@@ -43,13 +43,11 @@ func (s *Store) Lookup(ref string) (Entry, bool) {
 	defer s.mu.Unlock()
 	s.loadLocked()
 
-	lower := strings.ToLower(ref)
 	for _, e := range s.entries {
 		if strings.EqualFold(e.Alias, ref) ||
 			e.IOSUUID == ref ||
 			e.IOSCoreDevice == ref ||
 			e.AndroidSerial == ref {
-			_ = lower
 			return e, true
 		}
 	}
