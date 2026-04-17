@@ -17,7 +17,7 @@ import (
 // Entry records a known device with its platform-specific identifiers.
 type Entry struct {
 	Alias         string `json:"alias"`
-	Platform      string `json:"platform"` // "ios" or "android"
+	Platform      string `json:"platform"`                 // "ios" or "android"
 	IOSUUID       string `json:"ios_uuid,omitempty"`       // pymobiledevice3 / xctrace
 	IOSCoreDevice string `json:"ios_coredevice,omitempty"` // devicectl
 	AndroidSerial string `json:"android_serial,omitempty"` // adb
