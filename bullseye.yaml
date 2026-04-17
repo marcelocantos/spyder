@@ -1,0 +1,116 @@
+schema_version: 1
+targets:
+  T1:
+    name: Bimodal spyder MCP server registers with Claude Code and dispatches tool calls end-to-end
+    status: converging
+    value: 13.0
+    cost: 3.0
+    acceptance:
+    - go build produces a single working binary at bin/spyder
+    - spyder serve listens on ~/.spyder/spyder.sock and stays up across connections
+    - spyder (no args) auto-starts the daemon and speaks MCP JSON-RPC over stdio
+    - claude mcp add --scope user spyder -- spyder registers the server and Claude Code sees all four tools (devices, resolve, keepawake, device_state)
+    - Tool calls round-trip through the proxy → daemon → handler path and return structured results
+    context: Foundation for everything else. The scaffold is in place (mnemo-style flat layout, sawmill-style auto-starting daemon via mcpbridge). Build is green. Remaining work is wiring to Claude Code and confirming the full round-trip. Deliberately uses the same patterns as sawmill/mnemo (mcpbridge library, ~/.spyder/ data dir, unprefixed tool names) so future maintenance is cheap.
+    tags:
+    - scaffold
+    - infrastructure
+    origin: bullseye_init
+    discovered: 2026-04-17
+  T2:
+    name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
+    status: identified
+    value: 8.0
+    cost: 3.0
+    acceptance:
+    - ~/.spyder/inventory.json format is documented with at least Pippa as a worked example
+    - 'resolve({name: "Pippa"}) returns both the hardware UDID (00008103-000D39301A6A201E) and the CoreDevice UUID (E1A01EA6-8D77-556C-B18D-D470B2909E87)'
+    - Alias lookup is case-insensitive; raw UUIDs pass through unchanged when not in the inventory
+    - Missing inventory file is handled as empty, not an error
+    - devices tool annotates results with the inventory alias when the UUID matches
+    context: The inventory layer is what lets the agent say \"the iPad\" or \"Pippa\" without memorising UUIDs — and lets tests target the right device by semantic name. Two UUID systems coexist in iOS tooling (hardware UDID for xctrace/xcodebuild, CoreDevice UUID for devicectl/pymobiledevice3); the inventory holds both so callers don't have to care which their downstream tool needs. Skeleton is in internal/inventory/inventory.go.
+    depends_on:
+    - T1
+    tags:
+    - inventory
+    - ios
+    origin: manual
+    discovered: 2026-04-17
+  T3:
+    name: iOS devices stay awake while plugged in via the KeepAwake companion app
+    status: identified
+    value: 13.0
+    cost: 8.0
+    acceptance:
+    - ios/KeepAwake/ contains a buildable Xcode project producing com.marcelocantos.spyder.KeepAwake
+    - The app sets UIApplication.shared.isIdleTimerDisabled = true on foreground and unsets on background
+    - Bundle is installable on Pippa via devicectl or Xcode, survives device reboot, and works with a standard free developer profile (no paid entitlements required)
+    - 'keepawake({device: "Pippa"}) MCP tool foregrounds the app on the device and returns a success confirmation'
+    - With the app foregrounded, a plugged-in Pippa stays awake indefinitely in practice (verified over a ≥30 minute idle window)
+    context: 'The originating pain point: iOS has no system-level \"stay awake on power\" setting. A trivial SwiftUI app that holds isIdleTimerDisabled is the cleanest workaround. The MCP surface wraps the launch step so automation (test-run wrappers) can bring the app back to the foreground without manual taps. Scope-fence: no fancy UI, no telemetry, no background operation — it only works while foregrounded and that''s the whole point. The iOS Shortcut automation (\"when power connected → open KeepAwake\") is belt-and-braces and can be set up manually by the user.'
+    depends_on:
+    - T1
+    - T2
+    tags:
+    - ios
+    - keepawake
+    - swift
+    origin: manual
+    discovered: 2026-04-17
+  T4:
+    name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
+    status: identified
+    value: 13.0
+    cost: 5.0
+    acceptance:
+    - A wrapper command (subcommand or companion script) runs xcodebuild test/run with arbitrary args, waits for completion, and foregrounds KeepAwake on exit — success or failure
+    - Target device defaults to the inventory's canonical iPad (Pippa) but can be overridden
+    - No race between test teardown and KeepAwake launch — if the device is still holding the test app, the wrapper waits for the test process to exit before launching KeepAwake
+    - 'Idempotent: calling it when KeepAwake is already foregrounded is a no-op, not an error'
+    context: The actual automation piece that closes the loop on the user's original ask. Without this, the human has to remember to re-foreground KeepAwake after every test run — which is exactly the failure mode the user described. The wrapper is what makes the workflow reliable. Could be a subcommand like `spyder run -- xcodebuild ...` or a thin shell script; decide when implementing.
+    depends_on:
+    - T3
+    tags:
+    - orchestration
+    - ios
+    - keepawake
+    origin: manual
+    discovered: 2026-04-17
+  T5:
+    name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
+    status: identified
+    value: 5.0
+    cost: 8.0
+    acceptance:
+    - 'device_state({device: "Pippa"}) returns battery level (0-100), charging bool, thermal state (nominal/fair/serious/critical), and foreground app bundle ID'
+    - Implementation shells out to pymobiledevice3 and/or devicectl — no private iOS APIs, no jailbreak
+    - Results are cached per-device with a short TTL (~2s) to avoid hammering the device when tools call in quick succession
+    - 'Graceful degradation: if any single field is unavailable, the others are still returned with a note'
+    - Error surface distinguishes "device not connected" from "tool unavailable in PATH"
+    context: Value is lower than T3/T4 because it's useful but not load-bearing for the keep-awake workflow. Bumped up once an agent actually needs to reason about device state during a test session (e.g. skip thermal-sensitive tests when the iPad is 'serious'). Implementation-wise, pymobiledevice3 diagnostics covers battery and thermal; springboard queries give foreground app.
+    depends_on:
+    - T1
+    - T2
+    tags:
+    - ios
+    - state
+    origin: manual
+    discovered: 2026-04-17
+  T6:
+    name: Android adapter lights up with feature parity to iOS (list, state, keepawake)
+    status: identified
+    value: 3.0
+    cost: 13.0
+    acceptance:
+    - Android adapter shells out to adb and returns connected devices via `devices` tool
+    - '`device_state` reports battery, charging, and foreground activity (via `dumpsys`)'
+    - Android KeepAwake app exists and is wired to `keepawake` tool — though Android's WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON makes this less critical than iOS
+    - 'Cross-platform test: listing works with one iOS + one Android device attached simultaneously'
+    context: Deliberately low-priority until there's a concrete Android testing need. The cross-platform seam (internal/device.Adapter) is already in place so this target is feature-fill rather than architecture. Pairdroid already handles the wireless-ADB ergonomics separately; spyder's Android adapter assumes adb is set up and reachable. Reassess value if the user starts doing more Android work.
+    depends_on:
+    - T1
+    tags:
+    - android
+    - cross-platform
+    origin: manual
+    discovered: 2026-04-17
