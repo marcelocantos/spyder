@@ -157,35 +157,49 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 	}
 
 	// Launch + retry-on-lock loop. dvt launch fails fast on a locked
-	// device with a distinctive error; we notify once and retry until
-	// the user unlocks.
-	lockedNotified := false
+	// device with a distinctive error; fire a persistent alert once
+	// (via alerter), retry silently, and dismiss the alert as soon as
+	// the launch succeeds OR we give up. The alert is also dismissed
+	// if the user clicks its Dismiss button — the alerter goroutine
+	// will just exit on its own in that case.
+	alertGroup := "spyder-lock-" + udid
+	lockAlertFired := false
+	dismiss := func() {
+		if lockAlertFired {
+			_ = notify.MacOSAlertRemove(alertGroup)
+		}
+	}
+
 	for attempt := 0; attempt < retryWhileLockedBudget; attempt++ {
 		// Re-check running each iteration — user might have launched
 		// it manually between attempts.
 		if running, _ := s.isKeepAwakeRunning(udid); running {
 			slog.Info("autoawake: KeepAwake already running, skip", "udid", udid, "alias", alias)
+			dismiss()
 			return
 		}
 
 		err := s.ios.LaunchApp(udid, device.KeepAwakeBundleID)
 		if err == nil {
 			slog.Info("autoawake: KeepAwake launched", "udid", udid, "alias", alias)
-			if nerr := notify.MacOS("spyder", fmt.Sprintf("Launched KeepAwake on %s", alias)); nerr != nil {
-				slog.Warn("autoawake: notify failed", "error", nerr)
-			}
+			dismiss()
 			return
 		}
 		if errors.Is(err, device.ErrLocked) {
-			if !lockedNotified {
-				slog.Info("autoawake: device locked — notifying user", "udid", udid, "alias", alias)
-				if nerr := notify.MacOS("spyder", fmt.Sprintf("Unlock %s to enable keep-awake", alias)); nerr != nil {
-					slog.Warn("autoawake: notify failed", "error", nerr)
-				}
-				lockedNotified = true
+			if !lockAlertFired {
+				slog.Info("autoawake: device locked — alerting user", "udid", udid, "alias", alias)
+				go func() {
+					if nerr := notify.MacOSAlert("spyder",
+						fmt.Sprintf("Unlock %s to enable keep-awake", alias),
+						alertGroup); nerr != nil {
+						slog.Warn("autoawake: alert failed", "error", nerr)
+					}
+				}()
+				lockAlertFired = true
 			}
 			select {
 			case <-ctx.Done():
+				dismiss()
 				return
 			case <-time.After(retryWhileLockedInterval):
 			}
@@ -193,9 +207,11 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 		}
 		// Some other failure — not worth retrying.
 		slog.Warn("autoawake: launch failed", "udid", udid, "alias", alias, "error", summariseErr(err))
+		dismiss()
 		return
 	}
 	slog.Info("autoawake: giving up on locked device", "udid", udid, "alias", alias)
+	dismiss()
 }
 
 // summariseErr strips pymobiledevice3's rich-console traceback
