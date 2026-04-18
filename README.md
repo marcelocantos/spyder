@@ -1,92 +1,110 @@
 # spyder
 
-Cross-platform mobile development workflow assistant — a bimodal MCP server
-that owns device inventory, tracks session state, and orchestrates prep →
-run → restore cycles around tests on real devices.
+HTTP-based MCP server for cross-platform mobile development workflow
+orchestration. Spyder owns device inventory, live device facts (battery,
+charging, foreground app), screenshots, app lifecycle, and a plug-in-driven
+auto-launcher for the KeepAwake companion app on iOS.
 
 Not a replacement for
-[mobile-mcp](https://github.com/mobile-next/mobile-mcp) (UI automation) or
-[XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP) (xcodebuild).
-Spyder sits above them as the session-state layer — the cross-tool context
-those single-shot surfaces don't carry.
+[mobile-mcp](https://github.com/mobile-next/mobile-mcp) (UI automation via
+WebDriverAgent) or [XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP)
+(xcodebuild). Spyder sits above them: it remembers what the device *is* and
+wraps the workflow around it, using `pymobiledevice3` + CoreDevice to talk
+directly to iOS physical devices where mobile-mcp's WDA path often fails.
 
-## Status
+## Quick start (for agents)
 
-iOS-first MVP. Android adapter is stubbed so the cross-platform seam exists
-from day one, but the implementation is deferred.
+Paste this into your agent:
 
-## Build & Run
-
-```bash
-make build
-bin/spyder serve                        # daemon on ~/.spyder/spyder.sock
-bin/spyder                              # stdio MCP proxy (auto-starts daemon)
+```
+Install spyder from https://github.com/marcelocantos/spyder — brew install
+the binary from the marcelocantos/tap, start the brew service, register it
+as an HTTP MCP server with Claude Code, then restart this session. Follow
+agents-guide.md in the repo for the full instructions (it's a multi-step
+install — all steps are required).
 ```
 
-## Install as MCP server
+## Install
 
 ```bash
-claude mcp add --scope user spyder -- spyder
+# 1. Binary
+brew install marcelocantos/tap/spyder
+
+# 2. Persistent server
+brew services start spyder
+
+# 3. Register with Claude Code (HTTP transport)
+claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
+
+# 4. Restart your agent session
 ```
 
-## MCP Tools
+Verify with `lsof -iTCP:3030 -sTCP:LISTEN` (the MCP endpoint only answers
+JSON-RPC POSTs, so `curl` is not a useful probe).
 
-| Tool | What it does |
+If you use an agentic coding tool, include
+[`agents-guide.md`](agents-guide.md) in your project context — it has
+everything below plus gotchas, device-inventory format, and the full
+`spyder run` wrapper semantics.
+
+## MCP tools
+
+| Tool | Purpose |
 |---|---|
-| `devices` | List connected iOS and Android devices with alias, platform, model. |
-| `resolve` | Resolve a symbolic name (e.g. `Pippa`) to platform-specific UUIDs. |
-| `keepawake` | Foreground the KeepAwake companion app on a device. |
-| `device_state` | Report battery, thermal, charging, foreground app. |
+| `devices` | List connected iOS + Android devices, annotated with inventory alias. |
+| `resolve` | Symbolic name → structured entry with all known UUIDs. |
+| `device_state` | Battery, charging, thermal, foreground app. 2 s TTL cache. |
+| `screenshot` | PNG of the current screen. iOS via DVT; Android via `adb screencap`. |
+| `keepawake` | Foreground the KeepAwake companion app (iOS). No-op on Android. |
+| `list_apps` | Installed third-party apps. |
+| `launch_app` | Foreground an arbitrary app by bundle id. |
+| `terminate_app` | Stop an app by bundle id. |
 
-## Device Inventory
-
-JSON file at `~/.spyder/inventory.json`:
-
-```json
-[
-  {
-    "alias": "Pippa",
-    "platform": "ios",
-    "ios_uuid": "00008103-000D39301A6A201E",
-    "ios_coredevice": "E1A01EA6-8D77-556C-B18D-D470B2909E87",
-    "notes": "Preferred iPad test device"
-  }
-]
-```
-
-## Code Structure
-
-```
-spyder/
-├── main.go                    bimodal entrypoint (stdio proxy ↔ daemon)
-├── internal/
-│   ├── paths/                 ~/.spyder/ path conventions
-│   ├── daemon/                mcpbridge daemon wiring
-│   ├── mcp/                   ToolHandler + tool definitions
-│   ├── device/                cross-platform Adapter interface + iOS/Android
-│   └── inventory/             symbolic name ↔ UUID resolution
-├── ios/
-│   └── KeepAwake/             companion Swift app (TBD)
-└── docs/
-    └── TODO.md
-```
-
-## Dependencies
-
-- [`mcpbridge`](https://github.com/marcelocantos/mcpbridge) — daemon/proxy pattern
-- [`mcp-go`](https://github.com/mark3labs/mcp-go) — MCP SDK
-- `pymobiledevice3` (in PATH) — iOS introspection
-- Xcode `devicectl` — iOS 17+ process launching
-
-## Testing
+## Test-run wrapper
 
 ```bash
-go test ./...
+spyder run -- xcodebuild -project MyApp.xcodeproj \
+  -scheme MyApp -destination 'id=00008103-000D39301A6A201E' test
 ```
 
-## Delivery
+Runs the command, waits for it to exit, then foregrounds KeepAwake on the
+device regardless of success/failure. Forwards the command's exit code.
 
-Merged to master via squash PR.
+## Auto-awake supervisor
+
+`spyder serve` polls `pymobiledevice3 remote tunneld` for paired iOS
+devices. For each newly-seen device:
+
+1. Checks whether KeepAwake is installed.
+2. If not, auto-deploys via `xcodegen` + `xcodebuild` + `devicectl install`.
+3. Launches KeepAwake via DVT.
+4. If the device is locked, fires a **persistent macOS alert** via
+   [`alerter`](https://github.com/vjeantet/alerter) asking the user to
+   unlock. The alert auto-dismisses on successful launch.
+
+## Device inventory
+
+Spyder reads `~/.spyder/inventory.json` — a JSON array mapping symbolic
+aliases to platform-specific UUIDs. Alias lookup is case-insensitive;
+unknown raw identifiers are classified by format and passed through. See
+the [agent guide](agents-guide.md#device-inventory) for the format.
+
+## Build from source
+
+```bash
+make build          # bin/spyder
+make test
+make bullseye       # full invariants
+```
+
+Dependencies:
+
+- Go 1.26+
+- `pymobiledevice3` ≥ 8.2 in PATH (iOS operations)
+- `adb` (Android operations)
+- `xcodegen` + Xcode (auto-deploy of KeepAwake on iOS)
+- `alerter` (persistent macOS notifications for the locked-device prompt;
+  falls back to `terminal-notifier` → `osascript`)
 
 ## Licence
 
