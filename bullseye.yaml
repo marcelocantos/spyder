@@ -240,21 +240,64 @@ targets:
     discovered: 2026-04-17
     achieved: 2026-04-18
   T6:
-    name: Android adapter lights up with feature parity to iOS (list, state, keepawake)
+    name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: identified
-    value: 3.0
-    cost: 13.0
+    value: 8.0
+    cost: 2.0
     observable: true
     acceptance:
-    - Android adapter shells out to adb and returns connected devices via `devices` tool
-    - '`device_state` reports battery, charging, and foreground activity (via `dumpsys`)'
-    - Android KeepAwake app exists and is wired to `keepawake` tool — though Android's WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON makes this less critical than iOS
-    - 'Cross-platform test: listing works with one iOS + one Android device attached simultaneously'
-    context: Deliberately low-priority until there's a concrete Android testing need. The cross-platform seam (internal/device.Adapter) is already in place so this target is feature-fill rather than architecture. Pairdroid already handles the wireless-ADB ergonomics separately; spyder's Android adapter assumes adb is set up and reachable. Reassess value if the user starts doing more Android work.
+    - devices tool lists Android devices via adb, annotated with inventory alias when matched, alongside iOS devices in a single call
+    - device_state({device:<android>}) returns battery level (0-100), charging bool, and foreground activity (via adb dumpsys)
+    - keepawake({device:<android>}) returns a success no-op explaining that Android handles stay-awake natively via Settings → Developer options → Stay awake while plugged in
+    - 'Cross-platform behaviour: a single devices call works with iOS (Pippa) and ≥1 Android devices attached simultaneously'
+    context: |-
+      Elevated from low-priority: user has confirmed Android is a key target. Android does NOT need the KeepAwake companion app — the OS offers a native \"stay on while plugged in\" developer setting, so the keepawake MCP tool only needs to report that cleanly. The interesting work is wiring the Android adapter for list and state via adb + dumpsys. Three Android devices are currently attached to the Mac (R5CR112X76K, T1AIOC662722687, emulator-5554) — good test bed. The cross-platform seam (internal/device.Adapter) is already in place; this is adapter fleshout, not new architecture.
+
+      Decomposed into 🎯T6.1 (devices list + keepawake no-op) and 🎯T6.2 (device_state). Umbrella rolls up when both are achieved.
     depends_on:
-    - T1
+    - T6.2
     tags:
     - android
     - cross-platform
     origin: manual
     discovered: 2026-04-17
+  T6.1:
+    name: Android adapter lists connected devices via adb and renders keepawake as an OS-native no-op
+    status: identified
+    value: 8.0
+    cost: 3.0
+    observable: true
+    acceptance:
+    - AndroidAdapter.List shells out to `adb devices -l` and returns one Info per attached device with UUID=serial, Platform=android, and Model/OS populated where available
+    - devices({platform:"android"}) returns only Android devices; devices({platform:"all"}) returns iOS + Android in one call
+    - inventory.AliasFor annotates Android entries via Entry.AndroidSerial when the inventory has them
+    - keepawake({device:<android>}) succeeds with a structured message referring the user to Settings → Developer options → Stay awake while plugged in — no companion app launched, no error
+    context: Foundation sub-target for 🎯T6. Output of `adb devices -l` is whitespace-separated with optional key:value attrs (model, device). Must be robust to offline/unauthorized states — return those devices with a note rather than erroring out. Keepawake-on-Android is a gentle no-op in this same commit because the change touches the same adapter surface.
+    tags:
+    - android
+    - cross-platform
+    - adb
+    origin: forked-from T6 (reframing 2026-04-18)
+    discovered: 2026-04-18
+  T6.2:
+    name: Android device_state reports battery, charging, and foreground activity via adb dumpsys
+    status: identified
+    value: 8.0
+    cost: 5.0
+    observable: true
+    acceptance:
+    - AndroidAdapter.State shells out to `adb -s <serial> shell dumpsys battery` and `dumpsys activity activities` (or equivalent) to populate BatteryLevel, Charging, and ForegroundApp
+    - device_state({device:<android>}) returns the populated State struct for attached Android devices tested in this session
+    - Per-device 2s TTL cache matches the iOS adapter (avoid hammering)
+    - 'Graceful degradation: if any single field is unavailable (e.g. dumpsys parse miss), others still return with a note'
+    - Error surface distinguishes 'device not connected' (adb reports offline/unauthorized) from 'adb not in PATH'
+    context: 'Depends on 🎯T6.1 for adapter basics. Battery parsing: `dumpsys battery` emits key:value lines (level, status, AC/USB/Wireless powered bools). Charging can be inferred from any powered=true. Foreground activity: `dumpsys activity activities | grep mResumedActivity` or `dumpsys window windows | grep mCurrentFocus` — pick whichever survives Android version skew. Thermal state can be added later via `dumpsys thermalservice` if useful; not required by acceptance but welcome as a bonus.'
+    depends_on:
+    - T6.1
+    tags:
+    - android
+    - state
+    - adb
+    - dumpsys
+    origin: forked-from T6 (reframing 2026-04-18)
+    discovered: 2026-04-18
