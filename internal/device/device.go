@@ -16,13 +16,15 @@ type Info struct {
 	Alias    string `json:"alias,omitempty"` // populated from inventory
 }
 
-// State reports device runtime state.
+// State reports device runtime state. Fields are optional: nil pointers
+// or empty strings indicate the field was unavailable (see Notes for why).
 type State struct {
-	BatteryLevel  int    `json:"battery_level"` // 0..100
-	Charging      bool   `json:"charging"`
-	ThermalState  string `json:"thermal_state"` // "nominal", "fair", "serious", "critical"
-	ForegroundApp string `json:"foreground_app,omitempty"`
-	StorageFreeMB int64  `json:"storage_free_mb,omitempty"`
+	BatteryLevel  *int     `json:"battery_level,omitempty"` // 0..100
+	Charging      *bool    `json:"charging,omitempty"`
+	ThermalState  string   `json:"thermal_state,omitempty"` // "nominal", "fair", "serious", "critical"
+	ForegroundApp string   `json:"foreground_app,omitempty"`
+	StorageFreeMB int64    `json:"storage_free_mb,omitempty"`
+	Notes         []string `json:"notes,omitempty"` // degradation messages for unavailable fields
 }
 
 // Adapter is the platform-specific device surface.
