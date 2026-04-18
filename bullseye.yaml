@@ -314,12 +314,11 @@ targets:
     cost: 8.0
     observable: true
     acceptance:
-    - spyder serve starts `pymobiledevice3 remote tunneld` as a managed child process (with sudo) and keeps it alive for the server's lifetime
-    - If tunneld dies unexpectedly, spyder restarts it with exponential backoff and logs the event
-    - A health probe against the tunneld HTTP surface succeeds before any DVT-dependent tool call is attempted; tools return a specific 'tunneld unavailable' error if the probe fails
-    - Tunneld is shut down cleanly when spyder serve receives SIGINT/SIGTERM (no orphaned sudo process)
-    - 'Configuration: --no-tunneld flag disables supervision for environments that manage it externally (launchd, systemd, CI)'
-    context: Load-bearing infrastructure. The external research (captured in the conversation on 2026-04-18) confirmed that pymobiledevice3's `developer dvt` operations — screenshot, launch, sysmon, accessibility, foreground detection — all require an active tunneld session on iOS 17+. Tunneld needs root (TUN/TAP interface) and is fragile (can die silently). Spyder, as the Go daemon that already orchestrates session state, is the natural owner of tunneld's lifecycle. Upstream tunneld is FastAPI/uvicorn-based — we run it as-is and probe its health; we do not reimplement it. This target enables 🎯T8, 🎯T9, and the 'foreground app' note in 🎯T5.
+    - spyder detects and health-probes an externally-managed tunneld on startup (default 127.0.0.1:49151) and logs the paired-device count on success
+    - When tunneld is unreachable, DVT-dependent tools (🎯T5 foreground, 🎯T8 iOS screenshot, 🎯T9 iOS launch/terminate) return a specific 'tunneld unavailable — start pymobiledevice3 remote tunneld or enable --supervise-tunneld' error; non-DVT tools (devices list, resolve, keepawake, Android state) are unaffected
+    - 'Optional: --supervise-tunneld flag spawns `sudo -n pymobiledevice3 remote tunneld` as a managed child with clean shutdown on SIGINT/SIGTERM. Requires passwordless sudo for the binary; clear error otherwise. Auto-restart on unexpected exit with fixed backoff'
+    - --tunneld-addr host:port overrides the probe target for non-default setups (alternate port, launchd-managed service, etc.)
+    context: Reshaped after finding tunneld is already externally managed on the dev machine (port 49151 responding with three paired devices). External tunneld is now first-class; spyder's job is to detect and gate DVT-dependent tools. Child-process supervision becomes opt-in via --supervise-tunneld for environments where no external manager (launchd, brew services, systemd) exists. This keeps the happy path simple and avoids the passwordless-sudo setup burden for users who already have tunneld running.
     tags:
     - infrastructure
     - ios
