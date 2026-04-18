@@ -196,10 +196,11 @@ targets:
     achieved: 2026-04-18
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
-    status: identified
+    status: achieved
     value: 13.0
     cost: 5.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - A wrapper command (subcommand or companion script) runs xcodebuild test/run with arbitrary args, waits for completion, and foregrounds KeepAwake on exit — success or failure
     - Target device defaults to the inventory's canonical iPad (Pippa) but can be overridden
@@ -214,6 +215,7 @@ targets:
     - keepawake
     origin: manual
     discovered: 2026-04-17
+    achieved: 2026-04-18
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
