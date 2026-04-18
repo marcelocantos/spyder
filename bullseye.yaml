@@ -38,10 +38,11 @@ targets:
     achieved: 2026-04-18
   T1.2:
     name: spyder serve listens on ~/.spyder/spyder.sock and stays up across connections
-    status: identified
+    status: achieved
     value: 3.0
     cost: 2.0
     observable: true
+    actual_cost: 2.0
     acceptance:
     - spyder serve creates ~/.spyder/spyder.sock with mode 0600
     - a client can connect via nc -U ~/.spyder/spyder.sock and receive valid MCP framing
@@ -56,6 +57,7 @@ targets:
     - daemon
     origin: forked-from T1 (decomposition 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T1.3:
     name: spyder stdio proxy auto-starts the daemon and forwards MCP JSON-RPC
     status: identified
