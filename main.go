@@ -7,43 +7,46 @@
 //
 // Usage:
 //
-//	spyder             MCP stdio proxy — auto-starts daemon if needed
-//	spyder serve       Start the persistent background daemon
-//	spyder version     Print version and exit
+//	spyder serve [--addr :3030]  Start the HTTP MCP server
+//	spyder run -- <cmd>          Run a command, then restore KeepAwake
+//	spyder version               Print version and exit
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
-	"syscall"
-	"time"
-
-	"github.com/marcelocantos/mcpbridge"
 
 	"github.com/marcelocantos/spyder/internal/daemon"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
-	"github.com/marcelocantos/spyder/internal/paths"
 )
+
+// version is set by ldflags at build time.
+var version = "dev"
+
+// defaultAddr is the HTTP listen address when `spyder serve` is invoked
+// without --addr.
+const defaultAddr = ":3030"
 
 // defaultRunDevice is the device alias used when `spyder run` is invoked
 // without --device. The inventory must contain an entry with this alias.
 const defaultRunDevice = "Pippa"
 
-// version is set by ldflags at build time.
-var version = "dev"
-
 const usage = `Usage: spyder [command]
 
 Commands:
-  (none)    MCP stdio proxy — auto-starts daemon if needed
-  serve     Start the persistent background daemon
+  serve     Start the HTTP MCP server (default :3030, endpoint /mcp)
   run       Run a command, then foreground KeepAwake on the device
   version   Print version and exit
+
+Serve:
+  spyder serve [--addr :3030]
+
+  Runs an MCP server over streamable HTTP. Register with Claude Code:
+    claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
 
 Run:
   spyder run [--device <alias>] -- <command> [args...]
@@ -56,14 +59,14 @@ Run:
 
 func main() {
 	if len(os.Args) < 2 {
-		runMCP()
+		fmt.Print(usage)
 		return
 	}
 
 	cmd := os.Args[1]
 	switch cmd {
 	case "serve":
-		runServe()
+		runServe(os.Args[2:])
 	case "run":
 		runCmd(os.Args[2:])
 	case "version", "--version", "-version":
@@ -71,11 +74,30 @@ func main() {
 	case "help", "--help", "-help":
 		fmt.Print(usage)
 	default:
-		if strings.HasPrefix(cmd, "-") {
-			runMCP()
-			return
-		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)
+		os.Exit(1)
+	}
+}
+
+// runServe parses optional --addr and starts the HTTP MCP server.
+func runServe(args []string) {
+	addr := defaultAddr
+	for len(args) > 0 {
+		switch args[0] {
+		case "--addr", "-a":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "serve: --addr requires a value")
+				os.Exit(2)
+			}
+			addr = args[1]
+			args = args[2:]
+		default:
+			fmt.Fprintf(os.Stderr, "serve: unknown flag %q\n", args[0])
+			os.Exit(2)
+		}
+	}
+	if err := daemon.Start(addr, version); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -137,8 +159,7 @@ func runCmd(args []string) {
 
 // restoreKeepAwake foregrounds the KeepAwake app on the device named
 // by the inventory alias (falling back to raw passthrough for
-// unknown names). Package-level so `spyder run` bypasses the daemon
-// entirely — the test wrapper needs no running mcpbridge server.
+// unknown names).
 func restoreKeepAwake(dev string) error {
 	store := inventory.New()
 	id := dev
@@ -150,63 +171,9 @@ func restoreKeepAwake(dev string) error {
 				id = entry.IOSCoreDevice
 			}
 		case "android":
-			return fmt.Errorf("KeepAwake on Android is not yet implemented (🎯T6)")
+			return fmt.Errorf("KeepAwake on Android is a no-op (OS-native — enable Settings → Developer options → Stay awake)")
 		}
 	}
 	adapter := device.NewIOSAdapter()
 	return adapter.LaunchKeepAwake(id)
-}
-
-func runServe() {
-	if err := daemon.Start(paths.SocketPath()); err != nil {
-		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
-		os.Exit(1)
-	}
-}
-
-func runMCP() {
-	ensureDaemon()
-
-	if err := mcpbridge.RunProxy(context.Background(), mcpbridge.ProxyConfig{
-		SocketPath: paths.SocketPath(),
-		ServerName: "spyder",
-		Version:    version,
-	}); err != nil {
-		fmt.Fprintf(os.Stderr, "spyder: %v\n", err)
-		fmt.Fprintf(os.Stderr, "hint: the daemon may have stopped — it will auto-start on next invocation\n")
-		os.Exit(1)
-	}
-}
-
-// ensureDaemon re-execs `spyder serve` in the background if no daemon is
-// listening. Uses Setsid so the child survives the parent's exit.
-func ensureDaemon() {
-	sock := paths.SocketPath()
-	if daemon.Running(sock) {
-		return
-	}
-
-	exe, err := os.Executable()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "cannot find own executable: %v\n", err)
-		os.Exit(1)
-	}
-	cmd := exec.Command(exe, "serve")
-	cmd.Stdout = nil
-	cmd.Stderr = nil
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := cmd.Start(); err != nil {
-		fmt.Fprintf(os.Stderr, "failed to start daemon: %v\n", err)
-		os.Exit(1)
-	}
-	_ = cmd.Process.Release()
-
-	for range 30 {
-		time.Sleep(100 * time.Millisecond)
-		if daemon.Running(sock) {
-			return
-		}
-	}
-	fmt.Fprintf(os.Stderr, "daemon did not start within 3 seconds\n")
-	os.Exit(1)
 }

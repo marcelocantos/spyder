@@ -1,47 +1,53 @@
 # spyder
 
-Cross-platform mobile development workflow assistant. Bimodal MCP server
-(Go) that sits above mobile-mcp and XcodeBuildMCP as the session-state
-layer — device inventory, wake-state, and prep/run/restore orchestration
-around real-device tests. iOS-first; Android stubbed.
+Cross-platform mobile development workflow assistant. HTTP-based MCP
+server (Go) that sits above mobile-mcp and XcodeBuildMCP as the
+session-state layer — device inventory, wake-state, and prep/run/restore
+orchestration around real-device tests. iOS physical devices are a
+first-class citizen (via `pymobiledevice3` + CoreDevice, where
+mobile-mcp struggles); Android is supported via `adb`.
 
 ## What it owns
 
 - Device inventory (symbolic names → platform UUIDs)
-- Device state snapshots (battery, thermal, charging, foreground app)
-- KeepAwake companion app lifecycle (keeps devices awake while plugged in)
-- Session-aware test-run orchestration (deferred — see 🎯 targets)
+- Device state snapshots (battery, charging, thermal, foreground app)
+- KeepAwake companion app lifecycle for iOS (Android has OS-native support)
+- Session-aware test-run orchestration (`spyder run --` wraps the
+  test command and restores KeepAwake on exit)
 
 ## What it does NOT own
 
-- UI automation (that's mobile-mcp)
-- xcodebuild invocations (that's XcodeBuildMCP)
-- Raw device ops — spyder wraps `pymobiledevice3` / `devicectl` / `adb`,
-  it doesn't reimplement them
+- UI automation (tap/swipe/type/UI tree) — that's mobile-mcp
+- xcodebuild invocations — that's XcodeBuildMCP
+- Raw device protocols — spyder shells out to `pymobiledevice3` /
+  `devicectl` / `adb`, it doesn't reimplement them
 
 ## Build & Run
 
 ```bash
 make build
-bin/spyder serve                        # daemon on ~/.spyder/spyder.sock
-bin/spyder                              # stdio MCP proxy (auto-starts daemon)
-claude mcp add --scope user spyder -- spyder
+bin/spyder serve                      # HTTP MCP server on :3030, endpoint /mcp
+bin/spyder serve --addr :3131         # custom addr
+bin/spyder run -- xcodebuild test ... # wrapper: runs cmd, restores KeepAwake
+
+# Register with Claude Code:
+claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
 ```
 
 ## Architecture
 
-- **main.go** — bimodal entrypoint. No args → stdio proxy (auto-starts
-  daemon). `serve` → persistent daemon. Pattern follows sawmill.
-- **internal/daemon** — wires `mcpbridge.NewServer` with spyder's
-  `ToolHandler` and tool definitions.
+- **main.go** — single entrypoint. Subcommands: `serve` (HTTP MCP
+  server), `run` (test-wrapper), `version`.
+- **internal/daemon** — wires `github.com/mark3labs/mcp-go`'s
+  `MCPServer` and `StreamableHTTPServer` with spyder's tool handlers.
 - **internal/mcp** — `Handler` + `Definitions()`. Dispatches tool calls.
 - **internal/device** — `Adapter` interface; `ios.go` and `android.go`
   implementations. iOS shells out to `pymobiledevice3` + `devicectl`;
-  Android is a stub.
+  Android shells out to `adb`.
 - **internal/inventory** — symbolic name resolution, JSON-backed.
 - **internal/paths** — `~/.spyder/` path conventions.
 - **ios/KeepAwake** — minimal SwiftUI app that sets
-  `UIApplication.isIdleTimerDisabled = true`. Pending.
+  `UIApplication.isIdleTimerDisabled = true`. Installed on Pippa.
 
 ## Device Inventory Format
 
@@ -66,7 +72,7 @@ JSON array at `~/.spyder/inventory.json`:
 
 - Apache 2.0, short-form SPDX headers on every .go file.
 - Go 1.26.1, `go.mod` at repo root (flat layout — no nested `go/` subdir).
-- `~/.spyder/` holds all runtime state (socket, inventory).
+- `~/.spyder/` holds runtime state (inventory).
 - Tool names are unprefixed (`devices`, not `spyder_devices`); MCP clients
   add the server-name prefix at their end.
 

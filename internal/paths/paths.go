@@ -19,11 +19,6 @@ func Base() string {
 	return filepath.Join(home, ".spyder")
 }
 
-// SocketPath returns the Unix domain socket path for the daemon.
-func SocketPath() string {
-	return filepath.Join(Base(), "spyder.sock")
-}
-
 // InventoryPath returns the device inventory JSON file path.
 func InventoryPath() string {
 	return filepath.Join(Base(), "inventory.json")

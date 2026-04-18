@@ -2,10 +2,7 @@ module github.com/marcelocantos/spyder
 
 go 1.26.1
 
-require (
-	github.com/marcelocantos/mcpbridge v0.0.0-20260408093540-23a00b31c01c
-	github.com/mark3labs/mcp-go v0.47.0
-)
+require github.com/mark3labs/mcp-go v0.47.0
 
 require (
 	github.com/google/jsonschema-go v0.4.2 // indirect
