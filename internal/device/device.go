@@ -27,6 +27,13 @@ type State struct {
 	Notes         []string `json:"notes,omitempty"` // degradation messages for unavailable fields
 }
 
+// AppInfo summarises an installed third-party application.
+type AppInfo struct {
+	BundleID string `json:"bundle_id"`
+	Name     string `json:"name,omitempty"`
+	Version  string `json:"version,omitempty"`
+}
+
 // Adapter is the platform-specific device surface.
 type Adapter interface {
 	// List returns all currently connected devices for this platform.
@@ -44,4 +51,16 @@ type Adapter interface {
 	// pymobiledevice3 developer dvt (requires tunneld); Android uses
 	// adb shell screencap.
 	Screenshot(id string) ([]byte, error)
+
+	// ListApps returns installed third-party apps.
+	ListApps(id string) ([]AppInfo, error)
+
+	// LaunchApp foregrounds an arbitrary app by bundle id. iOS needs
+	// tunneld (dvt launch); Android uses adb monkey.
+	LaunchApp(id, bundleID string) error
+
+	// TerminateApp stops a running app by bundle id. iOS needs
+	// tunneld (dvt process-id-for-bundle-id + kill); Android uses
+	// adb am force-stop.
+	TerminateApp(id, bundleID string) error
 }

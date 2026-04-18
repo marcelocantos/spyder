@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -179,6 +181,120 @@ func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 		return nil, fmt.Errorf("capture did not produce a file: %s", truncate(stderrStr, 240))
 	}
 	return data, nil
+}
+
+// ListApps returns installed user apps via `pymobiledevice3 apps list`.
+// Does not need DDI/tunneld.
+func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	out, stderr, err := runCapture("pymobiledevice3", "apps", "list", "--type", "User", "--udid", id)
+	if isDeviceNotConnected(string(stderr)) {
+		return nil, fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("pymobiledevice3 apps list: %v\n%s", err, truncate(string(stderr), 200))
+	}
+	var raw map[string]map[string]any
+	if err := json.Unmarshal(out, &raw); err != nil {
+		return nil, fmt.Errorf("parsing apps list: %w", err)
+	}
+	apps := make([]AppInfo, 0, len(raw))
+	for bid, meta := range raw {
+		apps = append(apps, AppInfo{
+			BundleID: bid,
+			Name:     firstNonEmpty(stringOf(meta["CFBundleDisplayName"]), stringOf(meta["CFBundleName"])),
+			Version:  stringOf(meta["CFBundleShortVersionString"]),
+		})
+	}
+	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
+	return apps, nil
+}
+
+// LaunchApp foregrounds an arbitrary app via `pymobiledevice3 developer dvt launch`.
+// Requires tunneld.
+func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
+	if id == "" || bundleID == "" {
+		return errors.New("device id and bundle_id are required")
+	}
+	_, stderr, err := runCapture("pymobiledevice3", "developer", "dvt", "launch", bundleID, "--udid", id)
+	stderrStr := string(stderr)
+	if isDeviceNotConnected(stderrStr) {
+		return fmt.Errorf("device not connected: %s", id)
+	}
+	if isIOSAppNotFound(stderrStr) {
+		return fmt.Errorf("app not installed: %s", bundleID)
+	}
+	if err != nil {
+		return fmt.Errorf("dvt launch: %v\n%s", err, truncate(stderrStr, 200))
+	}
+	return nil
+}
+
+// TerminateApp stops an app via dvt: look up PID for bundle id, then kill.
+// Requires tunneld.
+func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
+	if id == "" || bundleID == "" {
+		return errors.New("device id and bundle_id are required")
+	}
+	pidOut, pidStderr, pidErr := runCapture("pymobiledevice3", "developer", "dvt", "process-id-for-bundle-id", bundleID, "--udid", id)
+	if isDeviceNotConnected(string(pidStderr)) {
+		return fmt.Errorf("device not connected: %s", id)
+	}
+	if pidErr != nil {
+		return fmt.Errorf("resolve pid: %v\n%s", pidErr, truncate(string(pidStderr), 200))
+	}
+	pid, err := parseIOSPID(pidOut)
+	if err != nil {
+		return fmt.Errorf("app not running: %s", bundleID)
+	}
+	_, killStderr, killErr := runCapture("pymobiledevice3", "developer", "dvt", "kill", strconv.Itoa(pid), "--udid", id)
+	if killErr != nil {
+		return fmt.Errorf("kill pid %d: %v\n%s", pid, killErr, truncate(string(killStderr), 200))
+	}
+	return nil
+}
+
+// parseIOSPID extracts a PID from `dvt process-id-for-bundle-id` output.
+// The command can emit either a plain integer line or a structured
+// "bundle_id -> PID" form; we tolerate both.
+func parseIOSPID(out []byte) (int, error) {
+	s := strings.TrimSpace(string(out))
+	// Strip "com.foo.bar:" or "com.foo.bar ->" prefixes if present.
+	if i := strings.LastIndexAny(s, ":->"); i >= 0 {
+		s = strings.TrimSpace(s[i+1:])
+	}
+	pid, err := strconv.Atoi(s)
+	if err != nil || pid <= 0 {
+		return 0, fmt.Errorf("no PID in %q", strings.TrimSpace(string(out)))
+	}
+	return pid, nil
+}
+
+// isIOSAppNotFound matches pymobiledevice3's stderr when a bundle id
+// isn't installed on the device.
+func isIOSAppNotFound(stderr string) bool {
+	l := strings.ToLower(stderr)
+	return strings.Contains(l, "not installed") ||
+		strings.Contains(l, "application is not installed") ||
+		(strings.Contains(l, "bundle") && strings.Contains(l, "not found"))
+}
+
+func stringOf(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.

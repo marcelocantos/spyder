@@ -186,6 +186,76 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 	), nil
 }
 
+func (h *Handler) handleListApps(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	apps, err := adapter.ListApps(id)
+	if err != nil {
+		return toolErr("list_apps on %s: %v", dev, err)
+	}
+	return toolJSON(apps)
+}
+
+func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	bundleID, err := requireString(args, "bundle_id")
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	adapter, platform, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if platform == "ios" && h.tunneld != nil {
+		if err := h.tunneld.Require(); err != nil {
+			return toolErr("launch_app on %s: %v", dev, err)
+		}
+	}
+	if err := adapter.LaunchApp(id, bundleID); err != nil {
+		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
+	}
+	return toolText(fmt.Sprintf("launched %s on %s", bundleID, dev))
+}
+
+func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	bundleID, err := requireString(args, "bundle_id")
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	adapter, platform, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if platform == "ios" && h.tunneld != nil {
+		if err := h.tunneld.Require(); err != nil {
+			return toolErr("terminate_app on %s: %v", dev, err)
+		}
+	}
+	if err := adapter.TerminateApp(id, bundleID); err != nil {
+		return toolErr("terminate_app %s on %s: %v", bundleID, dev, err)
+	}
+	return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
+}
+
 // resolveAdapter maps a user-provided device reference (alias or raw UUID)
 // to the platform adapter, the platform name ("ios" | "android"), and the
 // platform-specific identifier it expects. Raw identifiers not in the

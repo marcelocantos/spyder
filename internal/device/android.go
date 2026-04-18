@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os/exec"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -206,6 +207,70 @@ func isAndroidDeviceNotConnected(s string) bool {
 // success; the tool handler surfaces a helpful message pointing the user
 // at the setting.
 func (a *AndroidAdapter) LaunchKeepAwake(id string) error {
+	return nil
+}
+
+// ListApps returns third-party packages via `adb shell pm list packages -3`.
+// Only bundle ids are populated; per-app names/versions would need a
+// dumpsys pass per package and are deferred until a use case lands.
+func (a *AndroidAdapter) ListApps(id string) ([]AppInfo, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return nil, fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "shell", "pm", "list", "packages", "-3")
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return nil, fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("adb pm list packages: %w", err)
+	}
+	apps := []AppInfo{}
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "package:") {
+			apps = append(apps, AppInfo{BundleID: strings.TrimPrefix(line, "package:")})
+		}
+	}
+	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
+	return apps, nil
+}
+
+// LaunchApp foregrounds an app via `adb shell monkey -p <pkg> -c LAUNCHER 1`.
+func (a *AndroidAdapter) LaunchApp(id, bundleID string) error {
+	if id == "" || bundleID == "" {
+		return errors.New("device id and bundle_id are required")
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "shell", "monkey", "-p", bundleID, "-c", "android.intent.category.LAUNCHER", "1")
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return fmt.Errorf("device not connected: %s", id)
+	}
+	if strings.Contains(strings.ToLower(combined), "no activities found") ||
+		strings.Contains(strings.ToLower(combined), "no packages found") {
+		return fmt.Errorf("app not installed or has no launcher activity: %s", bundleID)
+	}
+	if err != nil {
+		return fmt.Errorf("adb monkey: %v\n%s", err, truncate(string(stderr), 200))
+	}
+	return nil
+}
+
+// TerminateApp stops an app via `adb shell am force-stop <pkg>`.
+func (a *AndroidAdapter) TerminateApp(id, bundleID string) error {
+	if id == "" || bundleID == "" {
+		return errors.New("device id and bundle_id are required")
+	}
+	_, stderr, err := runCapture("adb", "-s", id, "shell", "am", "force-stop", bundleID)
+	if isAndroidDeviceNotConnected(string(stderr)) {
+		return fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return fmt.Errorf("adb force-stop: %v\n%s", err, truncate(string(stderr), 200))
+	}
 	return nil
 }
 
