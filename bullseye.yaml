@@ -147,10 +147,11 @@ targets:
     achieved: 2026-04-18
   T10:
     name: Auto-deploy and auto-launch KeepAwake on every iOS device that appears
-    status: identified
+    status: achieved
     value: 13.0
     cost: 5.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - spyder serve supervises every iOS device that tunneld reports as paired, with no flag or allow-list — all iOS/iPadOS devices, all the time
     - When a new iOS UDID appears in tunneld (including on spyder startup), spyder checks whether KeepAwake is installed via pymobiledevice3 apps query
@@ -168,6 +169,7 @@ targets:
     - keepawake
     origin: manual
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
     status: achieved
