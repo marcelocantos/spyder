@@ -171,15 +171,17 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 		err := s.ios.LaunchApp(udid, device.KeepAwakeBundleID)
 		if err == nil {
 			slog.Info("autoawake: KeepAwake launched", "udid", udid, "alias", alias)
-			_ = notify.MacOS("spyder",
-				fmt.Sprintf("Launched KeepAwake on %s", alias))
+			if nerr := notify.MacOS("spyder", fmt.Sprintf("Launched KeepAwake on %s", alias)); nerr != nil {
+				slog.Warn("autoawake: notify failed", "error", nerr)
+			}
 			return
 		}
 		if errors.Is(err, device.ErrLocked) {
 			if !lockedNotified {
 				slog.Info("autoawake: device locked — notifying user", "udid", udid, "alias", alias)
-				_ = notify.MacOS("spyder",
-					fmt.Sprintf("Unlock %s to enable keep-awake", alias))
+				if nerr := notify.MacOS("spyder", fmt.Sprintf("Unlock %s to enable keep-awake", alias)); nerr != nil {
+					slog.Warn("autoawake: notify failed", "error", nerr)
+				}
 				lockedNotified = true
 			}
 			select {

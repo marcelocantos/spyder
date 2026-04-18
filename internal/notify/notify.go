@@ -13,14 +13,20 @@ import (
 	"strings"
 )
 
-// MacOS fires a macOS notification via osascript. Returns nil if
-// invocation succeeded or if the host isn't macOS (no-op).
+// MacOS fires a macOS notification. Prefers terminal-notifier (which
+// registers as its own app and is reliably delivered), falling back to
+// osascript's 'display notification' (which is attributed to Script
+// Editor and often silently dropped when Script Editor's notification
+// style is set to None). Returns nil if invocation succeeded or if the
+// host isn't macOS (no-op).
 func MacOS(title, body string) error {
 	if runtime.GOOS != "darwin" {
 		return nil
 	}
-	// osascript string literals use double quotes with backslash
-	// escaping. We also strip newlines to avoid truncation surprises.
+	if path, err := exec.LookPath("terminal-notifier"); err == nil {
+		return exec.Command(path, "-title", title, "-message", body).Run()
+	}
+	// Fallback: osascript.
 	esc := func(s string) string {
 		s = strings.ReplaceAll(s, `\`, `\\`)
 		s = strings.ReplaceAll(s, `"`, `\"`)
