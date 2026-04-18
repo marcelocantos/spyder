@@ -169,10 +169,11 @@ targets:
     achieved: 2026-04-18
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
-    status: converging
+    status: achieved
     value: 13.0
     cost: 8.0
     observable: true
+    actual_cost: 8.0
     acceptance:
     - ios/KeepAwake/ contains a buildable Xcode project producing com.marcelocantos.spyder.KeepAwake
     - The app sets UIApplication.shared.isIdleTimerDisabled = true on foreground and unsets on background
@@ -192,6 +193,7 @@ targets:
     - swift
     origin: manual
     discovered: 2026-04-17
+    achieved: 2026-04-18
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: identified
