@@ -3,7 +3,17 @@
 
 package device
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	"os/exec"
+	"strings"
+)
+
+// KeepAwakeBundleID is the bundle identifier of the ios/KeepAwake companion
+// app. Any iOS device that should hold its screen awake must have this app
+// installed; LaunchKeepAwake foregrounds it via devicectl.
+const KeepAwakeBundleID = "com.marcelocantos.spyder.KeepAwake"
 
 // IOSAdapter talks to iOS devices via pymobiledevice3 and devicectl.
 type IOSAdapter struct{}
@@ -27,9 +37,20 @@ func (a *IOSAdapter) State(id string) (State, error) {
 	return State{}, errors.New("iOS State not yet implemented")
 }
 
-// LaunchKeepAwake brings the KeepAwake app to foreground.
+// LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.
+// The id may be the hardware UDID, CoreDevice UUID, device name, or any
+// other identifier `devicectl --device` accepts.
 func (a *IOSAdapter) LaunchKeepAwake(id string) error {
-	// TODO: `devicectl device process launch --device <id> com.marcelocantos.spyder.KeepAwake`
-	// once the companion app is built and installable.
-	return errors.New("iOS LaunchKeepAwake not yet implemented — companion app pending")
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	cmd := exec.Command("xcrun", "devicectl", "device", "process", "launch",
+		"--device", id,
+		KeepAwakeBundleID,
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("devicectl launch: %w\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
