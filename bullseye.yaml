@@ -145,6 +145,28 @@ targets:
     origin: forked-from T1 (decomposition 2026-04-18)
     discovered: 2026-04-18
     achieved: 2026-04-18
+  T10:
+    name: Auto-deploy and auto-launch KeepAwake on every iOS device that appears
+    status: identified
+    value: 13.0
+    cost: 5.0
+    observable: true
+    acceptance:
+    - spyder serve supervises every iOS device that tunneld reports as paired, with no flag or allow-list — all iOS/iPadOS devices, all the time
+    - When a new iOS UDID appears in tunneld (including on spyder startup), spyder checks whether KeepAwake is installed via pymobiledevice3 apps query
+    - 'If KeepAwake is not installed, spyder auto-deploys: runs xcodebuild targeting that specific UDID (so the device is registered with the provisioning profile) and then devicectl install. Requires Xcode Accounts already signed in and one-time device trust (out-of-band manual step)'
+    - If KeepAwake is not currently running, spyder launches it via the existing LaunchKeepAwake path. If it's already running, skip (no yank-focus loop)
+    - Unplug/replug is the natural re-trigger — device disappears from tunneld then reappears, and spyder treats it as new
+    - Graceful shutdown on SIGINT/SIGTERM; supervisor goroutine exits cleanly on context cancel
+    - 'Skipping is safe: if xcodebuild/devicectl fails (e.g. trust not granted, network hiccup) spyder logs the error and moves on; other devices are unaffected'
+    context: 'Natural closing feature: plug in an iPad, it just starts keeping itself awake — no Shortcut needed, no manual launch. Pairs with the just-landed KeepAwake unplug-exit so the whole plug/unplug loop is self-managing.\n\nSimplification vs. the original \"only if no app running\" ask: iOS foreground-app detection via pymobiledevice3 turned out harder than the external research suggested (dvt applist doesn''t flag frontmost; sysmon process single returns a huge process list with no foreground indicator). Practical substitute: only launch if KeepAwake isn''t already running. This avoids the yank-focus loop on repeated polls, and the normal use case (plug in and walk away, or plug in already locked) works correctly. If a user happens to be actively using Safari when they plug in, they''ll get a single interruption — a future target can add foreground-awareness if that bites.\n\nAuto-deploy requires locating the KeepAwake Xcode project at build time. For v1 we search relative to the spyder binary and the repo root, falling back to an env var override. Long-term we should go:embed the project into the binary and extract on first use, but that''s a refinement.\n\nOut of scope: the one-time device-trust step (Settings \u2192 General \u2192 VPN & Device Management \u2192 Trust) is Apple-imposed and unautomatable. For any device that hasn''t been trusted yet, auto-deploy will install but launch will fail with a specific code-signature error \u2014 spyder logs and skips.'
+    tags:
+    - ios
+    - supervisor
+    - automation
+    - keepawake
+    origin: manual
+    discovered: 2026-04-18
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
     status: achieved
