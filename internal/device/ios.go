@@ -23,6 +23,11 @@ import (
 // installed; LaunchKeepAwake foregrounds it via devicectl.
 const KeepAwakeBundleID = "com.marcelocantos.spyder.KeepAwake"
 
+// ErrLocked is returned when an operation fails specifically because the
+// target device is locked. Callers can errors.Is check this to fire a
+// targeted notification and retry until the device is unlocked.
+var ErrLocked = errors.New("device is locked")
+
 // stateTTL bounds how often we re-query a device. Tools called in quick
 // succession (e.g. from an agent reasoning loop) share a snapshot so the
 // device isn't hammered.
@@ -220,16 +225,40 @@ func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
 	}
 	_, stderr, err := runCapture("pymobiledevice3", "developer", "dvt", "launch", bundleID, "--udid", id)
 	stderrStr := string(stderr)
+	// Classify known failure modes against the full stderr (the
+	// DvtException marker can be tens of KB into a rich-console
+	// traceback), then collapse to a short error for logging.
 	if isDeviceNotConnected(stderrStr) {
 		return fmt.Errorf("device not connected: %s", id)
 	}
 	if isIOSAppNotFound(stderrStr) {
 		return fmt.Errorf("app not installed: %s", bundleID)
 	}
+	if isDeviceLocked(stderrStr) {
+		return fmt.Errorf("launch %s on %s: %w", bundleID, id, ErrLocked)
+	}
 	if err != nil {
-		return fmt.Errorf("dvt launch: %v\n%s", err, truncate(stderrStr, 200))
+		return fmt.Errorf("dvt launch: %v\n%s", err, tailTruncate(stderrStr, 400))
 	}
 	return nil
+}
+
+// isDeviceLocked recognises pymobiledevice3's DvtException footer when
+// the device's lock screen blocks a launch.
+func isDeviceLocked(stderr string) bool {
+	return strings.Contains(stderr, "could not be, unlocked") ||
+		strings.Contains(stderr, "'Locked'") ||
+		strings.Contains(stderr, "was not, or could not be")
+}
+
+// tailTruncate returns the last n characters of s with an ellipsis
+// prefix. Useful when the signal is at the end of a long traceback.
+func tailTruncate(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= n {
+		return s
+	}
+	return "…" + s[len(s)-n:]
 }
 
 // TerminateApp stops an app via dvt: look up PID for bundle id, then kill.

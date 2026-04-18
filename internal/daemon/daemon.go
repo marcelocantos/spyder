@@ -9,10 +9,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os/signal"
+	"syscall"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/marcelocantos/spyder/internal/autoawake"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/tunneld"
 )
@@ -55,11 +58,26 @@ func Start(cfg Config) error {
 		})
 	}
 
+	// Auto-awake supervisor: watches tunneld for iOS devices and
+	// ensures KeepAwake is running on each. Exits when ctx is done.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	go autoawake.New(tunClient).Run(ctx)
+
 	slog.Info("spyder mcp server listening", "addr", cfg.Addr, "endpoint", "/mcp")
 
 	http := server.NewStreamableHTTPServer(srv)
-	if err := http.Start(cfg.Addr); err != nil {
-		return fmt.Errorf("http server: %w", err)
+	errCh := make(chan error, 1)
+	go func() { errCh <- http.Start(cfg.Addr) }()
+
+	select {
+	case <-ctx.Done():
+		slog.Info("shutting down")
+		return nil
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
 	}
-	return nil
 }
