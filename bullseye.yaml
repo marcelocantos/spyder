@@ -309,10 +309,11 @@ targets:
     achieved: 2026-04-18
   T7:
     name: spyder supervises pymobiledevice3 tunneld for reliable iOS DVT access
-    status: identified
+    status: achieved
     value: 8.0
     cost: 8.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - spyder detects and health-probes an externally-managed tunneld on startup (default 127.0.0.1:49151) and logs the paired-device count on success
     - When tunneld is unreachable, DVT-dependent tools (🎯T5 foreground, 🎯T8 iOS screenshot, 🎯T9 iOS launch/terminate) return a specific 'tunneld unavailable — start pymobiledevice3 remote tunneld or enable --supervise-tunneld' error; non-DVT tools (devices list, resolve, keepawake, Android state) are unaffected
@@ -326,6 +327,7 @@ targets:
     - tunneld
     origin: research-derived (pymobiledevice3 8.x study 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: identified
