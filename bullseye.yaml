@@ -354,10 +354,11 @@ targets:
     achieved: 2026-04-18
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - '`list_apps({device})` returns installed third-party apps with bundle id, name, and version. iOS: `pymobiledevice3 apps list` (no DDI needed). Android: `adb shell pm list packages -3` + `cmd package dump <pkg>` for names'
     - '`launch_app({device, bundle_id})` foregrounds an arbitrary app on the device. iOS: `pymobiledevice3 developer dvt launch <id>` (needs 🎯T7). Android: `adb shell monkey -p <pkg> -c android.intent.category.LAUNCHER 1`'
@@ -373,3 +374,4 @@ targets:
     - mcp-tool
     origin: research-derived (pymobiledevice3 8.x study 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
