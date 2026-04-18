@@ -13,7 +13,7 @@ struct ContentView: View {
             VStack(spacing: 24) {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 96))
-                    .foregroundStyle(scenePhase == .active ? .yellow : .secondary)
+                    .foregroundStyle(scenePhase == .active ? Color.yellow.opacity(0.5) : .secondary)
                     .symbolEffect(.pulse, options: .repeat(.continuous), isActive: scenePhase == .active)
 
                 Text("KeepAwake")
