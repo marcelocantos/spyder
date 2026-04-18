@@ -287,11 +287,14 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 
 // parseIOSPID extracts a PID from `dvt process-id-for-bundle-id` output.
 // The command can emit either a plain integer line or a structured
-// "bundle_id -> PID" form; we tolerate both.
+// "bundle_id -> PID" / "bundle_id: PID" form; we tolerate both. Bundle
+// ids can contain '-', so we match the separators as substrings rather
+// than a character class.
 func parseIOSPID(out []byte) (int, error) {
 	s := strings.TrimSpace(string(out))
-	// Strip "com.foo.bar:" or "com.foo.bar ->" prefixes if present.
-	if i := strings.LastIndexAny(s, ":->"); i >= 0 {
+	if i := strings.LastIndex(s, "->"); i >= 0 {
+		s = strings.TrimSpace(s[i+2:])
+	} else if i := strings.LastIndex(s, ":"); i >= 0 {
 		s = strings.TrimSpace(s[i+1:])
 	}
 	pid, err := strconv.Atoi(s)

@@ -13,6 +13,7 @@
 package main
 
 import (
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
@@ -23,6 +24,9 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 )
+
+//go:embed agents-guide.md
+var agentsGuide string
 
 // version is set by ldflags at build time.
 var version = "dev"
@@ -38,9 +42,10 @@ const defaultRunDevice = "Pippa"
 const usage = `Usage: spyder [command]
 
 Commands:
-  serve     Start the HTTP MCP server (default :3030, endpoint /mcp)
-  run       Run a command, then foreground KeepAwake on the device
-  version   Print version and exit
+  serve        Start the HTTP MCP server (default :3030, endpoint /mcp)
+  run          Run a command, then foreground KeepAwake on the device
+  version      Print version and exit
+  help-agent   Print the usage above followed by the agent guide
 
 Serve:
   spyder serve [--addr :3030]
@@ -73,6 +78,10 @@ func main() {
 		fmt.Printf("spyder %s\n", version)
 	case "help", "--help", "-help":
 		fmt.Print(usage)
+	case "help-agent", "--help-agent", "-help-agent":
+		fmt.Print(usage)
+		fmt.Println()
+		fmt.Print(agentsGuide)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)
 		os.Exit(1)
