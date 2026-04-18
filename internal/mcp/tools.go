@@ -34,17 +34,25 @@ func (h *Handler) handleDevices(args map[string]any) (string, bool, error) {
 	defer h.mu.Unlock()
 
 	var devices []device.Info
+	var perAdapterErrors []string
+
 	if platform == "ios" || platform == "all" {
 		ds, err := h.ios.List()
 		if err != nil {
-			return fmt.Sprintf("ios: %v", err), true, nil
+			if platform == "ios" {
+				return fmt.Sprintf("ios: %v", err), true, nil
+			}
+			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("ios: %v", err))
 		}
 		devices = append(devices, ds...)
 	}
 	if platform == "android" || platform == "all" {
 		ds, err := h.android.List()
-		if err != nil && platform == "android" {
-			return fmt.Sprintf("android: %v", err), true, nil
+		if err != nil {
+			if platform == "android" {
+				return fmt.Sprintf("android: %v", err), true, nil
+			}
+			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("android: %v", err))
 		}
 		devices = append(devices, ds...)
 	}
@@ -55,6 +63,14 @@ func (h *Handler) handleDevices(args map[string]any) (string, bool, error) {
 		}
 	}
 
+	// When listing "all", surface per-adapter errors as a wrapped shape
+	// so partial results aren't lost.
+	if platform == "all" && len(perAdapterErrors) > 0 {
+		return marshal(struct {
+			Devices []device.Info `json:"devices"`
+			Errors  []string      `json:"errors,omitempty"`
+		}{devices, perAdapterErrors})
+	}
 	return marshal(devices)
 }
 
@@ -84,14 +100,19 @@ func (h *Handler) handleKeepAwake(args map[string]any) (string, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	adapter, id, err := h.resolveAdapter(dev)
+	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return err.Error(), true, nil
 	}
 	if err := adapter.LaunchKeepAwake(id); err != nil {
 		return fmt.Sprintf("launching KeepAwake on %s: %v", dev, err), true, nil
 	}
-	return fmt.Sprintf("KeepAwake launched on %s", dev), false, nil
+	switch platform {
+	case "android":
+		return fmt.Sprintf("KeepAwake is a no-op on %s: Android handles stay-awake natively — enable Settings → Developer options → Stay awake while plugged in", dev), false, nil
+	default:
+		return fmt.Sprintf("KeepAwake launched on %s", dev), false, nil
+	}
 }
 
 func (h *Handler) handleDeviceState(args map[string]any) (string, bool, error) {
@@ -103,7 +124,7 @@ func (h *Handler) handleDeviceState(args map[string]any) (string, bool, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	adapter, id, err := h.resolveAdapter(dev)
+	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return err.Error(), true, nil
 	}
@@ -115,12 +136,18 @@ func (h *Handler) handleDeviceState(args map[string]any) (string, bool, error) {
 }
 
 // resolveAdapter maps a user-provided device reference (alias or raw UUID)
-// to the platform adapter and the platform-specific identifier it expects.
-// Raw UUIDs that aren't in the inventory default to the iOS adapter.
-func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, error) {
+// to the platform adapter, the platform name ("ios" | "android"), and the
+// platform-specific identifier it expects. Raw identifiers not in the
+// inventory are classified by format (iOS UDID vs. Android serial) via
+// inventory.ClassifyRaw.
+func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, error) {
 	entry, ok := h.inventory.Lookup(ref)
 	if !ok {
-		return h.ios, ref, nil
+		classified := inventory.ClassifyRaw(ref)
+		if classified.Platform == "android" {
+			return h.android, "android", ref, nil
+		}
+		return h.ios, "ios", ref, nil
 	}
 	switch entry.Platform {
 	case "ios":
@@ -128,11 +155,11 @@ func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, error) {
 		if id == "" {
 			id = entry.IOSCoreDevice
 		}
-		return h.ios, id, nil
+		return h.ios, "ios", id, nil
 	case "android":
-		return h.android, entry.AndroidSerial, nil
+		return h.android, "android", entry.AndroidSerial, nil
 	default:
-		return nil, "", fmt.Errorf("inventory entry %q has unknown platform %q", ref, entry.Platform)
+		return nil, "", "", fmt.Errorf("inventory entry %q has unknown platform %q", ref, entry.Platform)
 	}
 }
 
