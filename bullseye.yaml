@@ -214,10 +214,11 @@ targets:
     discovered: 2026-04-17
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
-    status: identified
+    status: achieved
     value: 5.0
     cost: 8.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - 'device_state({device: "Pippa"}) returns battery level (0-100), charging bool, thermal state (nominal/fair/serious/critical), and foreground app bundle ID'
     - Implementation shells out to pymobiledevice3 and/or devicectl — no private iOS APIs, no jailbreak
@@ -233,6 +234,7 @@ targets:
     - state
     origin: manual
     discovered: 2026-04-17
+    achieved: 2026-04-18
   T6:
     name: Android adapter lights up with feature parity to iOS (list, state, keepawake)
     status: identified
