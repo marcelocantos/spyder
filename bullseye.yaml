@@ -147,10 +147,11 @@ targets:
     achieved: 2026-04-18
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
-    status: identified
+    status: achieved
     value: 8.0
     cost: 3.0
     observable: true
+    actual_cost: 2.0
     acceptance:
     - ~/.spyder/inventory.json format is documented with at least Pippa as a worked example
     - 'resolve({name: "Pippa"}) returns both the hardware UDID (00008103-000D39301A6A201E) and the CoreDevice UUID (E1A01EA6-8D77-556C-B18D-D470B2909E87)'
@@ -165,6 +166,7 @@ targets:
     - ios
     origin: manual
     discovered: 2026-04-17
+    achieved: 2026-04-18
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: identified
