@@ -330,10 +330,11 @@ targets:
     achieved: 2026-04-18
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
-    status: identified
+    status: achieved
     value: 8.0
     cost: 3.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - New `screenshot` MCP tool accepts {device} and returns the screen as an image content block (base64 PNG) usable by mcp clients without intermediate files
     - iOS path uses `pymobiledevice3 developer dvt screenshot` (requires 🎯T7 tunneld) with explicit file staging under a temp dir
@@ -350,6 +351,7 @@ targets:
     - mcp-tool
     origin: research-derived (mobile-mcp gap 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: identified
