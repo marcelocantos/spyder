@@ -7,22 +7,28 @@ struct ContentView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
-        VStack(spacing: 24) {
-            Image(systemName: "bolt.fill")
-                .font(.system(size: 96))
-                .foregroundStyle(scenePhase == .active ? .yellow : .secondary)
-                .symbolEffect(.pulse, options: .repeat(.continuous), isActive: scenePhase == .active)
+        ZStack {
+            Color.black.ignoresSafeArea()
 
-            Text("KeepAwake")
-                .font(.largeTitle.bold())
+            VStack(spacing: 24) {
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: 96))
+                    .foregroundStyle(scenePhase == .active ? .yellow : .secondary)
+                    .symbolEffect(.pulse, options: .repeat(.continuous), isActive: scenePhase == .active)
 
-            Text(scenePhase == .active
-                 ? "Screen stays on while this app is foregrounded."
-                 : "Bring the app to the foreground to keep the screen awake.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 40)
+                Text("KeepAwake")
+                    .font(.largeTitle.bold())
+                    .foregroundStyle(.white)
+
+                Text(scenePhase == .active
+                     ? "Screen stays on while this app is foregrounded."
+                     : "Bring the app to the foreground to keep the screen awake.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white.opacity(0.6))
+                    .padding(.horizontal, 40)
+            }
         }
+        .preferredColorScheme(.dark)
     }
 }
 
