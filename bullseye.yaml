@@ -169,7 +169,7 @@ targets:
     achieved: 2026-04-18
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
-    status: identified
+    status: converging
     value: 13.0
     cost: 8.0
     observable: true
@@ -179,7 +179,10 @@ targets:
     - Bundle is installable on Pippa via devicectl or Xcode, survives device reboot, and works with a standard free developer profile (no paid entitlements required)
     - 'keepawake({device: "Pippa"}) MCP tool foregrounds the app on the device and returns a success confirmation'
     - With the app foregrounded, a plugged-in Pippa stays awake indefinitely in practice (verified over a ≥30 minute idle window)
-    context: 'The originating pain point: iOS has no system-level \"stay awake on power\" setting. A trivial SwiftUI app that holds isIdleTimerDisabled is the cleanest workaround. The MCP surface wraps the launch step so automation (test-run wrappers) can bring the app back to the foreground without manual taps. Scope-fence: no fancy UI, no telemetry, no background operation — it only works while foregrounded and that''s the whole point. The iOS Shortcut automation (\"when power connected → open KeepAwake\") is belt-and-braces and can be set up manually by the user.'
+    context: |-
+      The originating pain point: iOS has no system-level "stay awake on power" setting. A trivial SwiftUI app that holds isIdleTimerDisabled is the cleanest workaround. The MCP surface wraps the launch step so automation (test-run wrappers) can bring the app back to the foreground without manual taps. Scope-fence: no fancy UI, no telemetry, no background operation — it only works while foregrounded and that's the whole point. The iOS Shortcut automation ("when power connected → open KeepAwake") is belt-and-braces and can be set up manually by the user.
+
+      Progress (commit 3482133): scaffolded ios/KeepAwake/ (xcodegen-driven, SwiftUI, iOS 18 target), bundle id com.marcelocantos.spyder.KeepAwake, scenePhase-driven isIdleTimerDisabled toggle. Simulator build ✓. IOSAdapter.LaunchKeepAwake wired to `xcrun devicectl device process launch`. Remaining: install on Pippa via Xcode (requires Apple ID linked in Xcode → Settings → Accounts; free developer profile suffices), then confirm ≥30 min idle hold.
     depends_on:
     - T1
     - T2
