@@ -11,12 +11,128 @@ targets:
     - spyder (no args) auto-starts the daemon and speaks MCP JSON-RPC over stdio
     - claude mcp add --scope user spyder -- spyder registers the server and Claude Code sees all four tools (devices, resolve, keepawake, device_state)
     - Tool calls round-trip through the proxy → daemon → handler path and return structured results
-    context: Foundation for everything else. The scaffold is in place (mnemo-style flat layout, sawmill-style auto-starting daemon via mcpbridge). Build is green. Remaining work is wiring to Claude Code and confirming the full round-trip. Deliberately uses the same patterns as sawmill/mnemo (mcpbridge library, ~/.spyder/ data dir, unprefixed tool names) so future maintenance is cheap.
+    context: 'Umbrella target — decomposed into 🎯T1.1–🎯T1.6 on 2026-04-18 to introduce observable checkpoints and unblock convergence. Rolls up automatically once 🎯T1.6 is achieved. Original scope: foundation for everything else, scaffold using mnemo-style flat layout and sawmill-style auto-starting daemon via mcpbridge.'
+    depends_on:
+    - T1.6
     tags:
     - scaffold
     - infrastructure
     origin: bullseye_init
     discovered: 2026-04-17
+  T1.1:
+    name: go build produces a working bin/spyder binary
+    status: achieved
+    value: 2.0
+    cost: 1.0
+    actual_cost: 1.0
+    acceptance:
+    - make build (or go build -o bin/spyder) exits 0 on macOS arm64
+    - bin/spyder --help runs and prints usage without crashing
+    - bin/spyder --version prints a version string
+    context: Cheapest leaf — likely already satisfied since `make bullseye` has `build` green. Kept as an explicit target so every downstream link has a verified foundation.
+    tags:
+    - scaffold
+    - build
+    origin: forked-from T1 (decomposition 2026-04-18)
+    discovered: 2026-04-18
+    achieved: 2026-04-18
+  T1.2:
+    name: spyder serve listens on ~/.spyder/spyder.sock and stays up across connections
+    status: identified
+    value: 3.0
+    cost: 2.0
+    observable: true
+    acceptance:
+    - spyder serve creates ~/.spyder/spyder.sock with mode 0600
+    - a client can connect via nc -U ~/.spyder/spyder.sock and receive valid MCP framing
+    - a second connection works while the first is still open (concurrent sessions supported)
+    - daemon logs to stderr and stays up when a client disconnects
+    - second invocation of spyder serve refuses to start (socket already in use) or hands off cleanly
+    context: 'First observable checkpoint: the daemon mode works in isolation, independent of the stdio proxy. Lets the agent verify the mcpbridge wiring before layering on auto-start.'
+    depends_on:
+    - T1.1
+    tags:
+    - scaffold
+    - daemon
+    origin: forked-from T1 (decomposition 2026-04-18)
+    discovered: 2026-04-18
+  T1.3:
+    name: spyder stdio proxy auto-starts the daemon and forwards MCP JSON-RPC
+    status: identified
+    value: 3.0
+    cost: 2.0
+    observable: true
+    acceptance:
+    - invoking spyder with no args and piping an MCP `initialize` request on stdin yields a valid MCP response on stdout
+    - if no daemon is running, the proxy starts one and connects to the socket
+    - if a daemon is already running, the proxy reuses it (no duplicate process spawned)
+    - proxy exits cleanly when stdin closes; daemon stays running for subsequent invocations
+    context: 'Second checkpoint: the stdio → daemon bridge works end-to-end. This is the surface Claude Code actually uses. Mirrors the sawmill auto-start pattern.'
+    depends_on:
+    - T1.2
+    tags:
+    - scaffold
+    - stdio
+    - proxy
+    origin: forked-from T1 (decomposition 2026-04-18)
+    discovered: 2026-04-18
+  T1.4:
+    name: MCP tools/list returns devices, resolve, keepawake, device_state with valid schemas
+    status: identified
+    value: 2.0
+    cost: 1.0
+    observable: true
+    acceptance:
+    - 'JSON-RPC tools/list via the stdio proxy returns exactly four tools: devices, resolve, keepawake, device_state'
+    - each tool has a non-empty inputSchema that parses as valid JSON Schema
+    - each tool's description is non-empty and mentions its purpose
+    context: Verifies that internal/mcp.Definitions() is wired into the handler dispatch path. A dedicated checkpoint so tool discovery is confirmed before tool invocation is tested.
+    depends_on:
+    - T1.3
+    tags:
+    - scaffold
+    - mcp
+    origin: forked-from T1 (decomposition 2026-04-18)
+    discovered: 2026-04-18
+  T1.5:
+    name: All four tools dispatch end-to-end through proxy → daemon → handler and return structured results
+    status: identified
+    value: 3.0
+    cost: 2.0
+    observable: true
+    acceptance:
+    - tools/call devices returns a structured result (may be empty list if inventory unset, but with correct shape)
+    - tools/call resolve with {name:"Pippa"} returns a structured result even if inventory is empty (error payload with correct JSON-RPC shape is acceptable)
+    - tools/call keepawake and device_state return structured results (stub payloads are fine at this layer — this target validates the dispatch path, not the business logic)
+    - unknown tool names return a proper JSON-RPC error, not a crash
+    context: Confirms the full proxy → daemon → ToolHandler.Dispatch path. Tool-specific business logic lives in 🎯T2, 🎯T3, 🎯T5, 🎯T6 — this target only cares that the dispatch wiring is intact.
+    depends_on:
+    - T1.4
+    tags:
+    - scaffold
+    - mcp
+    - dispatch
+    origin: forked-from T1 (decomposition 2026-04-18)
+    discovered: 2026-04-18
+  T1.6:
+    name: Claude Code registers spyder via `claude mcp add` and can list and call all four tools
+    status: identified
+    value: 5.0
+    cost: 1.0
+    observable: true
+    acceptance:
+    - '`claude mcp add --scope user spyder -- spyder` registers the server without error'
+    - Claude Code lists all four tools under the `spyder` server in an interactive session
+    - calling each tool from within Claude Code returns a structured response (not an error dialog)
+    - the registration persists across Claude Code sessions (daemon auto-starts on subsequent invocations)
+    context: Final integration checkpoint. Closes the loop on the original T1 goal — the server is usable from the tool that will actually drive it. This is the external-visible \"it works\" moment.
+    depends_on:
+    - T1.5
+    tags:
+    - scaffold
+    - integration
+    origin: forked-from T1 (decomposition 2026-04-18)
+    discovered: 2026-04-18
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
     status: identified
