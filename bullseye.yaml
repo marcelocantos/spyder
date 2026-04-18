@@ -2,9 +2,10 @@ schema_version: 1
 targets:
   T1:
     name: Bimodal spyder MCP server registers with Claude Code and dispatches tool calls end-to-end
-    status: converging
+    status: achieved
     value: 13.0
     cost: 3.0
+    actual_cost: 3.0
     acceptance:
     - go build produces a single working binary at bin/spyder
     - spyder serve listens on ~/.spyder/spyder.sock and stays up across connections
@@ -19,6 +20,7 @@ targets:
     - infrastructure
     origin: bullseye_init
     discovered: 2026-04-17
+    achieved: 2026-04-18
   T1.1:
     name: go build produces a working bin/spyder binary
     status: achieved
@@ -60,10 +62,11 @@ targets:
     achieved: 2026-04-18
   T1.3:
     name: spyder stdio proxy auto-starts the daemon and forwards MCP JSON-RPC
-    status: identified
+    status: achieved
     value: 3.0
     cost: 2.0
     observable: true
+    actual_cost: 1.0
     acceptance:
     - invoking spyder with no args and piping an MCP `initialize` request on stdin yields a valid MCP response on stdout
     - if no daemon is running, the proxy starts one and connects to the socket
@@ -78,12 +81,14 @@ targets:
     - proxy
     origin: forked-from T1 (decomposition 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T1.4:
     name: MCP tools/list returns devices, resolve, keepawake, device_state with valid schemas
-    status: identified
+    status: achieved
     value: 2.0
     cost: 1.0
     observable: true
+    actual_cost: 1.0
     acceptance:
     - 'JSON-RPC tools/list via the stdio proxy returns exactly four tools: devices, resolve, keepawake, device_state'
     - each tool has a non-empty inputSchema that parses as valid JSON Schema
@@ -96,12 +101,14 @@ targets:
     - mcp
     origin: forked-from T1 (decomposition 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T1.5:
     name: All four tools dispatch end-to-end through proxy → daemon → handler and return structured results
-    status: identified
+    status: achieved
     value: 3.0
     cost: 2.0
     observable: true
+    actual_cost: 1.0
     acceptance:
     - tools/call devices returns a structured result (may be empty list if inventory unset, but with correct shape)
     - tools/call resolve with {name:"Pippa"} returns a structured result even if inventory is empty (error payload with correct JSON-RPC shape is acceptable)
@@ -116,12 +123,14 @@ targets:
     - dispatch
     origin: forked-from T1 (decomposition 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T1.6:
     name: Claude Code registers spyder via `claude mcp add` and can list and call all four tools
-    status: identified
+    status: achieved
     value: 5.0
     cost: 1.0
     observable: true
+    actual_cost: 1.0
     acceptance:
     - '`claude mcp add --scope user spyder -- spyder` registers the server without error'
     - Claude Code lists all four tools under the `spyder` server in an interactive session
@@ -135,6 +144,7 @@ targets:
     - integration
     origin: forked-from T1 (decomposition 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
     status: identified
