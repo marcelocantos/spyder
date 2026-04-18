@@ -8,11 +8,20 @@ package inventory
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 
 	"github.com/marcelocantos/spyder/internal/paths"
 )
+
+// iOS hardware UDID: 8 hex, dash, 16 hex. Emitted by pymobiledevice3 and
+// xcrun xctrace list devices.
+var iosHardwareUDID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$`)
+
+// Standard UUID (8-4-4-4-12). iOS 17+ CoreDevice UUIDs from devicectl
+// follow this form.
+var standardUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$`)
 
 // Entry records a known device with its platform-specific identifiers.
 type Entry struct {
@@ -52,6 +61,21 @@ func (s *Store) Lookup(ref string) (Entry, bool) {
 		}
 	}
 	return Entry{}, false
+}
+
+// ClassifyRaw echoes a raw identifier back as an Entry with the input
+// placed in the field that best matches its format. Use when Lookup
+// misses — callers (e.g. the resolve tool) can treat any input as a
+// pass-through identifier rather than erroring.
+func ClassifyRaw(raw string) Entry {
+	switch {
+	case iosHardwareUDID.MatchString(raw):
+		return Entry{Platform: "ios", IOSUUID: raw}
+	case standardUUID.MatchString(raw):
+		return Entry{Platform: "ios", IOSCoreDevice: raw}
+	default:
+		return Entry{Platform: "android", AndroidSerial: raw}
+	}
 }
 
 // AliasFor returns the alias registered for a UUID, or "" if unknown.

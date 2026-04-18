@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/marcelocantos/spyder/internal/device"
+	"github.com/marcelocantos/spyder/internal/inventory"
 )
 
 func requireString(args map[string]any, key string) (string, error) {
@@ -68,7 +69,7 @@ func (h *Handler) handleResolve(args map[string]any) (string, bool, error) {
 
 	entry, ok := h.inventory.Lookup(name)
 	if !ok {
-		return fmt.Sprintf("unknown device %q (check inventory at %s)", name, h.inventory.Path()), true, nil
+		entry = inventory.ClassifyRaw(name)
 	}
 
 	return marshal(entry)
