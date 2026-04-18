@@ -14,18 +14,39 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
+	"github.com/marcelocantos/spyder/internal/tunneld"
 )
 
+// Config configures a spyder server instance.
+type Config struct {
+	Addr        string // HTTP listen address (e.g. ":3030")
+	Version     string // emitted in serverInfo
+	TunneldAddr string // tunneld probe target (host:port; empty → DefaultAddr)
+}
+
 // Start creates the MCP server, registers all spyder tools, wraps it in
-// a streamable-HTTP transport, and blocks serving on addr (e.g. ":3030").
-func Start(addr, version string) error {
+// a streamable-HTTP transport, probes tunneld for observability, and
+// blocks serving on cfg.Addr.
+func Start(cfg Config) error {
+	tunneldAddr := cfg.TunneldAddr
+	if tunneldAddr == "" {
+		tunneldAddr = tunneld.DefaultAddr
+	}
+	tunClient := tunneld.New(tunneldAddr)
+	if udids, err := tunClient.Probe(); err != nil {
+		slog.Warn("tunneld unavailable — iOS DVT tools will fail",
+			"addr", tunneldAddr, "error", err)
+	} else {
+		slog.Info("tunneld reachable", "addr", tunneldAddr, "paired_devices", len(udids))
+	}
+
 	srv := server.NewMCPServer(
 		"spyder",
-		version,
+		cfg.Version,
 		server.WithToolCapabilities(true),
 	)
 
-	handler := spydermcp.NewHandler()
+	handler := spydermcp.NewHandler(tunClient)
 
 	for _, tool := range spydermcp.Definitions() {
 		toolName := tool.Name
@@ -42,10 +63,10 @@ func Start(addr, version string) error {
 		})
 	}
 
-	slog.Info("spyder mcp server listening", "addr", addr, "endpoint", "/mcp")
+	slog.Info("spyder mcp server listening", "addr", cfg.Addr, "endpoint", "/mcp")
 
 	http := server.NewStreamableHTTPServer(srv)
-	if err := http.Start(addr); err != nil {
+	if err := http.Start(cfg.Addr); err != nil {
 		return fmt.Errorf("http server: %w", err)
 	}
 	return nil

@@ -79,9 +79,10 @@ func main() {
 	}
 }
 
-// runServe parses optional --addr and starts the HTTP MCP server.
+// runServe parses optional --addr / --tunneld-addr and starts the HTTP
+// MCP server.
 func runServe(args []string) {
-	addr := defaultAddr
+	cfg := daemon.Config{Addr: defaultAddr, Version: version}
 	for len(args) > 0 {
 		switch args[0] {
 		case "--addr", "-a":
@@ -89,14 +90,21 @@ func runServe(args []string) {
 				fmt.Fprintln(os.Stderr, "serve: --addr requires a value")
 				os.Exit(2)
 			}
-			addr = args[1]
+			cfg.Addr = args[1]
+			args = args[2:]
+		case "--tunneld-addr":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "serve: --tunneld-addr requires a value")
+				os.Exit(2)
+			}
+			cfg.TunneldAddr = args[1]
 			args = args[2:]
 		default:
 			fmt.Fprintf(os.Stderr, "serve: unknown flag %q\n", args[0])
 			os.Exit(2)
 		}
 	}
-	if err := daemon.Start(addr, version); err != nil {
+	if err := daemon.Start(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 		os.Exit(1)
 	}

@@ -16,20 +16,31 @@ import (
 	"github.com/marcelocantos/spyder/internal/inventory"
 )
 
-// Handler implements mcpbridge.ToolHandler for spyder.
+// Handler implements the spyder tool handler.
 type Handler struct {
 	mu        sync.Mutex
 	inventory *inventory.Store
 	ios       device.Adapter
 	android   device.Adapter
+	tunneld   TunneldGate
 }
 
-// NewHandler creates a new spyder tool handler with default adapters.
-func NewHandler() *Handler {
+// TunneldGate is satisfied by *tunneld.Client. The small interface lets
+// tests inject a fake without a circular package dependency.
+type TunneldGate interface {
+	Require() error
+	Addr() string
+}
+
+// NewHandler creates a new spyder tool handler. tun may be nil for
+// handler instances that never call DVT-dependent tools; tools that
+// need it will return a clear error when tun is missing.
+func NewHandler(tun TunneldGate) *Handler {
 	return &Handler{
 		inventory: inventory.New(),
 		ios:       device.NewIOSAdapter(),
 		android:   device.NewAndroidAdapter(),
+		tunneld:   tun,
 	}
 }
 
