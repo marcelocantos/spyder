@@ -241,10 +241,11 @@ targets:
     achieved: 2026-04-18
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
-    status: identified
+    status: achieved
     value: 8.0
     cost: 2.0
     observable: true
+    actual_cost: 2.0
     acceptance:
     - devices tool lists Android devices via adb, annotated with inventory alias when matched, alongside iOS devices in a single call
     - device_state({device:<android>}) returns battery level (0-100), charging bool, and foreground activity (via adb dumpsys)
@@ -261,6 +262,7 @@ targets:
     - cross-platform
     origin: manual
     discovered: 2026-04-17
+    achieved: 2026-04-18
   T6.1:
     name: Android adapter lists connected devices via adb and renders keepawake as an OS-native no-op
     status: achieved
@@ -283,10 +285,11 @@ targets:
     achieved: 2026-04-18
   T6.2:
     name: Android device_state reports battery, charging, and foreground activity via adb dumpsys
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - AndroidAdapter.State shells out to `adb -s <serial> shell dumpsys battery` and `dumpsys activity activities` (or equivalent) to populate BatteryLevel, Charging, and ForegroundApp
     - device_state({device:<android>}) returns the populated State struct for attached Android devices tested in this session
@@ -303,6 +306,7 @@ targets:
     - dumpsys
     origin: forked-from T6 (reframing 2026-04-18)
     discovered: 2026-04-18
+    achieved: 2026-04-18
   T7:
     name: spyder supervises pymobiledevice3 tunneld for reliable iOS DVT access
     status: identified
