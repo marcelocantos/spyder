@@ -5,7 +5,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-18 — /release v0.1.0
 
-- **Commit**: pending
+- **Commit**: `424ca56`
 - **Outcome**: First release. Published v0.1.0 for darwin-arm64,
   linux-amd64, and linux-arm64 via GitHub Actions; homebrew-releaser
   updated `marcelocantos/homebrew-tap` with a formula that runs
