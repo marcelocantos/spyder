@@ -15,7 +15,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -84,20 +83,11 @@ func runMCP() {
 	}
 }
 
-func daemonRunning(socketPath string) bool {
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		return false
-	}
-	conn.Close()
-	return true
-}
-
 // ensureDaemon re-execs `spyder serve` in the background if no daemon is
 // listening. Uses Setsid so the child survives the parent's exit.
 func ensureDaemon() {
 	sock := paths.SocketPath()
-	if daemonRunning(sock) {
+	if daemon.Running(sock) {
 		return
 	}
 
@@ -118,7 +108,7 @@ func ensureDaemon() {
 
 	for range 30 {
 		time.Sleep(100 * time.Millisecond)
-		if daemonRunning(sock) {
+		if daemon.Running(sock) {
 			return
 		}
 	}
