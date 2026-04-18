@@ -1,9 +1,10 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package mcp implements the spyder MCP tool handler using mcpbridge.
-// It exposes the device inventory, keep-awake lifecycle, and device state
-// reporting as MCP tools.
+// Package mcp implements the spyder MCP tool handler.
+// Handler methods return *mcpgo.CallToolResult directly so tools can
+// emit image/binary content (e.g. screenshot PNGs) without the daemon
+// wrapper needing tool-specific wiring.
 package mcp
 
 import (
@@ -44,8 +45,8 @@ func NewHandler(tun TunneldGate) *Handler {
 	}
 }
 
-// Call dispatches an MCP tool call by name.
-func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
+// Dispatch routes a tool call by name to its handler.
+func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
 	switch name {
 	case "devices":
 		return h.handleDevices(args)
@@ -55,8 +56,10 @@ func (h *Handler) Call(name string, args map[string]any) (string, bool, error) {
 		return h.handleKeepAwake(args)
 	case "device_state":
 		return h.handleDeviceState(args)
+	case "screenshot":
+		return h.handleScreenshot(args)
 	default:
-		return "", false, fmt.Errorf("unknown tool: %s", name)
+		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
 }
 
@@ -88,6 +91,14 @@ func Definitions() []mcpgo.Tool {
 
 		mcpgo.NewTool("device_state",
 			mcpgo.WithDescription("Report current device state: battery level, thermal state, charging status, foreground app."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID"),
+			),
+		),
+
+		mcpgo.NewTool("screenshot",
+			mcpgo.WithDescription("Capture a PNG screenshot of the device. Returns the image inline for the agent to inspect. iOS uses pymobiledevice3 developer dvt (requires tunneld); Android uses adb shell screencap."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),

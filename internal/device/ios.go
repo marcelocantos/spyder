@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -143,6 +145,40 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// Screenshot captures a PNG via `pymobiledevice3 developer dvt screenshot`.
+// Requires a live tunneld session on iOS 17+; callers should gate on
+// tunneld health before invoking.
+func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	tmp, err := os.MkdirTemp("", "spyder-screenshot-*")
+	if err != nil {
+		return nil, fmt.Errorf("temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+	out := filepath.Join(tmp, "screen.png")
+
+	_, stderr, runErr := runCapture("pymobiledevice3", "developer", "dvt", "screenshot", out, "--udid", id)
+	stderrStr := string(stderr)
+	// pymobiledevice3 sometimes exits 0 without writing the file
+	// (e.g. unknown UDID logged as ERROR to stderr). Inspect stderr
+	// regardless of exit code.
+	if isDeviceNotConnected(stderrStr) {
+		return nil, fmt.Errorf("device not connected: %s", id)
+	}
+	if runErr != nil {
+		return nil, fmt.Errorf("pymobiledevice3 dvt screenshot: %v\n%s", runErr, truncate(stderrStr, 240))
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		// File wasn't created despite exit 0 — surface stderr so the
+		// caller can see why (ERROR lines typically explain).
+		return nil, fmt.Errorf("capture did not produce a file: %s", truncate(stderrStr, 240))
+	}
+	return data, nil
 }
 
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.

@@ -208,3 +208,26 @@ func isAndroidDeviceNotConnected(s string) bool {
 func (a *AndroidAdapter) LaunchKeepAwake(id string) error {
 	return nil
 }
+
+// Screenshot captures a PNG via `adb shell screencap -p`. The subcommand
+// writes the PNG to stdout, which we return unchanged.
+func (a *AndroidAdapter) Screenshot(id string) ([]byte, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return nil, fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "shell", "screencap", "-p")
+	combined := string(stderr) + " " + string(out[:min(len(out), 512)])
+	if isAndroidDeviceNotConnected(combined) {
+		return nil, fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("adb screencap: %v\n%s", err, truncate(string(stderr), 200))
+	}
+	if len(out) == 0 {
+		return nil, errors.New("adb screencap returned empty output")
+	}
+	return out, nil
+}

@@ -51,15 +51,7 @@ func Start(cfg Config) error {
 	for _, tool := range spydermcp.Definitions() {
 		toolName := tool.Name
 		srv.AddTool(tool, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			text, isErr, err := handler.Call(toolName, req.GetArguments())
-			if err != nil {
-				return mcp.NewToolResultError(err.Error()), nil
-			}
-			result := mcp.NewToolResultText(text)
-			if isErr {
-				result.IsError = true
-			}
-			return result, nil
+			return handler.Dispatch(toolName, req.GetArguments())
 		})
 	}
 

@@ -4,8 +4,12 @@
 package mcp
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+
+	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
@@ -24,7 +28,28 @@ func optString(args map[string]any, key string) string {
 	return v
 }
 
-func (h *Handler) handleDevices(args map[string]any) (string, bool, error) {
+// toolErr wraps a user-facing error as a non-nil CallToolResult with
+// IsError=true so clients surface it in the tool-result channel rather
+// than treating it as a transport fault.
+func toolErr(format string, args ...any) (*mcpgo.CallToolResult, error) {
+	return mcpgo.NewToolResultError(fmt.Sprintf(format, args...)), nil
+}
+
+// toolText returns a successful CallToolResult carrying text.
+func toolText(text string) (*mcpgo.CallToolResult, error) {
+	return mcpgo.NewToolResultText(text), nil
+}
+
+// toolJSON marshals v as pretty-printed JSON and returns it as text.
+func toolJSON(v any) (*mcpgo.CallToolResult, error) {
+	data, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return toolText(string(data))
+}
+
+func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, error) {
 	platform := optString(args, "platform")
 	if platform == "" {
 		platform = "all"
@@ -40,7 +65,7 @@ func (h *Handler) handleDevices(args map[string]any) (string, bool, error) {
 		ds, err := h.ios.List()
 		if err != nil {
 			if platform == "ios" {
-				return fmt.Sprintf("ios: %v", err), true, nil
+				return toolErr("ios: %v", err)
 			}
 			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("ios: %v", err))
 		}
@@ -50,7 +75,7 @@ func (h *Handler) handleDevices(args map[string]any) (string, bool, error) {
 		ds, err := h.android.List()
 		if err != nil {
 			if platform == "android" {
-				return fmt.Sprintf("android: %v", err), true, nil
+				return toolErr("android: %v", err)
 			}
 			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("android: %v", err))
 		}
@@ -63,21 +88,19 @@ func (h *Handler) handleDevices(args map[string]any) (string, bool, error) {
 		}
 	}
 
-	// When listing "all", surface per-adapter errors as a wrapped shape
-	// so partial results aren't lost.
 	if platform == "all" && len(perAdapterErrors) > 0 {
-		return marshal(struct {
+		return toolJSON(struct {
 			Devices []device.Info `json:"devices"`
 			Errors  []string      `json:"errors,omitempty"`
 		}{devices, perAdapterErrors})
 	}
-	return marshal(devices)
+	return toolJSON(devices)
 }
 
-func (h *Handler) handleResolve(args map[string]any) (string, bool, error) {
+func (h *Handler) handleResolve(args map[string]any) (*mcpgo.CallToolResult, error) {
 	name, err := requireString(args, "name")
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 
 	h.mu.Lock()
@@ -87,14 +110,13 @@ func (h *Handler) handleResolve(args map[string]any) (string, bool, error) {
 	if !ok {
 		entry = inventory.ClassifyRaw(name)
 	}
-
-	return marshal(entry)
+	return toolJSON(entry)
 }
 
-func (h *Handler) handleKeepAwake(args map[string]any) (string, bool, error) {
+func (h *Handler) handleKeepAwake(args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 
 	h.mu.Lock()
@@ -102,23 +124,23 @@ func (h *Handler) handleKeepAwake(args map[string]any) (string, bool, error) {
 
 	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
-		return err.Error(), true, nil
+		return toolErr("%v", err)
 	}
 	if err := adapter.LaunchKeepAwake(id); err != nil {
-		return fmt.Sprintf("launching KeepAwake on %s: %v", dev, err), true, nil
+		return toolErr("launching KeepAwake on %s: %v", dev, err)
 	}
 	switch platform {
 	case "android":
-		return fmt.Sprintf("KeepAwake is a no-op on %s: Android handles stay-awake natively — enable Settings → Developer options → Stay awake while plugged in", dev), false, nil
+		return toolText(fmt.Sprintf("KeepAwake is a no-op on %s: Android handles stay-awake natively — enable Settings → Developer options → Stay awake while plugged in", dev))
 	default:
-		return fmt.Sprintf("KeepAwake launched on %s", dev), false, nil
+		return toolText(fmt.Sprintf("KeepAwake launched on %s", dev))
 	}
 }
 
-func (h *Handler) handleDeviceState(args map[string]any) (string, bool, error) {
+func (h *Handler) handleDeviceState(args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
-		return "", false, err
+		return nil, err
 	}
 
 	h.mu.Lock()
@@ -126,13 +148,42 @@ func (h *Handler) handleDeviceState(args map[string]any) (string, bool, error) {
 
 	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
-		return err.Error(), true, nil
+		return toolErr("%v", err)
 	}
 	state, err := adapter.State(id)
 	if err != nil {
-		return fmt.Sprintf("reading state: %v", err), true, nil
+		return toolErr("reading state: %v", err)
 	}
-	return marshal(state)
+	return toolJSON(state)
+}
+
+func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	adapter, platform, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if platform == "ios" && h.tunneld != nil {
+		if err := h.tunneld.Require(); err != nil {
+			return toolErr("screenshot on %s: %v", dev, err)
+		}
+	}
+	png, err := adapter.Screenshot(id)
+	if err != nil {
+		return toolErr("screenshot on %s: %v", dev, err)
+	}
+	return mcpgo.NewToolResultImage(
+		fmt.Sprintf("screenshot of %s (%d bytes)", dev, len(png)),
+		base64.StdEncoding.EncodeToString(png),
+		"image/png",
+	), nil
 }
 
 // resolveAdapter maps a user-provided device reference (alias or raw UUID)
@@ -163,10 +214,5 @@ func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, er
 	}
 }
 
-func marshal(v any) (string, bool, error) {
-	out, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		return "", false, err
-	}
-	return string(out), false, nil
-}
+// Compile-time assertion that errors package is imported (for build).
+var _ = errors.New
