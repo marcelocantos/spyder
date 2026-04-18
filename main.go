@@ -119,13 +119,12 @@ func runServe(args []string) {
 	}
 }
 
-// runCmd implements the `spyder run [--device X] -- <cmd> [args]`
-// subcommand: exec the command, wait for exit, then foreground
-// KeepAwake on the device regardless of success/failure. Exits with
-// the command's exit code (KeepAwake restore failure is logged but
-// does not override the exit code — the test result is authoritative).
-func runCmd(args []string) {
-	dev := defaultRunDevice
+// parseRunArgs parses the flag portion of `spyder run`. Returns the
+// target device alias and the command tail, or an error for the
+// caller to surface. Extracted from runCmd so it can be unit-tested
+// without touching exec/os.
+func parseRunArgs(args []string) (dev string, cmd []string, err error) {
+	dev = defaultRunDevice
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		if args[0] == "--" {
 			args = args[1:]
@@ -134,22 +133,33 @@ func runCmd(args []string) {
 		switch args[0] {
 		case "--device", "-d":
 			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "spyder run: --device requires a value")
-				os.Exit(2)
+				return "", nil, fmt.Errorf("--device requires a value")
 			}
 			dev = args[1]
 			args = args[2:]
 		default:
-			fmt.Fprintf(os.Stderr, "spyder run: unknown flag %q\n", args[0])
-			os.Exit(2)
+			return "", nil, fmt.Errorf("unknown flag %q", args[0])
 		}
 	}
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "spyder run: no command provided — usage: spyder run [--device X] -- <cmd> [args...]")
+		return "", nil, fmt.Errorf("no command provided — usage: spyder run [--device X] -- <cmd> [args...]")
+	}
+	return dev, args, nil
+}
+
+// runCmd implements the `spyder run [--device X] -- <cmd> [args]`
+// subcommand: exec the command, wait for exit, then foreground
+// KeepAwake on the device regardless of success/failure. Exits with
+// the command's exit code (KeepAwake restore failure is logged but
+// does not override the exit code — the test result is authoritative).
+func runCmd(args []string) {
+	dev, cmdArgs, err := parseRunArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
 		os.Exit(2)
 	}
 
-	child := exec.Command(args[0], args[1:]...)
+	child := exec.Command(cmdArgs[0], cmdArgs[1:]...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr

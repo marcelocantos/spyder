@@ -30,14 +30,22 @@ func MacOS(title, body string) error {
 	if path, err := exec.LookPath("terminal-notifier"); err == nil {
 		return exec.Command(path, "-title", title, "-message", body).Run()
 	}
-	esc := func(s string) string {
-		s = strings.ReplaceAll(s, `\`, `\\`)
-		s = strings.ReplaceAll(s, `"`, `\"`)
-		s = strings.ReplaceAll(s, "\n", " ")
-		return s
-	}
-	script := fmt.Sprintf(`display notification "%s" with title "%s"`, esc(body), esc(title))
-	return exec.Command("osascript", "-e", script).Run()
+	return exec.Command("osascript", "-e", osascriptScript(title, body)).Run()
+}
+
+// osascriptScript builds the `display notification` AppleScript for
+// the osascript fallback. Escapes backslashes, double-quotes, and
+// collapses newlines (osascript string literals don't tolerate
+// unescaped multi-line content).
+func osascriptScript(title, body string) string {
+	return fmt.Sprintf(`display notification "%s" with title "%s"`, escAppleScript(body), escAppleScript(title))
+}
+
+func escAppleScript(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", " ")
+	return s
 }
 
 // MacOSAlert fires a persistent macOS alert with a single "Dismiss"

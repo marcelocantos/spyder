@@ -92,21 +92,31 @@ func (s *Supervisor) tick(ctx context.Context, seen map[string]bool) {
 	if err != nil {
 		return // tunneld unavailable — quiet retry next tick
 	}
-	current := map[string]bool{}
-	for _, udid := range udids {
-		current[udid] = true
-		if seen[udid] {
-			continue
-		}
-		seen[udid] = true
+	for _, udid := range newDevices(udids, seen) {
 		go s.handleNewDevice(ctx, udid)
 	}
-	// Forget devices that disappeared so replug retriggers.
+}
+
+// newDevices returns the UDIDs in `current` that weren't in `seen`,
+// marks them seen, and prunes `seen` entries that are no longer in
+// `current` (so unplug+replug retriggers). Pure — no I/O, testable
+// without mocks.
+func newDevices(current []string, seen map[string]bool) []string {
+	present := make(map[string]bool, len(current))
+	var fresh []string
+	for _, udid := range current {
+		present[udid] = true
+		if !seen[udid] {
+			fresh = append(fresh, udid)
+			seen[udid] = true
+		}
+	}
 	for udid := range seen {
-		if !current[udid] {
+		if !present[udid] {
 			delete(seen, udid)
 		}
 	}
+	return fresh
 }
 
 // handleNewDevice runs the install/launch/notify sequence for one
