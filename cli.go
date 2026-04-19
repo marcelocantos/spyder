@@ -61,6 +61,7 @@ func init() {
 		{"crashes", "spyder crashes <device> [--since RFC3339] [--process NAME] [--as OWNER] [--json]", runCrashes},
 		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
+		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 	}
 }
 
@@ -814,6 +815,31 @@ func runEmuDelete(args []string) {
 		fatalUsage("emu", fmt.Errorf("delete: expected <avd-name>"))
 	}
 	dispatchAndExit("emu_delete", map[string]any{"name": pf.positional[0]}, false)
+}
+
+func runRecord(args []string) {
+	pf, err := parseFlags(args, []string{"--as"}, []string{"--start", "--stop"})
+	if err != nil {
+		fatalUsage("record", err)
+	}
+	requirePositional("record", pf, 1)
+	dev := pf.positional[0]
+	start := pf.bools["--start"]
+	stop := pf.bools["--stop"]
+	if start == stop {
+		fatalUsage("record", fmt.Errorf("exactly one of --start or --stop is required"))
+	}
+	a := map[string]any{"device": dev}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	if start {
+		dispatchAndExit("record_start", a, false)
+	} else {
+		dispatchAndExit("record_stop", a, false)
+	}
 }
 
 // --- helpers --------------------------------------------------------

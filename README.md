@@ -65,6 +65,7 @@ everything below plus gotchas, device-inventory format, and the full
 | `baseline_update` | Store a reference screenshot (and optional UI manifest) as a visual baseline. |
 | `diff` | Compare a candidate screenshot against the stored baseline. Returns pixel RMS error, manifest structural diff (added/removed/moved elements with bounding boxes), and a pass/fail verdict. |
 | `baselines_list` | List all stored baselines for a suite. |
+| `record_start` / `record_stop` | Start and stop a screen recording (mp4). iOS simulators via `xcrun simctl io recordVideo`; Android via `adb shell screenrecord`. **iOS physical devices are not supported** — use a simulator. |
 
 ## REST API
 

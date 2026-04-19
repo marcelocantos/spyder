@@ -26,6 +26,8 @@ type stubAdapter struct {
 	terminateApp    func(id, bundle string) error
 	rotate          func(id, orientation string) error
 	crashes         func(id string, since time.Time, process string) ([]device.CrashReport, error)
+	startRecording  func(id, dest string) (func() error, int, error)
+	stopRecording   func(id string, pid int) error
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -81,6 +83,20 @@ func (s *stubAdapter) Crashes(id string, since time.Time, process string) ([]dev
 		return nil, nil
 	}
 	return s.crashes(id, since, process)
+}
+func (s *stubAdapter) StartRecording(id, dest string) (func() error, int, error) {
+	if s.startRecording == nil {
+		done := make(chan struct{})
+		close(done)
+		return func() error { return nil }, 42, nil
+	}
+	return s.startRecording(id, dest)
+}
+func (s *stubAdapter) StopRecording(id string, pid int) error {
+	if s.stopRecording == nil {
+		return nil
+	}
+	return s.stopRecording(id, pid)
 }
 
 // stubTunneld is a TunneldGate with controllable Require behaviour.

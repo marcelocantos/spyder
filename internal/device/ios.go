@@ -733,6 +733,21 @@ func parseIPSReport(data []byte, meta ipsFileMeta) CrashReport {
 	return cr
 }
 
+// StartRecording is not supported on iOS physical devices. Use an iOS
+// simulator (platform "ios-sim") for screen recording.
+//
+// The error message is structured so agents can detect the unsupported case:
+// it contains the literal phrase "not supported on iOS physical devices".
+func (a *IOSAdapter) StartRecording(id, dest string) (func() error, int, error) {
+	return nil, 0, fmt.Errorf("screen recording is not supported on iOS physical devices; use a simulator — run `xcrun simctl list devices` to pick one, then pass its UDID directly")
+}
+
+// StopRecording is a no-op on iOS physical devices because StartRecording
+// always errors. It exists only to satisfy the Adapter interface.
+func (a *IOSAdapter) StopRecording(id string, pid int) error {
+	return fmt.Errorf("screen recording is not supported on iOS physical devices")
+}
+
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.
 // The id may be the hardware UDID, CoreDevice UUID, device name, or any
 // other identifier `devicectl --device` accepts.

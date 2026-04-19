@@ -93,4 +93,21 @@ type Adapter interface {
 	// (root-capable devices only). Falls back to `adb logcat -b crash`
 	// when tombstones are inaccessible.
 	Crashes(id string, since time.Time, process string) ([]CrashReport, error)
+
+	// StartRecording begins a screen recording to dest (an mp4 path).
+	// Returns immediately; the recording runs asynchronously. The caller
+	// must call StopRecording to finalise the file.
+	//
+	// iOS physical devices are not supported; they return an error immediately.
+	// iOS simulators use `xcrun simctl io <udid> recordVideo <dest>`.
+	// Android uses `adb shell screenrecord` and the file is pulled on stop.
+	//
+	// stopFn sends the termination signal to the subprocess. pid is the
+	// subprocess PID, valid until StopRecording returns.
+	StartRecording(id, dest string) (stopFn func() error, pid int, err error)
+
+	// StopRecording signals the recorder subprocess to terminate cleanly
+	// (SIGINT), waits for exit, and (for Android) pulls the output file
+	// from the device to dest. pid is the value returned by StartRecording.
+	StopRecording(id string, pid int) error
 }

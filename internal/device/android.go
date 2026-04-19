@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -545,6 +546,85 @@ func parseLogcatCrashBuffer(output string, since time.Time, processFilter string
 		return reports[i].Timestamp.After(reports[j].Timestamp)
 	})
 	return reports
+}
+
+// androidDeviceRecordPath is where screenrecord writes on the device.
+const androidDeviceRecordPath = "/sdcard/spyder-recording.mp4"
+
+// StartRecording starts `adb shell screenrecord` on the device. The
+// screenrecord binary writes to androidDeviceRecordPath on the device;
+// dest is the local path the file will be pulled to by the stopFn.
+//
+// The command runs in the background; stopFn sends SIGINT so the mp4 is
+// properly finalised before we pull it.
+func (a *AndroidAdapter) StartRecording(id, dest string) (func() error, int, error) {
+	if id == "" {
+		return nil, 0, errors.New("adb: device identifier is empty")
+	}
+	if dest == "" {
+		return nil, 0, errors.New("adb: dest path is required")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return nil, 0, fmt.Errorf("adb not found in PATH: %w", err)
+	}
+
+	// Remove stale recording from a previous interrupted session.
+	_, _, _ = runCapture("adb", "-s", id, "shell", "rm", "-f", androidDeviceRecordPath)
+
+	cmd := exec.Command("adb", "-s", id, "shell", "screenrecord",
+		"--bit-rate", "4000000",
+		androidDeviceRecordPath,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		return nil, 0, fmt.Errorf("adb screenrecord: %w", err)
+	}
+
+	pid := cmd.Process.Pid
+	stopFn := func() error {
+		// SIGINT the local adb shell; it propagates to screenrecord on device.
+		if sigErr := cmd.Process.Signal(syscall.SIGINT); sigErr != nil && !errors.Is(sigErr, os.ErrProcessDone) {
+			// Fall back to killing screenrecord on device via adb killall.
+			_, _, _ = runCapture("adb", "-s", id, "shell", "killall", "-SIGINT", "screenrecord")
+		}
+		// Wait for the local adb shell to exit.
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-time.After(15 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		case <-done:
+		}
+		// Pull the recorded file to dest.
+		if _, _, pullErr := runCapture("adb", "-s", id, "pull", androidDeviceRecordPath, dest); pullErr != nil {
+			return fmt.Errorf("adb pull %s → %s: %w", androidDeviceRecordPath, dest, pullErr)
+		}
+		// Clean up on device.
+		_, _, _ = runCapture("adb", "-s", id, "shell", "rm", "-f", androidDeviceRecordPath)
+		return nil
+	}
+
+	return stopFn, pid, nil
+}
+
+// StopRecording signals the local adb shell (which propagates to screenrecord
+// on device) via SIGINT. For full cleanup including the device-side pull,
+// use the stopFn returned by StartRecording directly. This method exists to
+// satisfy the Adapter interface.
+func (a *AndroidAdapter) StopRecording(id string, pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("adb StopRecording: invalid pid %d", pid)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("adb StopRecording: find process %d: %w", pid, err)
+	}
+	if sigErr := proc.Signal(syscall.SIGINT); sigErr != nil && !errors.Is(sigErr, os.ErrProcessDone) {
+		_, _, _ = runCapture("adb", "-s", id, "shell", "killall", "-SIGINT", "screenrecord")
+	}
+	return nil
 }
 
 // Screenshot captures a PNG via `adb shell screencap -p`. The subcommand

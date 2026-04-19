@@ -6,15 +6,17 @@ package mcp
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/simemu"
@@ -387,6 +389,13 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 	if err != nil {
 		return nil, err
 	}
+
+	h.mu.Lock()
+	canonical := h.canonicalDevice(dev)
+	// Stop any active recording owned by this owner before releasing.
+	h.stopRecordingForOwner(canonical, owner)
+	h.mu.Unlock()
+
 	if err := h.reservations.Release(dev, owner); err != nil {
 		return toolErr("%v", err)
 	}
@@ -728,5 +737,132 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 	return toolJSON(reports)
 }
 
-// Compile-time assertion that errors package is imported (for build).
-var _ = errors.New
+// --- recording tools ---------------------------------------------------
+
+// handleRecordStart begins a screen recording on the device. The recording
+// runs asynchronously; the caller must invoke record_stop to finalise.
+func (h *Handler) handleRecordStart(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	canonical := h.canonicalDevice(dev)
+
+	// Conflict check: only one active recorder per device.
+	if existing := h.recordings.ForDevice(canonical); existing != nil {
+		return toolErr("record_start: device %q is already being recorded by owner %q — call record_stop first", dev, existing.Owner)
+	}
+
+	// Build output path in the temp/run dir.
+	dir := h.runsBaseDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	ts := time.Now().UTC().Format("20060102-150405")
+	dest := filepath.Join(dir, fmt.Sprintf("recording-%s-%s.mp4", sanitizeFilename(canonical), ts))
+
+	stopFn, pid, err := adapter.StartRecording(id, dest)
+	if err != nil {
+		return toolErr("record_start on %s: %v", dev, err)
+	}
+
+	doneCh := make(chan struct{})
+	wrappedStop := func() error {
+		defer close(doneCh)
+		return stopFn()
+	}
+
+	if _, err := h.recordings.Start(canonical, owner, dest, wrappedStop, doneCh); err != nil {
+		// Should not happen because we checked ForDevice above, but be safe.
+		return toolErr("record_start: %v", err)
+	}
+
+	slog.Info("recording started", "device", canonical, "owner", owner, "pid", pid, "dest", dest)
+	return toolText(fmt.Sprintf("recording started on %s (pid %d); call record_stop to finalise → %s", dev, pid, dest))
+}
+
+// handleRecordStop signals the active recorder to stop, waits for the
+// mp4 to be finalised, and returns the output path.
+func (h *Handler) handleRecordStop(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		h.mu.Unlock()
+		return res, nil
+	}
+	canonical := h.canonicalDevice(dev)
+
+	session, stopErr := h.recordings.Stop(canonical)
+	h.mu.Unlock()
+
+	if stopErr != nil {
+		return toolErr("record_stop on %s: %v", dev, stopErr)
+	}
+
+	// Wait for the subprocess to exit and the file to be written.
+	select {
+	case <-session.Done():
+	case <-time.After(30 * time.Second):
+		return toolErr("record_stop on %s: timed out waiting for recorder to exit", dev)
+	}
+
+	slog.Info("recording stopped", "device", canonical, "output", session.OutputPath)
+	return toolText(fmt.Sprintf("recording saved to %s", session.OutputPath))
+}
+
+// stopRecordingForOwner stops any active recording on device owned by owner.
+// Called from handleRelease to clean up before releasing the reservation.
+// Best-effort: errors are logged but not returned.
+func (h *Handler) stopRecordingForOwner(canonical, owner string) {
+	session := h.recordings.ForDevice(canonical)
+	if session == nil || session.Owner != owner {
+		return
+	}
+	s, err := h.recordings.Stop(canonical)
+	if err != nil {
+		slog.Warn("recording cleanup on release failed", "device", canonical, "owner", owner, "error", err)
+		return
+	}
+	// Wait briefly for clean shutdown.
+	select {
+	case <-s.Done():
+	case <-time.After(10 * time.Second):
+		slog.Warn("recording cleanup timed out", "device", canonical, "owner", owner)
+	}
+}
+
+// sanitizeFilename replaces characters that are unsafe in file names.
+func sanitizeFilename(s string) string {
+	out := make([]byte, len(s))
+	for i := range len(s) {
+		c := s[i]
+		if c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' {
+			out[i] = '_'
+		} else {
+			out[i] = c
+		}
+	}
+	return string(out)
+}
+
+// Compile-time check: recording.IsConflict must be callable.
+var _ = recording.IsConflict

@@ -77,6 +77,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   crashes       Fetch crash reports (--since RFC3339, --process NAME, --as OWNER, --json)
   diff          Compare a screenshot against its stored baseline (--variant, --tolerance, --json)
   baseline      Manage visual baselines; subcommand: update
+  record        Start or stop a screen recording (--start | --stop, --as OWNER)
 
 Serve:
   spyder serve [--addr :3030]

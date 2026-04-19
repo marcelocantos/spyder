@@ -55,6 +55,8 @@ Snapshot as of `v0.4.0`.
 | `emu_boot` | `{name: string}`. | Text (serial visible in `adb devices` once booted). | Needs review |
 | `emu_shutdown` | `{serial: string}`. | Text confirmation. | Needs review |
 | `emu_delete` | `{name: string}`. | Text confirmation. | Needs review |
+| `record_start` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with subprocess PID and output path. | Needs review — iOS simulator UDID must be passed directly; iOS physical devices return an immediate error. |
+| `record_stop` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with the local mp4 path. | Needs review |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -99,6 +101,7 @@ can match on these phrases.
 | `spyder emu boot <name>` | REST proxy to `emu_boot`. | Needs review |
 | `spyder emu shutdown <serial>` | REST proxy to `emu_shutdown`. | Needs review |
 | `spyder emu delete <name>` | REST proxy to `emu_delete`. | Needs review |
+| `spyder record <device> --start \| --stop [--as OWNER]` | REST proxy to `record_start` / `record_stop`. Starts or stops a screen recording on an iOS simulator or Android device. | Needs review |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
@@ -288,7 +291,12 @@ builds. **Stable.**
 - Windows host support.
 - Full UI automation (tap/swipe/type) — that's deliberately mobile-mcp's
   territory.
-- Screen-recording / video capture (no clean pymobiledevice3 primitive).
+- Screen-recording on **iOS physical devices** — `pymobiledevice3` and
+  `devicectl` do not expose a clean CLI path for video capture on real
+  devices at this time. `record_start` on a physical iOS device returns an
+  immediate error: `"screen recording is not supported on iOS physical
+  devices; use a simulator"`. Use `xcrun simctl list devices` to pick a
+  simulator UDID instead.
 - Wireless-ADB pairing / discovery — assumed set up externally (spyder
   inherits `adb devices`).
 - Auto-install of an Android KeepAwake app — Android handles stay-awake
