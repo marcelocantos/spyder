@@ -56,6 +56,7 @@ func init() {
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
+		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 	}
 }
 
@@ -500,6 +501,31 @@ func runReservations(args []string) {
 		fatalUsage("reservations", err)
 	}
 	dispatchAndExit("reservations", map[string]any{}, pf.bools["--json"])
+}
+
+func runRecord(args []string) {
+	pf, err := parseFlags(args, []string{"--as"}, []string{"--start", "--stop"})
+	if err != nil {
+		fatalUsage("record", err)
+	}
+	requirePositional("record", pf, 1)
+	dev := pf.positional[0]
+	start := pf.bools["--start"]
+	stop := pf.bools["--stop"]
+	if start == stop {
+		fatalUsage("record", fmt.Errorf("exactly one of --start or --stop is required"))
+	}
+	a := map[string]any{"device": dev}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	if start {
+		dispatchAndExit("record_start", a, false)
+	} else {
+		dispatchAndExit("record_stop", a, false)
+	}
 }
 
 // --- helpers --------------------------------------------------------

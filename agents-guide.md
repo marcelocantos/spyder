@@ -106,9 +106,11 @@ everything it can see.
 | `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses DVT launch (needs tunneld); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
 | `reserve` | Acquire an exclusive device hold. | `{device, owner, ttl_seconds?, note?}`. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. |
-| `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. |
+| `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Also stops any active recording owned by the releaser. |
 | `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
 | `reservations` | List active reservations. | Read-only. |
+| `record_start` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | `{device, owner?}`. iOS simulators only — physical devices return an immediate error. Only one recording per device at a time. Reservation-gated. |
+| `record_stop` | Stop the active recording and return the local mp4 path. | `{device, owner?}`. Waits for the recorder to flush. On Android, pulls the file from the device. |
 
 ## Reservations
 
@@ -280,6 +282,39 @@ Without it, auto-launch still works for devices that already have
 KeepAwake installed; auto-deploy is silently skipped for first-install
 devices. Logs show `autoawake: ready project_dir=…` (good) or
 `autoawake: KeepAwake project not found — auto-deploy disabled`.
+
+## Screen recording
+
+`record_start` / `record_stop` capture a video of the device's screen. Single
+screenshots miss multi-frame visual bugs (rotation flashes, animation glitches,
+transition artifacts). Use recording to capture a short mp4 around a dynamic
+event.
+
+```json
+{"name": "record_start", "arguments": {"device": "iphone-16-sim", "owner": "tiltbuggy"}}
+// … trigger the event …
+{"name": "record_stop", "arguments": {"device": "iphone-16-sim", "owner": "tiltbuggy"}}
+```
+
+**Platform notes:**
+
+- **iOS simulator**: Pass the simulator UDID directly (from `xcrun simctl list
+  devices`). The alias inventory doesn't currently have a simulator type, so
+  pass the raw UDID. Recording uses `xcrun simctl io <udid> recordVideo
+  <dest.mp4>`.
+- **iOS physical device**: Not supported. `record_start` returns an immediate
+  error: `"screen recording is not supported on iOS physical devices; use a
+  simulator"`. This is a platform limitation — `pymobiledevice3` and
+  `devicectl` do not expose a recording API at this time.
+- **Android device / emulator**: Uses `adb shell screenrecord --bit-rate
+  4000000 /sdcard/spyder-recording.mp4`. The file is pulled to a local temp
+  path on `record_stop`. Maximum native recording duration is 180 s per
+  Android's `screenrecord` limit.
+
+**Conflict detection**: Only one recording session per device at a time. A
+second `record_start` on the same device returns a Conflict error naming the
+current recorder's owner. The session is also stopped automatically when the
+owner's reservation is released.
 
 ## Common gotchas
 

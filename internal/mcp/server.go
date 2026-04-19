@@ -15,6 +15,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 )
 
@@ -26,6 +27,8 @@ type Handler struct {
 	android      device.Adapter
 	tunneld      TunneldGate
 	reservations *reservations.Store
+	recordings   *recording.Registry
+	runsBaseDir  string // base dir for active-run temp files; empty = os.TempDir()
 }
 
 // TunneldGate is satisfied by *tunneld.Client. The small interface lets
@@ -52,15 +55,22 @@ func WithInventory(inv *inventory.Store) HandlerOption {
 	return func(h *Handler) { h.inventory = inv }
 }
 
+// WithRunsBaseDir sets the directory where recording temp files are created.
+// Defaults to os.TempDir() when empty.
+func WithRunsBaseDir(dir string) HandlerOption {
+	return func(h *Handler) { h.runsBaseDir = dir }
+}
+
 // NewHandler creates a new spyder tool handler. tun may be nil for
 // handler instances that never call DVT-dependent tools; tools that
 // need it will return a clear error when tun is missing.
 func NewHandler(tun TunneldGate, opts ...HandlerOption) *Handler {
 	h := &Handler{
-		inventory: inventory.New(),
-		ios:       device.NewIOSAdapter(),
-		android:   device.NewAndroidAdapter(),
-		tunneld:   tun,
+		inventory:  inventory.New(),
+		ios:        device.NewIOSAdapter(),
+		android:    device.NewAndroidAdapter(),
+		tunneld:    tun,
+		recordings: recording.NewRegistry(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -95,6 +105,10 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleRenew(args)
 	case "reservations":
 		return h.handleReservations(args)
+	case "record_start":
+		return h.handleRecordStart(args)
+	case "record_stop":
+		return h.handleRecordStop(args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -233,6 +247,28 @@ func Definitions() []mcpgo.Tool {
 
 		mcpgo.NewTool("reservations",
 			mcpgo.WithDescription("List all active reservations across all devices. Read-only."),
+		),
+
+		mcpgo.NewTool("record_start",
+			mcpgo.WithDescription("Start a screen recording on an iOS simulator or Android device/emulator. Returns immediately; the recording runs in the background until record_stop is called. iOS physical devices are not supported — use a simulator (xcrun simctl list devices). Strictly enforced: rejects if the device is reserved by a different owner, or if a recording is already in progress on the same device."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UDID/serial. For iOS simulators pass the simulator UDID from `xcrun simctl list devices`."),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
+		),
+
+		mcpgo.NewTool("record_stop",
+			mcpgo.WithDescription("Stop the active screen recording on a device, finalise the mp4, and return the path to the recorded file. Must be called after record_start."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UDID/serial (must match the value passed to record_start)"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
 		),
 	}
 }

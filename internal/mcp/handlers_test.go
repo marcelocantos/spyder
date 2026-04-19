@@ -23,6 +23,8 @@ type stubAdapter struct {
 	listApps        func(id string) ([]device.AppInfo, error)
 	launchApp       func(id, bundle string) error
 	terminateApp    func(id, bundle string) error
+	startRecording  func(id, dest string) (func() error, int, error)
+	stopRecording   func(id string, pid int) error
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -66,6 +68,20 @@ func (s *stubAdapter) TerminateApp(id, bundle string) error {
 		return nil
 	}
 	return s.terminateApp(id, bundle)
+}
+func (s *stubAdapter) StartRecording(id, dest string) (func() error, int, error) {
+	if s.startRecording == nil {
+		done := make(chan struct{})
+		close(done)
+		return func() error { return nil }, 42, nil
+	}
+	return s.startRecording(id, dest)
+}
+func (s *stubAdapter) StopRecording(id string, pid int) error {
+	if s.stopRecording == nil {
+		return nil
+	}
+	return s.stopRecording(id, pid)
 }
 
 // stubTunneld is a TunneldGate with controllable Require behaviour.

@@ -60,6 +60,7 @@ everything below plus gotchas, device-inventory format, and the full
 | `launch_app` | Foreground an arbitrary app by bundle id. |
 | `terminate_app` | Stop an app by bundle id. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
+| `record_start` / `record_stop` | Start and stop a screen recording (mp4). iOS simulators via `xcrun simctl io recordVideo`; Android via `adb shell screenrecord`. **iOS physical devices are not supported** — use a simulator. |
 
 ## REST API
 

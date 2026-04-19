@@ -71,6 +71,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   release       Release a reservation you hold (--as OWNER)
   renew         Extend a reservation you hold (--as OWNER, --ttl SECONDS)
   reservations  List all active reservations (--json)
+  record        Start or stop a screen recording (--start | --stop, --as OWNER)
 
 Serve:
   spyder serve [--addr :3030]
