@@ -89,6 +89,16 @@ can match on these phrases.
 | `spyder rotate <device> --to <orientation> [--as OWNER]` | REST proxy to `rotate`. Orientation: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. | Needs review |
 | `spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]` | REST proxy to `diff`. Exits 0 on pass, 1 on fail. | Needs review |
 | `spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]` | REST proxy to `baseline_update`. | Needs review |
+| `spyder sim list [--state STATE] [--json]` | REST proxy to `sim_list`. | Needs review |
+| `spyder sim create <name> --type <id> --runtime <id>` | REST proxy to `sim_create`. | Needs review |
+| `spyder sim boot <udid>` | REST proxy to `sim_boot`. | Needs review |
+| `spyder sim shutdown <udid>` | REST proxy to `sim_shutdown`. | Needs review |
+| `spyder sim delete <udid>` | REST proxy to `sim_delete`. | Needs review |
+| `spyder emu list [--json]` | REST proxy to `emu_list`. | Needs review |
+| `spyder emu create <name> --image <pkg> --device <profile>` | REST proxy to `emu_create`. | Needs review |
+| `spyder emu boot <name>` | REST proxy to `emu_boot`. | Needs review |
+| `spyder emu shutdown <serial>` | REST proxy to `emu_shutdown`. | Needs review |
+| `spyder emu delete <name>` | REST proxy to `emu_delete`. | Needs review |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block

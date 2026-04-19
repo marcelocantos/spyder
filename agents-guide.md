@@ -126,6 +126,75 @@ everything it can see.
 | `emu_shutdown` | Shut down an Android emulator by serial (e.g. `emulator-5554`). | `{serial}`. Sends `adb emu kill`. |
 | `emu_delete` | Delete an AVD by name. | `{name}`. Irreversible. |
 
+## Simulator and emulator lifecycle
+
+iOS simulators and Android emulators are managed through dedicated tool groups (`sim_*` and `emu_*`). Booted simulators and running emulators appear automatically in `spyder devices` output — the existing iOS adapter calls `xcrun simctl` which includes both physical and simulator devices, and the Android adapter calls `adb devices` which lists running emulators alongside physical devices.
+
+### iOS simulators
+
+```bash
+# List all simulators (state: Booted, Shutdown, etc.)
+# {"name":"sim_list","arguments":{}}
+
+# Create a new simulator
+# {"name":"sim_create","arguments":{"name":"MyTestPhone",
+#   "device_type_id":"com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+#   "runtime_id":"com.apple.CoreSimulator.SimRuntime.iOS-17-5"}}
+
+# Boot and shut down
+# {"name":"sim_boot","arguments":{"udid":"ABCD-1234-..."}}
+# {"name":"sim_shutdown","arguments":{"udid":"ABCD-1234-..."}}
+```
+
+CLI:
+
+```bash
+spyder sim list
+spyder sim list --state Booted --json
+spyder sim create MyPhone \
+  --type com.apple.CoreSimulator.SimDeviceType.iPhone-15 \
+  --runtime com.apple.CoreSimulator.SimRuntime.iOS-17-5
+spyder sim boot <udid>
+spyder sim shutdown <udid>
+spyder sim delete <udid>
+```
+
+### Android emulators
+
+```bash
+# List AVDs
+# {"name":"emu_list","arguments":{}}
+
+# Boot an emulator (headless; takes 30–90 s to fully start)
+# {"name":"emu_boot","arguments":{"name":"Pixel6_API34"}}
+
+# Shut down by adb serial
+# {"name":"emu_shutdown","arguments":{"serial":"emulator-5554"}}
+```
+
+CLI:
+
+```bash
+spyder emu list --json
+spyder emu create Pixel6_API34 \
+  --image 'system-images;android-34;google_apis;arm64-v8a' --device pixel_6
+spyder emu boot Pixel6_API34
+spyder emu shutdown emulator-5554
+spyder emu delete Pixel6_API34
+```
+
+### Boot-on-demand / reservation policy
+
+You can reserve a device identifier (alias, UDID, or AVD name) before it is booted — the reservation is just a named hold on a string key; spyder does not enforce that the device is currently connected or running. This allows workflows to pre-claim a simulator slot and boot on demand:
+
+1. `reserve` the sim/emu name.
+2. `sim_boot` or `emu_boot` to start it.
+3. Wait for it to appear in `devices` (simulators: immediate; emulators: poll `spyder devices --platform android` until the serial appears).
+4. Use the booted device's UDID or serial for operations.
+5. `release` when done (optionally shut it down first).
+
+**Operations that target a device must use the live UDID/serial**, not the AVD name. The `devices` tool returns the identifier once the sim/emu is booted.
+
 ## Visual regression
 
 Spyder ships a baseline store (`~/.spyder/baselines/`) and a two-tier
