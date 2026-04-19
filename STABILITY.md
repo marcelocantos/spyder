@@ -17,7 +17,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.3.0`.
+Snapshot as of `v0.4.0`.
 
 ## Interaction surface catalogue
 
@@ -61,7 +61,7 @@ code for `spyder run` when the command itself exits non-zero.
 
 ### HTTP MCP endpoint
 
-- Address: `:3030` (default, overridable via `--addr`).
+- Address: `127.0.0.1:3030` (default, loopback only; overridable via `--addr`).
 - Path: `/mcp`.
 - Transport: mcp-go's streamable HTTP (JSON-RPC over POST; `Mcp-Session-Id`
   header for session continuity).

@@ -47,3 +47,21 @@ maintenance activities. Append-only — newest entries at the bottom.
   installs and a note that SPYDER_KEEPAWAKE_PROJECT is slated for
   removal once the KeepAwake Xcode project is go:embedded into the
   binary. Published for darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-19 — /release v0.4.0
+
+- **Commit**: pending
+- **Outcome**: Small feature + security + correctness release.
+  🎯T22 fixed the long-standing `devices({platform:"ios"})` stub
+  (shipped broken across v0.1.0–v0.3.0, masked by the partial-
+  results wrapper); iOS enumeration now fuses pymobiledevice3
+  usbmux list and xcrun devicectl list devices by hardware UDID.
+  Default HTTP bind changed to 127.0.0.1:3030 (loopback only) —
+  the MCP endpoint is unauthenticated and a wildcard bind on
+  shared Wi-Fi would let LAN peers drive devices; external
+  exposure is opt-in via --addr. Go 1.24 idiom sweep across five
+  sites (SplitSeq, range-over-int, CutPrefix). Filed and scored
+  🎯T12–T21 for post-v0.4.0 work (REST API, run-artefact store,
+  orientation, recording, crash reports, install/uninstall, net
+  shaping, sim/emu lifecycle, log tailing, visual regression).
+  Published for darwin-arm64, linux-amd64, linux-arm64.
