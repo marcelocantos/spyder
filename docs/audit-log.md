@@ -33,7 +33,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-19 — /release v0.3.0
 
-- **Commit**: pending
+- **Commit**: `79e28fc`
 - **Outcome**: Service-polish release. Fixed the v0.2.0 Homebrew
   formula so the launchd service inherits a usable PATH (covers
   /opt/homebrew/bin and system dirs) — v0.2.0's install was silently
