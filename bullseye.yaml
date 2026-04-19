@@ -457,6 +457,81 @@ targets:
     origin: manual
     discovered: 2026-04-19
     achieved: 2026-04-19
+  T23:
+    name: Reservation API supports fuzzy device requests by class and capability predicates
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - reserve accepts a `selector` argument as an alternative to a literal `device` — a structured predicate over (platform, model-family, OS-min, OS-max, orientation-capable, tags, and free-form attribute matchers)
+    - 'Selector grammar is documented in agents-guide.md with worked examples (e.g. `{platform: ios, model_family: ipad}`, `{platform: android, api_min: 33, tags: [arm64]}`)'
+    - Server resolves the selector against the live device set + the sim/emu pool and returns a Reservation bound to a concrete UUID/serial; the caller never has to know which one was picked
+    - 'Selector resolution prefers (in order): an idle physical device matching the predicate, an idle pre-warmed sim/emu in the pool, a freshly minted sim/emu (when 🎯T18 lifecycle + the pool target are both wired)'
+    - If the selector matches no available candidate and the pool can't mint one, reserve fails with a structured error naming the failed predicate and the closest near-miss
+    - 'CLI: `spyder reserve --selector ''{platform: ios, model_family: ipad}''` (or `--platform ios --model ipad` shorthand); --device remains supported for literal pin'
+    - MCP and REST surfaces both accept the selector form
+    - Inventory entries gain optional `tags` and `capabilities` fields so physical devices can participate in selector matching alongside sims/emus
+    context: |-
+      Today, `reserve` requires an exact `device` string (alias or raw UUID/serial). Callers must know the inventory ahead of time and pin a specific unit, which makes it impossible to say "give me an iPad" — even when several iPads exist or could be spun up. Fuzzy reservation lifts that constraint: callers describe what they need, spyder finds (or mints) a match. For physical devices the gain is "any one of N equivalent units"; for sims/emus the gain compounds with on-demand spin-up — selector + lifecycle = pool-on-demand.
+
+      Selector design hint (open for discussion at implementation): start with a flat key/value object covering the dimensions tests actually filter on (platform, model family, OS bounds, orientation capability, free tags). Keep it grammar-free for v1; structured but minimal. Defer query-language ambitions (boolean ops, regex) until usage demands them.
+
+      Pool-on-demand for sims/emus depends on the pool target being in place, but selector matching against existing devices / inventory is independently useful and ships first.</context>
+      <parameter name="depends_on">["T11"]
+    tags:
+    - reservations
+    - fuzzy
+    - selector
+    - ergonomics
+    origin: manual
+    discovered: 2026-04-19
+  T24:
+    name: Sim/emu pool with two readiness tiers and configurable linger-on-release
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - 'Pool catalogue at ~/.spyder/pool.yaml (or similar) declares stock sim/emu templates: device-type + runtime/system-image + tags + min/max desired-ready counts + per-template linger duration + per-template warm-pool size'
+    - |-
+      Two readiness tiers tracked per template:
+         - **available**: AVD/sim already created on disk, not booted (cheap to spin up)
+         - **running**: booted and idle, ready to hand off in ~milliseconds
+    - On startup, daemon reconciles the pool against desired counts — creates missing AVDs/sims, optionally pre-boots up to the configured `running` warm-pool size
+    - On `release`, the underlying sim/emu does NOT immediately tear down. The **server-side** linger period (configured per template in pool.yaml, with a global default override via env) keeps it in the `running` tier; if reservation comes back within the window, hand it off without re-boot. After linger expires, transition to `available` (shutdown but keep on disk) or destroy entirely if `available` count is at cap
+    - '**Client API stays minimal: reserve when you need a device, release when you don''t.** Linger, warm-pool size, mint vs. reuse, and shutdown decisions are all spyder''s. The client doesn''t have to think about lifecycle optimisation — spyder owns that based on host capacity and observed traffic patterns'
+    - 'Each sim/emu is cloned from a stock template so that two reservations of the same template get fully independent state (Android: AVD directory clone with new ports; iOS: fresh `simctl create` from the same device-type+runtime)'
+    - 'MCP/REST tools: `pool_list` (current state per template), `pool_warm <template>` (force pre-boot N), `pool_drain <template>` (shut down + delete idle members)'
+    - 'CLI: `spyder pool list|warm|drain`'
+    - 'Pool participates in fuzzy reservation (🎯T23): selector resolution prefers a `running` tier hit, then `available`, then mint-new'
+    - Physical devices are explicitly out of scope for the pool — they pass through to the existing reservation flow unchanged
+    - Pool state survives daemon restart (reconciliation re-walks the catalogue + the disk state)
+    context: |-
+      Without a pool, every sim/emu reservation pays full boot cost (30-90s for Android, 10-20s for iOS) and every release destroys state, repeating that cost on the next request. The pool amortises boot across many short reservations and lets test runs hand off devices in milliseconds.
+
+      Two readiness tiers are deliberate:
+      - **available** is cheap on disk (a few GB per AVD/sim) and requires only `boot` to use.
+      - **running** consumes RAM (1-2GB per emulator, 0.5-1GB per sim) and needs proactive management — the warm-pool size is a quality-of-service knob the user tunes per their host's headroom.
+
+      Linger-on-release is the magic: an iterating test loop (`run; release; run; release;`) shouldn't pay re-boot per cycle. 5 minutes is a reasonable default — long enough to absorb most edit-rerun cycles, short enough that an idle pool drains overnight.
+
+      Cloning is the mechanism for "two of the same":
+      - iOS: `simctl create` from a stock device-type+runtime is the native clone primitive. Cheap (~few seconds).
+      - Android: AVD directories are filesystem clones — `cp -r ~/.android/avd/<template>.avd ~/.android/avd/<template>-N.avd` plus a one-line edit to the .ini. Console/adb ports auto-allocate from the 5554+2N range (16-emulator default cap; document if a host needs more).
+
+      Depends on \ud83c\udfafT18 (lifecycle primitives) since pool actions are sequenced lifecycle calls. Pairs with \ud83c\udfafT23 (fuzzy reservation) — the pool is the substrate that makes selector resolution cheap.
+
+      Out of scope: cross-host pool sharing (a pool on Mac A serving requests from Mac B). The daemon is single-host by design.</context>
+      <parameter name="depends_on">["T18"]
+    tags:
+    - sim
+    - emu
+    - pool
+    - performance
+    - linger
+    origin: manual
+    discovered: 2026-04-19
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: achieved
