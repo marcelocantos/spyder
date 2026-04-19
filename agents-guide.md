@@ -115,6 +115,16 @@ everything it can see.
 | `baseline_update` | Store a new visual baseline for `suite/case/variant`. | Supply PNG via `screenshot_path` or `screenshot_base64`. Optional `manifest` JSON enables structural diffing. |
 | `diff` | Compare a candidate screenshot against the stored baseline. | Returns a structured JSON report with RMS pixel error, manifest structural diff (added/removed/moved elements with bounding boxes), and a `pass` verdict. Supply PNG via `screenshot_path` or `screenshot_base64`. |
 | `baselines_list` | List all baselines stored for a suite. | Read-only. Returns `[{case, variant, has_png, has_manifest}]`. |
+| `sim_list` | List all iOS simulators (UDID, name, state, runtime). Booted sims appear in `devices`. | `state` filter: `Booted`, `Shutdown`, etc. |
+| `sim_create` | Create a new iOS simulator; returns its UDID. | `{name, device_type_id, runtime_id}`. IDs from `xcrun simctl list devicetypes/runtimes --json`. |
+| `sim_boot` | Boot an iOS simulator by UDID. | `{udid}`. Sim appears in `devices` once booted. |
+| `sim_shutdown` | Shut down an iOS simulator by UDID. | `{udid}`. |
+| `sim_delete` | Delete an iOS simulator by UDID (must be shut down first). | `{udid}`. Irreversible. |
+| `emu_list` | List all Android Virtual Devices (name, path, target, ABI). Booted emus appear in `devices`. | Read-only. |
+| `emu_create` | Create a new Android AVD. | `{name, system_image, device_profile}`. System image must be pre-installed. |
+| `emu_boot` | Start an Android emulator (headless). Appears in `devices` once fully booted (~30–90 s). | `{name}`. Returns the serial once the process is launched. |
+| `emu_shutdown` | Shut down an Android emulator by serial (e.g. `emulator-5554`). | `{serial}`. Sends `adb emu kill`. |
+| `emu_delete` | Delete an AVD by name. | `{name}`. Irreversible. |
 
 ## Visual regression
 
@@ -271,6 +281,19 @@ spyder list-apps Pippa --json
 spyder release Pippa
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
+spyder sim list --json
+spyder sim list --state Booted
+spyder sim boot <udid>
+spyder sim shutdown <udid>
+spyder sim create MyPhone --type com.apple.CoreSimulator.SimDeviceType.iPhone-15 \
+  --runtime com.apple.CoreSimulator.SimRuntime.iOS-17-5
+spyder sim delete <udid>
+spyder emu list --json
+spyder emu boot Pixel6_API34
+spyder emu shutdown emulator-5554
+spyder emu create Pixel6_API34 \
+  --image 'system-images;android-34;google_apis;arm64-v8a' --device pixel_6
+spyder emu delete Pixel6_API34
 ```
 
 `--as OWNER` defaults to `filepath.Base(cwd)` (same convention as

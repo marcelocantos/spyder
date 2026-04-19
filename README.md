@@ -62,6 +62,9 @@ everything below plus gotchas, device-inventory format, and the full
 | `rotate` | Rotate an iOS simulator or Android emulator to portrait, landscape-left, landscape-right, or portrait-upside-down. Physical devices return an error. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
 | `runs_list` / `runs_show` | Inspect per-reservation artefact bundles under `~/.spyder/runs/`. |
+| `baseline_update` | Store a reference screenshot (and optional UI manifest) as a visual baseline. |
+| `diff` | Compare a candidate screenshot against the stored baseline. Returns pixel RMS error, manifest structural diff (added/removed/moved elements with bounding boxes), and a pass/fail verdict. |
+| `baselines_list` | List all stored baselines for a suite. |
 
 ## REST API
 
