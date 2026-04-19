@@ -6,7 +6,9 @@ package device
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -272,6 +274,277 @@ func (a *AndroidAdapter) TerminateApp(id, bundleID string) error {
 		return fmt.Errorf("adb force-stop: %v\n%s", err, truncate(string(stderr), 200))
 	}
 	return nil
+}
+
+// androidRotationValues maps canonical orientation names to the Android
+// user_rotation setting value. Android's user_rotation is a clockwise
+// rotation index: 0=portrait, 1=landscape-left (90° CW), 2=portrait-upside-down
+// (180°), 3=landscape-right (270° CW / 90° CCW).
+var androidRotationValues = map[string]int{
+	"portrait":             0,
+	"landscape-left":       1,
+	"portrait-upside-down": 2,
+	"landscape-right":      3,
+}
+
+// isEmulatorSerial returns true when serial matches the `emulator-*`
+// pattern that `adb devices` uses for running Android emulators.
+func isEmulatorSerial(serial string) bool {
+	return strings.HasPrefix(serial, "emulator-")
+}
+
+// androidCurrentRotation reads the emulator's current user_rotation
+// via `adb shell settings get system user_rotation`. Returns 0..3.
+func androidCurrentRotation(serial string) (int, error) {
+	out, stderr, err := runCapture("adb", "-s", serial, "shell", "settings", "get", "system", "user_rotation")
+	if err != nil {
+		return 0, fmt.Errorf("adb settings get user_rotation: %v\n%s", err, truncate(string(stderr), 160))
+	}
+	val, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("parse user_rotation %q: %w", strings.TrimSpace(string(out)), err)
+	}
+	return val, nil
+}
+
+// Rotate drives an Android emulator to the specified orientation by
+// reading its current rotation and issuing the required number of
+// `adb emu rotate` (90° CW) commands. Physical Android devices return
+// an error — only emulator serials (matching "emulator-*") are supported.
+func (a *AndroidAdapter) Rotate(id, orientation string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if !isEmulatorSerial(id) {
+		return errors.New("rotation on real Android devices is not supported; only Android emulators (serial prefix 'emulator-') support programmatic rotation")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	target, ok := androidRotationValues[orientation]
+	if !ok {
+		return fmt.Errorf("unsupported orientation %q; valid values: portrait, landscape-left, landscape-right, portrait-upside-down", orientation)
+	}
+	current, err := androidCurrentRotation(id)
+	if err != nil {
+		return fmt.Errorf("read current rotation: %w", err)
+	}
+	// adb emu rotate toggles 90° CW each call. Calculate how many rotations
+	// are needed to reach the target orientation from the current one.
+	steps := (target - current + 4) % 4
+	for range steps {
+		_, stderr, err := runCapture("adb", "-s", id, "emu", "rotate")
+		if err != nil {
+			return fmt.Errorf("adb emu rotate: %v\n%s", err, truncate(string(stderr), 160))
+		}
+	}
+	return nil
+}
+
+// Crashes fetches crash reports from an Android device. It first attempts
+// to pull tombstones from /data/tombstones/ via adb (root-capable devices
+// only). When that fails or returns nothing, it falls back to parsing
+// `adb logcat -b crash` output.
+//
+// The since filter is applied to tombstone mtimes (when available) and
+// to the logcat timestamp. The process filter matches the process tag
+// embedded in logcat lines. Reports are returned newest-first.
+func (a *AndroidAdapter) Crashes(id string, since time.Time, process string) ([]CrashReport, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return nil, fmt.Errorf("adb not found in PATH: %w", err)
+	}
+
+	// Attempt tombstone pull first.
+	reports, tombErr := androidTombstoneCrashes(id, since, process)
+	if tombErr == nil && len(reports) > 0 {
+		return reports, nil
+	}
+
+	// Fall back to logcat crash buffer.
+	return androidLogcatCrashes(id, since, process)
+}
+
+// androidTombstoneCrashes tries to pull tombstone files from
+// /data/tombstones/ via adb pull. Only works on rooted or
+// adb-root-enabled devices.
+func androidTombstoneCrashes(id string, since time.Time, process string) ([]CrashReport, error) {
+	tmp, err := os.MkdirTemp("", "spyder-tombstones-*")
+	if err != nil {
+		return nil, fmt.Errorf("temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	out, stderr, err := runCapture("adb", "-s", id, "pull", "/data/tombstones/.", tmp)
+	if err != nil {
+		// Not root or directory doesn't exist — expected on non-rooted devices.
+		return nil, fmt.Errorf("adb pull /data/tombstones: %v\n%s",
+			err, truncate(string(stderr)+string(out), 200))
+	}
+
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return nil, fmt.Errorf("read pulled tombstones: %w", err)
+	}
+
+	var reports []CrashReport
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fpath := filepath.Join(tmp, e.Name())
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		mtime := fi.ModTime().UTC()
+		if !since.IsZero() && mtime.Before(since) {
+			continue
+		}
+		data, err := os.ReadFile(fpath)
+		if err != nil {
+			continue
+		}
+		cr := parseTombstone(data, mtime, process)
+		if cr == nil {
+			continue
+		}
+		reports = append(reports, *cr)
+	}
+
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Timestamp.After(reports[j].Timestamp)
+	})
+	return reports, nil
+}
+
+// parseTombstone extracts a CrashReport from a tombstone file. Returns
+// nil when the process filter is set and the tombstone doesn't match.
+func parseTombstone(data []byte, mtime time.Time, processFilter string) *CrashReport {
+	cr := CrashReport{Timestamp: mtime, Raw: string(data)}
+	// Tombstone header lines look like:
+	//   pid: 1234, tid: 1234, name: my_process  >>> com.example.app <<<
+	// or just:
+	//   Cmd line: com.example.app
+	for _, line := range strings.SplitN(string(data), "\n", 30) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "pid:") {
+			// Extract name: field.
+			if i := strings.Index(line, "name: "); i >= 0 {
+				rest := line[i+len("name: "):]
+				if j := strings.Index(rest, " "); j > 0 {
+					cr.Process = rest[:j]
+				} else {
+					cr.Process = strings.TrimSpace(rest)
+				}
+			}
+		} else if strings.HasPrefix(line, "Cmd line:") {
+			cr.Process = strings.TrimSpace(strings.TrimPrefix(line, "Cmd line:"))
+		} else if strings.HasPrefix(line, "signal ") || strings.HasPrefix(line, "Abort message:") {
+			if cr.Reason == "" {
+				cr.Reason = line
+			}
+		}
+		if cr.Process != "" && cr.Reason != "" {
+			break
+		}
+	}
+
+	if processFilter != "" && !strings.EqualFold(cr.Process, processFilter) {
+		return nil
+	}
+	return &cr
+}
+
+// logcatCrashRE matches the start of an AndroidRuntime crash block:
+//
+//	MM-DD HH:MM:SS.mmm  PID  TID E AndroidRuntime: FATAL EXCEPTION: <thread>
+var logcatCrashRE = regexp.MustCompile(`^(\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\s+\d+\s+\d+\s+\w\s+(\S+)\s*:\s+(.*)`)
+
+// androidLogcatCrashes reads the crash logcat buffer and parses crash
+// blocks. When since is non-zero, it passes the timestamp to logcat via
+// -T; otherwise it reads the full crash buffer.
+func androidLogcatCrashes(id string, since time.Time, processFilter string) ([]CrashReport, error) {
+	args := []string{"-s", id, "logcat", "-b", "crash", "-d", "-v", "threadtime"}
+	if !since.IsZero() {
+		// adb logcat -T accepts "MM-DD HH:MM:SS.mmm" or a Unix timestamp.
+		args = append(args, "-T", since.Format("01-02 15:04:05.000"))
+	}
+	out, stderr, err := runCapture("adb", args...)
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return nil, fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("adb logcat: %v\n%s", err, truncate(string(stderr), 200))
+	}
+	return parseLogcatCrashBuffer(string(out), since, processFilter), nil
+}
+
+// parseLogcatCrashBuffer splits logcat output into per-process crash
+// blocks and returns one CrashReport per block.
+func parseLogcatCrashBuffer(output string, since time.Time, processFilter string) []CrashReport {
+	var reports []CrashReport
+	var curProc, curReason string
+	var curTS time.Time
+	var curLines []string
+
+	flush := func() {
+		if curProc == "" {
+			return
+		}
+		if processFilter != "" && !strings.EqualFold(curProc, processFilter) {
+			curProc, curReason, curTS, curLines = "", "", time.Time{}, nil
+			return
+		}
+		reports = append(reports, CrashReport{
+			Process:   curProc,
+			Reason:    curReason,
+			Timestamp: curTS,
+			Raw:       strings.Join(curLines, "\n"),
+		})
+		curProc, curReason, curTS, curLines = "", "", time.Time{}, nil
+	}
+
+	for _, line := range strings.Split(output, "\n") {
+		m := logcatCrashRE.FindStringSubmatch(line)
+		if m == nil {
+			if curProc != "" {
+				curLines = append(curLines, line)
+			}
+			continue
+		}
+		tsStr, tag, msg := m[1], m[2], m[3]
+		// Logcat timestamp has no year; assume current year.
+		ts, err := time.Parse("2006 01-02 15:04:05.000", fmt.Sprintf("%d %s", time.Now().Year(), tsStr))
+		if err != nil {
+			ts = time.Time{}
+		} else {
+			ts = ts.UTC()
+		}
+		if !since.IsZero() && !ts.IsZero() && ts.Before(since) {
+			continue
+		}
+		if strings.Contains(msg, "FATAL EXCEPTION") {
+			// A FATAL EXCEPTION line starts a new crash block.
+			flush()
+			curProc = tag
+			curTS = ts
+			curReason = msg
+			curLines = []string{line}
+		} else if curProc != "" {
+			// Continuation line within an open crash block.
+			curLines = append(curLines, line)
+		}
+	}
+	flush()
+
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Timestamp.After(reports[j].Timestamp)
+	})
+	return reports
 }
 
 // Screenshot captures a PNG via `adb shell screencap -p`. The subcommand

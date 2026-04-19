@@ -68,11 +68,15 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   list-apps     List installed third-party apps
   launch-app    Launch an app by bundle id (--as OWNER)
   terminate-app Terminate an app by bundle id (--as OWNER)
+  rotate        Rotate a simulator/emulator (--to <orientation>, --as OWNER)
   reserve       Acquire an exclusive lock (--as OWNER, --ttl SECONDS, --note)
   release       Release a reservation you hold (--as OWNER)
   renew         Extend a reservation you hold (--as OWNER, --ttl SECONDS)
   reservations  List all active reservations (--json)
   runs          Inspect run-artefact bundles (list|show|artefacts)
+  crashes       Fetch crash reports (--since RFC3339, --process NAME, --as OWNER, --json)
+  diff          Compare a screenshot against its stored baseline (--variant, --tolerance, --json)
+  baseline      Manage visual baselines; subcommand: update
 
 Serve:
   spyder serve [--addr :3030]

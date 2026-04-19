@@ -17,6 +17,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/simemu"
 )
 
 func requireString(args map[string]any, key string) (string, error) {
@@ -503,6 +504,228 @@ func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, er
 	default:
 		return nil, "", "", fmt.Errorf("inventory entry %q has unknown platform %q", ref, entry.Platform)
 	}
+}
+
+// --------------------------------------------------------------------------
+// iOS simulator tools
+// --------------------------------------------------------------------------
+
+// handleSimList lists all iOS simulators known to simctl, optionally
+// filtered by state ("Booted", "Shutdown", etc.). Also includes
+// available device types and runtimes when requested.
+func (h *Handler) handleSimList(args map[string]any) (*mcpgo.CallToolResult, error) {
+	state := optString(args, "state")
+	devices, err := simemu.SimList()
+	if err != nil {
+		return toolErr("sim_list: %v", err)
+	}
+	if state != "" {
+		filtered := devices[:0]
+		for _, d := range devices {
+			if d.State == state {
+				filtered = append(filtered, d)
+			}
+		}
+		devices = filtered
+	}
+	if devices == nil {
+		devices = []simemu.SimDevice{}
+	}
+	return toolJSON(devices)
+}
+
+func (h *Handler) handleSimCreate(args map[string]any) (*mcpgo.CallToolResult, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return nil, err
+	}
+	deviceTypeID, err := requireString(args, "device_type_id")
+	if err != nil {
+		return nil, err
+	}
+	runtimeID, err := requireString(args, "runtime_id")
+	if err != nil {
+		return nil, err
+	}
+	udid, err := simemu.SimCreate(name, deviceTypeID, runtimeID)
+	if err != nil {
+		return toolErr("sim_create: %v", err)
+	}
+	return toolJSON(map[string]string{"udid": udid, "name": name})
+}
+
+func (h *Handler) handleSimBoot(args map[string]any) (*mcpgo.CallToolResult, error) {
+	udid, err := requireString(args, "udid")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.SimBoot(udid); err != nil {
+		return toolErr("sim_boot: %v", err)
+	}
+	return toolText(fmt.Sprintf("simulator %s booted", udid))
+}
+
+func (h *Handler) handleSimShutdown(args map[string]any) (*mcpgo.CallToolResult, error) {
+	udid, err := requireString(args, "udid")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.SimShutdown(udid); err != nil {
+		return toolErr("sim_shutdown: %v", err)
+	}
+	return toolText(fmt.Sprintf("simulator %s shut down", udid))
+}
+
+func (h *Handler) handleSimDelete(args map[string]any) (*mcpgo.CallToolResult, error) {
+	udid, err := requireString(args, "udid")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.SimDelete(udid); err != nil {
+		return toolErr("sim_delete: %v", err)
+	}
+	return toolText(fmt.Sprintf("simulator %s deleted", udid))
+}
+
+// --------------------------------------------------------------------------
+// Android emulator tools
+// --------------------------------------------------------------------------
+
+func (h *Handler) handleEmuList(_ map[string]any) (*mcpgo.CallToolResult, error) {
+	avds, err := simemu.AVDList()
+	if err != nil {
+		return toolErr("emu_list: %v", err)
+	}
+	if avds == nil {
+		avds = []simemu.AVD{}
+	}
+	return toolJSON(avds)
+}
+
+func (h *Handler) handleEmuCreate(args map[string]any) (*mcpgo.CallToolResult, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return nil, err
+	}
+	systemImage, err := requireString(args, "system_image")
+	if err != nil {
+		return nil, err
+	}
+	deviceProfile, err := requireString(args, "device_profile")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.AVDCreate(name, systemImage, deviceProfile); err != nil {
+		return toolErr("emu_create: %v", err)
+	}
+	return toolText(fmt.Sprintf("AVD %q created", name))
+}
+
+func (h *Handler) handleEmuBoot(args map[string]any) (*mcpgo.CallToolResult, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return nil, err
+	}
+	msg, err := simemu.AVDBoot(name)
+	if err != nil {
+		return toolErr("emu_boot: %v", err)
+	}
+	return toolText(msg)
+}
+
+func (h *Handler) handleEmuShutdown(args map[string]any) (*mcpgo.CallToolResult, error) {
+	serial, err := requireString(args, "serial")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.AVDShutdown(serial); err != nil {
+		return toolErr("emu_shutdown: %v", err)
+	}
+	return toolText(fmt.Sprintf("emulator %s shut down", serial))
+}
+
+func (h *Handler) handleEmuDelete(args map[string]any) (*mcpgo.CallToolResult, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.AVDDelete(name); err != nil {
+		return toolErr("emu_delete: %v", err)
+	}
+	return toolText(fmt.Sprintf("AVD %q deleted", name))
+}
+
+func (h *Handler) handleRotate(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	orientation, err := requireString(args, "orientation")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := adapter.Rotate(id, orientation); err != nil {
+		return toolErr("rotate %s on %s: %v", orientation, dev, err)
+	}
+	return toolText(fmt.Sprintf("rotated %s to %s", dev, orientation))
+}
+
+// handleCrashes fetches crash reports from a device. Read-only; not
+// reservation-gated (same pattern as device_state). Optionally archives
+// reports into the active run when an owner is provided.
+func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	var since time.Time
+	if s := optString(args, "since"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return toolErr("since: invalid RFC3339 timestamp %q: %v", s, err)
+		}
+		since = t
+	}
+	process := optString(args, "process")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	reports, err := adapter.Crashes(id, since, process)
+	if err != nil {
+		return toolErr("crashes on %s: %v", dev, err)
+	}
+
+	// Optionally archive each pulled .ips report into the active run.
+	if h.runs != nil && owner != "" {
+		for _, r := range reports {
+			if r.Raw == "" {
+				continue
+			}
+			h.archiveArtefact(dev, owner, "crashes", "application/x-apple-crashreport", ".ips", []byte(r.Raw))
+		}
+	}
+
+	return toolJSON(reports)
 }
 
 // Compile-time assertion that errors package is imported (for build).

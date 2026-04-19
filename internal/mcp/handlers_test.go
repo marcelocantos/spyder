@@ -8,6 +8,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marcelocantos/spyder/internal/device"
 )
@@ -23,6 +24,8 @@ type stubAdapter struct {
 	listApps        func(id string) ([]device.AppInfo, error)
 	launchApp       func(id, bundle string) error
 	terminateApp    func(id, bundle string) error
+	rotate          func(id, orientation string) error
+	crashes         func(id string, since time.Time, process string) ([]device.CrashReport, error)
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -66,6 +69,18 @@ func (s *stubAdapter) TerminateApp(id, bundle string) error {
 		return nil
 	}
 	return s.terminateApp(id, bundle)
+}
+func (s *stubAdapter) Rotate(id, orientation string) error {
+	if s.rotate == nil {
+		return nil
+	}
+	return s.rotate(id, orientation)
+}
+func (s *stubAdapter) Crashes(id string, since time.Time, process string) ([]device.CrashReport, error) {
+	if s.crashes == nil {
+		return nil, nil
+	}
+	return s.crashes(id, since, process)
 }
 
 // stubTunneld is a TunneldGate with controllable Require behaviour.

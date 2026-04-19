@@ -22,6 +22,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/marcelocantos/spyder/internal/autoawake"
+	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
@@ -147,6 +148,13 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 			"removed", len(res.Removed), "retained", res.Retained)
 	}
 
+	blsStore, err := baselines.New(paths.BaselinesBase())
+	if err != nil {
+		slog.Warn("baselines store unavailable — visual-regression tools disabled",
+			"path", paths.BaselinesBase(), "error", err)
+		blsStore = nil
+	}
+
 	handlerOpts := []spydermcp.HandlerOption{
 		spydermcp.WithInventory(invStore),
 	}
@@ -155,6 +163,9 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 	}
 	if runsStore != nil {
 		handlerOpts = append(handlerOpts, spydermcp.WithRuns(runsStore))
+	}
+	if blsStore != nil {
+		handlerOpts = append(handlerOpts, spydermcp.WithBaselines(blsStore))
 	}
 	handler := spydermcp.NewHandler(tunClient, handlerOpts...)
 

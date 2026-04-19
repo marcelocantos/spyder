@@ -472,6 +472,267 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
+// iosSimOrientations maps canonical orientation names to the xcrun simctl
+// rotate argument. simctl uses camelCase orientation identifiers.
+var iosSimOrientations = map[string]string{
+	"portrait":             "portrait",
+	"landscape-left":       "landscapeLeft",
+	"landscape-right":      "landscapeRight",
+	"portrait-upside-down": "portraitUpsideDown",
+}
+
+// isSimulatorID returns true when id looks like an iOS simulator UUID
+// rather than a hardware device UDID.
+//
+// Hardware UDID format: exactly 8 hex + "-" + 16 hex, e.g.
+//
+//	00008103-000D39301A6A201E
+//
+// Simulator UUIDs follow the standard UUID4 shape (8-4-4-4-12 hex groups),
+// matching devicectl / xcrun simctl output, e.g.
+//
+//	C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8
+//
+// We detect the hardware pattern (single hyphen, groups of 8+16) and treat
+// everything else as a simulator candidate.
+func isSimulatorID(id string) bool {
+	// Hardware UDID: exactly one hyphen, 8 chars before and 16 after.
+	parts := strings.SplitN(id, "-", 2)
+	if len(parts) == 2 && len(parts[0]) == 8 && len(parts[1]) == 16 {
+		return false // physical device UDID
+	}
+	return true
+}
+
+// Rotate sets the screen orientation of an iOS simulator via
+// `xcrun simctl io <udid> rotate <orientation>`. Physical iOS devices
+// return an error — rotation requires physical movement and is not
+// programmatically supported.
+func (a *IOSAdapter) Rotate(id, orientation string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if !isSimulatorID(id) {
+		return errors.New("rotation on real iOS devices is not supported; only iOS simulators support programmatic rotation")
+	}
+	arg, ok := iosSimOrientations[orientation]
+	if !ok {
+		return fmt.Errorf("unsupported orientation %q; valid values: portrait, landscape-left, landscape-right, portrait-upside-down", orientation)
+	}
+	_, stderr, err := runCapture("xcrun", "simctl", "io", id, "rotate", arg)
+	if err != nil {
+		return fmt.Errorf("simctl rotate: %v\n%s", err, truncate(string(stderr), 240))
+	}
+	return nil
+}
+
+// Crashes fetches .ips crash reports from the device via
+// `pymobiledevice3 crash-reports pull`. Reports are filtered by the
+// timestamp embedded in the filename and optionally by process name.
+// Each .ips file's first line is a JSON header with structured metadata;
+// we parse it for the summary and include the full file content in Raw.
+// Reports are returned newest-first.
+func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]CrashReport, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("pymobiledevice3"); err != nil {
+		return nil, fmt.Errorf("pymobiledevice3 not found in PATH: %w", err)
+	}
+
+	// List available crash reports.
+	listOut, listStderr, listErr := runCapture("pymobiledevice3", "crash-reports", "list", "--udid", id)
+	if isDeviceNotConnected(string(listStderr)) {
+		return nil, fmt.Errorf("device not connected: %s", id)
+	}
+	if listErr != nil {
+		return nil, fmt.Errorf("crash-reports list: %v\n%s", listErr, truncate(string(listStderr), 200))
+	}
+
+	filenames, err := parseCrashReportList(listOut)
+	if err != nil {
+		return nil, fmt.Errorf("crash-reports list parse: %w", err)
+	}
+
+	// Filter by filename-embedded timestamp and optional process name.
+	var filtered []ipsFileMeta
+	for _, m := range filenames {
+		if !since.IsZero() && m.ts.Before(since) {
+			continue
+		}
+		if process != "" && !strings.EqualFold(m.process, process) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	if len(filtered) == 0 {
+		return []CrashReport{}, nil
+	}
+
+	// Pull reports into a temporary directory.
+	tmp, err := os.MkdirTemp("", "spyder-crashes-*")
+	if err != nil {
+		return nil, fmt.Errorf("temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	_, pullStderr, pullErr := runCapture("pymobiledevice3", "crash-reports", "pull", tmp, "--udid", id)
+	if pullErr != nil {
+		return nil, fmt.Errorf("crash-reports pull: %v\n%s", pullErr, truncate(string(pullStderr), 200))
+	}
+
+	var reports []CrashReport
+	for _, m := range filtered {
+		path := filepath.Join(tmp, m.filename)
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			// File may not be present if pull raced or the filter was
+			// approximate. Include a minimal record without raw content.
+			reports = append(reports, CrashReport{
+				Process:   m.process,
+				Timestamp: m.ts,
+			})
+			continue
+		}
+		cr := parseIPSReport(data, m)
+		reports = append(reports, cr)
+	}
+
+	// Sort newest-first.
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Timestamp.After(reports[j].Timestamp)
+	})
+	return reports, nil
+}
+
+// ipsFileMeta holds metadata extracted from a crash report filename.
+// iOS crash report names follow patterns such as:
+//
+//	<process>-<YYYY-MM-DD-HHmmss>[-<pid>].ips
+type ipsFileMeta struct {
+	filename string
+	process  string
+	ts       time.Time
+}
+
+// parseCrashReportList parses `pymobiledevice3 crash-reports list` output.
+// The command emits a JSON array of filename strings. Some versions emit
+// one filename per line instead; we handle both.
+func parseCrashReportList(data []byte) ([]ipsFileMeta, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal(data, &names); err != nil {
+		// Fall back to newline-delimited plain text.
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				names = append(names, line)
+			}
+		}
+	}
+	out := make([]ipsFileMeta, 0, len(names))
+	for _, name := range names {
+		out = append(out, parseIPSFilename(name))
+	}
+	return out, nil
+}
+
+// ipsTimestampFormats are the datetime patterns we try when parsing the
+// timestamp embedded in a crash report filename.
+var ipsTimestampFormats = []string{
+	"2006-01-02-150405",
+	"2006-01-02-150405-0700",
+}
+
+// parseIPSFilename extracts process name and timestamp from an .ips filename.
+// Returns zero time if no recognisable timestamp is found.
+func parseIPSFilename(name string) ipsFileMeta {
+	base := strings.TrimSuffix(filepath.Base(name), ".ips")
+	parts := strings.SplitN(base, "-", 2)
+	proc := parts[0]
+	// Strip any trailing underscore-separated token (some tools append uuid).
+	if i := strings.Index(proc, "_"); i > 0 {
+		proc = proc[:i]
+	}
+
+	var ts time.Time
+	if len(parts) > 1 {
+		suffix := parts[1]
+		for _, layout := range ipsTimestampFormats {
+			// Try the full suffix, then sub-segments separated by hyphens.
+			candidates := append([]string{suffix}, strings.Split(suffix, "-")...)
+			for _, c := range candidates {
+				if t, err := time.Parse(layout, c); err == nil {
+					ts = t.UTC()
+					break
+				}
+			}
+			if !ts.IsZero() {
+				break
+			}
+		}
+	}
+	return ipsFileMeta{filename: filepath.Base(name), process: proc, ts: ts}
+}
+
+// ipsHeader is the subset of .ips first-line JSON we care about.
+type ipsHeader struct {
+	ProcName      string `json:"procName"`
+	ProcessName   string `json:"process_name"`
+	CapturedTime  string `json:"captured_time"`
+	ExceptionType string `json:"exception_type"`
+	ExceptionInfo string `json:"exception_info"`
+}
+
+// parseIPSReport reads an .ips file, parses its first-line JSON header,
+// and returns a CrashReport. The full raw content is stored in Raw.
+func parseIPSReport(data []byte, meta ipsFileMeta) CrashReport {
+	cr := CrashReport{
+		Process:   meta.process,
+		Timestamp: meta.ts,
+		Raw:       string(data),
+	}
+
+	// The first line of an .ips file is a single JSON object.
+	firstLine := data
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		firstLine = data[:i]
+	}
+	var hdr ipsHeader
+	if err := json.Unmarshal(bytes.TrimSpace(firstLine), &hdr); err == nil {
+		if hdr.ProcName != "" {
+			cr.Process = hdr.ProcName
+		} else if hdr.ProcessName != "" {
+			cr.Process = hdr.ProcessName
+		}
+		if hdr.CapturedTime != "" {
+			for _, layout := range []string{
+				time.RFC3339,
+				"2006-01-02 15:04:05.000 -0700",
+				"2006-01-02T15:04:05Z",
+			} {
+				if t, err := time.Parse(layout, hdr.CapturedTime); err == nil {
+					cr.Timestamp = t.UTC()
+					break
+				}
+			}
+		}
+		reason := hdr.ExceptionType
+		if hdr.ExceptionInfo != "" {
+			if reason != "" {
+				reason += ": " + hdr.ExceptionInfo
+			} else {
+				reason = hdr.ExceptionInfo
+			}
+		}
+		cr.Reason = reason
+	}
+	return cr
+}
+
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.
 // The id may be the hardware UDID, CoreDevice UUID, device name, or any
 // other identifier `devicectl --device` accepts.
