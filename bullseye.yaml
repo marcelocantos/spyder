@@ -198,10 +198,11 @@ targets:
     achieved: 2026-04-19
   T12:
     name: Non-agent consumers (CLI, shell scripts, CI) can drive spyder via a REST API on the daemon, sharing the same reservation-authorised handlers as MCP
-    status: identified
+    status: achieved
     value: 13.0
     cost: 5.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - 'Daemon exposes REST endpoints on the same HTTP listener as /mcp covering: devices, resolve, device_state, screenshot, list_apps, launch_app, terminate_app, keepawake, reserve, release, renew, reservations'
     - REST handlers share the same authorization path as MCP (same Authorize() check on mutating ops; reservation state identical regardless of transport)
@@ -217,6 +218,7 @@ targets:
       Reservation semantics are already production-grade (file-backed, atomic-rename, TTL leases, owner-auth on mutations) — the hard part is done. This target is purely about transport.
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T13:
     name: Programmatic orientation control for iOS simulators and Android emulators
     status: identified
