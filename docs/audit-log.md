@@ -48,6 +48,22 @@ maintenance activities. Append-only — newest entries at the bottom.
   removal once the KeepAwake Xcode project is go:embedded into the
   binary. Published for darwin-arm64, linux-amd64, linux-arm64.
 
+## 2026-04-19 — /release v0.5.0
+
+- **PR**: #20 (parallel fan-out), plus direct retire/prep commits
+- **Outcome**: Large feature release — 9 targets shipped. Run-artefact
+  store (🎯T20) landed first; then 8 parallel Sonnet subagents shipped
+  🎯T13 (rotate), 🎯T14 (record), 🎯T15 (crashes), 🎯T16
+  (install/uninstall/deploy), 🎯T17 (network), 🎯T18 (sim/emu
+  lifecycle), 🎯T19 (logs + SSE live tail), and 🎯T21 (visual
+  regression MVP: pixel RMS + manifest diff; SSIM and VLM stubbed).
+  Added two design targets: 🎯T23 (fuzzy reservation via selector
+  predicates) and 🎯T24 (sim/emu pool with two readiness tiers and
+  server-owned linger-on-release). arm64-only host matrix; iOS
+  physical devices out of scope for rotate/record/network (errored
+  cleanly with structured messages). Published for darwin-arm64,
+  linux-amd64, linux-arm64.
+
 ## 2026-04-19 — /release v0.4.0
 
 - **Commit**: `d64b00e`
