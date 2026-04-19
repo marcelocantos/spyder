@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 )
 
 // --- newDevices seen-set logic ----------------------------------------
@@ -122,7 +123,137 @@ func TestFindKeepAwakeProject_WalkUp(t *testing.T) {
 	}
 }
 
+// --- summariseErr ------------------------------------------------------
+
+func TestSummariseErr_PrefersDvtException(t *testing.T) {
+	input := `dvt launch: exit status 1
+2026-04-18 21:52:56 colossus.lan pymobiledevice3.__main__[...] WARNING blah
+╭───── Traceback ─────╮
+│ some decorative box │
+╰─────────────────────╯
+DvtException: {'BSErrorCodeDescription': 'Locked', 'NSLocalizedFailureReason': 'foo'}`
+	err := errFromString(input)
+	got := summariseErr(err)
+	if got == "" || got == "dvt launch: exit status 1" {
+		t.Errorf("summariseErr should pick the DvtException line; got %q", got)
+	}
+	if !containsStr(got, "DvtException") {
+		t.Errorf("summariseErr output missing DvtException marker: %q", got)
+	}
+}
+
+func TestSummariseErr_FallsBackToFirstNonDecorative(t *testing.T) {
+	input := `dvt launch: exit status 1
+╭────╮
+│ ok │
+╰────╯`
+	got := summariseErr(errFromString(input))
+	// Shouldn't return empty; first non-decorative line is the first.
+	if got != "dvt launch: exit status 1" {
+		t.Errorf("summariseErr = %q; want first non-decorative line", got)
+	}
+}
+
+// --- aliasOf -----------------------------------------------------------
+
+func TestAliasOf_FromInventory(t *testing.T) {
+	// Set up a temp HOME with Pippa registered so inventory.AliasFor
+	// matches. Use the public New to exercise the production path.
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if err := os.MkdirAll(filepath.Join(tmp, ".spyder"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, ".spyder/inventory.json"),
+		[]byte(`[{"alias":"Pippa","platform":"ios","ios_uuid":"00008103-000D39301A6A201E"}]`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := New(nil) // tunneld nil; aliasOf doesn't use it
+	if got := s.aliasOf("00008103-000D39301A6A201E"); got != "Pippa" {
+		t.Errorf("aliasOf(Pippa UDID) = %q; want Pippa", got)
+	}
+}
+
+func TestAliasOf_UnknownShortens(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp) // no inventory file
+	s := New(nil)
+
+	if got := s.aliasOf("00008103-000D39301A6A201E"); got != "00008103…" {
+		t.Errorf("aliasOf(unknown long) = %q; want 00008103…", got)
+	}
+	// Shorter than the cutoff: passes through unchanged.
+	if got := s.aliasOf("short"); got != "short" {
+		t.Errorf("aliasOf(short) = %q; want short", got)
+	}
+}
+
+// --- findBuiltApp -----------------------------------------------------
+//
+// findBuiltApp globs DerivedData under $HOME. We can't easily feign a
+// full DerivedData layout, but we can override HOME and create the
+// expected subtree so the glob matches.
+
+func TestFindBuiltApp_PicksNewestMatch(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	// Create two candidate app dirs with different mtimes.
+	base := filepath.Join(tmp, "Library/Developer/Xcode/DerivedData")
+	old := filepath.Join(base, "KeepAwake-aaaa/Build/Products/Debug-iphoneos/KeepAwake.app")
+	fresh := filepath.Join(base, "KeepAwake-bbbb/Build/Products/Debug-iphoneos/KeepAwake.app")
+	if err := os.MkdirAll(old, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(fresh, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(old, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := findBuiltApp()
+	if err != nil {
+		t.Fatalf("findBuiltApp err = %v", err)
+	}
+	// Resolve symlinks because macOS /var is symlinked.
+	gotReal, _ := filepath.EvalSymlinks(got)
+	freshReal, _ := filepath.EvalSymlinks(fresh)
+	if gotReal != freshReal {
+		t.Errorf("findBuiltApp = %q; want newest %q", got, fresh)
+	}
+}
+
+func TestFindBuiltApp_NoMatches(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp) // empty DerivedData
+
+	_, err := findBuiltApp()
+	if err == nil {
+		t.Error("findBuiltApp with no matches returned nil err; want error")
+	}
+}
+
 // --- helpers -----------------------------------------------------------
+
+// errFromString returns an error whose Error() returns s. Used to
+// feed summariseErr the exact multi-line input we want to test.
+type stringError string
+
+func (s stringError) Error() string { return string(s) }
+
+func errFromString(s string) error { return stringError(s) }
+
+// containsStr is a tiny local helper (avoids another import).
+func containsStr(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
+}
 
 // chdir changes into dir for the duration of the test.
 func chdir(t *testing.T, dir string) {

@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -22,15 +23,58 @@ import (
 
 // Config configures a spyder server instance.
 type Config struct {
-	Addr        string // HTTP listen address (e.g. ":3030")
-	Version     string // emitted in serverInfo
-	TunneldAddr string // tunneld probe target (host:port; empty → DefaultAddr)
+	Addr             string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
+	Version          string // emitted in serverInfo
+	TunneldAddr      string // tunneld probe target (host:port; empty → DefaultAddr)
+	DisableAutoAwake bool   // tests set this to avoid the supervisor poking live tunneld
 }
 
 // Start creates the MCP server, registers all spyder tools, wraps it in
 // a streamable-HTTP transport, probes tunneld for observability, and
-// blocks serving on cfg.Addr.
+// blocks serving on cfg.Addr until a SIGINT/SIGTERM arrives.
 func Start(cfg Config) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	return Run(ctx, cfg)
+}
+
+// Run is Start's cancellable sibling: it returns when ctx is cancelled
+// (or the underlying HTTP server errors). Exposed for tests and for
+// embedders that want to own signal handling.
+func Run(ctx context.Context, cfg Config) error {
+	httpSrv, tunClient := Build(cfg)
+
+	if !cfg.DisableAutoAwake {
+		go autoawake.New(tunClient).Run(ctx)
+	}
+
+	slog.Info("spyder mcp server listening", "addr", cfg.Addr, "endpoint", "/mcp")
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- httpSrv.Start(cfg.Addr) }()
+
+	select {
+	case <-ctx.Done():
+		slog.Info("shutting down")
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		_ = httpSrv.Shutdown(shutdownCtx)
+		return nil
+	case err := <-errCh:
+		if err != nil {
+			return fmt.Errorf("http server: %w", err)
+		}
+		return nil
+	}
+}
+
+// Build wires up the MCP server and the streamable-HTTP handler
+// without starting a listener or the autoawake supervisor. Tests
+// (and embedders) can compose this with their own transport.
+//
+// The returned StreamableHTTPServer is a drop-in http.Handler via
+// its ServeHTTP method, suitable for httptest.NewServer.
+func Build(cfg Config) (*server.StreamableHTTPServer, *tunneld.Client) {
 	tunneldAddr := cfg.TunneldAddr
 	if tunneldAddr == "" {
 		tunneldAddr = tunneld.DefaultAddr
@@ -58,26 +102,5 @@ func Start(cfg Config) error {
 		})
 	}
 
-	// Auto-awake supervisor: watches tunneld for iOS devices and
-	// ensures KeepAwake is running on each. Exits when ctx is done.
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
-	go autoawake.New(tunClient).Run(ctx)
-
-	slog.Info("spyder mcp server listening", "addr", cfg.Addr, "endpoint", "/mcp")
-
-	http := server.NewStreamableHTTPServer(srv)
-	errCh := make(chan error, 1)
-	go func() { errCh <- http.Start(cfg.Addr) }()
-
-	select {
-	case <-ctx.Done():
-		slog.Info("shutting down")
-		return nil
-	case err := <-errCh:
-		if err != nil {
-			return fmt.Errorf("http server: %w", err)
-		}
-		return nil
-	}
+	return server.NewStreamableHTTPServer(srv), tunClient
 }
