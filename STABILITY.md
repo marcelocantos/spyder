@@ -41,6 +41,16 @@ Snapshot as of `v0.4.0`.
 | `reservations` | (no args). | JSON array of active `Reservation` records. | Stable |
 | `runs_list` | (no args). | JSON array of `runs.Run` records (id, device, owner, note, created_at, closed_at?, artefacts?), newest first. | Needs review — field additions expected as more artefact-producing tools land |
 | `runs_show` | `{run_id: string}`. | JSON-encoded `runs.Run` with full artefact list. | Needs review — same caveat as `runs_list` |
+| `sim_list` | `{state?: string}`. | JSON array of `simemu.SimDevice` (`udid`, `name`, `state`, `runtimeID`). | Needs review |
+| `sim_create` | `{name: string, device_type_id: string, runtime_id: string}`. | JSON `{udid, name}`. | Needs review |
+| `sim_boot` | `{udid: string}`. | Text confirmation. | Needs review |
+| `sim_shutdown` | `{udid: string}`. | Text confirmation. | Needs review |
+| `sim_delete` | `{udid: string}`. | Text confirmation. | Needs review |
+| `emu_list` | (no args). | JSON array of `simemu.AVD` (`name`, `path?`, `target?`, `abi?`). | Needs review |
+| `emu_create` | `{name: string, system_image: string, device_profile: string}`. | Text confirmation. | Needs review |
+| `emu_boot` | `{name: string}`. | Text (serial visible in `adb devices` once booted). | Needs review |
+| `emu_shutdown` | `{serial: string}`. | Text confirmation. | Needs review |
+| `emu_delete` | `{name: string}`. | Text confirmation. | Needs review |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -72,6 +82,16 @@ can match on these phrases.
 | `spyder runs list [--json]` | REST proxy to `runs_list`. | Needs review |
 | `spyder runs show <run-id> [--json]` | REST proxy to `runs_show`. | Needs review |
 | `spyder runs artefacts <run-id> [--json]` | REST proxy to `runs_show`; prints just the artefacts table. | Needs review |
+| `spyder sim list [--state STATE] [--json]` | REST proxy to `sim_list`. | Needs review |
+| `spyder sim create <name> --type <id> --runtime <id>` | REST proxy to `sim_create`. | Needs review |
+| `spyder sim boot <udid>` | REST proxy to `sim_boot`. | Needs review |
+| `spyder sim shutdown <udid>` | REST proxy to `sim_shutdown`. | Needs review |
+| `spyder sim delete <udid>` | REST proxy to `sim_delete`. | Needs review |
+| `spyder emu list [--json]` | REST proxy to `emu_list`. | Needs review |
+| `spyder emu create <name> --image <pkg> --device <profile>` | REST proxy to `emu_create`. | Needs review |
+| `spyder emu boot <name>` | REST proxy to `emu_boot`. | Needs review |
+| `spyder emu shutdown <serial>` | REST proxy to `emu_shutdown`. | Needs review |
+| `spyder emu delete <name>` | REST proxy to `emu_delete`. | Needs review |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block

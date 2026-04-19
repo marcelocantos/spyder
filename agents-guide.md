@@ -111,6 +111,54 @@ everything it can see.
 | `reservations` | List active reservations. | Read-only. |
 | `runs_list` | List run-artefact bundles under `~/.spyder/runs/`, newest first. | Read-only. |
 | `runs_show` | Return a single run's full manifest (device, owner, timestamps, artefacts). | Read-only. `{run_id}`. |
+| `sim_list` | List all iOS simulators (UDID, name, state, runtime). Booted sims appear in `devices`. | `state` filter: `Booted`, `Shutdown`, etc. |
+| `sim_create` | Create a new iOS simulator; returns its UDID. | `{name, device_type_id, runtime_id}`. IDs from `xcrun simctl list devicetypes/runtimes --json`. |
+| `sim_boot` | Boot an iOS simulator by UDID. | `{udid}`. Sim appears in `devices` once booted. |
+| `sim_shutdown` | Shut down an iOS simulator by UDID. | `{udid}`. |
+| `sim_delete` | Delete an iOS simulator by UDID (must be shut down first). | `{udid}`. Irreversible. |
+| `emu_list` | List all Android Virtual Devices (name, path, target, ABI). Booted emus appear in `devices`. | Read-only. |
+| `emu_create` | Create a new Android AVD. | `{name, system_image, device_profile}`. System image must be pre-installed. |
+| `emu_boot` | Start an Android emulator (headless). Appears in `devices` once fully booted (~30–90 s). | `{name}`. |
+| `emu_shutdown` | Shut down an Android emulator by serial (e.g. `emulator-5554`). | `{serial}`. Sends `adb emu kill`. |
+| `emu_delete` | Delete an AVD by name. | `{name}`. Irreversible. |
+
+## Simulator and emulator lifecycle
+
+iOS simulators and Android emulators are managed through `sim_*` and `emu_*` tools. Booted simulators and running emulators appear automatically in `spyder devices` output.
+
+### iOS simulators
+
+```bash
+spyder sim list
+spyder sim list --state Booted --json
+spyder sim create MyPhone \
+  --type com.apple.CoreSimulator.SimDeviceType.iPhone-15 \
+  --runtime com.apple.CoreSimulator.SimRuntime.iOS-17-5
+spyder sim boot <udid>
+spyder sim shutdown <udid>
+spyder sim delete <udid>
+```
+
+### Android emulators
+
+```bash
+spyder emu list --json
+spyder emu create Pixel6_API34 \
+  --image 'system-images;android-34;google_apis;arm64-v8a' --device pixel_6
+spyder emu boot Pixel6_API34
+spyder emu shutdown emulator-5554
+spyder emu delete Pixel6_API34
+```
+
+### Boot-on-demand policy
+
+Reservations may be acquired on a sim/emu name before it is booted — the reservation is a named hold only; spyder does not enforce that the device is currently running. Boot-on-demand pattern:
+
+1. `reserve` the sim/emu identifier (alias or UDID/serial).
+2. `sim_boot` or `emu_boot` to start it.
+3. Wait for it to appear in `devices` (simulators: immediate; emulators: poll ~30–90 s).
+4. Use the live UDID/serial for test operations.
+5. `release` when done (optionally shut down first).
 
 ## Reservations
 
@@ -201,6 +249,11 @@ spyder list-apps Pippa --json
 spyder release Pippa
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
+spyder sim list --json
+spyder sim boot <udid>
+spyder emu list --json
+spyder emu boot Pixel6_API34
+spyder emu shutdown emulator-5554
 ```
 
 `--as OWNER` defaults to `filepath.Base(cwd)` (same convention as
