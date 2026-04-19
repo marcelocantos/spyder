@@ -45,6 +45,16 @@ Snapshot as of `v0.4.0`.
 | `baseline_update` | `{suite, case, variant?, screenshot_path?, screenshot_base64?, manifest?}`. One of screenshot_path/base64 required. | Text confirmation. | Needs review — variant convention and manifest schema v1 may gain fields |
 | `diff` | `{suite, case, variant?, screenshot_path?, screenshot_base64?, manifest?, pixel_tolerance?, owner?, device?}`. | JSON-encoded `visualdiff.Report`. | Needs review — SSIM stubbed (NaN); VLM interface unimplemented; report shape expected to gain fields |
 | `baselines_list` | `{suite: string}`. | JSON array of `{case, variant, has_png, has_manifest}`. | Needs review |
+| `sim_list` | `{state?: string}`. | JSON array of `simemu.SimDevice` (`udid`, `name`, `state`, `runtimeID`). | Needs review |
+| `sim_create` | `{name: string, device_type_id: string, runtime_id: string}`. | JSON `{udid, name}`. | Needs review |
+| `sim_boot` | `{udid: string}`. | Text confirmation. | Needs review |
+| `sim_shutdown` | `{udid: string}`. | Text confirmation. | Needs review |
+| `sim_delete` | `{udid: string}`. | Text confirmation. | Needs review |
+| `emu_list` | (no args). | JSON array of `simemu.AVD` (`name`, `path?`, `target?`, `abi?`). | Needs review |
+| `emu_create` | `{name: string, system_image: string, device_profile: string}`. | Text confirmation. | Needs review |
+| `emu_boot` | `{name: string}`. | Text (serial visible in `adb devices` once booted). | Needs review |
+| `emu_shutdown` | `{serial: string}`. | Text confirmation. | Needs review |
+| `emu_delete` | `{name: string}`. | Text confirmation. | Needs review |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -77,6 +87,8 @@ can match on these phrases.
 | `spyder runs show <run-id> [--json]` | REST proxy to `runs_show`. | Needs review |
 | `spyder runs artefacts <run-id> [--json]` | REST proxy to `runs_show`; prints just the artefacts table. | Needs review |
 | `spyder rotate <device> --to <orientation> [--as OWNER]` | REST proxy to `rotate`. Orientation: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. | Needs review |
+| `spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]` | REST proxy to `diff`. Exits 0 on pass, 1 on fail. | Needs review |
+| `spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]` | REST proxy to `baseline_update`. | Needs review |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
@@ -172,6 +184,45 @@ Retention is enforced on daemon startup. Configurable via environment:
 
 Open runs are never pruned — they represent in-flight reservations.
 **Needs review** — schema may gain fields as more artefact tools land.
+
+### Baseline store
+
+Path: `~/.spyder/baselines/<suite>/<variant>/<case>.{png,manifest.json}`.
+
+A variant key encodes per-device / per-orientation context as a URL-safe
+string, e.g. `pippa-landscape`. The store is opaque to the key's content.
+Writes are atomic (write-to-temp then rename).
+
+Diff report shape (`visualdiff.Report`):
+
+```json
+{
+  "tier": "manifest+pixel | manifest | pixel",
+  "pixel": {
+    "rms_error": 0.003,
+    "ssim_score": "NaN (stubbed in v1)",
+    "ssim_note": "not implemented in v1",
+    "size_mismatch": false,
+    "width": 390,
+    "height": 844
+  },
+  "manifest_diff": {
+    "added": ["id/of/new/element"],
+    "removed": [],
+    "moved": [{"id": "…", "from": [x,y,w,h], "to": [x,y,w,h]}],
+    "attr_changed": [{"id": "…", "from": {}, "to": {}}],
+    "kind_changed": [],
+    "unchanged": 12
+  },
+  "regions": [{"label": "added:…", "bbox": [x,y,w,h]}],
+  "vlm_summary": "",
+  "pass": true,
+  "pixel_tolerance": 0.01
+}
+```
+
+**Needs review** — SSIM is stubbed (NaN); VLM interface defined but unimplemented;
+manifest schema v1 may gain fields in later tiers.
 
 ### Version macro
 
