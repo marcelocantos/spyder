@@ -56,6 +56,7 @@ func init() {
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
+		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
 	}
 }
 
@@ -500,6 +501,35 @@ func runReservations(args []string) {
 		fatalUsage("reservations", err)
 	}
 	dispatchAndExit("reservations", map[string]any{}, pf.bools["--json"])
+}
+
+func runNet(args []string) {
+	pf, err := parseFlags(args, []string{"--profile", "--as"}, []string{"--clear"})
+	if err != nil {
+		fatalUsage("net", err)
+	}
+	requirePositional("net", pf, 1)
+	dev := pf.positional[0]
+	profile := pf.flags["--profile"]
+	clear := pf.bools["--clear"]
+
+	if profile == "" && !clear {
+		fatalUsage("net", fmt.Errorf("supply --profile NAME or --clear"))
+	}
+	if profile != "" && clear {
+		fatalUsage("net", fmt.Errorf("--profile and --clear are mutually exclusive"))
+	}
+
+	a := map[string]any{
+		"device": dev,
+		"owner":  deriveOwner(pf.flags["--as"]),
+	}
+	if clear {
+		a["clear"] = true
+	} else {
+		a["profile"] = profile
+	}
+	dispatchAndExit("network", a, false)
 }
 
 // --- helpers --------------------------------------------------------

@@ -6,6 +6,8 @@
 // (pymobiledevice3, devicectl, adb).
 package device
 
+import "github.com/marcelocantos/spyder/internal/network"
+
 // Info summarises a single connected device.
 type Info struct {
 	UUID     string `json:"uuid"`
@@ -63,4 +65,17 @@ type Adapter interface {
 	// tunneld (dvt process-id-for-bundle-id + kill); Android uses
 	// adb am force-stop.
 	TerminateApp(id, bundleID string) error
+
+	// ApplyNetwork shapes network conditions on the device according to
+	// profile. Support varies by platform:
+	//   - Android emulator: applied via "adb emu network speed/delay".
+	//   - iOS simulator: not yet implemented; returns a clear error.
+	//   - Physical devices (iOS or Android): not supported; returns a
+	//     clear error explaining the limitation.
+	ApplyNetwork(id string, profile network.NetworkProfile) error
+
+	// ClearNetwork removes any previously applied network shaping and
+	// restores full-speed connectivity. Support varies by platform in
+	// the same way as ApplyNetwork.
+	ClearNetwork(id string) error
 }

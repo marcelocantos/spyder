@@ -60,6 +60,7 @@ everything below plus gotchas, device-inventory format, and the full
 | `launch_app` | Foreground an arbitrary app by bundle id. |
 | `terminate_app` | Stop an app by bundle id. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
+| `network` | Apply or clear network condition shaping. Android emulators only — see STABILITY.md for platform limits. |
 
 ## REST API
 

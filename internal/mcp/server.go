@@ -15,8 +15,16 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/reservations"
 )
+
+// appliedNetwork tracks a network profile applied to a device by a
+// specific owner, so it can be cleared automatically on reservation release.
+type appliedNetwork struct {
+	profile network.NetworkProfile
+	owner   string
+}
 
 // Handler implements the spyder tool handler.
 type Handler struct {
@@ -26,6 +34,11 @@ type Handler struct {
 	android      device.Adapter
 	tunneld      TunneldGate
 	reservations *reservations.Store
+
+	// networkByDevice maps a normalised device reference to the most
+	// recently applied network profile for that device. Cleared when
+	// the owning reservation is released.
+	networkByDevice map[string]appliedNetwork
 }
 
 // TunneldGate is satisfied by *tunneld.Client. The small interface lets
@@ -57,10 +70,11 @@ func WithInventory(inv *inventory.Store) HandlerOption {
 // need it will return a clear error when tun is missing.
 func NewHandler(tun TunneldGate, opts ...HandlerOption) *Handler {
 	h := &Handler{
-		inventory: inventory.New(),
-		ios:       device.NewIOSAdapter(),
-		android:   device.NewAndroidAdapter(),
-		tunneld:   tun,
+		inventory:       inventory.New(),
+		ios:             device.NewIOSAdapter(),
+		android:         device.NewAndroidAdapter(),
+		tunneld:         tun,
+		networkByDevice: map[string]appliedNetwork{},
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -95,6 +109,8 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleRenew(args)
 	case "reservations":
 		return h.handleReservations(args)
+	case "network":
+		return h.handleNetwork(args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -233,6 +249,36 @@ func Definitions() []mcpgo.Tool {
 
 		mcpgo.NewTool("reservations",
 			mcpgo.WithDescription("List all active reservations across all devices. Read-only."),
+		),
+
+		mcpgo.NewTool("network",
+			mcpgo.WithDescription(
+				"Apply or clear network condition shaping on a device. "+
+					"Supported on Android emulators via the adb console. "+
+					"iOS (simulator and physical) and physical Android devices are not supported — "+
+					"a clear error is returned for those targets.\n\n"+
+					"Named profiles: wifi (full-speed), 4g, 3g, edge, gsm, offline.\n"+
+					"Dynamic profiles: lossy-<pct> (0–100% packet loss), delay-<ms> (extra one-way latency).\n\n"+
+					"NOTE — packet loss (lossy-<pct>) is not implemented by the adb console protocol. "+
+					"The profile is partially applied (speed/delay) and an error is returned describing the gap.\n\n"+
+					"Applied profiles are cleared automatically when the reservation for the device is released. "+
+					"If the daemon exits abnormally before a release, the emulator retains the last applied profile "+
+					"until the next ApplyNetwork or ClearNetwork call, or the emulator is restarted.",
+			),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Required(),
+				mcpgo.Description("Reservation owner to authenticate as"),
+			),
+			mcpgo.WithString("profile",
+				mcpgo.Description("Network profile to apply: wifi, 4g, 3g, edge, gsm, offline, lossy-<pct>, delay-<ms>. Mutually exclusive with clear."),
+			),
+			mcpgo.WithBoolean("clear",
+				mcpgo.Description("If true, clear the applied profile and restore full-speed connectivity. Mutually exclusive with profile."),
+			),
 		),
 	}
 }

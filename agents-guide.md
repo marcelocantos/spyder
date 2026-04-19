@@ -106,9 +106,10 @@ everything it can see.
 | `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses DVT launch (needs tunneld); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
 | `reserve` | Acquire an exclusive device hold. | `{device, owner, ttl_seconds?, note?}`. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. |
-| `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. |
+| `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Any applied network profile is cleared automatically. |
 | `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
 | `reservations` | List active reservations. | Read-only. |
+| `network` | Apply or clear network condition shaping. | `{device, owner, profile?}` or `{device, owner, clear:true}`. Android emulators only — see gotchas below. |
 
 ## Reservations
 
@@ -134,6 +135,76 @@ To pass owner-authentication on a mutating call while someone else holds
 the device, pass `"owner": "<your-owner>"` in the arguments map. The
 server resolves canonical identity via the inventory, so reserving
 "Pippa" also blocks operations on her raw UDID and vice versa.
+
+## Network condition shaping
+
+The `network` tool applies named network profiles to emulators for
+streaming-protocol testing (adaptive bitrate, reconnection, loss recovery).
+
+### Supported platforms
+
+| Platform | Support | Notes |
+|---|---|---|
+| Android emulator (avd) | Full (speed + delay) | Via `adb emu network speed/delay`. |
+| Android physical device | Not supported | adb console commands are emulator-only. |
+| iOS simulator | Not supported | No public CLI for Link Conditioner. Contributions welcome. |
+| iOS physical device | Not supported | No remote interface to Developer Settings. |
+
+### Named profiles
+
+| Profile | Up kbps | Down kbps | Delay ms | Notes |
+|---|---|---|---|---|
+| `wifi` | unlimited | unlimited | 0 | Full speed — removes any applied throttle. |
+| `4g` | 5760 | 14400 | 20 | HSPA+ class. adb keyword: `hsdpa`. |
+| `3g` | 384 | 2000 | 100 | UMTS class. adb keyword: `umts`. |
+| `edge` | 128 | 384 | 400 | EDGE/2.75G. adb keyword: `edge`. |
+| `gsm` | 40 | 114 | 600 | GPRS. adb keyword: `gprs`. |
+| `offline` | 0 | 0 | — | No connectivity (speed=0). |
+| `lossy-<pct>` | unlimited | unlimited | 0 | **Partial** — speed/delay only; loss not implemented by adb console. Error returned. |
+| `delay-<ms>` | unlimited | unlimited | `<ms>` | Extra one-way latency only. |
+
+### Usage
+
+```json
+// Apply a profile
+{"name": "network", "arguments": {"device": "Pixel8", "owner": "myagent", "profile": "3g"}}
+
+// Clear — restore full speed
+{"name": "network", "arguments": {"device": "Pixel8", "owner": "myagent", "clear": true}}
+```
+
+CLI equivalent:
+
+```bash
+spyder net Pixel8 --profile 3g --as myagent
+spyder net Pixel8 --clear --as myagent
+```
+
+### Automatic cleanup on release
+
+When a reservation is released (via `release` or `spyder run` exit), spyder
+attempts to clear any network profile applied by the same owner. This is
+best-effort: if the daemon exits abnormally before the release call, the
+emulator retains the last applied profile until the next explicit `clear`,
+the next `spyder serve` session that clears it, or the emulator is restarted.
+Always prefer a `clear` or `release` call to clean up rather than relying on
+daemon restart.
+
+### Common gotchas
+
+- **Android physical device gets "KO: not supported"** → `adb emu network`
+  commands go through the emulator's control socket. Physical devices don't
+  expose one; use Android Studio's network profiler or a host-level traffic
+  shaper (`tc`, `dummynet`, `Charles Proxy`) for real hardware.
+- **iOS simulator returns "not yet implemented"** → correct and intentional.
+  Link Conditioner is macOS-host-level (affects all traffic), not per-simulator.
+  A per-simulator shaping solution would need private CoreSimulator APIs.
+  PRs welcome.
+- **`lossy-<pct>` profile returns an error** → partially applied (speed/delay
+  set correctly) but the adb emulator console has no packet-loss knob. Use
+  a host-level traffic shaper for loss simulation on Android.
+- **Profile persists after daemon crash** → the emulator is stateful; clear
+  manually via `spyder net <device> --clear` after restarting the daemon.
 
 ## REST API and CLI subcommands
 

@@ -36,9 +36,10 @@ Snapshot as of `v0.4.0`.
 | `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `reserve` | `{device: string, owner: string, ttl_seconds?: number, note?: string}` (device and owner required). | JSON-encoded `reservations.Reservation` (device, owner, expires_at, note, created_at). | Stable |
-| `release` | `{device: string, owner: string}`. | Text confirmation. | Stable |
+| `release` | `{device: string, owner: string}`. | Text confirmation. Applied network profiles cleared automatically. | Stable |
 | `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
 | `reservations` | (no args). | JSON array of active `Reservation` records. | Stable |
+| `network` | `{device: string, owner: string, profile?: string}` or `{device: string, owner: string, clear: true}`. Exactly one of profile or clear required. | Text confirmation. | Beta — Android emulator only; iOS and physical Android return clear errors. |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -67,6 +68,7 @@ can match on these phrases.
 | `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
 | `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |
 | `spyder reservations [--json]` | REST proxy to `reservations`. | Stable |
+| `spyder net <device> [--profile NAME\|--clear] [--as OWNER]` | REST proxy to `network`. Requires exactly one of `--profile` or `--clear`. | Beta — Android emulator only. |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
@@ -183,6 +185,20 @@ builds. **Stable.**
 - **Rate-limiting / retry policy.** Auto-awake retries lock failures every
   10 s for up to 5 minutes. Not user-configurable. Fine for v0.x but should
   surface a knob before 1.0.
+- **Network shaping for iOS simulator.** `network` returns an error on iOS
+  simulator and physical devices. Apple's Link Conditioner is host-level (not
+  per-simulator); driving it via a CLI requires private CoreSimulator APIs.
+  Contributions that implement per-simulator shaping via future `simctl`
+  flags or the private framework are welcome.
+- **Packet-loss emulation on Android.** The `lossy-<pct>` profile partially
+  applies (speed/delay are set) but the adb emulator console has no loss knob.
+  Host-level traffic shapers (`tc`, `dummynet`) or Android Studio's network
+  profiler are alternatives.
+- **Network profile persistence across daemon restarts.** Applied profiles are
+  tracked in-memory only. If the daemon crashes before `release` fires the
+  cleanup, the emulator retains its last profile until an explicit `clear` or
+  emulator restart. A future version may persist the active profile to disk
+  (alongside `reservations.json`) to enable cleanup on daemon restart.
 - **`HOMEBREW_TAP_TOKEN` per-repo setup.** Not a stability issue but worth
   noting: each new repo needs the token set, documented in the release
   skill.

@@ -71,6 +71,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   release       Release a reservation you hold (--as OWNER)
   renew         Extend a reservation you hold (--as OWNER, --ttl SECONDS)
   reservations  List all active reservations (--json)
+  net           Apply or clear network conditions (--profile NAME | --clear, --as OWNER)
 
 Serve:
   spyder serve [--addr :3030]
