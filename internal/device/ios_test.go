@@ -153,6 +153,158 @@ func TestTailTruncate(t *testing.T) {
 	}
 }
 
+func TestParseUsbmuxList(t *testing.T) {
+	data := []byte(`[
+		{
+			"UniqueDeviceID": "00008103-000D39301A6A201E",
+			"DeviceName": "Pippa",
+			"DeviceClass": "iPad",
+			"ProductType": "iPad13,16",
+			"ProductVersion": "26.3.1"
+		},
+		{
+			"UniqueDeviceID": "00008110-0014182E0AC2801E",
+			"DeviceName": "Minicades Test iPhone",
+			"ProductType": "iPhone14,5",
+			"ProductVersion": "26.2"
+		}
+	]`)
+	got, err := parseUsbmuxList(data)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d devices; want 2", len(got))
+	}
+	if got[0].UUID != "00008103-000D39301A6A201E" || got[0].Name != "Pippa" ||
+		got[0].Model != "iPad13,16" || got[0].OS != "iOS 26.3.1" || got[0].Platform != "ios" {
+		t.Errorf("device 0: %+v", got[0])
+	}
+	if got[1].Name != "Minicades Test iPhone" {
+		t.Errorf("device 1 Name = %q", got[1].Name)
+	}
+}
+
+func TestParseUsbmuxList_Empty(t *testing.T) {
+	got, err := parseUsbmuxList([]byte(`[]`))
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("got %d; want 0", len(got))
+	}
+}
+
+func TestParseUsbmuxList_BadJSON(t *testing.T) {
+	_, err := parseUsbmuxList([]byte(`not json`))
+	if err == nil {
+		t.Error("want error on bad JSON")
+	}
+}
+
+func TestParseDevicectlList(t *testing.T) {
+	data := []byte(`{
+		"info": {"outcome": "success"},
+		"result": {
+			"devices": [
+				{
+					"identifier": "E1A01EA6-8D77-556C-B18D-D470B2909E87",
+					"hardwareProperties": {
+						"udid": "00008103-000D39301A6A201E",
+						"marketingName": "iPad Air (5th generation)",
+						"productType": "iPad13,16"
+					},
+					"deviceProperties": {
+						"name": "Pippa",
+						"osVersionNumber": "26.3.1"
+					}
+				},
+				{
+					"identifier": "CD2E3380-F1AB-5D03-BBA8-E5A68ADB3261",
+					"hardwareProperties": {
+						"udid": "00008110-0014182E0AC2801E",
+						"marketingName": "iPhone 13"
+					},
+					"deviceProperties": {
+						"name": "Minicades Test iPhone",
+						"osVersionNumber": "26.2"
+					}
+				}
+			]
+		}
+	}`)
+	got, err := parseDevicectlList(data)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d; want 2", len(got))
+	}
+	if got[0].UUID != "00008103-000D39301A6A201E" {
+		t.Errorf("UDID preferred over CoreDevice UUID: %q", got[0].UUID)
+	}
+	if got[0].Model != "iPad Air (5th generation)" {
+		t.Errorf("Model = %q; want marketingName", got[0].Model)
+	}
+	if got[0].OS != "iOS 26.3.1" {
+		t.Errorf("OS = %q", got[0].OS)
+	}
+}
+
+func TestParseDevicectlList_MarketingNameFallback(t *testing.T) {
+	// When marketingName is absent, productType is used as Model.
+	data := []byte(`{"result": {"devices": [{"hardwareProperties": {"udid": "XXXX", "productType": "iPad16,1"}, "deviceProperties": {"name": "Foo"}}]}}`)
+	got, err := parseDevicectlList(data)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got[0].Model != "iPad16,1" {
+		t.Errorf("Model = %q; want iPad16,1 fallback", got[0].Model)
+	}
+}
+
+func TestParseDevicectlList_UDIDFallbackToIdentifier(t *testing.T) {
+	// When hardwareProperties.udid is absent, fall back to the
+	// CoreDevice identifier (at least we have *some* stable key).
+	data := []byte(`{"result": {"devices": [{"identifier": "CORE-UUID-HERE", "deviceProperties": {"name": "X"}}]}}`)
+	got, _ := parseDevicectlList(data)
+	if got[0].UUID != "CORE-UUID-HERE" {
+		t.Errorf("UUID fallback = %q; want CORE-UUID-HERE", got[0].UUID)
+	}
+}
+
+func TestMergeIOSDevices_OverlayByUDID(t *testing.T) {
+	base := []Info{
+		{UUID: "A", Name: "pm3-name", Model: "iPad13,16", OS: "iOS 26.3.1", Platform: "ios"},
+		{UUID: "B", Name: "only-in-usbmux", Model: "iPhone14,5", Platform: "ios"},
+	}
+	overlay := []Info{
+		{UUID: "A", Name: "Pippa", Model: "iPad Air (5th generation)", OS: "iOS 26.3.1", Platform: "ios"},
+		{UUID: "C", Name: "only-in-devicectl", Model: "iPad mini (A17 Pro)", Platform: "ios"},
+	}
+	got := mergeIOSDevices(base, overlay)
+	if len(got) != 3 {
+		t.Fatalf("got %d; want 3", len(got))
+	}
+	// A: overlay wins on Name + Model (richer fields).
+	for _, d := range got {
+		switch d.UUID {
+		case "A":
+			if d.Name != "Pippa" || d.Model != "iPad Air (5th generation)" {
+				t.Errorf("A not upgraded: %+v", d)
+			}
+		case "B":
+			if d.Name != "only-in-usbmux" {
+				t.Errorf("B lost: %+v", d)
+			}
+		case "C":
+			if d.Name != "only-in-devicectl" {
+				t.Errorf("C lost: %+v", d)
+			}
+		}
+	}
+}
+
 func TestStringOfAndFirstNonEmpty(t *testing.T) {
 	if got := stringOf("hello"); got != "hello" {
 		t.Errorf("stringOf string = %q", got)

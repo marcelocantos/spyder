@@ -434,6 +434,23 @@ targets:
     - T20
     origin: manual
     discovered: 2026-04-19
+  T22:
+    name: iOS device enumeration implemented in devices tool
+    status: identified
+    value: 8.0
+    cost: 3.0
+    observable: true
+    acceptance:
+    - IOSAdapter.List shells out to `pymobiledevice3 usbmux list` (USB) and `xcrun devicectl list devices` (CoreDevice) and fuses the two into a single []Info array keyed by UUID
+    - Each Info entry has UUID (hardware UDID), Name (device name), Platform="ios", Model (e.g. "iPad Air (5th generation)"), OS (e.g. "iOS 26.3.1"), and Alias (populated via inventory)
+    - Devices that devicectl reports as paired-but-unavailable are still listed, with a marker shape matching adb's offline/unauthorized convention
+    - '`devices({platform:"ios"})` returns the populated array; `devices({platform:"all"})` no longer wraps an iOS error'
+    - Unit tests cover the parsers for both pymobiledevice3 usbmux list JSON and devicectl list devices structured output
+    context: |-
+      IOSAdapter.List has been stubbed returning errors.New(\"iOS List not yet implemented\") since the initial scaffold — v0.1.0 through v0.3.0 all shipped with `devices({platform:\"ios\"})` broken. Every other iOS tool works because they resolve via the inventory or classify raw UUIDs (resolveAdapter), so this gap stayed invisible until a user actually tried to enumerate. `devices({platform:\"all\"})` wraps it into the partial-results envelope rather than hard-failing, which masks the bug in cross-platform calls.\n\nFusion logic: pymobiledevice3 sees USB-attached devices (hardware UDIDs); devicectl sees paired CoreDevice UUIDs including wireless. Both should contribute to the same device entry when they refer to the same physical device — the inventory knows about both ID forms so we can dedupe via that, falling back to a best-effort match on device name when the device isn't in the inventory.\n\nSmall self-contained scope; ~50 LOC plus parsers. Effectively a hotfix for shipped-broken behaviour, but the MINOR-only policy means it ships in the next minor (v0.4.0).</context>
+      <parameter name="tags">["ios", "devices", "bug-fix"]
+    origin: manual
+    discovered: 2026-04-19
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: achieved
