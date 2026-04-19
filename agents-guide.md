@@ -135,6 +135,40 @@ the device, pass `"owner": "<your-owner>"` in the arguments map. The
 server resolves canonical identity via the inventory, so reserving
 "Pippa" also blocks operations on her raw UDID and vice versa.
 
+## REST API and CLI subcommands
+
+Every MCP tool is also exposed over plain HTTP+JSON on the same
+listener, at `POST /api/v1/<tool>`. The request body is the tool's
+arguments (same as MCP); the response is a JSON-encoded
+`mcp.CallToolResult`:
+
+```bash
+# Shell scripts: call a tool directly.
+curl -s -X POST http://127.0.0.1:3030/api/v1/devices \
+  -H 'Content-Type: application/json' -d '{"platform":"android"}'
+
+# Zero-arg tools accept an empty body.
+curl -s -X POST http://127.0.0.1:3030/api/v1/reservations
+```
+
+The same surface is available as `spyder` subcommands, which POST to
+the local daemon and render the result:
+
+```bash
+spyder devices --platform ios --json
+spyder screenshot Pippa --output /tmp/pippa.png
+spyder reserve Pippa --ttl 600 --note "UI sweep"
+spyder list-apps Pippa --json
+spyder release Pippa
+```
+
+`--as OWNER` defaults to `filepath.Base(cwd)` (same convention as
+`spyder run`). Set `SPYDER_DAEMON_URL` to point the CLI at a
+non-default daemon (e.g. `http://127.0.0.1:13030` during development).
+
+Reservation state is shared between transports: an agent holding a
+lock via MCP blocks a shell script hitting REST and vice versa.
+
 ## The `spyder run` test wrapper
 
 Beyond the MCP surface, spyder exposes a CLI wrapper that runs a command and

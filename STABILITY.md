@@ -9,9 +9,11 @@ At 1.0, spyder commits to backwards compatibility for:
 
 - The **MCP tool surface** (names, input schemas, output shapes).
 - The **CLI subcommand surface** (`spyder serve`, `spyder run`, `spyder
-  version`, `spyder help-agent`, flag names, exit codes).
+  version`, `spyder help-agent`, plus the device-tool subcommands
+  listed below, flag names, exit codes).
 - The **inventory file format** (`~/.spyder/inventory.json`).
 - The **HTTP MCP endpoint** (`/mcp`, port default, streamable-HTTP transport).
+- The **REST endpoint** (`/api/v1/<tool>` POST + JSON, same listener).
 
 Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
@@ -53,6 +55,23 @@ can match on these phrases.
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |
 | `spyder help-agent` / `--help-agent` / `-help-agent` | Usage + embedded agents-guide.md. | Stable |
+| `spyder devices [--platform ios\|android\|all] [--json]` | REST proxy to `devices` tool. | Stable |
+| `spyder resolve <name> [--json]` | REST proxy to `resolve` tool. | Stable |
+| `spyder device-state <device> [--json]` | REST proxy to `device_state` tool. | Stable |
+| `spyder screenshot <device> [--output FILE] [--as OWNER]` | REST proxy to `screenshot`; writes PNG to `--output` (default `<device>-<ts>.png`). | Stable |
+| `spyder keepawake <device> [--as OWNER]` | REST proxy to `keepawake`. | Stable |
+| `spyder list-apps <device> [--json]` | REST proxy to `list_apps`. | Stable |
+| `spyder launch-app <device> <bundle-id> [--as OWNER]` | REST proxy to `launch_app`. | Stable |
+| `spyder terminate-app <device> <bundle-id> [--as OWNER]` | REST proxy to `terminate_app`. | Stable |
+| `spyder reserve <device> [--as OWNER] [--ttl SECONDS] [--note TEXT]` | REST proxy to `reserve`. | Stable |
+| `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
+| `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |
+| `spyder reservations [--json]` | REST proxy to `reservations`. | Stable |
+
+All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
+`http://127.0.0.1:3030`) and print the first text content block
+(text tools) or write the first image content block to disk
+(`screenshot`). `--as OWNER` defaults to `filepath.Base(cwd)`.
 
 Exit codes: `0` success; `1` server startup / unclassified child-process error;
 `2` argument parsing error; `3` reservation conflict at `spyder run`
@@ -66,6 +85,20 @@ code for `spyder run` when the command itself exits non-zero.
 - Transport: mcp-go's streamable HTTP (JSON-RPC over POST; `Mcp-Session-Id`
   header for session continuity).
 - Server info: `{name: "spyder", version: "<tag>"}`.
+
+### REST endpoint
+
+- Address: same listener as `/mcp`.
+- Path: `POST /api/v1/<tool>`.
+- Request: JSON object of the tool's arguments (same as MCP). Empty body
+  allowed for zero-arg tools.
+- Response: JSON-encoded `mcp.CallToolResult`
+  (`{"content":[{"type":"text","text":"…"} | {"type":"image","data":"…","mimeType":"…"}], "isError":bool}`).
+- Errors: `404` unknown tool; `405` non-POST; `400` bad JSON body.
+  Tool-level errors (missing args, conflicts, etc.) return `200` with
+  `isError:true` in the body — transport success, tool failure.
+- Reservation state is shared with the MCP transport: a lock taken via
+  one channel is honoured on the other.
 
 ### Reservation file
 

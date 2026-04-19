@@ -7,8 +7,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -22,6 +24,7 @@ import (
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/reservations"
+	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/tunneld"
 )
 
@@ -46,7 +49,7 @@ func Start(cfg Config) error {
 // (or the underlying HTTP server errors). Exposed for tests and for
 // embedders that want to own signal handling.
 func Run(ctx context.Context, cfg Config) error {
-	httpSrv, tunClient, resvStore := Build(cfg)
+	handler, tunClient, resvStore := Build(cfg)
 
 	if !cfg.DisableAutoAwake {
 		awakeOpts := []autoawake.Option{}
@@ -56,34 +59,36 @@ func Run(ctx context.Context, cfg Config) error {
 		go autoawake.New(tunClient, awakeOpts...).Run(ctx)
 	}
 
-	slog.Info("spyder mcp server listening", "addr", cfg.Addr, "endpoint", "/mcp")
+	slog.Info("spyder listening",
+		"addr", cfg.Addr, "mcp", "/mcp", "rest", rest.Prefix)
 
+	srv := &http.Server{Addr: cfg.Addr, Handler: handler}
 	errCh := make(chan error, 1)
-	go func() { errCh <- httpSrv.Start(cfg.Addr) }()
+	go func() { errCh <- srv.ListenAndServe() }()
 
 	select {
 	case <-ctx.Done():
 		slog.Info("shutting down")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer shutdownCancel()
-		_ = httpSrv.Shutdown(shutdownCtx)
+		_ = srv.Shutdown(shutdownCtx)
 		return nil
 	case err := <-errCh:
-		if err != nil {
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			return fmt.Errorf("http server: %w", err)
 		}
 		return nil
 	}
 }
 
-// Build wires up the MCP server and the streamable-HTTP handler
-// without starting a listener or the autoawake supervisor. Tests
-// (and embedders) can compose this with their own transport. The
-// returned StreamableHTTPServer is a drop-in http.Handler via its
-// ServeHTTP method, suitable for httptest.NewServer. The reservation
-// store may be nil if ~/.spyder/reservations.json is unreadable;
-// callers that need strict enforcement should check.
-func Build(cfg Config) (*server.StreamableHTTPServer, *tunneld.Client, *reservations.Store) {
+// Build wires up the MCP server and the REST handler on a shared
+// http.ServeMux without starting a listener or the autoawake
+// supervisor. Tests (and embedders) can compose this with their own
+// transport. The returned mux serves `/mcp` (mcp-go streamable HTTP)
+// and `/api/v1/<tool>` (JSON over POST — see package rest). The
+// reservation store may be nil if `~/.spyder/reservations.json` is
+// unreadable; callers that need strict enforcement should check.
+func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 	tunneldAddr := cfg.TunneldAddr
 	if tunneldAddr == "" {
 		tunneldAddr = tunneld.DefaultAddr
@@ -134,5 +139,8 @@ func Build(cfg Config) (*server.StreamableHTTPServer, *tunneld.Client, *reservat
 		})
 	}
 
-	return server.NewStreamableHTTPServer(srv), tunClient, resvStore
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv))
+	mux.Handle(rest.Prefix, rest.NewHandler(handler))
+	return mux, tunClient, resvStore
 }
