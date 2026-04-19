@@ -31,3 +31,10 @@ func InventoryPath() string {
 func RunsBase() string {
 	return filepath.Join(Base(), "runs")
 }
+
+// BaselinesBase returns the root directory for the visual-regression
+// baseline store (~/.spyder/baselines). Baselines are organised as
+// <suite>/<variant>/<case>.{png,manifest.json}.
+func BaselinesBase() string {
+	return filepath.Join(Base(), "baselines")
+}

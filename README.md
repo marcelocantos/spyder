@@ -59,6 +59,7 @@ everything below plus gotchas, device-inventory format, and the full
 | `list_apps` | Installed third-party apps. |
 | `launch_app` | Foreground an arbitrary app by bundle id. |
 | `terminate_app` | Stop an app by bundle id. |
+| `rotate` | Rotate an iOS simulator or Android emulator to portrait, landscape-left, landscape-right, or portrait-upside-down. Physical devices return an error. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
 | `runs_list` / `runs_show` | Inspect per-reservation artefact bundles under `~/.spyder/runs/`. |
 
@@ -95,6 +96,7 @@ spyder screenshot Pippa --output /tmp/pippa.png
 spyder reserve Pippa --ttl 600 --note "UI sweep"
 spyder reservations --json
 spyder release Pippa
+spyder rotate C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8 --to landscape-left
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
 spyder runs artefacts 20260419-143022-a3f1b2

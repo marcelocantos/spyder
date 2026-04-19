@@ -105,12 +105,82 @@ everything it can see.
 | `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
 | `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses DVT launch (needs tunneld); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
+| `rotate` | Rotate an iOS simulator or Android emulator to a named orientation. Physical iOS/Android devices return a clear error. | Orientations: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. iOS uses `xcrun simctl io <udid> rotate`; Android uses `adb emu rotate` (driven N times to reach the target). |
 | `reserve` | Acquire an exclusive device hold. | `{device, owner, ttl_seconds?, note?}`. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. |
 | `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
 | `reservations` | List active reservations. | Read-only. |
 | `runs_list` | List run-artefact bundles under `~/.spyder/runs/`, newest first. | Read-only. |
 | `runs_show` | Return a single run's full manifest (device, owner, timestamps, artefacts). | Read-only. `{run_id}`. |
+| `baseline_update` | Store a new visual baseline for `suite/case/variant`. | Supply PNG via `screenshot_path` or `screenshot_base64`. Optional `manifest` JSON enables structural diffing. |
+| `diff` | Compare a candidate screenshot against the stored baseline. | Returns a structured JSON report with RMS pixel error, manifest structural diff (added/removed/moved elements with bounding boxes), and a `pass` verdict. Supply PNG via `screenshot_path` or `screenshot_base64`. |
+| `baselines_list` | List all baselines stored for a suite. | Read-only. Returns `[{case, variant, has_png, has_manifest}]`. |
+
+## Visual regression
+
+Spyder ships a baseline store (`~/.spyder/baselines/`) and a two-tier
+comparison pipeline:
+
+1. **Manifest diff (structural)** — when both the baseline and the candidate
+   carry a UI-element manifest, spyder reports added / removed / moved elements
+   with their bounding boxes. This tier catches layout regressions that pixel
+   RMS misses (e.g. an element moved by 2 px in a noisy background).
+2. **Pixel diff (RMS)** — root-mean-square error across all channels, in [0, 1].
+   Configurable tolerance (default 0.01). SSIM is stubbed in v1 (returns NaN).
+
+The `diff` tool runs both tiers and returns a unified report. If both sides have
+a manifest, structural changes cause `pass=false` regardless of RMS. The VLM
+natural-language summary interface is defined but not implemented in v1.
+
+### Manifest schema
+
+Manifests are JSON objects with this shape:
+
+```json
+{
+  "schema_version": 1,
+  "elements": [
+    {
+      "id":    "com.example.app/MainScreen/loginButton",
+      "kind":  "button",
+      "bbox":  [x, y, width, height],
+      "attrs": { "label": "Log In", "enabled": true }
+    }
+  ]
+}
+```
+
+- `id`: stable unique key within a screen (convention: `<bundle>/<screen>/<name>`).
+- `kind`: semantic type — `button`, `label`, `image`, `textfield`, `container`, etc.
+- `bbox`: `[x, y, width, height]` in logical pixels, top-left origin.
+- `attrs`: free-form attribute bag (text, enabled state, accessibility label, …).
+
+### Typical workflow
+
+```bash
+# 1. Capture a reference screenshot and store as baseline.
+spyder screenshot Pippa --output login.png
+spyder baseline update login-flow/main-screen login.png
+
+# 2. Later, compare a new screenshot against the baseline.
+spyder diff login-flow/main-screen new-screenshot.png
+# exit 0 → pass; exit 1 → fail (structural or pixel regression)
+
+# 3. With a manifest for richer structural diffing:
+spyder baseline update login-flow/main-screen login.png manifest.json
+spyder diff login-flow/main-screen new-screenshot.png new-manifest.json
+
+# 4. Use --variant for per-device or per-orientation separation:
+spyder baseline update login-flow/main-screen login.png --variant pippa-landscape
+spyder diff login-flow/main-screen new-screenshot.png --variant pippa-landscape
+```
+
+Via MCP, the same operations are:
+
+```json
+{"name": "baseline_update", "arguments": {"suite": "login-flow", "case": "main-screen", "screenshot_path": "/tmp/login.png"}}
+{"name": "diff", "arguments": {"suite": "login-flow", "case": "main-screen", "screenshot_path": "/tmp/new.png"}}
+```
 
 ## Reservations
 

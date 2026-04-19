@@ -6,6 +6,8 @@
 // (pymobiledevice3, devicectl, adb).
 package device
 
+import "time"
+
 // Info summarises a single connected device.
 type Info struct {
 	UUID     string `json:"uuid"`
@@ -32,6 +34,17 @@ type AppInfo struct {
 	BundleID string `json:"bundle_id"`
 	Name     string `json:"name,omitempty"`
 	Version  string `json:"version,omitempty"`
+}
+
+// CrashReport summarises a single crash event. Path points to the local
+// copy of the raw report (if pulled); Raw holds inline content when
+// available. At least one of Path or Raw will typically be populated.
+type CrashReport struct {
+	Process   string    `json:"process"`
+	Reason    string    `json:"reason,omitempty"`
+	Timestamp time.Time `json:"timestamp"`
+	Path      string    `json:"path,omitempty"` // local path to raw report on the host
+	Raw       string    `json:"raw,omitempty"`  // inline raw content (optional)
 }
 
 // Adapter is the platform-specific device surface.
@@ -63,4 +76,21 @@ type Adapter interface {
 	// tunneld (dvt process-id-for-bundle-id + kill); Android uses
 	// adb am force-stop.
 	TerminateApp(id, bundleID string) error
+
+	// Rotate sets the screen orientation of a simulator or emulator.
+	// Supported orientations: portrait, landscape-left, landscape-right,
+	// portrait-upside-down. Physical devices return a clear error.
+	Rotate(id, orientation string) error
+
+	// Crashes fetches crash reports from the device. since is the oldest
+	// report to include (zero means all); process filters by process name
+	// (empty means all). Reports are returned newest-first.
+	//
+	// iOS: pulls .ips files via pymobiledevice3 crash-reports. Each
+	// report's first-line JSON header is parsed for structured metadata.
+	//
+	// Android: attempts tombstones via adb from /data/tombstones/
+	// (root-capable devices only). Falls back to `adb logcat -b crash`
+	// when tombstones are inaccessible.
+	Crashes(id string, since time.Time, process string) ([]CrashReport, error)
 }

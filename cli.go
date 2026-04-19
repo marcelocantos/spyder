@@ -57,6 +57,10 @@ func init() {
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
 		{"runs", "spyder runs <list|show|artefacts> [args...]", runRuns},
+		{"rotate", "spyder rotate <device> --to <orientation> [--as OWNER]", runRotate},
+		{"crashes", "spyder crashes <device> [--since RFC3339] [--process NAME] [--as OWNER] [--json]", runCrashes},
+		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
+		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 	}
 }
 
@@ -591,6 +595,225 @@ func runRunsArtefacts(args []string) {
 		fmt.Printf("%-40s %-12s %-20s %10d %s\n",
 			a.Name, a.Source, a.MIMEType, a.Size, a.CreatedAt)
 	}
+}
+
+func runRotate(args []string) {
+	pf, err := parseFlags(args, []string{"--to", "--as"}, nil)
+	if err != nil {
+		fatalUsage("rotate", err)
+	}
+	requirePositional("rotate", pf, 1)
+	orientation := pf.flags["--to"]
+	if orientation == "" {
+		fatalUsage("rotate", fmt.Errorf("--to is required (portrait, landscape-left, landscape-right, portrait-upside-down)"))
+	}
+	a := map[string]any{
+		"device":      pf.positional[0],
+		"orientation": orientation,
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	dispatchAndExit("rotate", a, false)
+}
+
+func runCrashes(args []string) {
+	pf, err := parseFlags(args, []string{"--since", "--process", "--as"}, []string{"--json"})
+	if err != nil {
+		fatalUsage("crashes", err)
+	}
+	requirePositional("crashes", pf, 1)
+	a := map[string]any{"device": pf.positional[0]}
+	if s := pf.flags["--since"]; s != "" {
+		a["since"] = s
+	}
+	if p := pf.flags["--process"]; p != "" {
+		a["process"] = p
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	}
+	dispatchAndExit("crashes", a, pf.bools["--json"])
+}
+
+// --- sim subcommands ------------------------------------------------
+
+// runSim dispatches `spyder sim <subcommand>` for iOS simulator lifecycle.
+func runSim(args []string) {
+	if len(args) == 0 {
+		fatalUsage("sim", fmt.Errorf("missing subcommand — expected list|create|boot|shutdown|delete"))
+	}
+	switch args[0] {
+	case "list":
+		runSimList(args[1:])
+	case "create":
+		runSimCreate(args[1:])
+	case "boot":
+		runSimBoot(args[1:])
+	case "shutdown":
+		runSimShutdown(args[1:])
+	case "delete":
+		runSimDelete(args[1:])
+	default:
+		fatalUsage("sim", fmt.Errorf("unknown subcommand %q — expected list|create|boot|shutdown|delete", args[0]))
+	}
+}
+
+func runSimList(args []string) {
+	pf, err := parseFlags(args, []string{"--state"}, []string{"--json"})
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	a := map[string]any{}
+	if s := pf.flags["--state"]; s != "" {
+		a["state"] = s
+	}
+	dispatchAndExit("sim_list", a, pf.bools["--json"])
+}
+
+func runSimCreate(args []string) {
+	pf, err := parseFlags(args, []string{"--type", "--runtime"}, []string{"--json"})
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("create: expected <name> (with --type and --runtime flags)"))
+	}
+	deviceType := pf.flags["--type"]
+	if deviceType == "" {
+		fatalUsage("sim", fmt.Errorf("create: --type <device-type-id> is required"))
+	}
+	runtime := pf.flags["--runtime"]
+	if runtime == "" {
+		fatalUsage("sim", fmt.Errorf("create: --runtime <runtime-id> is required"))
+	}
+	dispatchAndExit("sim_create", map[string]any{
+		"name":           pf.positional[0],
+		"device_type_id": deviceType,
+		"runtime_id":     runtime,
+	}, pf.bools["--json"])
+}
+
+func runSimBoot(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("boot: expected <udid>"))
+	}
+	dispatchAndExit("sim_boot", map[string]any{"udid": pf.positional[0]}, false)
+}
+
+func runSimShutdown(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("shutdown: expected <udid>"))
+	}
+	dispatchAndExit("sim_shutdown", map[string]any{"udid": pf.positional[0]}, false)
+}
+
+func runSimDelete(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("delete: expected <udid>"))
+	}
+	dispatchAndExit("sim_delete", map[string]any{"udid": pf.positional[0]}, false)
+}
+
+// --- emu subcommands ------------------------------------------------
+
+// runEmu dispatches `spyder emu <subcommand>` for Android emulator lifecycle.
+func runEmu(args []string) {
+	if len(args) == 0 {
+		fatalUsage("emu", fmt.Errorf("missing subcommand — expected list|create|boot|shutdown|delete"))
+	}
+	switch args[0] {
+	case "list":
+		runEmuList(args[1:])
+	case "create":
+		runEmuCreate(args[1:])
+	case "boot":
+		runEmuBoot(args[1:])
+	case "shutdown":
+		runEmuShutdown(args[1:])
+	case "delete":
+		runEmuDelete(args[1:])
+	default:
+		fatalUsage("emu", fmt.Errorf("unknown subcommand %q — expected list|create|boot|shutdown|delete", args[0]))
+	}
+}
+
+func runEmuList(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	dispatchAndExit("emu_list", map[string]any{}, pf.bools["--json"])
+}
+
+func runEmuCreate(args []string) {
+	pf, err := parseFlags(args, []string{"--image", "--device"}, []string{"--json"})
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("emu", fmt.Errorf("create: expected <name> (with --image and --device flags)"))
+	}
+	image := pf.flags["--image"]
+	if image == "" {
+		fatalUsage("emu", fmt.Errorf("create: --image <system-image-package> is required"))
+	}
+	deviceProfile := pf.flags["--device"]
+	if deviceProfile == "" {
+		fatalUsage("emu", fmt.Errorf("create: --device <device-profile> is required"))
+	}
+	dispatchAndExit("emu_create", map[string]any{
+		"name":           pf.positional[0],
+		"system_image":   image,
+		"device_profile": deviceProfile,
+	}, pf.bools["--json"])
+}
+
+func runEmuBoot(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("emu", fmt.Errorf("boot: expected <avd-name>"))
+	}
+	dispatchAndExit("emu_boot", map[string]any{"name": pf.positional[0]}, false)
+}
+
+func runEmuShutdown(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("emu", fmt.Errorf("shutdown: expected <serial> (e.g. emulator-5554)"))
+	}
+	dispatchAndExit("emu_shutdown", map[string]any{"serial": pf.positional[0]}, false)
+}
+
+func runEmuDelete(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("emu", fmt.Errorf("delete: expected <avd-name>"))
+	}
+	dispatchAndExit("emu_delete", map[string]any{"name": pf.positional[0]}, false)
 }
 
 // --- helpers --------------------------------------------------------
