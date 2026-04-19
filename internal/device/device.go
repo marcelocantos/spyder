@@ -63,4 +63,20 @@ type Adapter interface {
 	// tunneld (dvt process-id-for-bundle-id + kill); Android uses
 	// adb am force-stop.
 	TerminateApp(id, bundleID string) error
+
+	// InstallApp installs an app on the device. path must point to
+	// a .app or .ipa bundle (iOS) or a .apk file (Android). iOS uses
+	// xcrun devicectl device install app; Android uses adb install -r.
+	InstallApp(id, path string) error
+
+	// UninstallApp removes an app by bundle id / package name. iOS uses
+	// xcrun devicectl device uninstall app --bundle-identifier; Android
+	// uses adb uninstall.
+	UninstallApp(id, bundleID string) error
+
+	// AppPID returns the process id of a running app identified by its
+	// bundle id / package name, or an error if the app is not running.
+	// iOS uses pymobiledevice3 developer dvt process-id-for-bundle-id
+	// (requires tunneld); Android uses adb shell pidof.
+	AppPID(id, bundleID string) (int, error)
 }

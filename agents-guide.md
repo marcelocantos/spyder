@@ -105,6 +105,9 @@ everything it can see.
 | `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
 | `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses DVT launch (needs tunneld); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
+| `install_app` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | iOS: `xcrun devicectl device install app`; Android: `adb install -r`. |
+| `uninstall_app` | Remove an app by bundle id / package name. | iOS: `xcrun devicectl device uninstall app --bundle-identifier`; Android: `adb uninstall`. |
+| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS needs tunneld for launch + pid-verify. Fail-fast on install error; "not running" from terminate is ignored. |
 | `reserve` | Acquire an exclusive device hold. | `{device, owner, ttl_seconds?, note?}`. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. |
 | `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
@@ -303,6 +306,19 @@ devices. Logs show `autoawake: ready project_dir=…` (good) or
 - **Stale screenshot after auto-awake's launch** → DVT launches to foreground
   but screen content can lag a beat. If you need a settled screenshot, wait
   500 ms - 1 s before capturing.
+- **`deploy_app` bundle_id auto-derivation (iOS)** → requires `plutil` (ships
+  with macOS). Fails if the .app bundle has no `Info.plist` or
+  `CFBundleIdentifier` is empty. Pass `bundle_id` explicitly to skip.
+- **`deploy_app` bundle_id auto-derivation (Android)** → requires `aapt` from
+  Android SDK build-tools in PATH. If absent, the error says to install it. Pass
+  `bundle_id` explicitly to skip. The CLI equivalent is `--bundle-id`.
+- **`install_app` path validation** → paths containing `..` are rejected at the
+  handler layer before reaching the device. Use absolute paths or relative paths
+  without traversal for reliability.
+- **Already terminated race in `deploy_app`** → if the app is not running when
+  deploy starts, the terminate step returns "not running" which is treated as
+  success and the deploy continues. There is no race window: terminate and install
+  are sequential within the same handler lock.
 - **`brew services start spyder` + registration but no tools visible** → the
   agent session needs a restart. MCP servers are loaded at session start;
   mid-session registration doesn't take effect.

@@ -59,6 +59,9 @@ everything below plus gotchas, device-inventory format, and the full
 | `list_apps` | Installed third-party apps. |
 | `launch_app` | Foreground an arbitrary app by bundle id. |
 | `terminate_app` | Stop an app by bundle id. |
+| `install_app` | Install a .app/.ipa (iOS) or .apk (Android) on a device. |
+| `uninstall_app` | Remove an app by bundle id / package name. |
+| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
 
 ## REST API

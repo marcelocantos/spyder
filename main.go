@@ -67,6 +67,9 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   list-apps     List installed third-party apps
   launch-app    Launch an app by bundle id (--as OWNER)
   terminate-app Terminate an app by bundle id (--as OWNER)
+  install       Install a .app/.ipa/.apk on a device (--as OWNER)
+  uninstall     Remove an app by bundle id (--as OWNER)
+  deploy        Atomic deploy: terminate → install → launch → verify pid (--bundle-id, --as OWNER)
   reserve       Acquire an exclusive lock (--as OWNER, --ttl SECONDS, --note)
   release       Release a reservation you hold (--as OWNER)
   renew         Extend a reservation you hold (--as OWNER, --ttl SECONDS)
