@@ -39,7 +39,7 @@ Snapshot as of `v0.4.0`.
 | `uninstall_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required). | Text confirmation. | Stable |
 | `deploy_app` | `{device: string, path: string, bundle_id?: string, owner?: string}` (device and path required). `bundle_id` derived from Info.plist (iOS) or `aapt dump badging` (Android) if omitted. | JSON `{bundle_id: string, pid: number}`. | Stable |
 | `reserve` | `{device: string, owner: string, ttl_seconds?: number, note?: string}` (device and owner required). | JSON-encoded `reservations.Reservation` (device, owner, expires_at, note, created_at). | Stable |
-| `release` | `{device: string, owner: string}`. | Text confirmation. | Stable |
+| `release` | `{device: string, owner: string}`. | Text confirmation. Applied network profiles cleared automatically. | Stable |
 | `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
 | `reservations` | (no args). | JSON array of active `Reservation` records. | Stable |
 | `runs_list` | (no args). | JSON array of `runs.Run` records (id, device, owner, note, created_at, closed_at?, artefacts?), newest first. | Needs review — field additions expected as more artefact-producing tools land |
@@ -60,6 +60,7 @@ Snapshot as of `v0.4.0`.
 | `emu_delete` | `{name: string}`. | Text confirmation. | Needs review |
 | `record_start` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with subprocess PID and output path. | Needs review — iOS simulator UDID must be passed directly; iOS physical devices return an immediate error. |
 | `record_stop` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with the local mp4 path. | Needs review |
+| `network` | `{device: string, owner: string, profile?: string}` or `{device: string, owner: string, clear: true}`. Exactly one of profile or clear required. | Text confirmation. | Beta — Android emulator only; iOS and physical Android return clear errors. |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -108,6 +109,7 @@ can match on these phrases.
 | `spyder emu shutdown <serial>` | REST proxy to `emu_shutdown`. | Needs review |
 | `spyder emu delete <name>` | REST proxy to `emu_delete`. | Needs review |
 | `spyder record <device> --start \| --stop [--as OWNER]` | REST proxy to `record_start` / `record_stop`. Starts or stops a screen recording on an iOS simulator or Android device. | Needs review |
+| `spyder net <device> [--profile NAME\|--clear] [--as OWNER]` | REST proxy to `network`. Requires exactly one of `--profile` or `--clear`. | Beta — Android emulator only. |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
@@ -288,6 +290,20 @@ builds. **Stable.**
 - **Rate-limiting / retry policy.** Auto-awake retries lock failures every
   10 s for up to 5 minutes. Not user-configurable. Fine for v0.x but should
   surface a knob before 1.0.
+- **Network shaping for iOS simulator.** `network` returns an error on iOS
+  simulator and physical devices. Apple's Link Conditioner is host-level (not
+  per-simulator); driving it via a CLI requires private CoreSimulator APIs.
+  Contributions that implement per-simulator shaping via future `simctl`
+  flags or the private framework are welcome.
+- **Packet-loss emulation on Android.** The `lossy-<pct>` profile partially
+  applies (speed/delay are set) but the adb emulator console has no loss knob.
+  Host-level traffic shapers (`tc`, `dummynet`) or Android Studio's network
+  profiler are alternatives.
+- **Network profile persistence across daemon restarts.** Applied profiles are
+  tracked in-memory only. If the daemon crashes before `release` fires the
+  cleanup, the emulator retains its last profile until an explicit `clear` or
+  emulator restart. A future version may persist the active profile to disk
+  (alongside `reservations.json`) to enable cleanup on daemon restart.
 - **`HOMEBREW_TAP_TOKEN` per-repo setup.** Not a stability issue but worth
   noting: each new repo needs the token set, documented in the release
   skill.

@@ -16,6 +16,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/network"
 )
 
 // AndroidAdapter talks to Android devices via adb. Unlike iOS it does not
@@ -697,6 +699,132 @@ func (a *AndroidAdapter) AppPID(id, bundleID string) (int, error) {
 		return 0, fmt.Errorf("unexpected pidof output for %s: %q", bundleID, s)
 	}
 	return pid, nil
+}
+
+// ApplyNetwork shapes network conditions on an Android emulator via the
+// adb telnet console "network speed" and "network delay" commands.
+//
+// This ONLY works on Android emulators (avd) — not on physical Android
+// devices. adb console commands are tunnelled to the emulator's control
+// socket; they are silently ignored or errored by real hardware because
+// real hardware has no emulator control plane.
+//
+// Packet-loss profiles (lossy-<pct>) are not supported by the adb console
+// protocol. The adb emu network commands control speed and delay only.
+// If you need loss emulation on Android, use Android Studio's built-in
+// network profiler, or apply it at the host OS/router level.
+func (a *AndroidAdapter) ApplyNetwork(id string, p network.NetworkProfile) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+
+	// Validate emulator accessibility: adb forward --list produces
+	// output only for emulators (emulator-XXXX serials). Physical
+	// devices will still accept the emu commands at the transport level,
+	// but they'll silently fail. We proceed regardless and let the
+	// emulator console error surface naturally.
+
+	if p.IsOffline {
+		// Offline: set speed to 0 in both directions. The adb console
+		// accepts "0" as a valid speed value meaning "no traffic".
+		if err := adbEmu(id, "network", "speed", "0"); err != nil {
+			return fmt.Errorf("apply offline (speed 0): %w", err)
+		}
+		return nil
+	}
+
+	// Apply speed limit.
+	if kw, ok := network.ADBSpeedClass(p); ok {
+		if err := adbEmu(id, "network", "speed", kw); err != nil {
+			return fmt.Errorf("apply speed %s: %w", kw, err)
+		}
+	} else if p.UploadKbps > 0 || p.DownloadKbps > 0 {
+		// Numeric: "adb emu network speed <up> <down>"
+		upStr := strconv.Itoa(p.UploadKbps)
+		downStr := strconv.Itoa(p.DownloadKbps)
+		if err := adbEmu(id, "network", "speed", upStr, downStr); err != nil {
+			return fmt.Errorf("apply speed %s/%s kbps: %w", upStr, downStr, err)
+		}
+	} else {
+		// Full speed (wifi / no limit).
+		if err := adbEmu(id, "network", "speed", "full"); err != nil {
+			return fmt.Errorf("apply full speed: %w", err)
+		}
+	}
+
+	// Apply delay.
+	if kw, ok := network.ADBDelayClass(p); ok {
+		if err := adbEmu(id, "network", "delay", kw); err != nil {
+			return fmt.Errorf("apply delay %s: %w", kw, err)
+		}
+	} else if p.DelayMs > 0 {
+		if err := adbEmu(id, "network", "delay", strconv.Itoa(p.DelayMs)); err != nil {
+			return fmt.Errorf("apply delay %d ms: %w", p.DelayMs, err)
+		}
+	} else {
+		if err := adbEmu(id, "network", "delay", "none"); err != nil {
+			return fmt.Errorf("apply delay none: %w", err)
+		}
+	}
+
+	if p.LossPct > 0 {
+		// Document the gap rather than silently ignoring it.
+		return fmt.Errorf(
+			"profile %q applied (speed/delay), but packet-loss (%d%%) is not supported "+
+				"by the adb emulator console — use Android Studio's network profiler or a "+
+				"host-level traffic shaper (tc/dummynet) for loss emulation",
+			p.Name, p.LossPct,
+		)
+	}
+
+	return nil
+}
+
+// ClearNetwork restores full-speed / no-delay conditions on an Android
+// emulator by setting speed=full and delay=none.
+func (a *AndroidAdapter) ClearNetwork(id string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if err := adbEmu(id, "network", "speed", "full"); err != nil {
+		return fmt.Errorf("clear network speed: %w", err)
+	}
+	if err := adbEmu(id, "network", "delay", "none"); err != nil {
+		return fmt.Errorf("clear network delay: %w", err)
+	}
+	return nil
+}
+
+// adbEmu sends a command to the emulator console via `adb -s <id> emu
+// <args...>`. The emulator console commands are available only on
+// Android Virtual Devices (avd) — physical devices do not expose a
+// console and will return an error.
+func adbEmu(id string, args ...string) error {
+	cmdArgs := append([]string{"-s", id, "emu"}, args...)
+	out, stderr, err := runCapture("adb", cmdArgs...)
+	if err != nil {
+		combined := string(stderr) + " " + string(out)
+		if isAndroidDeviceNotConnected(combined) {
+			return fmt.Errorf("device not connected: %s", id)
+		}
+		return fmt.Errorf("%w: %s", err, truncate(string(stderr), 200))
+	}
+	// The emulator console echoes "OK" on success. Some versions echo
+	// "KO: ..." on failure but still exit 0. Surface that as an error.
+	outStr := strings.TrimSpace(string(out))
+	if strings.HasPrefix(outStr, "KO:") {
+		// Physical device or unsupported command.
+		msg := strings.TrimPrefix(outStr, "KO:")
+		msg = strings.TrimSpace(msg)
+		if strings.Contains(strings.ToLower(msg), "not supported") ||
+			strings.Contains(strings.ToLower(msg), "unknown command") {
+			return fmt.Errorf(
+				"adb emu network commands are only supported on Android emulators, "+
+					"not physical devices (emulator replied: %s)", msg)
+		}
+		return fmt.Errorf("emulator console error: %s", msg)
+	}
+	return nil
 }
 
 // Screenshot captures a PNG via `adb shell screencap -p`. The subcommand

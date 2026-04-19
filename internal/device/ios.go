@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/network"
 )
 
 // KeepAwakeBundleID is the bundle identifier of the ios/KeepAwake companion
@@ -797,6 +799,42 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 		return 0, fmt.Errorf("app not running: %s", bundleID)
 	}
 	return pid, nil
+}
+
+// ApplyNetwork is not yet implemented for iOS.
+//
+// # iOS simulator
+//
+// Apple does not expose a first-class CLI for Link Conditioner. The
+// Network Link Conditioner preference pane (com.apple.Network-Link-Conditioner)
+// and its backing daemon (nslookupd / nlcd) are host-level — they affect
+// all network traffic on the Mac, not just a single simulator instance.
+// Some third-party tools (e.g. `nlct`) wrap the pane, but they are not
+// reliably available and the API is private. Contributions that implement
+// per-simulator shaping (e.g. via `simctl` future flags or the private
+// CoreSimulator framework) are welcome.
+//
+// # Physical iOS devices
+//
+// Physical iOS devices do not expose a programmable network-shaping
+// interface to the host. Apple's Developer Settings → Network Link
+// Conditioner feature can be toggled on-device, but there is no
+// host-side CLI or protocol to drive it remotely.
+func (a *IOSAdapter) ApplyNetwork(_ string, _ network.NetworkProfile) error {
+	return errors.New(
+		"network condition shaping is not supported on iOS: " +
+			"iOS simulator — no public CLI for Link Conditioner (contributions welcome); " +
+			"physical iOS devices — no remote interface to Developer Settings",
+	)
+}
+
+// ClearNetwork is not yet implemented for iOS (same limitations as ApplyNetwork).
+func (a *IOSAdapter) ClearNetwork(_ string) error {
+	return errors.New(
+		"network condition clearing is not supported on iOS: " +
+			"iOS simulator — no public CLI for Link Conditioner (contributions welcome); " +
+			"physical iOS devices — no remote interface to Developer Settings",
+	)
 }
 
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.

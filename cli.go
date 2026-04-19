@@ -65,6 +65,7 @@ func init() {
 		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
+		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
 	}
 }
 
@@ -900,6 +901,35 @@ func runRecord(args []string) {
 	} else {
 		dispatchAndExit("record_stop", a, false)
 	}
+}
+
+func runNet(args []string) {
+	pf, err := parseFlags(args, []string{"--profile", "--as"}, []string{"--clear"})
+	if err != nil {
+		fatalUsage("net", err)
+	}
+	requirePositional("net", pf, 1)
+	dev := pf.positional[0]
+	profile := pf.flags["--profile"]
+	clear := pf.bools["--clear"]
+
+	if profile == "" && !clear {
+		fatalUsage("net", fmt.Errorf("supply --profile NAME or --clear"))
+	}
+	if profile != "" && clear {
+		fatalUsage("net", fmt.Errorf("--profile and --clear are mutually exclusive"))
+	}
+
+	a := map[string]any{
+		"device": dev,
+		"owner":  deriveOwner(pf.flags["--as"]),
+	}
+	if clear {
+		a["clear"] = true
+	} else {
+		a["profile"] = profile
+	}
+	dispatchAndExit("network", a, false)
 }
 
 // --- helpers --------------------------------------------------------

@@ -21,6 +21,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/recording"
+	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/simemu"
@@ -415,7 +416,99 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 		}
 	}
 
+
+	// Best-effort network clear: if this owner applied a network profile
+	// on this device, clear it on reservation release.  Errors are
+	// surfaced in the result text but do not fail the release.  This
+	// covers the normal-exit path; if the daemon dies before release the
+	// emulator retains the applied profile until the next explicit clear
+	// or emulator restart (documented in the tool description).
+	h.mu.Lock()
+	applied, hasProfile := h.networkByDevice[dev]
+	if hasProfile && applied.owner == owner {
+		delete(h.networkByDevice, dev)
+		// Resolve the adapter while still under the lock (same pattern
+		// as all other handler methods).
+		adapter, _, id, resolveErr := h.resolveAdapter(dev)
+		h.mu.Unlock()
+		if resolveErr == nil {
+			if clearErr := adapter.ClearNetwork(id); clearErr != nil {
+				return toolText(fmt.Sprintf(
+					"released reservation on %s (network clear failed: %v — clear manually if needed)",
+					dev, clearErr,
+				))
+			}
+		}
+	} else {
+		h.mu.Unlock()
+	}
+
 	return toolText(fmt.Sprintf("released reservation on %s", dev))
+}
+
+// handleNetwork applies or clears a network condition profile on a device.
+// Requires an active reservation from the caller (owner field).
+//
+// Arguments:
+//
+//	device  — required; device alias or UUID.
+//	owner   — required; must match the current reservation holder.
+//	profile — optional; named or dynamic profile string. Mutually exclusive with clear.
+//	clear   — optional bool; if true, clears any applied profile. Mutually exclusive with profile.
+//
+// Exactly one of profile or clear must be supplied.
+func (h *Handler) handleNetwork(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner, err := requireString(args, "owner")
+	if err != nil {
+		return nil, err
+	}
+
+	profileName := optString(args, "profile")
+	clearFlag, _ := args["clear"].(bool)
+
+	if profileName == "" && !clearFlag {
+		return toolErr("network: supply either profile=<name> or clear=true")
+	}
+	if profileName != "" && clearFlag {
+		return toolErr("network: profile and clear are mutually exclusive")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	if clearFlag {
+		if err := adapter.ClearNetwork(id); err != nil {
+			return toolErr("clear network on %s: %v", dev, err)
+		}
+		delete(h.networkByDevice, dev)
+		return toolText(fmt.Sprintf("network conditions cleared on %s", dev))
+	}
+
+	// Apply profile.
+	p, err := network.Parse(profileName)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	if applyErr := adapter.ApplyNetwork(id, p); applyErr != nil {
+		return toolErr("apply network %q on %s: %v", profileName, dev, applyErr)
+	}
+
+	h.networkByDevice[dev] = appliedNetwork{profile: p, owner: owner}
+	return toolText(fmt.Sprintf("network profile %q applied on %s", profileName, dev))
 }
 
 func (h *Handler) handleRenew(args map[string]any) (*mcpgo.CallToolResult, error) {
