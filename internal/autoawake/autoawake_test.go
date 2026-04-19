@@ -123,6 +123,31 @@ func TestFindKeepAwakeProject_WalkUp(t *testing.T) {
 	}
 }
 
+// --- isTrustError -----------------------------------------------------
+
+func TestIsTrustError(t *testing.T) {
+	yes := []string{
+		"DvtException: {'BSErrorCodeDescription': 'Security', 'NSLocalizedFailureReason': '...'}",
+		"Unable to launch com.foo because it has an invalid code signature",
+		"... or its profile has not been explicitly trusted by the user",
+	}
+	for _, s := range yes {
+		if !isTrustError(errFromString(s)) {
+			t.Errorf("isTrustError(%q) = false; want true", s[:min(60, len(s))])
+		}
+	}
+	no := []string{
+		"DvtException: {'BSErrorCodeDescription': 'Locked', ...}",
+		"device not connected: 00008103-…",
+		"",
+	}
+	for _, s := range no {
+		if isTrustError(errFromString(s)) {
+			t.Errorf("isTrustError(%q) = true; want false", s)
+		}
+	}
+}
+
 // --- summariseErr ------------------------------------------------------
 
 func TestSummariseErr_PrefersDvtException(t *testing.T) {
