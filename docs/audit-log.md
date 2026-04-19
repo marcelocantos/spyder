@@ -30,3 +30,20 @@ maintenance activities. Append-only — newest entries at the bottom.
   packages. STABILITY.md updated with the new surface and an honest
   assessment of shell-out coverage gaps. Published for darwin-arm64,
   linux-amd64, linux-arm64.
+
+## 2026-04-19 — /release v0.3.0
+
+- **Commit**: pending
+- **Outcome**: Service-polish release. Fixed the v0.2.0 Homebrew
+  formula so the launchd service inherits a usable PATH (covers
+  /opt/homebrew/bin and system dirs) — v0.2.0's install was silently
+  broken when spyder ran as `brew services` because pymobiledevice3 /
+  alerter / xcodegen / adb weren't resolvable. Added a persistent
+  macOS alert when auto-awake hits pymobiledevice3's `'Security'`
+  DvtException (developer profile not trusted on device) so users
+  aren't hunting through logs to diagnose the Trust-on-device step.
+  Documented brew-services env-var requirements in agents-guide.md,
+  with a launchctl setenv snippet for non-Homebrew pymobiledevice3
+  installs and a note that SPYDER_KEEPAWAKE_PROJECT is slated for
+  removal once the KeepAwake Xcode project is go:embedded into the
+  binary. Published for darwin-arm64, linux-amd64, linux-arm64.
