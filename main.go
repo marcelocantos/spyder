@@ -39,8 +39,12 @@ var agentsGuide string
 var version = "dev"
 
 // defaultAddr is the HTTP listen address when `spyder serve` is invoked
-// without --addr.
-const defaultAddr = ":3030"
+// without --addr. Binds to loopback only by default — the MCP endpoint
+// exposes powerful tool surfaces (screenshots, app lifecycle, device
+// reservation) with no auth, so a wildcard bind on shared Wi-Fi would
+// let any LAN peer drive your devices. Pass --addr :3030 explicitly
+// to expose externally.
+const defaultAddr = "127.0.0.1:3030"
 
 // defaultRunDevice is the device alias used when `spyder run` is invoked
 // without --device. The inventory must contain an entry with this alias.

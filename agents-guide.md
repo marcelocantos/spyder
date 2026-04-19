@@ -192,9 +192,16 @@ step is Apple-imposed and cannot be automated.
 ## Configuration
 
 ```bash
-spyder serve --addr :3030                     # default; HTTP MCP on /mcp
+spyder serve                                  # default: 127.0.0.1:3030, HTTP MCP on /mcp (loopback only)
+spyder serve --addr :3030                     # expose on all interfaces (caution: no auth; only on trusted networks)
 spyder serve --tunneld-addr 127.0.0.1:49151   # non-default tunneld location
 ```
+
+**Security note.** Spyder's MCP endpoint has no authentication; anyone
+who can hit `http://<addr>:3030/mcp` can take screenshots, launch /
+terminate apps, and hold reservations on your devices. The default
+loopback bind is deliberate — external exposure is opt-in via
+`--addr` and should only be used on trusted networks.
 
 Environment variables:
 

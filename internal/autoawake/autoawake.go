@@ -210,7 +210,7 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 		}
 	}
 
-	for attempt := 0; attempt < retryWhileLockedBudget; attempt++ {
+	for range retryWhileLockedBudget {
 		// Re-check running each iteration — user might have launched
 		// it manually between attempts.
 		if running, _ := s.isKeepAwakeRunning(udid); running {
@@ -293,7 +293,7 @@ func summariseErr(err error) string {
 		return strings.TrimSpace(s[i:])
 	}
 	// Pull the first non-decorative line.
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "│") || strings.HasPrefix(line, "╰") ||
 			strings.HasPrefix(line, "╭") || strings.HasPrefix(line, "→") {
