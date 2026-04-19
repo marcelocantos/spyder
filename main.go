@@ -53,16 +53,32 @@ const defaultRunDevice = "Pippa"
 const usage = `Usage: spyder [command]
 
 Commands:
-  serve        Start the HTTP MCP server (default :3030, endpoint /mcp)
-  run          Run a command, then foreground KeepAwake on the device
-  version      Print version and exit
-  help-agent   Print the usage above followed by the agent guide
+  serve         Start the HTTP MCP server (default :3030, endpoints /mcp and /api/v1/)
+  run           Run a command, then foreground KeepAwake on the device
+  version       Print version and exit
+  help-agent    Print the usage above followed by the agent guide
+
+Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
+  devices       List connected devices (--platform ios|android|all, --json)
+  resolve       Resolve a device alias to platform identifiers
+  device-state  Report battery, thermal, foreground app
+  screenshot    Capture a PNG to a file (--output FILE, --as OWNER)
+  keepawake     Foreground KeepAwake on an iOS device (--as OWNER)
+  list-apps     List installed third-party apps
+  launch-app    Launch an app by bundle id (--as OWNER)
+  terminate-app Terminate an app by bundle id (--as OWNER)
+  reserve       Acquire an exclusive lock (--as OWNER, --ttl SECONDS, --note)
+  release       Release a reservation you hold (--as OWNER)
+  renew         Extend a reservation you hold (--as OWNER, --ttl SECONDS)
+  reservations  List all active reservations (--json)
 
 Serve:
   spyder serve [--addr :3030]
 
   Runs an MCP server over streamable HTTP. Register with Claude Code:
     claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
+
+  The same listener exposes REST at http://<host>/api/v1/<tool> (POST JSON).
 
 Run:
   spyder run [--device <alias>] -- <command> [args...]
@@ -94,6 +110,10 @@ func main() {
 		fmt.Println()
 		fmt.Print(agentsGuide)
 	default:
+		if c := lookupCLI(cmd); c != nil {
+			c.run(os.Args[2:])
+			return
+		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)
 		os.Exit(1)
 	}

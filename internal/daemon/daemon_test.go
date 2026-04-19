@@ -15,18 +15,16 @@ import (
 	"time"
 )
 
-// mcpTestServer wraps daemon.Build's streamable HTTP handler in an
-// httptest.Server mounted at /mcp so we can POST JSON-RPC at it.
-func mcpTestServer(t *testing.T) (url string, teardown func()) {
+// mcpTestServer wraps daemon.Build's mux in an httptest.Server; the
+// mux already routes /mcp (streamable HTTP) and /api/v1/ (REST).
+func mcpTestServer(t *testing.T) (base string, teardown func()) {
 	t.Helper()
-	httpSrv, _, _ := Build(Config{
+	handler, _, _ := Build(Config{
 		Version:     "test",
 		TunneldAddr: "127.0.0.1:1", // guaranteed-unreachable so probe fails quietly
 	})
-	mux := http.NewServeMux()
-	mux.Handle("/mcp", httpSrv)
-	ts := httptest.NewServer(mux)
-	return ts.URL + "/mcp", ts.Close
+	ts := httptest.NewServer(handler)
+	return ts.URL, ts.Close
 }
 
 // postJSON sends a POST to url with the given JSON-RPC body and
@@ -61,10 +59,10 @@ func postJSON(t *testing.T, url, session string, body any) (map[string]any, stri
 }
 
 func TestBuild_InitializeRoundtrip(t *testing.T) {
-	url, teardown := mcpTestServer(t)
+	base, teardown := mcpTestServer(t)
 	defer teardown()
 
-	resp, sid := postJSON(t, url, "", map[string]any{
+	resp, sid := postJSON(t, base+"/mcp", "", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "initialize",
@@ -88,11 +86,11 @@ func TestBuild_InitializeRoundtrip(t *testing.T) {
 }
 
 func TestBuild_ToolsListHasAllTools(t *testing.T) {
-	url, teardown := mcpTestServer(t)
+	base, teardown := mcpTestServer(t)
 	defer teardown()
 
 	// Initialize first (required to open a session).
-	_, sid := postJSON(t, url, "", map[string]any{
+	_, sid := postJSON(t, base+"/mcp", "", map[string]any{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "initialize",
@@ -104,7 +102,7 @@ func TestBuild_ToolsListHasAllTools(t *testing.T) {
 	})
 
 	// tools/list within the session.
-	resp, _ := postJSON(t, url, sid, map[string]any{
+	resp, _ := postJSON(t, base+"/mcp", sid, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
 		"method":  "tools/list",

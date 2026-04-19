@@ -61,6 +61,44 @@ everything below plus gotchas, device-inventory format, and the full
 | `terminate_app` | Stop an app by bundle id. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
 
+## REST API
+
+Every MCP tool is also exposed as plain HTTP+JSON on the same listener:
+
+```bash
+# Human-or-script friendly: shares state with the MCP endpoint.
+curl -s -X POST http://127.0.0.1:3030/api/v1/devices \
+  -H 'Content-Type: application/json' -d '{"platform":"android"}'
+
+# Zero-arg tools accept an empty body.
+curl -s -X POST http://127.0.0.1:3030/api/v1/reservations
+```
+
+Responses are JSON-encoded `mcp.CallToolResult` objects
+(`{"content":[{"type":"text","text":"…"}], "isError":false}`).
+Image-bearing tools (`screenshot`) yield `type:"image"` with base64
+`data` + `mimeType`, identical to MCP.
+
+Reservation state is shared between transports — an agent holding a
+reservation via MCP blocks a shell script hitting REST and vice versa.
+
+## CLI device tools
+
+The same surface is available as subcommands of the `spyder` binary.
+These POST to the local daemon; set `SPYDER_DAEMON_URL` to override
+the default `http://127.0.0.1:3030`.
+
+```bash
+spyder devices --platform ios --json
+spyder screenshot Pippa --output /tmp/pippa.png
+spyder reserve Pippa --ttl 600 --note "UI sweep"
+spyder reservations --json
+spyder release Pippa
+```
+
+`--as OWNER` flags default to `filepath.Base(cwd)` so project-rooted
+shells get a sensible reservation identity without ceremony.
+
 ## Test-run wrapper
 
 ```bash
