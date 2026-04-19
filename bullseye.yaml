@@ -221,10 +221,11 @@ targets:
     achieved: 2026-04-19
   T13:
     name: Programmatic orientation control for iOS simulators and Android emulators
-    status: identified
+    status: achieved
     value: 5.0
     cost: 2.0
     observable: true
+    actual_cost: 2.0
     acceptance:
     - spyder tool rotates an iOS simulator via simctl io <udid> rotate to portrait, landscape-left, landscape-right, portrait-upside-down
     - spyder tool rotates an Android emulator via adb emu rotate (or equivalent)
@@ -236,12 +237,14 @@ targets:
     - T12
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T14:
     name: Screen recording capture for iOS and Android
-    status: identified
+    status: achieved
     value: 8.0
     cost: 5.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - start/stop recording a video on iOS simulator, iOS device, and Android (device+emu)
     - Recording tool returns an mp4 (or path to one) bound to the run artefact store
@@ -254,12 +257,14 @@ targets:
     - T20
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T15:
     name: Crash report collection for iOS and Android with time-range filtering
-    status: identified
+    status: achieved
     value: 8.0
     cost: 3.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - 'iOS: fetch .ips reports via pymobiledevice3 crash-reports (or devicectl equivalent), optionally filtered by since-timestamp and process name'
     - 'Android: fetch recent tombstones via adb (tombstones/ dir + logcat -b crash)'
@@ -272,12 +277,14 @@ targets:
     - T20
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T16:
     name: App install and uninstall through the daemon (no direct devicectl/adb from scripts)
-    status: identified
+    status: achieved
     value: 8.0
     cost: 3.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - 'install_app tool: accepts an .app (iOS) or .apk (Android) path, installs on the reserved device'
     - 'uninstall_app tool: removes a bundle-id/package from the reserved device'
@@ -289,12 +296,14 @@ targets:
     - T12
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T17:
     name: Network condition shaping for streaming-protocol testing
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - 'Named profiles: wifi, 4g, 3g, edge, offline, lossy-<pct>, delay-<ms>'
     - 'iOS simulator: apply via Link Conditioner config or CoreSimulator equivalent'
@@ -307,12 +316,14 @@ targets:
     - T12
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T18:
     name: Simulator and emulator lifecycle management (create, boot, shutdown, delete)
-    status: identified
+    status: achieved
     value: 5.0
     cost: 8.0
     observable: true
+    actual_cost: 8.0
     acceptance:
     - 'iOS: list/create/boot/shutdown/delete simulators by type + runtime'
     - 'Android: list/create/boot/shutdown/delete AVDs by system-image + device-profile'
@@ -324,12 +335,14 @@ targets:
     - T12
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T19:
     name: Device log tailing with filters over the daemon
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - 'Live tail: server-sent events (or chunked REST) streaming filtered log lines to a client'
     - 'Range query: fetch log lines between timestamps T1 and T2'
@@ -342,6 +355,7 @@ targets:
     - T20
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
     status: achieved
@@ -383,10 +397,11 @@ targets:
     achieved: 2026-04-19
   T21:
     name: 'Visual regression tooling: semantic-first diff with pixel diff as floor'
-    status: identified
+    status: achieved
     value: 13.0
     cost: 13.0
     observable: true
+    actual_cost: 8.0
     acceptance:
     - 'Baseline store: ~/.spyder/baselines/<suite>/<case>.{png,manifest.json} with per-device / per-orientation variants'
     - Compare tool accepts a screenshot + optional semantic manifest and compares against the baseline in the named suite
@@ -438,6 +453,7 @@ targets:
     - T20
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T22:
     name: iOS device enumeration implemented in devices tool
     status: achieved
