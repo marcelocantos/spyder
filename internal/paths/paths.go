@@ -23,3 +23,11 @@ func Base() string {
 func InventoryPath() string {
 	return filepath.Join(Base(), "inventory.json")
 }
+
+// RunsBase returns the root directory for run-artefact bundles
+// (~/.spyder/runs). Each reservation owns a subdirectory under this
+// path containing a manifest.json plus captured screenshots, logs,
+// recordings, and crash reports.
+func RunsBase() string {
+	return filepath.Join(Base(), "runs")
+}

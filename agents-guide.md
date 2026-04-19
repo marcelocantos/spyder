@@ -109,6 +109,8 @@ everything it can see.
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. |
 | `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
 | `reservations` | List active reservations. | Read-only. |
+| `runs_list` | List run-artefact bundles under `~/.spyder/runs/`, newest first. | Read-only. |
+| `runs_show` | Return a single run's full manifest (device, owner, timestamps, artefacts). | Read-only. `{run_id}`. |
 
 ## Reservations
 
@@ -135,6 +137,43 @@ the device, pass `"owner": "<your-owner>"` in the arguments map. The
 server resolves canonical identity via the inventory, so reserving
 "Pippa" also blocks operations on her raw UDID and vice versa.
 
+## Run-artefact store
+
+Every successful `reserve` opens a **run** — a directory under
+`~/.spyder/runs/<run-id>/` that collects screenshots, recordings, logs,
+and crash reports captured during that reservation. `release` (and the
+equivalent `spyder run` exit path) closes the run. The run's
+`manifest.json` enumerates every artefact with its source tool,
+timestamp, mime type, and size.
+
+Currently the `screenshot` tool writes its PNG into the active run's
+directory in addition to returning it inline. Future tools (recording,
+log capture, crash collection) will follow the same convention.
+
+```bash
+# List all runs, newest first.
+spyder runs list
+
+# Inspect one run's full manifest.
+spyder runs show 20260419-143022-a3f1b2
+
+# Just the artefacts table for a run.
+spyder runs artefacts 20260419-143022-a3f1b2
+```
+
+Retention is enforced when the daemon starts up. Two bounds, either
+optional, configured via environment:
+
+- `SPYDER_RUNS_MAX_AGE_DAYS` — default 30. Closed runs older than this
+  are deleted. Open runs are never pruned by age.
+- `SPYDER_RUNS_MAX_SIZE_GB` — default 20. If total artefact bytes
+  exceed this, oldest closed runs are deleted until the store is under
+  the cap.
+
+Set either to `0` to disable that bound. When spyder is run as a
+Homebrew service, use `launchctl setenv` as described for
+`SPYDER_KEEPAWAKE_PROJECT` above.
+
 ## REST API and CLI subcommands
 
 Every MCP tool is also exposed over plain HTTP+JSON on the same
@@ -160,6 +199,8 @@ spyder screenshot Pippa --output /tmp/pippa.png
 spyder reserve Pippa --ttl 600 --note "UI sweep"
 spyder list-apps Pippa --json
 spyder release Pippa
+spyder runs list
+spyder runs show 20260419-143022-a3f1b2
 ```
 
 `--as OWNER` defaults to `filepath.Base(cwd)` (same convention as

@@ -56,6 +56,7 @@ func init() {
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
+		{"runs", "spyder runs <list|show|artefacts> [args...]", runRuns},
 	}
 }
 
@@ -500,6 +501,96 @@ func runReservations(args []string) {
 		fatalUsage("reservations", err)
 	}
 	dispatchAndExit("reservations", map[string]any{}, pf.bools["--json"])
+}
+
+// runRuns dispatches `spyder runs <subcommand>` — a two-level
+// subcommand group for run-artefact inspection. Kept close to the
+// flat-subcommand style above; each leaf is a tiny REST wrapper.
+func runRuns(args []string) {
+	if len(args) == 0 {
+		fatalUsage("runs", fmt.Errorf("missing subcommand — expected list|show|artefacts"))
+	}
+	switch args[0] {
+	case "list":
+		runRunsList(args[1:])
+	case "show":
+		runRunsShow(args[1:])
+	case "artefacts":
+		runRunsArtefacts(args[1:])
+	default:
+		fatalUsage("runs", fmt.Errorf("unknown subcommand %q — expected list|show|artefacts", args[0]))
+	}
+}
+
+func runRunsList(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("runs", err)
+	}
+	dispatchAndExit("runs_list", map[string]any{}, pf.bools["--json"])
+}
+
+func runRunsShow(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("runs", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("runs", fmt.Errorf("show expects one run-id"))
+	}
+	dispatchAndExit("runs_show",
+		map[string]any{"run_id": pf.positional[0]},
+		pf.bools["--json"])
+}
+
+// runRunsArtefacts reuses runs_show and extracts just the artefacts
+// array so scripts can pipe it. Defaults to a tabular render; --json
+// emits the raw array.
+func runRunsArtefacts(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("runs", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("runs", fmt.Errorf("artefacts expects one run-id"))
+	}
+	res, err := postTool("runs_show", map[string]any{"run_id": pf.positional[0]})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spyder runs artefacts: %v\n", err)
+		os.Exit(1)
+	}
+	if res.IsError {
+		fmt.Fprintln(os.Stderr, res.firstText())
+		os.Exit(1)
+	}
+	var run struct {
+		ID        string `json:"id"`
+		Artefacts []struct {
+			Name      string `json:"name"`
+			Source    string `json:"source"`
+			MIMEType  string `json:"mime_type"`
+			Size      int64  `json:"size"`
+			CreatedAt string `json:"created_at"`
+		} `json:"artefacts"`
+	}
+	if err := json.Unmarshal([]byte(res.firstText()), &run); err != nil {
+		fmt.Fprintf(os.Stderr, "spyder runs artefacts: parse: %v\n", err)
+		os.Exit(1)
+	}
+	if pf.bools["--json"] {
+		data, _ := json.MarshalIndent(run.Artefacts, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+	if len(run.Artefacts) == 0 {
+		fmt.Printf("no artefacts recorded for %s\n", run.ID)
+		return
+	}
+	fmt.Printf("%-40s %-12s %-20s %10s %s\n", "NAME", "SOURCE", "MIME", "SIZE", "CREATED")
+	for _, a := range run.Artefacts {
+		fmt.Printf("%-40s %-12s %-20s %10d %s\n",
+			a.Name, a.Source, a.MIMEType, a.Size, a.CreatedAt)
+	}
 }
 
 // --- helpers --------------------------------------------------------

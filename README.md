@@ -60,6 +60,7 @@ everything below plus gotchas, device-inventory format, and the full
 | `launch_app` | Foreground an arbitrary app by bundle id. |
 | `terminate_app` | Stop an app by bundle id. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
+| `runs_list` / `runs_show` | Inspect per-reservation artefact bundles under `~/.spyder/runs/`. |
 
 ## REST API
 
@@ -94,6 +95,9 @@ spyder screenshot Pippa --output /tmp/pippa.png
 spyder reserve Pippa --ttl 600 --note "UI sweep"
 spyder reservations --json
 spyder release Pippa
+spyder runs list
+spyder runs show 20260419-143022-a3f1b2
+spyder runs artefacts 20260419-143022-a3f1b2
 ```
 
 `--as OWNER` flags default to `filepath.Base(cwd)` so project-rooted

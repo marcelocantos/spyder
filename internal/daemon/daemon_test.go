@@ -17,8 +17,11 @@ import (
 
 // mcpTestServer wraps daemon.Build's mux in an httptest.Server; the
 // mux already routes /mcp (streamable HTTP) and /api/v1/ (REST).
+// HOME is redirected to a tempdir so reservation + run-artefact state
+// doesn't touch the user's real ~/.spyder.
 func mcpTestServer(t *testing.T) (base string, teardown func()) {
 	t.Helper()
+	t.Setenv("HOME", t.TempDir())
 	handler, _, _ := Build(Config{
 		Version:     "test",
 		TunneldAddr: "127.0.0.1:1", // guaranteed-unreachable so probe fails quietly
@@ -133,6 +136,7 @@ func TestRun_ShutsDownOnContextCancel(t *testing.T) {
 	// (the happy-path for signal-driven shutdown). Uses ":0" so the
 	// kernel picks a free port. DisableAutoAwake keeps the test from
 	// poking real tunneld.
+	t.Setenv("HOME", t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {

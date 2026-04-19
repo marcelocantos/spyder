@@ -16,6 +16,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/reservations"
+	"github.com/marcelocantos/spyder/internal/runs"
 )
 
 // Handler implements the spyder tool handler.
@@ -26,6 +27,7 @@ type Handler struct {
 	android      device.Adapter
 	tunneld      TunneldGate
 	reservations *reservations.Store
+	runs         *runs.Store
 }
 
 // TunneldGate is satisfied by *tunneld.Client. The small interface lets
@@ -43,6 +45,13 @@ type HandlerOption func(*Handler)
 // tools run without any reservation checks (useful for tests).
 func WithReservations(s *reservations.Store) HandlerOption {
 	return func(h *Handler) { h.reservations = s }
+}
+
+// WithRuns injects a run-artefact store. When present, `reserve`
+// opens a run, `release` closes it, and artefact-producing tools
+// (currently just screenshot) write into the active run dir.
+func WithRuns(s *runs.Store) HandlerOption {
+	return func(h *Handler) { h.runs = s }
 }
 
 // WithInventory injects a shared inventory store. Useful when the
@@ -95,6 +104,10 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleRenew(args)
 	case "reservations":
 		return h.handleReservations(args)
+	case "runs_list":
+		return h.handleRunsList(args)
+	case "runs_show":
+		return h.handleRunsShow(args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -233,6 +246,18 @@ func Definitions() []mcpgo.Tool {
 
 		mcpgo.NewTool("reservations",
 			mcpgo.WithDescription("List all active reservations across all devices. Read-only."),
+		),
+
+		mcpgo.NewTool("runs_list",
+			mcpgo.WithDescription("List run-artefact bundles under ~/.spyder/runs, newest first. Each reservation opens a run; artefact-producing tools (screenshot, future: record/log/crashes) deposit files there."),
+		),
+
+		mcpgo.NewTool("runs_show",
+			mcpgo.WithDescription("Return a single run's full manifest — device, owner, note, timestamps, and the list of artefacts (name, source tool, mime, size, timestamp)."),
+			mcpgo.WithString("run_id",
+				mcpgo.Required(),
+				mcpgo.Description("Run id as returned by runs_list (e.g. 20260419-143022-a3f1b2)"),
+			),
 		),
 	}
 }

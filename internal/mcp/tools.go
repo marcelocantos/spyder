@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -15,6 +16,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/reservations"
+	"github.com/marcelocantos/spyder/internal/runs"
 )
 
 func requireString(args map[string]any, key string) (string, error) {
@@ -189,11 +191,52 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 	if err != nil {
 		return toolErr("screenshot on %s: %v", dev, err)
 	}
+	h.archiveArtefact(dev, owner, "screenshot", "image/png", ".png", png)
 	return mcpgo.NewToolResultImage(
 		fmt.Sprintf("screenshot of %s (%d bytes)", dev, len(png)),
 		base64.StdEncoding.EncodeToString(png),
 		"image/png",
 	), nil
+}
+
+// archiveArtefact writes data into the active run for (device, owner)
+// if one exists. Best-effort: missing run store, no active run, or a
+// write failure all log and return. The primary tool result is
+// authoritative; artefact persistence is observability.
+func (h *Handler) archiveArtefact(dev, owner, source, mime, ext string, data []byte) {
+	if h.runs == nil {
+		return
+	}
+	canonical := h.canonicalDevice(dev)
+	run, err := h.runs.Active(canonical, owner)
+	if err != nil {
+		slog.Warn("runs: active lookup failed",
+			"device", canonical, "owner", owner, "error", err)
+		return
+	}
+	if run == nil {
+		return
+	}
+	name := fmt.Sprintf("%s-%s%s",
+		source, time.Now().UTC().Format("20060102-150405"), ext)
+	if _, err := h.runs.AddArtefact(run.ID, source, name, mime, data); err != nil {
+		slog.Warn("runs: archive artefact failed",
+			"run", run.ID, "source", source, "error", err)
+	}
+}
+
+// canonicalDevice returns the inventory alias for ref when one is
+// known, mirroring the reservation normaliser so Active() lookups key
+// off the same string regardless of whether the caller passed an
+// alias or a raw UDID/serial.
+func (h *Handler) canonicalDevice(ref string) string {
+	if h.inventory == nil {
+		return ref
+	}
+	if entry, ok := h.inventory.Lookup(ref); ok && entry.Alias != "" {
+		return entry.Alias
+	}
+	return ref
 }
 
 func (h *Handler) handleListApps(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -310,6 +353,24 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 	if err != nil {
 		return toolErr("%v", err)
 	}
+
+	// Ensure a run is open for this (device, owner). Best-effort;
+	// reservation acquisition is already committed.
+	if h.runs != nil {
+		canonical := h.canonicalDevice(dev)
+		existing, lerr := h.runs.Active(canonical, owner)
+		switch {
+		case lerr != nil:
+			slog.Warn("runs: active lookup on reserve failed",
+				"device", canonical, "owner", owner, "error", lerr)
+		case existing == nil:
+			if _, err := h.runs.Open(canonical, owner, note); err != nil {
+				slog.Warn("runs: open on reserve failed",
+					"device", canonical, "owner", owner, "error", err)
+			}
+		}
+	}
+
 	return toolJSON(r)
 }
 
@@ -328,6 +389,18 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 	if err := h.reservations.Release(dev, owner); err != nil {
 		return toolErr("%v", err)
 	}
+
+	// Close the matching run, if any. Best-effort.
+	if h.runs != nil {
+		canonical := h.canonicalDevice(dev)
+		if run, lerr := h.runs.Active(canonical, owner); lerr == nil && run != nil {
+			if cerr := h.runs.Close(run.ID); cerr != nil {
+				slog.Warn("runs: close on release failed",
+					"run", run.ID, "error", cerr)
+			}
+		}
+	}
+
 	return toolText(fmt.Sprintf("released reservation on %s", dev))
 }
 
@@ -356,6 +429,37 @@ func (h *Handler) handleReservations(_ map[string]any) (*mcpgo.CallToolResult, e
 		return toolJSON([]reservations.Reservation{})
 	}
 	return toolJSON(h.reservations.List())
+}
+
+// --- run-artefact tools --------------------------------------------
+
+func (h *Handler) handleRunsList(_ map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.runs == nil {
+		return toolJSON([]runs.Run{})
+	}
+	list, err := h.runs.List()
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if list == nil {
+		list = []runs.Run{}
+	}
+	return toolJSON(list)
+}
+
+func (h *Handler) handleRunsShow(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.runs == nil {
+		return toolErr("runs store not configured on this server")
+	}
+	id, err := requireString(args, "run_id")
+	if err != nil {
+		return nil, err
+	}
+	r, err := h.runs.Get(id)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(r)
 }
 
 // optNumber extracts a float64-coerced integer-ish value. MCP

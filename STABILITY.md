@@ -39,6 +39,8 @@ Snapshot as of `v0.4.0`.
 | `release` | `{device: string, owner: string}`. | Text confirmation. | Stable |
 | `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
 | `reservations` | (no args). | JSON array of active `Reservation` records. | Stable |
+| `runs_list` | (no args). | JSON array of `runs.Run` records (id, device, owner, note, created_at, closed_at?, artefacts?), newest first. | Needs review — field additions expected as more artefact-producing tools land |
+| `runs_show` | `{run_id: string}`. | JSON-encoded `runs.Run` with full artefact list. | Needs review — same caveat as `runs_list` |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -67,6 +69,9 @@ can match on these phrases.
 | `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
 | `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |
 | `spyder reservations [--json]` | REST proxy to `reservations`. | Stable |
+| `spyder runs list [--json]` | REST proxy to `runs_list`. | Needs review |
+| `spyder runs show <run-id> [--json]` | REST proxy to `runs_show`. | Needs review |
+| `spyder runs artefacts <run-id> [--json]` | REST proxy to `runs_show`; prints just the artefacts table. | Needs review |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
@@ -137,6 +142,31 @@ records:
 
 Missing file is treated as empty, not an error. Alias lookup is
 case-insensitive. **Stable.**
+
+### Run-artefact store
+
+Path: `~/.spyder/runs/<run-id>/`. Each reservation opens one run
+directory; artefact-producing tools (currently `screenshot`) write into
+it, and `manifest.json` enumerates every file. `release` stamps
+`closed_at` on the manifest.
+
+```
+~/.spyder/runs/
+  20260419-143022-a3f1b2/
+    manifest.json
+    screenshot-20260419-143025.png
+```
+
+Retention is enforced on daemon startup. Configurable via environment:
+
+- `SPYDER_RUNS_MAX_AGE_DAYS` (default `30`; `0` disables). Closed runs
+  older than this are deleted.
+- `SPYDER_RUNS_MAX_SIZE_GB` (default `20`; `0` disables). Measures the
+  sum of `artefacts[].size` from each run's manifest; deletes oldest
+  closed runs until total ≤ cap.
+
+Open runs are never pruned — they represent in-flight reservations.
+**Needs review** — schema may gain fields as more artefact tools land.
 
 ### Version macro
 
