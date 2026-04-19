@@ -60,8 +60,9 @@ everything below plus gotchas, device-inventory format, and the full
 | `launch_app` | Foreground an arbitrary app by bundle id. |
 | `terminate_app` | Stop an app by bundle id. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
+| `logs` | Fetch log lines between two timestamps. Filters: `process`, `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
 
-## REST API
+## REST API and live log streaming
 
 Every MCP tool is also exposed as plain HTTP+JSON on the same listener:
 
@@ -78,6 +79,18 @@ Responses are JSON-encoded `mcp.CallToolResult` objects
 (`{"content":[{"type":"text","text":"…"}], "isError":false}`).
 Image-bearing tools (`screenshot`) yield `type:"image"` with base64
 `data` + `mimeType`, identical to MCP.
+
+For live log tailing, use the SSE endpoint:
+
+```bash
+# Stream filtered log lines until Ctrl-C.
+curl -N -X POST http://127.0.0.1:3030/api/v1/log_stream \
+  -H 'Content-Type: application/json' \
+  -d '{"device":"Pippa","process":"MyApp","regex":"error"}'
+```
+
+Each SSE event is `data: <JSON LogLine>` on a single line, followed by a
+blank line. The stream runs until the client disconnects.
 
 Reservation state is shared between transports — an agent holding a
 reservation via MCP blocks a shell script hitting REST and vice versa.

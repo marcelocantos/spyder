@@ -109,6 +109,54 @@ everything it can see.
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. |
 | `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
 | `reservations` | List active reservations. | Read-only. |
+| `logs` | Fetch log lines between two timestamps. | Read-only. iOS uses `pymobiledevice3 syslog live`; Android uses `adb logcat`. For live tailing use REST SSE (see below). |
+
+### Log queries — range vs. live
+
+The `logs` MCP tool returns a bounded JSON array of `LogLine` records. It
+accepts:
+
+- `device` (required) — alias or UUID.
+- `since` / `until` — RFC3339 timestamps (e.g. `2026-04-19T14:00:00Z`). Both
+  optional. When `since` is omitted, iOS collects from a short live window
+  (≤5 s); Android uses `-d` (dump buffer then exit).
+- `process` — filter by process name (iOS: `--procname`; Android: tag match).
+- `subsystem` — iOS only (`--subsystem com.apple.foo`). Ignored on Android.
+- `tag` — Android logcat tag (e.g. `MyApp`). Ignored on iOS.
+- `regex` — regex applied to the message body (both platforms, client-side).
+
+**MCP transport does not support streaming.** For live log tailing, use the
+REST SSE endpoint instead:
+
+```bash
+# Live tail — server-sent events, each line is a JSON LogLine.
+curl -N -X POST http://127.0.0.1:3030/api/v1/log_stream \
+  -H 'Content-Type: application/json' \
+  -d '{"device":"Pippa","process":"MyApp","regex":"error"}'
+```
+
+Or via the CLI:
+
+```bash
+spyder log Pippa --follow                          # live tail
+spyder log Pippa --follow --process MyApp          # process filter
+spyder log Pippa --since 2026-04-19T00:00:00Z     # bounded range
+spyder log Pippa --regex "crash|panic"             # regex on message
+```
+
+**Platform quirks:**
+
+- **iOS range queries** run `pymobiledevice3 syslog live` for up to 5 seconds
+  and collect lines in the window. This is adequate for post-hoc debugging but
+  is not a true archived-log query. For long-span queries run multiple short
+  windows or use `--follow` and let the stream run while reproducing.
+- **iOS timestamp precision** — pymobiledevice3's syslog output omits the year;
+  spyder assumes the current year. Lines near midnight on New Year's may be
+  misclassified by one year.
+- **Android tag filter** — logcat `-s <tag>:V *:S` suppresses all other tags.
+  Combining tag + regex is the most targeted approach.
+- **Android process filter** — there is no direct process-name filter in logcat;
+  spyder does a case-insensitive substring match on the tag column as a proxy.
 
 ## Reservations
 
@@ -160,6 +208,8 @@ spyder screenshot Pippa --output /tmp/pippa.png
 spyder reserve Pippa --ttl 600 --note "UI sweep"
 spyder list-apps Pippa --json
 spyder release Pippa
+spyder log Pippa --since 2026-04-19T00:00:00Z --json
+spyder log Pippa --follow --process MyApp         # live SSE tail
 ```
 
 `--as OWNER` defaults to `filepath.Base(cwd)` (same convention as

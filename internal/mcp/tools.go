@@ -17,6 +17,55 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 )
 
+// handleLogsRange returns log lines between since and until for a device.
+// Read-only; not subject to reservation checks.
+func (h *Handler) handleLogsRange(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+
+	filter := device.LogFilter{
+		Process:   optString(args, "process"),
+		Subsystem: optString(args, "subsystem"),
+		Tag:       optString(args, "tag"),
+		Regex:     optString(args, "regex"),
+	}
+
+	var since, until time.Time
+	if s := optString(args, "since"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return toolErr("since: invalid RFC3339 timestamp: %v", err)
+		}
+		since = t
+	}
+	if u := optString(args, "until"); u != "" {
+		t, err := time.Parse(time.RFC3339, u)
+		if err != nil {
+			return toolErr("until: invalid RFC3339 timestamp: %v", err)
+		}
+		until = t
+	}
+
+	h.mu.Lock()
+	adapter, _, id, adapterErr := h.resolveAdapter(dev)
+	h.mu.Unlock()
+
+	if adapterErr != nil {
+		return toolErr("%v", adapterErr)
+	}
+
+	lines, err := adapter.LogRange(id, filter, since, until)
+	if err != nil {
+		return toolErr("log range on %s: %v", dev, err)
+	}
+	if lines == nil {
+		lines = []device.LogLine{}
+	}
+	return toolJSON(lines)
+}
+
 func requireString(args map[string]any, key string) (string, error) {
 	v, ok := args[key].(string)
 	if !ok || v == "" {

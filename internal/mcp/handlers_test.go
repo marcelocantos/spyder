@@ -4,10 +4,12 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marcelocantos/spyder/internal/device"
 )
@@ -23,6 +25,8 @@ type stubAdapter struct {
 	listApps        func(id string) ([]device.AppInfo, error)
 	launchApp       func(id, bundle string) error
 	terminateApp    func(id, bundle string) error
+	logRange        func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
+	logStream       func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -66,6 +70,18 @@ func (s *stubAdapter) TerminateApp(id, bundle string) error {
 		return nil
 	}
 	return s.terminateApp(id, bundle)
+}
+func (s *stubAdapter) LogRange(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error) {
+	if s.logRange == nil {
+		return nil, nil
+	}
+	return s.logRange(id, filter, since, until)
+}
+func (s *stubAdapter) LogStream(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error {
+	if s.logStream == nil {
+		return nil
+	}
+	return s.logStream(ctx, id, filter, out)
 }
 
 // stubTunneld is a TunneldGate with controllable Require behaviour.

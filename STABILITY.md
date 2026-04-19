@@ -39,6 +39,7 @@ Snapshot as of `v0.4.0`.
 | `release` | `{device: string, owner: string}`. | Text confirmation. | Stable |
 | `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
 | `reservations` | (no args). | JSON array of active `Reservation` records. | Stable |
+| `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); field set and timestamp precision may evolve |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -67,6 +68,7 @@ can match on these phrases.
 | `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
 | `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |
 | `spyder reservations [--json]` | REST proxy to `reservations`. | Stable |
+| `spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow] [--json]` | Without `--follow`: REST proxy to `logs` MCP tool (bounded JSON array). With `--follow`: SSE live stream via `POST /api/v1/log_stream`. | Needs review — iOS range quirks; live streaming is REST-only |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
@@ -99,6 +101,11 @@ code for `spyder run` when the command itself exits non-zero.
   `isError:true` in the body — transport success, tool failure.
 - Reservation state is shared with the MCP transport: a lock taken via
   one channel is honoured on the other.
+- **SSE log stream:** `POST /api/v1/log_stream` accepts `{device, process?,
+  subsystem?, tag?, regex?}` and returns `Content-Type: text/event-stream`.
+  Each event is `data: <JSON LogLine>\n\n`. The stream runs until the client
+  disconnects. This is the only endpoint that returns a streaming response.
+  Stability: **Needs review** — shape may evolve before 1.0.
 
 ### Reservation file
 
