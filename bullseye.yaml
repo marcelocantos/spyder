@@ -172,9 +172,10 @@ targets:
     achieved: 2026-04-18
   T11:
     name: Reservation system for parallel dev sessions across devices
-    status: identified
+    status: achieved
     value: 13.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - 'Four new MCP tools: reserve, release, renew, reservations — each with structured result shapes (reservation_id, device, owner, expires_at, note)'
     - 'Existing mutating tools (keepawake, screenshot, launch_app, terminate_app) gain strict-reservation enforcement: reject with a clear conflict error if someone else holds the device; proceed if free or owner matches'
@@ -194,6 +195,7 @@ targets:
     - concurrency
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-19
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
     status: achieved
