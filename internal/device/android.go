@@ -627,6 +627,78 @@ func (a *AndroidAdapter) StopRecording(id string, pid int) error {
 	return nil
 }
 
+// InstallApp installs an APK via `adb -s <serial> install -r <path>`.
+// The -r flag replaces an existing installation if present.
+func (a *AndroidAdapter) InstallApp(id, path string) error {
+	if id == "" || path == "" {
+		return errors.New("device id and path are required")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "install", "-r", path)
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return fmt.Errorf("adb install: %v\n%s", err, truncate(combined, 300))
+	}
+	// adb install may exit 0 but include FAILURE in stdout.
+	if strings.Contains(strings.ToUpper(string(out)), "FAILURE") {
+		return fmt.Errorf("adb install failed: %s", truncate(string(out), 300))
+	}
+	return nil
+}
+
+// UninstallApp removes a package via `adb -s <serial> uninstall <package>`.
+func (a *AndroidAdapter) UninstallApp(id, bundleID string) error {
+	if id == "" || bundleID == "" {
+		return errors.New("device id and bundle_id are required")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "uninstall", bundleID)
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return fmt.Errorf("adb uninstall: %v\n%s", err, truncate(combined, 300))
+	}
+	return nil
+}
+
+// AppPID returns the process id of a running app via `adb shell pidof <pkg>`.
+// Returns an error if the app is not running or pidof output is empty.
+func (a *AndroidAdapter) AppPID(id, bundleID string) (int, error) {
+	if id == "" || bundleID == "" {
+		return 0, errors.New("device id and bundle_id are required")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return 0, fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "shell", "pidof", bundleID)
+	if isAndroidDeviceNotConnected(string(stderr)) {
+		return 0, fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("app not running: %s", bundleID)
+	}
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return 0, fmt.Errorf("app not running: %s", bundleID)
+	}
+	// pidof may return multiple PIDs; we take the first.
+	fields := strings.Fields(s)
+	pid, perr := strconv.Atoi(fields[0])
+	if perr != nil || pid <= 0 {
+		return 0, fmt.Errorf("unexpected pidof output for %s: %q", bundleID, s)
+	}
+	return pid, nil
+}
+
 // Screenshot captures a PNG via `adb shell screencap -p`. The subcommand
 // writes the PNG to stdout, which we return unchanged.
 func (a *AndroidAdapter) Screenshot(id string) ([]byte, error) {

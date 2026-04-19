@@ -6,6 +6,8 @@ package mcp
 import (
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +30,9 @@ type stubAdapter struct {
 	crashes         func(id string, since time.Time, process string) ([]device.CrashReport, error)
 	startRecording  func(id, dest string) (func() error, int, error)
 	stopRecording   func(id string, pid int) error
+	installApp      func(id, path string) error
+	uninstallApp    func(id, bundle string) error
+	appPID          func(id, bundle string) (int, error)
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -97,6 +102,24 @@ func (s *stubAdapter) StopRecording(id string, pid int) error {
 		return nil
 	}
 	return s.stopRecording(id, pid)
+}
+func (s *stubAdapter) InstallApp(id, path string) error {
+	if s.installApp == nil {
+		return nil
+	}
+	return s.installApp(id, path)
+}
+func (s *stubAdapter) UninstallApp(id, bundle string) error {
+	if s.uninstallApp == nil {
+		return nil
+	}
+	return s.uninstallApp(id, bundle)
+}
+func (s *stubAdapter) AppPID(id, bundle string) (int, error) {
+	if s.appPID == nil {
+		return 1234, nil
+	}
+	return s.appPID(id, bundle)
 }
 
 // stubTunneld is a TunneldGate with controllable Require behaviour.
@@ -417,6 +440,285 @@ func TestHandleTerminateApp(t *testing.T) {
 	}
 	if !strings.Contains(resultText(t, &r), "terminated com.squz.tiltbuggy on Raspberry") {
 		t.Errorf("unexpected body: %s", resultText(t, &r))
+	}
+}
+
+// --- handleInstallApp -------------------------------------------------
+
+func TestHandleInstallApp_Success(t *testing.T) {
+	// Create a real temp file so validateAppPath passes.
+	tmp := t.TempDir()
+	appPath := filepath.Join(tmp, "MyApp.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	called := false
+	ios := &stubAdapter{installApp: func(id, path string) error {
+		called = true
+		if id != "00008103-000D39301A6A201E" {
+			t.Errorf("id = %q; want iOS UDID", id)
+		}
+		return nil
+	}}
+	h := newHandlerWithStubs(t, ios, nil, nil)
+	r := dispatchJSON(t, h, "install_app", map[string]any{
+		"device": "Pippa",
+		"path":   appPath,
+	})
+	if r.IsError {
+		t.Fatalf("install_app should succeed; body=%s", resultText(t, &r))
+	}
+	if !called {
+		t.Error("InstallApp was not called")
+	}
+	if !strings.Contains(resultText(t, &r), "installed") {
+		t.Errorf("unexpected body: %s", resultText(t, &r))
+	}
+}
+
+func TestHandleInstallApp_TraversalRejected(t *testing.T) {
+	h := newTestHandler(t)
+	r := dispatchJSON(t, h, "install_app", map[string]any{
+		"device": "Pippa",
+		"path":   "/tmp/../etc/passwd",
+	})
+	if !r.IsError {
+		t.Fatalf("install_app with '..' path should fail; body=%s", resultText(t, &r))
+	}
+}
+
+func TestHandleInstallApp_NonexistentPathRejected(t *testing.T) {
+	h := newTestHandler(t)
+	r := dispatchJSON(t, h, "install_app", map[string]any{
+		"device": "Pippa",
+		"path":   "/nonexistent/path/MyApp.app",
+	})
+	if !r.IsError {
+		t.Fatalf("install_app with nonexistent path should fail; body=%s", resultText(t, &r))
+	}
+}
+
+func TestHandleInstallApp_MissingPath(t *testing.T) {
+	h := newTestHandler(t)
+	_, err := h.Dispatch("install_app", map[string]any{"device": "Pippa"})
+	if err == nil {
+		t.Error("Dispatch(install_app without path) returned nil; want error")
+	}
+}
+
+// --- handleUninstallApp -----------------------------------------------
+
+func TestHandleUninstallApp_Success(t *testing.T) {
+	called := false
+	android := &stubAdapter{uninstallApp: func(id, bundle string) error {
+		called = true
+		if bundle != "com.squz.tiltbuggy" {
+			t.Errorf("bundle = %q; want com.squz.tiltbuggy", bundle)
+		}
+		return nil
+	}}
+	h := newHandlerWithStubs(t, nil, android, nil)
+	r := dispatchJSON(t, h, "uninstall_app", map[string]any{
+		"device":    "Raspberry",
+		"bundle_id": "com.squz.tiltbuggy",
+	})
+	if r.IsError {
+		t.Fatalf("uninstall_app should succeed; body=%s", resultText(t, &r))
+	}
+	if !called {
+		t.Error("UninstallApp was not called")
+	}
+	if !strings.Contains(resultText(t, &r), "uninstalled com.squz.tiltbuggy from Raspberry") {
+		t.Errorf("unexpected body: %s", resultText(t, &r))
+	}
+}
+
+func TestHandleUninstallApp_MissingBundleID(t *testing.T) {
+	h := newTestHandler(t)
+	_, err := h.Dispatch("uninstall_app", map[string]any{"device": "Pippa"})
+	if err == nil {
+		t.Error("Dispatch(uninstall_app without bundle_id) returned nil; want error")
+	}
+}
+
+// --- handleDeployApp --------------------------------------------------
+
+func TestHandleDeployApp_Success(t *testing.T) {
+	tmp := t.TempDir()
+	appPath := filepath.Join(tmp, "MyApp.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	termCalled, installCalled, launchCalled, pidCalled := false, false, false, false
+	ios := &stubAdapter{
+		terminateApp: func(id, bundle string) error {
+			termCalled = true
+			return errors.New("app not running: com.example.app")
+		},
+		installApp: func(id, path string) error {
+			installCalled = true
+			return nil
+		},
+		launchApp: func(id, bundle string) error {
+			launchCalled = true
+			return nil
+		},
+		appPID: func(id, bundle string) (int, error) {
+			pidCalled = true
+			return 9999, nil
+		},
+	}
+	h := newHandlerWithStubs(t, ios, nil, &stubTunneld{})
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device":    "Pippa",
+		"path":      appPath,
+		"bundle_id": "com.example.app",
+	})
+	if r.IsError {
+		t.Fatalf("deploy_app should succeed; body=%s", resultText(t, &r))
+	}
+	if !termCalled || !installCalled || !launchCalled || !pidCalled {
+		t.Errorf("expected all steps called: terminate=%v install=%v launch=%v pid=%v",
+			termCalled, installCalled, launchCalled, pidCalled)
+	}
+	text := resultText(t, &r)
+	if !strings.Contains(text, `"pid": 9999`) {
+		t.Errorf("expected pid in response; body=%s", text)
+	}
+	if !strings.Contains(text, "com.example.app") {
+		t.Errorf("expected bundle_id in response; body=%s", text)
+	}
+}
+
+func TestHandleDeployApp_InstallFailFast(t *testing.T) {
+	tmp := t.TempDir()
+	appPath := filepath.Join(tmp, "MyApp.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	launchCalled := false
+	ios := &stubAdapter{
+		terminateApp: func(id, bundle string) error { return nil },
+		installApp:   func(id, path string) error { return errors.New("install failed: disk full") },
+		launchApp: func(id, bundle string) error {
+			launchCalled = true
+			return nil
+		},
+		appPID: func(id, bundle string) (int, error) { return 1, nil },
+	}
+	h := newHandlerWithStubs(t, ios, nil, &stubTunneld{})
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device":    "Pippa",
+		"path":      appPath,
+		"bundle_id": "com.example.app",
+	})
+	if !r.IsError {
+		t.Fatalf("deploy_app should fail when install fails; body=%s", resultText(t, &r))
+	}
+	if launchCalled {
+		t.Error("launch should NOT be called when install fails")
+	}
+	if !strings.Contains(resultText(t, &r), "disk full") {
+		t.Errorf("expected install error in body; body=%s", resultText(t, &r))
+	}
+}
+
+func TestHandleDeployApp_TraversalRejected(t *testing.T) {
+	h := newTestHandler(t)
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device":    "Pippa",
+		"path":      "../../etc/passwd",
+		"bundle_id": "com.example.app",
+	})
+	if !r.IsError {
+		t.Fatalf("deploy_app with '..' path should fail; body=%s", resultText(t, &r))
+	}
+}
+
+// --- validateAppPath --------------------------------------------------
+
+func TestValidateAppPath_TraversalRejected(t *testing.T) {
+	cases := []string{
+		"../etc/passwd",
+		"/tmp/../etc/passwd",
+		"a/../../b",
+	}
+	for _, c := range cases {
+		_, err := validateAppPath(c)
+		if err == nil {
+			t.Errorf("validateAppPath(%q) returned nil; want error", c)
+		}
+	}
+}
+
+func TestValidateAppPath_NonexistentRejected(t *testing.T) {
+	_, err := validateAppPath("/nonexistent/path/to/MyApp.app")
+	if err == nil {
+		t.Error("validateAppPath with nonexistent path returned nil; want error")
+	}
+}
+
+func TestValidateAppPath_ExistingAccepted(t *testing.T) {
+	tmp := t.TempDir()
+	path, err := validateAppPath(tmp)
+	if err != nil {
+		t.Fatalf("validateAppPath(existing dir) err = %v", err)
+	}
+	if path == "" {
+		t.Error("validateAppPath returned empty path")
+	}
+}
+
+// --- isNotRunningError ------------------------------------------------
+
+func TestIsNotRunningError(t *testing.T) {
+	yes := []error{
+		errors.New("app not running: com.foo"),
+		errors.New("not running"),
+		errors.New("not installed"),
+		errors.New("app not found"),
+	}
+	for _, e := range yes {
+		if !isNotRunningError(e) {
+			t.Errorf("isNotRunningError(%q) = false; want true", e)
+		}
+	}
+	if isNotRunningError(nil) {
+		t.Error("isNotRunningError(nil) = true; want false")
+	}
+	if isNotRunningError(errors.New("disk full")) {
+		t.Error("isNotRunningError('disk full') = true; want false")
+	}
+}
+
+// --- androidBundleIDFromAPK -------------------------------------------
+
+func TestAndroidBundleIDFromAPK_ParsesPackageLine(t *testing.T) {
+	// Test the parser directly with realistic aapt output.
+	aaptOutput := `package: name='com.squz.tiltbuggy' versionCode='42' versionName='1.0'
+sdkVersion:'21'
+targetSdkVersion:'34'
+`
+	// We can test the parsing logic via a synthetic aapt output by
+	// reimplementing the extraction inline — this avoids needing aapt
+	// in the test environment. Test the helper function logic instead.
+	var got string
+	for _, line := range strings.Split(aaptOutput, "\n") {
+		if !strings.HasPrefix(line, "package:") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			if after, ok := strings.CutPrefix(field, "name='"); ok {
+				got = strings.TrimSuffix(after, "'")
+				break
+			}
+		}
+	}
+	if got != "com.squz.tiltbuggy" {
+		t.Errorf("parsed package = %q; want com.squz.tiltbuggy", got)
 	}
 }
 

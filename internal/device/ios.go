@@ -748,6 +748,57 @@ func (a *IOSAdapter) StopRecording(id string, pid int) error {
 	return fmt.Errorf("screen recording is not supported on iOS physical devices")
 }
 
+// InstallApp installs a .app or .ipa bundle via `xcrun devicectl device
+// install app`. The device id may be the hardware UDID, CoreDevice UUID,
+// or any other identifier that devicectl --device accepts.
+func (a *IOSAdapter) InstallApp(id, path string) error {
+	if id == "" || path == "" {
+		return errors.New("device id and path are required")
+	}
+	_, stderr, err := runCapture("xcrun", "devicectl", "device", "install", "app",
+		"--device", id, path)
+	if err != nil {
+		return fmt.Errorf("devicectl install app: %v\n%s", err, truncate(string(stderr), 300))
+	}
+	return nil
+}
+
+// UninstallApp removes an app by bundle identifier via
+// `xcrun devicectl device uninstall app --bundle-identifier`.
+func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
+	if id == "" || bundleID == "" {
+		return errors.New("device id and bundle_id are required")
+	}
+	_, stderr, err := runCapture("xcrun", "devicectl", "device", "uninstall", "app",
+		"--device", id, "--bundle-identifier", bundleID)
+	if err != nil {
+		return fmt.Errorf("devicectl uninstall app: %v\n%s", err, truncate(string(stderr), 300))
+	}
+	return nil
+}
+
+// AppPID returns the process id of a running app by bundle id.
+// Uses `pymobiledevice3 developer dvt process-id-for-bundle-id`.
+// Returns an error if the app is not running. Requires tunneld.
+func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
+	if id == "" || bundleID == "" {
+		return 0, errors.New("device id and bundle_id are required")
+	}
+	pidOut, pidStderr, pidErr := runCapture("pymobiledevice3", "developer", "dvt",
+		"process-id-for-bundle-id", bundleID, "--udid", id)
+	if isDeviceNotConnected(string(pidStderr)) {
+		return 0, fmt.Errorf("device not connected: %s", id)
+	}
+	if pidErr != nil {
+		return 0, fmt.Errorf("resolve pid: %v\n%s", pidErr, truncate(string(pidStderr), 200))
+	}
+	pid, err := parseIOSPID(pidOut)
+	if err != nil {
+		return 0, fmt.Errorf("app not running: %s", bundleID)
+	}
+	return pid, nil
+}
+
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.
 // The id may be the hardware UDID, CoreDevice UUID, device name, or any
 // other identifier `devicectl --device` accepts.

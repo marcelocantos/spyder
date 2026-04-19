@@ -4,12 +4,16 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -866,3 +870,237 @@ func sanitizeFilename(s string) string {
 
 // Compile-time check: recording.IsConflict must be callable.
 var _ = recording.IsConflict
+// validateAppPath rejects paths with ".." traversal components and
+// paths that do not exist. Returns the cleaned absolute path.
+func validateAppPath(path string) (string, error) {
+	if strings.Contains(path, "..") {
+		return "", fmt.Errorf("path must not contain '..': %q", path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving path: %w", err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("path does not exist: %q", abs)
+	}
+	return abs, nil
+}
+
+func (h *Handler) handleInstallApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	path, err := requireString(args, "path")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	path, err = validateAppPath(path)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := adapter.InstallApp(id, path); err != nil {
+		return toolErr("install_app on %s: %v", dev, err)
+	}
+	return toolText(fmt.Sprintf("installed %s on %s", filepath.Base(path), dev))
+}
+
+func (h *Handler) handleUninstallApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	bundleID, err := requireString(args, "bundle_id")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := adapter.UninstallApp(id, bundleID); err != nil {
+		return toolErr("uninstall_app on %s: %v", dev, err)
+	}
+	return toolText(fmt.Sprintf("uninstalled %s from %s", bundleID, dev))
+}
+
+// deployResult is the JSON payload returned by deploy_app on success.
+type deployResult struct {
+	BundleID string `json:"bundle_id"`
+	PID      int    `json:"pid"`
+}
+
+func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	path, err := requireString(args, "path")
+	if err != nil {
+		return nil, err
+	}
+	bundleID := optString(args, "bundle_id")
+	owner := optString(args, "owner")
+
+	path, err = validateAppPath(path)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, platform, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	// Derive bundle id from the path if not supplied.
+	if bundleID == "" {
+		var deriveErr error
+		bundleID, deriveErr = deriveBundleID(platform, path)
+		if deriveErr != nil {
+			return toolErr("cannot derive bundle_id from %q: %v — pass --bundle-id explicitly", path, deriveErr)
+		}
+	}
+
+	// Tunneld gate for iOS DVT operations (launch + app-pid).
+	if platform == "ios" && h.tunneld != nil {
+		if err := h.tunneld.Require(); err != nil {
+			return toolErr("deploy_app on %s: %v", dev, err)
+		}
+	}
+
+	// Step 1: terminate (ignore "not running" errors — it's fine if the
+	// app isn't already up; the important thing is we tried).
+	if termErr := adapter.TerminateApp(id, bundleID); termErr != nil {
+		// Only propagate if the error is not "not running" or "not found".
+		if !isNotRunningError(termErr) {
+			return toolErr("deploy_app: terminate %s on %s: %v", bundleID, dev, termErr)
+		}
+	}
+
+	// Step 2: install (fail fast on error).
+	if err := adapter.InstallApp(id, path); err != nil {
+		return toolErr("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
+	}
+
+	// Step 3: launch.
+	if err := adapter.LaunchApp(id, bundleID); err != nil {
+		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
+	}
+
+	// Step 4: verify new PID.
+	pid, err := adapter.AppPID(id, bundleID)
+	if err != nil {
+		return toolErr("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
+	}
+
+	return toolJSON(deployResult{BundleID: bundleID, PID: pid})
+}
+
+// isNotRunningError returns true for "app not running" / "not installed"
+// errors from TerminateApp. These are safe to ignore during a deploy.
+func isNotRunningError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not running") ||
+		strings.Contains(s, "app not running") ||
+		strings.Contains(s, "not installed") ||
+		strings.Contains(s, "not found")
+}
+
+// deriveBundleID extracts the CFBundleIdentifier from an iOS .app bundle's
+// Info.plist, or the package name from an Android .apk via aapt (with a
+// --bundle-id fallback message when aapt is absent).
+func deriveBundleID(platform, path string) (string, error) {
+	switch platform {
+	case "ios":
+		return iosBundleIDFromApp(path)
+	case "android":
+		return androidBundleIDFromAPK(path)
+	default:
+		return "", fmt.Errorf("unsupported platform %q", platform)
+	}
+}
+
+// iosBundleIDFromApp reads CFBundleIdentifier from <path>/Info.plist.
+// The plist is expected in its JSON-serialised form as produced by
+// xcrun plutil or after xcrun devicectl install; for raw binary plists
+// we shell out to plutil -convert json.
+func iosBundleIDFromApp(appPath string) (string, error) {
+	plistPath := filepath.Join(appPath, "Info.plist")
+	if _, err := os.Stat(plistPath); err != nil {
+		return "", fmt.Errorf("Info.plist not found in %q", appPath)
+	}
+	// Convert to JSON then parse — handles both binary and XML plists.
+	var outBuf, errBuf bytes.Buffer
+	cmd := exec.Command("plutil", "-convert", "json", "-o", "-", plistPath)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("plutil convert Info.plist: %w", err)
+	}
+	var plist struct {
+		CFBundleIdentifier string `json:"CFBundleIdentifier"`
+	}
+	if err := json.Unmarshal(outBuf.Bytes(), &plist); err != nil {
+		return "", fmt.Errorf("parse Info.plist JSON: %w", err)
+	}
+	if plist.CFBundleIdentifier == "" {
+		return "", fmt.Errorf("CFBundleIdentifier not set in Info.plist")
+	}
+	return plist.CFBundleIdentifier, nil
+}
+
+// androidBundleIDFromAPK extracts the package name from an APK via
+// `aapt dump badging`. Falls back to a clear error when aapt is absent.
+func androidBundleIDFromAPK(apkPath string) (string, error) {
+	var outBuf bytes.Buffer
+	cmd := exec.Command("aapt", "dump", "badging", apkPath)
+	cmd.Stdout = &outBuf
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("aapt dump badging: %w (is aapt in PATH? install Android SDK build-tools)", err)
+	}
+	for _, line := range strings.Split(outBuf.String(), "\n") {
+		if !strings.HasPrefix(line, "package:") {
+			continue
+		}
+		// package: name='com.example.app' versionCode=... versionName=...
+		for _, field := range strings.Fields(line) {
+			if after, ok := strings.CutPrefix(field, "name='"); ok {
+				return strings.TrimSuffix(after, "'"), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("package name not found in aapt output")
+}
+
+// Compile-time assertion that errors package is imported (for build).
+var _ = errors.New

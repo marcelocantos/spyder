@@ -52,6 +52,9 @@ func init() {
 		{"list-apps", "spyder list-apps <device> [--json]", runListApps},
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
 		{"terminate-app", "spyder terminate-app <device> <bundle-id> [--as OWNER]", runTerminateApp},
+		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
+		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
+		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
 		{"reserve", "spyder reserve <device> [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
@@ -444,6 +447,63 @@ func runTerminateApp(args []string) {
 		a["owner"] = deriveOwner("")
 	}
 	dispatchAndExit("terminate_app", a, false)
+}
+
+func runInstall(args []string) {
+	pf, err := parseFlags(args, []string{"--as"}, nil)
+	if err != nil {
+		fatalUsage("install", err)
+	}
+	requirePositional("install", pf, 2)
+	a := map[string]any{
+		"device": pf.positional[0],
+		"path":   pf.positional[1],
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	dispatchAndExit("install_app", a, false)
+}
+
+func runUninstall(args []string) {
+	pf, err := parseFlags(args, []string{"--as"}, nil)
+	if err != nil {
+		fatalUsage("uninstall", err)
+	}
+	requirePositional("uninstall", pf, 2)
+	a := map[string]any{
+		"device":    pf.positional[0],
+		"bundle_id": pf.positional[1],
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	dispatchAndExit("uninstall_app", a, false)
+}
+
+func runDeploy(args []string) {
+	pf, err := parseFlags(args, []string{"--as", "--bundle-id"}, nil)
+	if err != nil {
+		fatalUsage("deploy", err)
+	}
+	requirePositional("deploy", pf, 2)
+	a := map[string]any{
+		"device": pf.positional[0],
+		"path":   pf.positional[1],
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	if bid := pf.flags["--bundle-id"]; bid != "" {
+		a["bundle_id"] = bid
+	}
+	dispatchAndExit("deploy_app", a, false)
 }
 
 func runReserve(args []string) {

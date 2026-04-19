@@ -35,6 +35,9 @@ Snapshot as of `v0.4.0`.
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
 | `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
+| `install_app` | `{device: string, path: string, owner?: string}` (device and path required). Path must not contain `..` and must exist. | Text confirmation. | Stable |
+| `uninstall_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required). | Text confirmation. | Stable |
+| `deploy_app` | `{device: string, path: string, bundle_id?: string, owner?: string}` (device and path required). `bundle_id` derived from Info.plist (iOS) or `aapt dump badging` (Android) if omitted. | JSON `{bundle_id: string, pid: number}`. | Stable |
 | `reserve` | `{device: string, owner: string, ttl_seconds?: number, note?: string}` (device and owner required). | JSON-encoded `reservations.Reservation` (device, owner, expires_at, note, created_at). | Stable |
 | `release` | `{device: string, owner: string}`. | Text confirmation. | Stable |
 | `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
@@ -81,6 +84,9 @@ can match on these phrases.
 | `spyder list-apps <device> [--json]` | REST proxy to `list_apps`. | Stable |
 | `spyder launch-app <device> <bundle-id> [--as OWNER]` | REST proxy to `launch_app`. | Stable |
 | `spyder terminate-app <device> <bundle-id> [--as OWNER]` | REST proxy to `terminate_app`. | Stable |
+| `spyder install <device> <path> [--as OWNER]` | REST proxy to `install_app`. | Stable |
+| `spyder uninstall <device> <bundle-id> [--as OWNER]` | REST proxy to `uninstall_app`. | Stable |
+| `spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]` | REST proxy to `deploy_app`. Derives bundle id from Info.plist (iOS) or `aapt` (Android) when `--bundle-id` is omitted. | Stable |
 | `spyder reserve <device> [--as OWNER] [--ttl SECONDS] [--note TEXT]` | REST proxy to `reserve`. | Stable |
 | `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
 | `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |

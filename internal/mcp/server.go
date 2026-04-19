@@ -115,6 +115,12 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleLaunchApp(args)
 	case "terminate_app":
 		return h.handleTerminateApp(args)
+	case "install_app":
+		return h.handleInstallApp(args)
+	case "uninstall_app":
+		return h.handleUninstallApp(args)
+	case "deploy_app":
+		return h.handleDeployApp(args)
 	case "reserve":
 		return h.handleReserve(args)
 	case "release":
@@ -255,6 +261,54 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id",
 				mcpgo.Required(),
 				mcpgo.Description("App bundle identifier (e.g. com.example.app)"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
+		),
+
+		mcpgo.NewTool("install_app",
+			mcpgo.WithDescription("Install an app on the device. Accepts a .app or .ipa path (iOS) or .apk path (Android). The path must not contain '..' and must exist. Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute or relative path to the .app/.ipa (iOS) or .apk (Android) to install"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
+		),
+
+		mcpgo.NewTool("uninstall_app",
+			mcpgo.WithDescription("Remove an app from the device by bundle id / package name. iOS uses xcrun devicectl; Android uses adb uninstall. Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID"),
+			),
+			mcpgo.WithString("bundle_id",
+				mcpgo.Required(),
+				mcpgo.Description("App bundle identifier (e.g. com.example.app)"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
+		),
+
+		mcpgo.NewTool("deploy_app",
+			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid} on success. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID"),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Required(),
+				mcpgo.Description("Absolute or relative path to the .app/.ipa (iOS) or .apk (Android) to install"),
+			),
+			mcpgo.WithString("bundle_id",
+				mcpgo.Description("App bundle identifier — derived automatically from Info.plist or aapt if omitted"),
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
