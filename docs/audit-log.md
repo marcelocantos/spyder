@@ -50,7 +50,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-19 — /release v0.4.0
 
-- **Commit**: pending
+- **Commit**: `d64b00e`
 - **Outcome**: Small feature + security + correctness release.
   🎯T22 fixed the long-standing `devices({platform:"ios"})` stub
   (shipped broken across v0.1.0–v0.3.0, masked by the partial-
