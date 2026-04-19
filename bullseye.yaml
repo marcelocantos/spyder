@@ -196,6 +196,150 @@ targets:
     origin: manual
     discovered: 2026-04-19
     achieved: 2026-04-19
+  T12:
+    name: Non-agent consumers (CLI, shell scripts, CI) can drive spyder via a REST API on the daemon, sharing the same reservation-authorised handlers as MCP
+    status: identified
+    value: 13.0
+    cost: 5.0
+    observable: true
+    acceptance:
+    - 'Daemon exposes REST endpoints on the same HTTP listener as /mcp covering: devices, resolve, device_state, screenshot, list_apps, launch_app, terminate_app, keepawake, reserve, release, renew, reservations'
+    - REST handlers share the same authorization path as MCP (same Authorize() check on mutating ops; reservation state identical regardless of transport)
+    - 'spyder CLI gains subcommands that dial the local daemon via REST (no direct pymobiledevice3/adb fallback): devices, screenshot, reserve, release, renew, reservations, resolve, device_state, list_apps, launch_app, terminate_app, keepawake'
+    - CLI auto-starts the daemon if it isn't running (same pattern as the existing stdio proxy)
+    - A shell script can acquire a reservation, take a screenshot, and release — concurrently with an agent session — without either clobbering the other's state
+    - README/agents-guide documents the REST surface and CLI commands
+    context: |-
+      Today the daemon's only network surface is `/mcp` (JSON-RPC), and the only non-agent entry point is `spyder run <cmd>` (reservation-wrapping shell wrapper). Tests and smoke scripts (e.g. ge/tools/smoke-test.sh, ge/tools/rotation-stability-test.sh) have no way to enumerate devices, take screenshots, or hold reservations without either embedding an MCP client or bypassing spyder and shelling out to pymobiledevice3/adb directly. Bypassing defeats the reservation invariants — two concurrent consumers (e.g. an agent and a CI run) would corrupt each other's device state.
+
+      Everything must go through the daemon so reservation state stays centralised. A REST surface on the existing HTTP server is the right shape: the CLI becomes a thin REST client (`spyder devices`, `spyder screenshot --device Pippa`, `spyder reserve`/`release`/`renew`), and any language or `curl` can participate without linking MCP. MCP remains for agents; REST and MCP share the same underlying handler code and the same Authorize() checks.
+
+      Reservation semantics are already production-grade (file-backed, atomic-rename, TTL leases, owner-auth on mutations) — the hard part is done. This target is purely about transport.
+    origin: manual
+    discovered: 2026-04-19
+  T13:
+    name: Programmatic orientation control for iOS simulators and Android emulators
+    status: identified
+    value: 5.0
+    cost: 2.0
+    observable: true
+    acceptance:
+    - spyder tool rotates an iOS simulator via simctl io <udid> rotate to portrait, landscape-left, landscape-right, portrait-upside-down
+    - spyder tool rotates an Android emulator via adb emu rotate (or equivalent)
+    - Rotation tool is reservation-gated (same Authorize() path as other mutating ops)
+    - 'CLI subcommand: spyder rotate --device <d> --to <orientation>'
+    - Exposed via MCP and REST
+    context: Rotation-stability testing (the class of bugs the recent iOS magenta-flash fix addressed) needs deterministic orientation changes driven from a test script. Today ge/tools/rotation-stability-test.sh would have to shell out to simctl/adb directly; centralising in spyder keeps reservation state coherent and lets multiple projects share the primitive. Real-device rotation is out of scope (needs physical movement or a UI-automation bridge).
+    depends_on:
+    - T12
+    origin: manual
+    discovered: 2026-04-19
+  T14:
+    name: Screen recording capture for iOS and Android
+    status: identified
+    value: 8.0
+    cost: 5.0
+    observable: true
+    acceptance:
+    - start/stop recording a video on iOS simulator, iOS device, and Android (device+emu)
+    - Recording tool returns an mp4 (or path to one) bound to the run artefact store
+    - Reservation-gated; concurrent recorders on the same device conflict cleanly
+    - 'CLI: spyder record --device <d> --start / --stop'
+    - Exposed via MCP and REST
+    context: Single screenshots miss whole classes of visual bugs that only manifest over multiple frames — the iOS magenta-flash during rotation is the canonical example. A smoke test that captures a short mp4 across an orientation change (or any dynamic event) can detect regressions that per-frame polling would miss. Uses simctl io recordVideo on iOS simulators, xcrun devicectl equivalent on devices, adb screenrecord on Android.
+    depends_on:
+    - T12
+    - T20
+    origin: manual
+    discovered: 2026-04-19
+  T15:
+    name: Crash report collection for iOS and Android with time-range filtering
+    status: identified
+    value: 8.0
+    cost: 3.0
+    observable: true
+    acceptance:
+    - 'iOS: fetch .ips reports via pymobiledevice3 crash-reports (or devicectl equivalent), optionally filtered by since-timestamp and process name'
+    - 'Android: fetch recent tombstones via adb (tombstones/ dir + logcat -b crash)'
+    - Returns structured summary (process, reason, timestamp) plus raw report content or path
+    - 'CLI: spyder crashes --device <d> --since <ts> [--process <name>]'
+    - Exposed via MCP and REST
+    context: 'Smoke-test post-run triage today reads iOS .ips crash reports from ~/Library/Logs/CrashReporter/MobileDevice/ or via devicectl, and Android tombstones via adb. Each script reinvents the collection logic and timestamp filtering. Centralising in spyder gives tests one primitive to call after a run: "any crashes on this device since T?" The return should include parsed summary (process name, reason, thread zero frame) plus the raw report for deeper inspection.'
+    depends_on:
+    - T12
+    - T20
+    origin: manual
+    discovered: 2026-04-19
+  T16:
+    name: App install and uninstall through the daemon (no direct devicectl/adb from scripts)
+    status: identified
+    value: 8.0
+    cost: 3.0
+    observable: true
+    acceptance:
+    - 'install_app tool: accepts an .app (iOS) or .apk (Android) path, installs on the reserved device'
+    - 'uninstall_app tool: removes a bundle-id/package from the reserved device'
+    - Both tools reservation-gated and exposed via MCP and REST
+    - 'CLI: spyder install --device <d> <path>; spyder uninstall --device <d> <bundle-id>'
+    - 'Atomic deploy helper: one call that does terminate → install → launch → verify-new-pid (the pattern smoke-test.sh currently reinvents)'
+    context: 'ge/tools/smoke-test.sh already supports --install <path>; today it shells out to xcrun devicectl / adb install directly, bypassing spyder. This defeats the reservation invariant: a concurrent agent session could mid-install a different build. Pulling install/uninstall into the daemon closes the bypass and gives tests an atomic "terminate → install → launch → verify-new-pid" primitive.'
+    depends_on:
+    - T12
+    origin: manual
+    discovered: 2026-04-19
+  T17:
+    name: Network condition shaping for streaming-protocol testing
+    status: identified
+    value: 5.0
+    cost: 5.0
+    observable: true
+    acceptance:
+    - 'Named profiles: wifi, 4g, 3g, edge, offline, lossy-<pct>, delay-<ms>'
+    - 'iOS simulator: apply via Link Conditioner config or CoreSimulator equivalent'
+    - 'Android emulator: apply via adb emu network {speed,delay,loss}'
+    - 'Physical devices: document limitations clearly; attempt via on-device Developer settings if a driver exists'
+    - Applied profile is cleared on reservation release (even on abnormal exit)
+    - 'CLI: spyder net --device <d> --profile <name>; spyder net --device <d> --clear'
+    context: ge streams H.264 over WebSocket (ged-brokered). Its robustness under lossy / constrained links is untested. Apple's Network Link Conditioner can be driven on iOS simulators via `xcrun simctl status_bar ... override` and on macOS host via the ncdl profiles; Android emulators accept `adb emu network speed/delay`; physical devices need on-device config or a proxy. A spyder primitive exposing common profiles (wifi, 4g, 3g, edge, offline, lossy-N%) would let smoke tests validate reconnect/backoff paths.
+    depends_on:
+    - T12
+    origin: manual
+    discovered: 2026-04-19
+  T18:
+    name: Simulator and emulator lifecycle management (create, boot, shutdown, delete)
+    status: identified
+    value: 5.0
+    cost: 8.0
+    observable: true
+    acceptance:
+    - 'iOS: list/create/boot/shutdown/delete simulators by type + runtime'
+    - 'Android: list/create/boot/shutdown/delete AVDs by system-image + device-profile'
+    - Newly booted sims/emus automatically appear in spyder devices output
+    - 'CLI: spyder sim create|boot|shutdown|delete; spyder emu create|boot|shutdown|delete'
+    - 'Reservation semantics: you can reserve a not-yet-booted sim/emu; boot-on-demand policy documented'
+    context: 'CI and matrix-test runs want ephemeral, reproducible test environments: "boot a fresh iPhone 15 Pro simulator on iOS 17.5, run tests, shut down." Today each script wraps xcrun simctl / avdmanager / emulator -avd directly. Centralising gives a clean primitive and lets the reservation system treat booted sims/emus as first-class devices once they come up.'
+    depends_on:
+    - T12
+    origin: manual
+    discovered: 2026-04-19
+  T19:
+    name: Device log tailing with filters over the daemon
+    status: identified
+    value: 5.0
+    cost: 5.0
+    observable: true
+    acceptance:
+    - 'Live tail: server-sent events (or chunked REST) streaming filtered log lines to a client'
+    - 'Range query: fetch log lines between timestamps T1 and T2'
+    - 'Filters: process name, subsystem (iOS), tag (Android), regex on message body'
+    - 'iOS: pymobiledevice3 syslog; Android: adb logcat'
+    - 'CLI: spyder log --device <d> --process <p> [--since <ts>] [--follow]'
+    context: Smoke tests and debugging sessions need device logs (iOS os_log, Android logcat) with magic-string or process filters, often streaming live. Every script reinvents the invocation. A daemon primitive lets tests "capture logs matching <pattern> for the duration of this reservation" and retrieve them as part of the run-artefact bundle.
+    depends_on:
+    - T12
+    - T20
+    origin: manual
+    discovered: 2026-04-19
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
     status: achieved
@@ -218,6 +362,78 @@ targets:
     origin: manual
     discovered: 2026-04-17
     achieved: 2026-04-18
+  T20:
+    name: Run-artefact store under ~/.spyder/runs/&lt;run-id&gt;/ for screenshots, recordings, logs, crashes
+    status: identified
+    value: 8.0
+    cost: 3.0
+    observable: true
+    acceptance:
+    - Each reservation gets a run-id and a directory ~/.spyder/runs/<run-id>/
+    - Spyder tools that produce artefacts (screenshot, record, log, crashes) write into the current run directory by default
+    - manifest.json enumerates all artefacts with timestamps, source tool, device, and reservation owner
+    - 'CLI: spyder runs list; spyder runs show <run-id>; spyder runs artefacts <run-id>'
+    - Configurable retention policy (time-based and size-capped); old runs are pruned on daemon startup
+    context: 'Each reservation (or named run) should accumulate its own artefact bundle on disk: screenshots, mp4 recordings, captured log ranges, crash reports, plus a manifest.json linking them. Tests produce evidence; agents and humans inspect it later. Without a store, every test writes artefacts to random scratch paths and correlation is manual.'
+    origin: manual
+    discovered: 2026-04-19
+  T21:
+    name: 'Visual regression tooling: semantic-first diff with pixel diff as floor'
+    status: identified
+    value: 13.0
+    cost: 13.0
+    observable: true
+    acceptance:
+    - 'Baseline store: ~/.spyder/baselines/<suite>/<case>.{png,manifest.json} with per-device / per-orientation variants'
+    - Compare tool accepts a screenshot + optional semantic manifest and compares against the baseline in the named suite
+    - Structural diff over manifests reports added/removed/moved elements with bounding boxes
+    - Pixel diff (RMS + SSIM) as fallback for regions without manifest coverage, with configurable tolerance
+    - Optional VLM pass over flagged regions; emits natural-language diff summary (out of scope for v1, interface designed for it)
+    - 'CLI: spyder diff <suite>/<case> <screenshot> [<manifest>]; spyder baseline update <suite>/<case>'
+    - Exposed via MCP and REST; integrates with the run-artefact store
+    context: |-
+      Pure pixel diff (RMS, SSIM) is too brittle for typical UI changes: antialiasing jitter, font rendering, subpixel layout shifts all flag as diffs that don't matter. We want diffing that reports meaningful semantic changes (button went missing, colour palette shifted, layout reflowed, wrong scene) and ignores cosmetic noise. Pixel diff stays as the safety floor for cases where semantic methods can't decide.
+
+      ## State of the art (roughly tiered)
+
+      **Pixel-domain perceptual metrics** (improve over RMS without leaving pixels):
+      - SSIM / MS-SSIM — structural similarity; standard baseline, tolerates brightness/contrast shifts.
+      - Butteraugli, SSIMULACRA2 — model human perception (used by JPEG-XL); more forgiving of imperceptible noise.
+      - LPIPS (Learned Perceptual Image Patch Similarity) — deep features from a pretrained CNN as a distance metric.
+
+      These still can't tell you *what* is different, only *how much*.
+
+      **Embedding-based** (global semantic similarity):
+      - CLIP / DINOv2 / SigLIP — embed both images, cosine distance. Excellent at "same scene or not", poor at localisation (one scalar, not a diff map).
+
+      **Region-based semantic diffing** (current sweet spot):
+      - SAM / SAM2 — mask proposals, diff per-region. Localises and classifies changes.
+      - Object-detector diffing — YOLO / Grounding-DINO; diff bounding-box sets. Catches missing/added/moved elements, misses styling.
+      - Commercial: Applitools "Visual AI", Percy, Chromatic — hybrid of detector + DOM/AX tree + perceptual metric + ML classifier for cosmetic-vs-meaningful. Closed-box but the shape is clear: multi-signal fusion.
+
+      **VLM-based** (highest ceiling, worst determinism):
+      - Feed both images to Claude/GPT-4V/Gemini: "What differences would matter to a user?" Powerful for triage and natural-language diff reports; slow, costly, non-reproducible across runs. Use as a tier, not the primary decider.
+
+      **Engine-cooperation** (the move when you own the renderer — our case):
+      - Industry trend for games: emit ground-truth metadata alongside pixels. Unity's Perception package and Unreal's synthetic-data pipeline capture per-object IDs, bounding boxes, depth, normals at render time. Diffing is deterministic, local, and free at test time.
+      - ge server already knows what it rendered each frame: camera state, model list, UI element list, screen-space bounds. Emitting a manifest.json alongside each frame turns "is button X visible" into an O(1) lookup. bgfx MRT can capture object-ID textures for per-pixel attribution if needed.
+
+      ## Pragmatic stack for spyder + ge
+
+      1. **Manifest diff** as primary — deterministic, localises changes, ignores antialiasing by construction. ge emits it from the server (separate ge-side target).
+      2. **SSIM + LPIPS** as pixel floor for regions the manifest doesn't cover (globe surface, video content).
+      3. **VLM pass on flagged regions only** — triage agent, never the primary decider. One call per failure, not per screenshot.
+      4. **Baseline-per-variant** — device class, orientation, OS version, locale — "same semantic output, different pixels" is the norm across variants.
+
+      Key insight: the flakiness of pure pixel diff and the flakiness of VLM-only diff share a root cause — insufficient ground truth. Engine cooperation supplies ground truth for free; the ML tier only triages residuals.
+
+      ## Spyder's role
+
+      Own the pipeline, run artefacts, and the compare-to-baseline workflow. Manifest emission is the app's responsibility (ge target, separate); spyder defines the manifest schema it expects and wires the tiers together.
+    depends_on:
+    - T20
+    origin: manual
+    discovered: 2026-04-19
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: achieved
