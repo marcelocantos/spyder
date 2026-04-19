@@ -55,8 +55,9 @@ can match on these phrases.
 | `spyder help-agent` / `--help-agent` / `-help-agent` | Usage + embedded agents-guide.md. | Stable |
 
 Exit codes: `0` success; `1` server startup / unclassified child-process error;
-`2` argument parsing error; the child command's own exit code for
-`spyder run`.
+`2` argument parsing error; `3` reservation conflict at `spyder run`
+startup (device held by another owner); the child command's own exit
+code for `spyder run` when the command itself exits non-zero.
 
 ### HTTP MCP endpoint
 
@@ -130,10 +131,15 @@ builds. **Stable.**
   up from CWD. For a Homebrew-installed binary with no source tree nearby,
   auto-deploy silently disables. Long-term fix is `go:embed` of the Xcode
   project + extraction on first use.
-- **Tests.** Zero test files in the Go packages. The `bullseye` invariant
-  check runs `go test ./...` but every package reports "no test files".
-  Critical paths (inventory, adapter parsing, device.State marshaling)
-  should have tests before 1.0.
+- **Tests for shell-out paths.** 105 test functions cover all pure
+  logic (inventory, parsers, classifiers, MCP dispatch, reservations,
+  daemon HTTP roundtrip). Shell-out orchestration in `internal/device`
+  (adapter methods wrapping `pymobiledevice3`/`adb`/`devicectl`),
+  `internal/notify` (osascript/terminal-notifier/alerter),
+  `main.restoreKeepAwake`, and the `internal/autoawake` supervisor
+  loop is still ~20-30% covered. Before 1.0 these should gain
+  env-gated live tests (e.g. `SPYDER_LIVE_TESTS=1`) against real
+  devices so regressions in the real-world path get caught.
 - **`pymobiledevice3` library embedding.** All iOS operations shell out,
   paying ~1 s of Python startup per call. Long-lived helper subprocess (JSON
   protocol over stdin/stdout) would eliminate this.
