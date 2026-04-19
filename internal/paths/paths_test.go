@@ -28,3 +28,12 @@ func TestInventoryPath(t *testing.T) {
 		t.Errorf("InventoryPath() = %q; expected /custom/home prefix", got)
 	}
 }
+
+func TestRunsBase(t *testing.T) {
+	t.Setenv("HOME", "/custom/home")
+	got := RunsBase()
+	want := filepath.Join("/custom/home", ".spyder", "runs")
+	if got != want {
+		t.Errorf("RunsBase() = %q; want %q", got, want)
+	}
+}

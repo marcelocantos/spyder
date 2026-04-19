@@ -4,18 +4,77 @@
 package mcp
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
+	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/simemu"
 )
+
+// handleLogsRange returns log lines between since and until for a device.
+// Read-only; not subject to reservation checks.
+func (h *Handler) handleLogsRange(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+
+	filter := device.LogFilter{
+		Process:   optString(args, "process"),
+		Subsystem: optString(args, "subsystem"),
+		Tag:       optString(args, "tag"),
+		Regex:     optString(args, "regex"),
+	}
+
+	var since, until time.Time
+	if s := optString(args, "since"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return toolErr("since: invalid RFC3339 timestamp: %v", err)
+		}
+		since = t
+	}
+	if u := optString(args, "until"); u != "" {
+		t, err := time.Parse(time.RFC3339, u)
+		if err != nil {
+			return toolErr("until: invalid RFC3339 timestamp: %v", err)
+		}
+		until = t
+	}
+
+	h.mu.Lock()
+	adapter, _, id, adapterErr := h.resolveAdapter(dev)
+	h.mu.Unlock()
+
+	if adapterErr != nil {
+		return toolErr("%v", adapterErr)
+	}
+
+	lines, err := adapter.LogRange(id, filter, since, until)
+	if err != nil {
+		return toolErr("log range on %s: %v", dev, err)
+	}
+	if lines == nil {
+		lines = []device.LogLine{}
+	}
+	return toolJSON(lines)
+}
 
 func requireString(args map[string]any, key string) (string, error) {
 	v, ok := args[key].(string)
@@ -189,11 +248,52 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 	if err != nil {
 		return toolErr("screenshot on %s: %v", dev, err)
 	}
+	h.archiveArtefact(dev, owner, "screenshot", "image/png", ".png", png)
 	return mcpgo.NewToolResultImage(
 		fmt.Sprintf("screenshot of %s (%d bytes)", dev, len(png)),
 		base64.StdEncoding.EncodeToString(png),
 		"image/png",
 	), nil
+}
+
+// archiveArtefact writes data into the active run for (device, owner)
+// if one exists. Best-effort: missing run store, no active run, or a
+// write failure all log and return. The primary tool result is
+// authoritative; artefact persistence is observability.
+func (h *Handler) archiveArtefact(dev, owner, source, mime, ext string, data []byte) {
+	if h.runs == nil {
+		return
+	}
+	canonical := h.canonicalDevice(dev)
+	run, err := h.runs.Active(canonical, owner)
+	if err != nil {
+		slog.Warn("runs: active lookup failed",
+			"device", canonical, "owner", owner, "error", err)
+		return
+	}
+	if run == nil {
+		return
+	}
+	name := fmt.Sprintf("%s-%s%s",
+		source, time.Now().UTC().Format("20060102-150405"), ext)
+	if _, err := h.runs.AddArtefact(run.ID, source, name, mime, data); err != nil {
+		slog.Warn("runs: archive artefact failed",
+			"run", run.ID, "source", source, "error", err)
+	}
+}
+
+// canonicalDevice returns the inventory alias for ref when one is
+// known, mirroring the reservation normaliser so Active() lookups key
+// off the same string regardless of whether the caller passed an
+// alias or a raw UDID/serial.
+func (h *Handler) canonicalDevice(ref string) string {
+	if h.inventory == nil {
+		return ref
+	}
+	if entry, ok := h.inventory.Lookup(ref); ok && entry.Alias != "" {
+		return entry.Alias
+	}
+	return ref
 }
 
 func (h *Handler) handleListApps(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -310,6 +410,24 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 	if err != nil {
 		return toolErr("%v", err)
 	}
+
+	// Ensure a run is open for this (device, owner). Best-effort;
+	// reservation acquisition is already committed.
+	if h.runs != nil {
+		canonical := h.canonicalDevice(dev)
+		existing, lerr := h.runs.Active(canonical, owner)
+		switch {
+		case lerr != nil:
+			slog.Warn("runs: active lookup on reserve failed",
+				"device", canonical, "owner", owner, "error", lerr)
+		case existing == nil:
+			if _, err := h.runs.Open(canonical, owner, note); err != nil {
+				slog.Warn("runs: open on reserve failed",
+					"device", canonical, "owner", owner, "error", err)
+			}
+		}
+	}
+
 	return toolJSON(r)
 }
 
@@ -325,10 +443,120 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 	if err != nil {
 		return nil, err
 	}
+
+	h.mu.Lock()
+	canonical := h.canonicalDevice(dev)
+	// Stop any active recording owned by this owner before releasing.
+	h.stopRecordingForOwner(canonical, owner)
+	h.mu.Unlock()
+
 	if err := h.reservations.Release(dev, owner); err != nil {
 		return toolErr("%v", err)
 	}
+
+	// Close the matching run, if any. Best-effort.
+	if h.runs != nil {
+		canonical := h.canonicalDevice(dev)
+		if run, lerr := h.runs.Active(canonical, owner); lerr == nil && run != nil {
+			if cerr := h.runs.Close(run.ID); cerr != nil {
+				slog.Warn("runs: close on release failed",
+					"run", run.ID, "error", cerr)
+			}
+		}
+	}
+
+	// Best-effort network clear: if this owner applied a network profile
+	// on this device, clear it on reservation release.  Errors are
+	// surfaced in the result text but do not fail the release.  This
+	// covers the normal-exit path; if the daemon dies before release the
+	// emulator retains the applied profile until the next explicit clear
+	// or emulator restart (documented in the tool description).
+	h.mu.Lock()
+	applied, hasProfile := h.networkByDevice[dev]
+	if hasProfile && applied.owner == owner {
+		delete(h.networkByDevice, dev)
+		// Resolve the adapter while still under the lock (same pattern
+		// as all other handler methods).
+		adapter, _, id, resolveErr := h.resolveAdapter(dev)
+		h.mu.Unlock()
+		if resolveErr == nil {
+			if clearErr := adapter.ClearNetwork(id); clearErr != nil {
+				return toolText(fmt.Sprintf(
+					"released reservation on %s (network clear failed: %v — clear manually if needed)",
+					dev, clearErr,
+				))
+			}
+		}
+	} else {
+		h.mu.Unlock()
+	}
+
 	return toolText(fmt.Sprintf("released reservation on %s", dev))
+}
+
+// handleNetwork applies or clears a network condition profile on a device.
+// Requires an active reservation from the caller (owner field).
+//
+// Arguments:
+//
+//	device  — required; device alias or UUID.
+//	owner   — required; must match the current reservation holder.
+//	profile — optional; named or dynamic profile string. Mutually exclusive with clear.
+//	clear   — optional bool; if true, clears any applied profile. Mutually exclusive with profile.
+//
+// Exactly one of profile or clear must be supplied.
+func (h *Handler) handleNetwork(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner, err := requireString(args, "owner")
+	if err != nil {
+		return nil, err
+	}
+
+	profileName := optString(args, "profile")
+	clearFlag, _ := args["clear"].(bool)
+
+	if profileName == "" && !clearFlag {
+		return toolErr("network: supply either profile=<name> or clear=true")
+	}
+	if profileName != "" && clearFlag {
+		return toolErr("network: profile and clear are mutually exclusive")
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	if clearFlag {
+		if err := adapter.ClearNetwork(id); err != nil {
+			return toolErr("clear network on %s: %v", dev, err)
+		}
+		delete(h.networkByDevice, dev)
+		return toolText(fmt.Sprintf("network conditions cleared on %s", dev))
+	}
+
+	// Apply profile.
+	p, err := network.Parse(profileName)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	if applyErr := adapter.ApplyNetwork(id, p); applyErr != nil {
+		return toolErr("apply network %q on %s: %v", profileName, dev, applyErr)
+	}
+
+	h.networkByDevice[dev] = appliedNetwork{profile: p, owner: owner}
+	return toolText(fmt.Sprintf("network profile %q applied on %s", profileName, dev))
 }
 
 func (h *Handler) handleRenew(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -356,6 +584,37 @@ func (h *Handler) handleReservations(_ map[string]any) (*mcpgo.CallToolResult, e
 		return toolJSON([]reservations.Reservation{})
 	}
 	return toolJSON(h.reservations.List())
+}
+
+// --- run-artefact tools --------------------------------------------
+
+func (h *Handler) handleRunsList(_ map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.runs == nil {
+		return toolJSON([]runs.Run{})
+	}
+	list, err := h.runs.List()
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if list == nil {
+		list = []runs.Run{}
+	}
+	return toolJSON(list)
+}
+
+func (h *Handler) handleRunsShow(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.runs == nil {
+		return toolErr("runs store not configured on this server")
+	}
+	id, err := requireString(args, "run_id")
+	if err != nil {
+		return nil, err
+	}
+	r, err := h.runs.Get(id)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(r)
 }
 
 // optNumber extracts a float64-coerced integer-ish value. MCP
@@ -399,6 +658,590 @@ func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, er
 	default:
 		return nil, "", "", fmt.Errorf("inventory entry %q has unknown platform %q", ref, entry.Platform)
 	}
+}
+
+// --------------------------------------------------------------------------
+// iOS simulator tools
+// --------------------------------------------------------------------------
+
+// handleSimList lists all iOS simulators known to simctl, optionally
+// filtered by state ("Booted", "Shutdown", etc.). Also includes
+// available device types and runtimes when requested.
+func (h *Handler) handleSimList(args map[string]any) (*mcpgo.CallToolResult, error) {
+	state := optString(args, "state")
+	devices, err := simemu.SimList()
+	if err != nil {
+		return toolErr("sim_list: %v", err)
+	}
+	if state != "" {
+		filtered := devices[:0]
+		for _, d := range devices {
+			if d.State == state {
+				filtered = append(filtered, d)
+			}
+		}
+		devices = filtered
+	}
+	if devices == nil {
+		devices = []simemu.SimDevice{}
+	}
+	return toolJSON(devices)
+}
+
+func (h *Handler) handleSimCreate(args map[string]any) (*mcpgo.CallToolResult, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return nil, err
+	}
+	deviceTypeID, err := requireString(args, "device_type_id")
+	if err != nil {
+		return nil, err
+	}
+	runtimeID, err := requireString(args, "runtime_id")
+	if err != nil {
+		return nil, err
+	}
+	udid, err := simemu.SimCreate(name, deviceTypeID, runtimeID)
+	if err != nil {
+		return toolErr("sim_create: %v", err)
+	}
+	return toolJSON(map[string]string{"udid": udid, "name": name})
+}
+
+func (h *Handler) handleSimBoot(args map[string]any) (*mcpgo.CallToolResult, error) {
+	udid, err := requireString(args, "udid")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.SimBoot(udid); err != nil {
+		return toolErr("sim_boot: %v", err)
+	}
+	return toolText(fmt.Sprintf("simulator %s booted", udid))
+}
+
+func (h *Handler) handleSimShutdown(args map[string]any) (*mcpgo.CallToolResult, error) {
+	udid, err := requireString(args, "udid")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.SimShutdown(udid); err != nil {
+		return toolErr("sim_shutdown: %v", err)
+	}
+	return toolText(fmt.Sprintf("simulator %s shut down", udid))
+}
+
+func (h *Handler) handleSimDelete(args map[string]any) (*mcpgo.CallToolResult, error) {
+	udid, err := requireString(args, "udid")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.SimDelete(udid); err != nil {
+		return toolErr("sim_delete: %v", err)
+	}
+	return toolText(fmt.Sprintf("simulator %s deleted", udid))
+}
+
+// --------------------------------------------------------------------------
+// Android emulator tools
+// --------------------------------------------------------------------------
+
+func (h *Handler) handleEmuList(_ map[string]any) (*mcpgo.CallToolResult, error) {
+	avds, err := simemu.AVDList()
+	if err != nil {
+		return toolErr("emu_list: %v", err)
+	}
+	if avds == nil {
+		avds = []simemu.AVD{}
+	}
+	return toolJSON(avds)
+}
+
+func (h *Handler) handleEmuCreate(args map[string]any) (*mcpgo.CallToolResult, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return nil, err
+	}
+	systemImage, err := requireString(args, "system_image")
+	if err != nil {
+		return nil, err
+	}
+	deviceProfile, err := requireString(args, "device_profile")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.AVDCreate(name, systemImage, deviceProfile); err != nil {
+		return toolErr("emu_create: %v", err)
+	}
+	return toolText(fmt.Sprintf("AVD %q created", name))
+}
+
+func (h *Handler) handleEmuBoot(args map[string]any) (*mcpgo.CallToolResult, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return nil, err
+	}
+	msg, err := simemu.AVDBoot(name)
+	if err != nil {
+		return toolErr("emu_boot: %v", err)
+	}
+	return toolText(msg)
+}
+
+func (h *Handler) handleEmuShutdown(args map[string]any) (*mcpgo.CallToolResult, error) {
+	serial, err := requireString(args, "serial")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.AVDShutdown(serial); err != nil {
+		return toolErr("emu_shutdown: %v", err)
+	}
+	return toolText(fmt.Sprintf("emulator %s shut down", serial))
+}
+
+func (h *Handler) handleEmuDelete(args map[string]any) (*mcpgo.CallToolResult, error) {
+	name, err := requireString(args, "name")
+	if err != nil {
+		return nil, err
+	}
+	if err := simemu.AVDDelete(name); err != nil {
+		return toolErr("emu_delete: %v", err)
+	}
+	return toolText(fmt.Sprintf("AVD %q deleted", name))
+}
+
+func (h *Handler) handleRotate(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	orientation, err := requireString(args, "orientation")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := adapter.Rotate(id, orientation); err != nil {
+		return toolErr("rotate %s on %s: %v", orientation, dev, err)
+	}
+	return toolText(fmt.Sprintf("rotated %s to %s", dev, orientation))
+}
+
+// handleCrashes fetches crash reports from a device. Read-only; not
+// reservation-gated (same pattern as device_state). Optionally archives
+// reports into the active run when an owner is provided.
+func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	var since time.Time
+	if s := optString(args, "since"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return toolErr("since: invalid RFC3339 timestamp %q: %v", s, err)
+		}
+		since = t
+	}
+	process := optString(args, "process")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	reports, err := adapter.Crashes(id, since, process)
+	if err != nil {
+		return toolErr("crashes on %s: %v", dev, err)
+	}
+
+	// Optionally archive each pulled .ips report into the active run.
+	if h.runs != nil && owner != "" {
+		for _, r := range reports {
+			if r.Raw == "" {
+				continue
+			}
+			h.archiveArtefact(dev, owner, "crashes", "application/x-apple-crashreport", ".ips", []byte(r.Raw))
+		}
+	}
+
+	return toolJSON(reports)
+}
+
+// --- recording tools ---------------------------------------------------
+
+// handleRecordStart begins a screen recording on the device. The recording
+// runs asynchronously; the caller must invoke record_stop to finalise.
+func (h *Handler) handleRecordStart(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	canonical := h.canonicalDevice(dev)
+
+	// Conflict check: only one active recorder per device.
+	if existing := h.recordings.ForDevice(canonical); existing != nil {
+		return toolErr("record_start: device %q is already being recorded by owner %q — call record_stop first", dev, existing.Owner)
+	}
+
+	// Build output path in the temp/run dir.
+	dir := h.runsBaseDir
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	ts := time.Now().UTC().Format("20060102-150405")
+	dest := filepath.Join(dir, fmt.Sprintf("recording-%s-%s.mp4", sanitizeFilename(canonical), ts))
+
+	stopFn, pid, err := adapter.StartRecording(id, dest)
+	if err != nil {
+		return toolErr("record_start on %s: %v", dev, err)
+	}
+
+	doneCh := make(chan struct{})
+	wrappedStop := func() error {
+		defer close(doneCh)
+		return stopFn()
+	}
+
+	if _, err := h.recordings.Start(canonical, owner, dest, wrappedStop, doneCh); err != nil {
+		// Should not happen because we checked ForDevice above, but be safe.
+		return toolErr("record_start: %v", err)
+	}
+
+	slog.Info("recording started", "device", canonical, "owner", owner, "pid", pid, "dest", dest)
+	return toolText(fmt.Sprintf("recording started on %s (pid %d); call record_stop to finalise → %s", dev, pid, dest))
+}
+
+// handleRecordStop signals the active recorder to stop, waits for the
+// mp4 to be finalised, and returns the output path.
+func (h *Handler) handleRecordStop(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		h.mu.Unlock()
+		return res, nil
+	}
+	canonical := h.canonicalDevice(dev)
+
+	session, stopErr := h.recordings.Stop(canonical)
+	h.mu.Unlock()
+
+	if stopErr != nil {
+		return toolErr("record_stop on %s: %v", dev, stopErr)
+	}
+
+	// Wait for the subprocess to exit and the file to be written.
+	select {
+	case <-session.Done():
+	case <-time.After(30 * time.Second):
+		return toolErr("record_stop on %s: timed out waiting for recorder to exit", dev)
+	}
+
+	slog.Info("recording stopped", "device", canonical, "output", session.OutputPath)
+	return toolText(fmt.Sprintf("recording saved to %s", session.OutputPath))
+}
+
+// stopRecordingForOwner stops any active recording on device owned by owner.
+// Called from handleRelease to clean up before releasing the reservation.
+// Best-effort: errors are logged but not returned.
+func (h *Handler) stopRecordingForOwner(canonical, owner string) {
+	session := h.recordings.ForDevice(canonical)
+	if session == nil || session.Owner != owner {
+		return
+	}
+	s, err := h.recordings.Stop(canonical)
+	if err != nil {
+		slog.Warn("recording cleanup on release failed", "device", canonical, "owner", owner, "error", err)
+		return
+	}
+	// Wait briefly for clean shutdown.
+	select {
+	case <-s.Done():
+	case <-time.After(10 * time.Second):
+		slog.Warn("recording cleanup timed out", "device", canonical, "owner", owner)
+	}
+}
+
+// sanitizeFilename replaces characters that are unsafe in file names.
+func sanitizeFilename(s string) string {
+	out := make([]byte, len(s))
+	for i := range len(s) {
+		c := s[i]
+		if c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' {
+			out[i] = '_'
+		} else {
+			out[i] = c
+		}
+	}
+	return string(out)
+}
+
+// Compile-time check: recording.IsConflict must be callable.
+var _ = recording.IsConflict
+
+// validateAppPath rejects paths with ".." traversal components and
+// paths that do not exist. Returns the cleaned absolute path.
+func validateAppPath(path string) (string, error) {
+	if strings.Contains(path, "..") {
+		return "", fmt.Errorf("path must not contain '..': %q", path)
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving path: %w", err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("path does not exist: %q", abs)
+	}
+	return abs, nil
+}
+
+func (h *Handler) handleInstallApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	path, err := requireString(args, "path")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	path, err = validateAppPath(path)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := adapter.InstallApp(id, path); err != nil {
+		return toolErr("install_app on %s: %v", dev, err)
+	}
+	return toolText(fmt.Sprintf("installed %s on %s", filepath.Base(path), dev))
+}
+
+func (h *Handler) handleUninstallApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	bundleID, err := requireString(args, "bundle_id")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := adapter.UninstallApp(id, bundleID); err != nil {
+		return toolErr("uninstall_app on %s: %v", dev, err)
+	}
+	return toolText(fmt.Sprintf("uninstalled %s from %s", bundleID, dev))
+}
+
+// deployResult is the JSON payload returned by deploy_app on success.
+type deployResult struct {
+	BundleID string `json:"bundle_id"`
+	PID      int    `json:"pid"`
+}
+
+func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	path, err := requireString(args, "path")
+	if err != nil {
+		return nil, err
+	}
+	bundleID := optString(args, "bundle_id")
+	owner := optString(args, "owner")
+
+	path, err = validateAppPath(path)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, platform, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	// Derive bundle id from the path if not supplied.
+	if bundleID == "" {
+		var deriveErr error
+		bundleID, deriveErr = deriveBundleID(platform, path)
+		if deriveErr != nil {
+			return toolErr("cannot derive bundle_id from %q: %v — pass --bundle-id explicitly", path, deriveErr)
+		}
+	}
+
+	// Tunneld gate for iOS DVT operations (launch + app-pid).
+	if platform == "ios" && h.tunneld != nil {
+		if err := h.tunneld.Require(); err != nil {
+			return toolErr("deploy_app on %s: %v", dev, err)
+		}
+	}
+
+	// Step 1: terminate (ignore "not running" errors — it's fine if the
+	// app isn't already up; the important thing is we tried).
+	if termErr := adapter.TerminateApp(id, bundleID); termErr != nil {
+		// Only propagate if the error is not "not running" or "not found".
+		if !isNotRunningError(termErr) {
+			return toolErr("deploy_app: terminate %s on %s: %v", bundleID, dev, termErr)
+		}
+	}
+
+	// Step 2: install (fail fast on error).
+	if err := adapter.InstallApp(id, path); err != nil {
+		return toolErr("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
+	}
+
+	// Step 3: launch.
+	if err := adapter.LaunchApp(id, bundleID); err != nil {
+		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
+	}
+
+	// Step 4: verify new PID.
+	pid, err := adapter.AppPID(id, bundleID)
+	if err != nil {
+		return toolErr("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
+	}
+
+	return toolJSON(deployResult{BundleID: bundleID, PID: pid})
+}
+
+// isNotRunningError returns true for "app not running" / "not installed"
+// errors from TerminateApp. These are safe to ignore during a deploy.
+func isNotRunningError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "not running") ||
+		strings.Contains(s, "app not running") ||
+		strings.Contains(s, "not installed") ||
+		strings.Contains(s, "not found")
+}
+
+// deriveBundleID extracts the CFBundleIdentifier from an iOS .app bundle's
+// Info.plist, or the package name from an Android .apk via aapt (with a
+// --bundle-id fallback message when aapt is absent).
+func deriveBundleID(platform, path string) (string, error) {
+	switch platform {
+	case "ios":
+		return iosBundleIDFromApp(path)
+	case "android":
+		return androidBundleIDFromAPK(path)
+	default:
+		return "", fmt.Errorf("unsupported platform %q", platform)
+	}
+}
+
+// iosBundleIDFromApp reads CFBundleIdentifier from <path>/Info.plist.
+// The plist is expected in its JSON-serialised form as produced by
+// xcrun plutil or after xcrun devicectl install; for raw binary plists
+// we shell out to plutil -convert json.
+func iosBundleIDFromApp(appPath string) (string, error) {
+	plistPath := filepath.Join(appPath, "Info.plist")
+	if _, err := os.Stat(plistPath); err != nil {
+		return "", fmt.Errorf("Info.plist not found in %q", appPath)
+	}
+	// Convert to JSON then parse — handles both binary and XML plists.
+	var outBuf, errBuf bytes.Buffer
+	cmd := exec.Command("plutil", "-convert", "json", "-o", "-", plistPath)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("plutil convert Info.plist: %w", err)
+	}
+	var plist struct {
+		CFBundleIdentifier string `json:"CFBundleIdentifier"`
+	}
+	if err := json.Unmarshal(outBuf.Bytes(), &plist); err != nil {
+		return "", fmt.Errorf("parse Info.plist JSON: %w", err)
+	}
+	if plist.CFBundleIdentifier == "" {
+		return "", fmt.Errorf("CFBundleIdentifier not set in Info.plist")
+	}
+	return plist.CFBundleIdentifier, nil
+}
+
+// androidBundleIDFromAPK extracts the package name from an APK via
+// `aapt dump badging`. Falls back to a clear error when aapt is absent.
+func androidBundleIDFromAPK(apkPath string) (string, error) {
+	var outBuf bytes.Buffer
+	cmd := exec.Command("aapt", "dump", "badging", apkPath)
+	cmd.Stdout = &outBuf
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("aapt dump badging: %w (is aapt in PATH? install Android SDK build-tools)", err)
+	}
+	for _, line := range strings.Split(outBuf.String(), "\n") {
+		if !strings.HasPrefix(line, "package:") {
+			continue
+		}
+		// package: name='com.example.app' versionCode=... versionName=...
+		for _, field := range strings.Fields(line) {
+			if after, ok := strings.CutPrefix(field, "name='"); ok {
+				return strings.TrimSuffix(after, "'"), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("package name not found in aapt output")
 }
 
 // Compile-time assertion that errors package is imported (for build).

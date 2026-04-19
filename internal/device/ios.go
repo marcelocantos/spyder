@@ -4,18 +4,23 @@
 package device
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/network"
 )
 
 // KeepAwakeBundleID is the bundle identifier of the ios/KeepAwake companion
@@ -470,6 +475,561 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// iosSimOrientations maps canonical orientation names to the xcrun simctl
+// rotate argument. simctl uses camelCase orientation identifiers.
+var iosSimOrientations = map[string]string{
+	"portrait":             "portrait",
+	"landscape-left":       "landscapeLeft",
+	"landscape-right":      "landscapeRight",
+	"portrait-upside-down": "portraitUpsideDown",
+}
+
+// isSimulatorID returns true when id looks like an iOS simulator UUID
+// rather than a hardware device UDID.
+//
+// Hardware UDID format: exactly 8 hex + "-" + 16 hex, e.g.
+//
+//	00008103-000D39301A6A201E
+//
+// Simulator UUIDs follow the standard UUID4 shape (8-4-4-4-12 hex groups),
+// matching devicectl / xcrun simctl output, e.g.
+//
+//	C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8
+//
+// We detect the hardware pattern (single hyphen, groups of 8+16) and treat
+// everything else as a simulator candidate.
+func isSimulatorID(id string) bool {
+	// Hardware UDID: exactly one hyphen, 8 chars before and 16 after.
+	parts := strings.SplitN(id, "-", 2)
+	if len(parts) == 2 && len(parts[0]) == 8 && len(parts[1]) == 16 {
+		return false // physical device UDID
+	}
+	return true
+}
+
+// Rotate sets the screen orientation of an iOS simulator via
+// `xcrun simctl io <udid> rotate <orientation>`. Physical iOS devices
+// return an error — rotation requires physical movement and is not
+// programmatically supported.
+func (a *IOSAdapter) Rotate(id, orientation string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if !isSimulatorID(id) {
+		return errors.New("rotation on real iOS devices is not supported; only iOS simulators support programmatic rotation")
+	}
+	arg, ok := iosSimOrientations[orientation]
+	if !ok {
+		return fmt.Errorf("unsupported orientation %q; valid values: portrait, landscape-left, landscape-right, portrait-upside-down", orientation)
+	}
+	_, stderr, err := runCapture("xcrun", "simctl", "io", id, "rotate", arg)
+	if err != nil {
+		return fmt.Errorf("simctl rotate: %v\n%s", err, truncate(string(stderr), 240))
+	}
+	return nil
+}
+
+// Crashes fetches .ips crash reports from the device via
+// `pymobiledevice3 crash-reports pull`. Reports are filtered by the
+// timestamp embedded in the filename and optionally by process name.
+// Each .ips file's first line is a JSON header with structured metadata;
+// we parse it for the summary and include the full file content in Raw.
+// Reports are returned newest-first.
+func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]CrashReport, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("pymobiledevice3"); err != nil {
+		return nil, fmt.Errorf("pymobiledevice3 not found in PATH: %w", err)
+	}
+
+	// List available crash reports.
+	listOut, listStderr, listErr := runCapture("pymobiledevice3", "crash-reports", "list", "--udid", id)
+	if isDeviceNotConnected(string(listStderr)) {
+		return nil, fmt.Errorf("device not connected: %s", id)
+	}
+	if listErr != nil {
+		return nil, fmt.Errorf("crash-reports list: %v\n%s", listErr, truncate(string(listStderr), 200))
+	}
+
+	filenames, err := parseCrashReportList(listOut)
+	if err != nil {
+		return nil, fmt.Errorf("crash-reports list parse: %w", err)
+	}
+
+	// Filter by filename-embedded timestamp and optional process name.
+	var filtered []ipsFileMeta
+	for _, m := range filenames {
+		if !since.IsZero() && m.ts.Before(since) {
+			continue
+		}
+		if process != "" && !strings.EqualFold(m.process, process) {
+			continue
+		}
+		filtered = append(filtered, m)
+	}
+	if len(filtered) == 0 {
+		return []CrashReport{}, nil
+	}
+
+	// Pull reports into a temporary directory.
+	tmp, err := os.MkdirTemp("", "spyder-crashes-*")
+	if err != nil {
+		return nil, fmt.Errorf("temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	_, pullStderr, pullErr := runCapture("pymobiledevice3", "crash-reports", "pull", tmp, "--udid", id)
+	if pullErr != nil {
+		return nil, fmt.Errorf("crash-reports pull: %v\n%s", pullErr, truncate(string(pullStderr), 200))
+	}
+
+	var reports []CrashReport
+	for _, m := range filtered {
+		path := filepath.Join(tmp, m.filename)
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			// File may not be present if pull raced or the filter was
+			// approximate. Include a minimal record without raw content.
+			reports = append(reports, CrashReport{
+				Process:   m.process,
+				Timestamp: m.ts,
+			})
+			continue
+		}
+		cr := parseIPSReport(data, m)
+		reports = append(reports, cr)
+	}
+
+	// Sort newest-first.
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Timestamp.After(reports[j].Timestamp)
+	})
+	return reports, nil
+}
+
+// ipsFileMeta holds metadata extracted from a crash report filename.
+// iOS crash report names follow patterns such as:
+//
+//	<process>-<YYYY-MM-DD-HHmmss>[-<pid>].ips
+type ipsFileMeta struct {
+	filename string
+	process  string
+	ts       time.Time
+}
+
+// parseCrashReportList parses `pymobiledevice3 crash-reports list` output.
+// The command emits a JSON array of filename strings. Some versions emit
+// one filename per line instead; we handle both.
+func parseCrashReportList(data []byte) ([]ipsFileMeta, error) {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 {
+		return nil, nil
+	}
+	var names []string
+	if err := json.Unmarshal(data, &names); err != nil {
+		// Fall back to newline-delimited plain text.
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" {
+				names = append(names, line)
+			}
+		}
+	}
+	out := make([]ipsFileMeta, 0, len(names))
+	for _, name := range names {
+		out = append(out, parseIPSFilename(name))
+	}
+	return out, nil
+}
+
+// ipsTimestampFormats are the datetime patterns we try when parsing the
+// timestamp embedded in a crash report filename.
+var ipsTimestampFormats = []string{
+	"2006-01-02-150405",
+	"2006-01-02-150405-0700",
+}
+
+// parseIPSFilename extracts process name and timestamp from an .ips filename.
+// Returns zero time if no recognisable timestamp is found.
+func parseIPSFilename(name string) ipsFileMeta {
+	base := strings.TrimSuffix(filepath.Base(name), ".ips")
+	parts := strings.SplitN(base, "-", 2)
+	proc := parts[0]
+	// Strip any trailing underscore-separated token (some tools append uuid).
+	if i := strings.Index(proc, "_"); i > 0 {
+		proc = proc[:i]
+	}
+
+	var ts time.Time
+	if len(parts) > 1 {
+		suffix := parts[1]
+		for _, layout := range ipsTimestampFormats {
+			// Try the full suffix, then sub-segments separated by hyphens.
+			candidates := append([]string{suffix}, strings.Split(suffix, "-")...)
+			for _, c := range candidates {
+				if t, err := time.Parse(layout, c); err == nil {
+					ts = t.UTC()
+					break
+				}
+			}
+			if !ts.IsZero() {
+				break
+			}
+		}
+	}
+	return ipsFileMeta{filename: filepath.Base(name), process: proc, ts: ts}
+}
+
+// ipsHeader is the subset of .ips first-line JSON we care about.
+type ipsHeader struct {
+	ProcName      string `json:"procName"`
+	ProcessName   string `json:"process_name"`
+	CapturedTime  string `json:"captured_time"`
+	ExceptionType string `json:"exception_type"`
+	ExceptionInfo string `json:"exception_info"`
+}
+
+// parseIPSReport reads an .ips file, parses its first-line JSON header,
+// and returns a CrashReport. The full raw content is stored in Raw.
+func parseIPSReport(data []byte, meta ipsFileMeta) CrashReport {
+	cr := CrashReport{
+		Process:   meta.process,
+		Timestamp: meta.ts,
+		Raw:       string(data),
+	}
+
+	// The first line of an .ips file is a single JSON object.
+	firstLine := data
+	if i := bytes.IndexByte(data, '\n'); i >= 0 {
+		firstLine = data[:i]
+	}
+	var hdr ipsHeader
+	if err := json.Unmarshal(bytes.TrimSpace(firstLine), &hdr); err == nil {
+		if hdr.ProcName != "" {
+			cr.Process = hdr.ProcName
+		} else if hdr.ProcessName != "" {
+			cr.Process = hdr.ProcessName
+		}
+		if hdr.CapturedTime != "" {
+			for _, layout := range []string{
+				time.RFC3339,
+				"2006-01-02 15:04:05.000 -0700",
+				"2006-01-02T15:04:05Z",
+			} {
+				if t, err := time.Parse(layout, hdr.CapturedTime); err == nil {
+					cr.Timestamp = t.UTC()
+					break
+				}
+			}
+		}
+		reason := hdr.ExceptionType
+		if hdr.ExceptionInfo != "" {
+			if reason != "" {
+				reason += ": " + hdr.ExceptionInfo
+			} else {
+				reason = hdr.ExceptionInfo
+			}
+		}
+		cr.Reason = reason
+	}
+	return cr
+}
+
+// StartRecording is not supported on iOS physical devices. Use an iOS
+// simulator (platform "ios-sim") for screen recording.
+//
+// The error message is structured so agents can detect the unsupported case:
+// it contains the literal phrase "not supported on iOS physical devices".
+func (a *IOSAdapter) StartRecording(id, dest string) (func() error, int, error) {
+	return nil, 0, fmt.Errorf("screen recording is not supported on iOS physical devices; use a simulator — run `xcrun simctl list devices` to pick one, then pass its UDID directly")
+}
+
+// StopRecording is a no-op on iOS physical devices because StartRecording
+// always errors. It exists only to satisfy the Adapter interface.
+func (a *IOSAdapter) StopRecording(id string, pid int) error {
+	return fmt.Errorf("screen recording is not supported on iOS physical devices")
+}
+
+// InstallApp installs a .app or .ipa bundle via `xcrun devicectl device
+// install app`. The device id may be the hardware UDID, CoreDevice UUID,
+// or any other identifier that devicectl --device accepts.
+func (a *IOSAdapter) InstallApp(id, path string) error {
+	if id == "" || path == "" {
+		return errors.New("device id and path are required")
+	}
+	_, stderr, err := runCapture("xcrun", "devicectl", "device", "install", "app",
+		"--device", id, path)
+	if err != nil {
+		return fmt.Errorf("devicectl install app: %v\n%s", err, truncate(string(stderr), 300))
+	}
+	return nil
+}
+
+// UninstallApp removes an app by bundle identifier via
+// `xcrun devicectl device uninstall app --bundle-identifier`.
+func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
+	if id == "" || bundleID == "" {
+		return errors.New("device id and bundle_id are required")
+	}
+	_, stderr, err := runCapture("xcrun", "devicectl", "device", "uninstall", "app",
+		"--device", id, "--bundle-identifier", bundleID)
+	if err != nil {
+		return fmt.Errorf("devicectl uninstall app: %v\n%s", err, truncate(string(stderr), 300))
+	}
+	return nil
+}
+
+// AppPID returns the process id of a running app by bundle id.
+// Uses `pymobiledevice3 developer dvt process-id-for-bundle-id`.
+// Returns an error if the app is not running. Requires tunneld.
+func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
+	if id == "" || bundleID == "" {
+		return 0, errors.New("device id and bundle_id are required")
+	}
+	pidOut, pidStderr, pidErr := runCapture("pymobiledevice3", "developer", "dvt",
+		"process-id-for-bundle-id", bundleID, "--udid", id)
+	if isDeviceNotConnected(string(pidStderr)) {
+		return 0, fmt.Errorf("device not connected: %s", id)
+	}
+	if pidErr != nil {
+		return 0, fmt.Errorf("resolve pid: %v\n%s", pidErr, truncate(string(pidStderr), 200))
+	}
+	pid, err := parseIOSPID(pidOut)
+	if err != nil {
+		return 0, fmt.Errorf("app not running: %s", bundleID)
+	}
+	return pid, nil
+}
+
+// ApplyNetwork is not yet implemented for iOS.
+//
+// # iOS simulator
+//
+// Apple does not expose a first-class CLI for Link Conditioner. The
+// Network Link Conditioner preference pane (com.apple.Network-Link-Conditioner)
+// and its backing daemon (nslookupd / nlcd) are host-level — they affect
+// all network traffic on the Mac, not just a single simulator instance.
+// Some third-party tools (e.g. `nlct`) wrap the pane, but they are not
+// reliably available and the API is private. Contributions that implement
+// per-simulator shaping (e.g. via `simctl` future flags or the private
+// CoreSimulator framework) are welcome.
+//
+// # Physical iOS devices
+//
+// Physical iOS devices do not expose a programmable network-shaping
+// interface to the host. Apple's Developer Settings → Network Link
+// Conditioner feature can be toggled on-device, but there is no
+// host-side CLI or protocol to drive it remotely.
+func (a *IOSAdapter) ApplyNetwork(_ string, _ network.NetworkProfile) error {
+	return errors.New(
+		"network condition shaping is not supported on iOS: " +
+			"iOS simulator — no public CLI for Link Conditioner (contributions welcome); " +
+			"physical iOS devices — no remote interface to Developer Settings",
+	)
+}
+
+// ClearNetwork is not yet implemented for iOS (same limitations as ApplyNetwork).
+func (a *IOSAdapter) ClearNetwork(_ string) error {
+	return errors.New(
+		"network condition clearing is not supported on iOS: " +
+			"iOS simulator — no public CLI for Link Conditioner (contributions welcome); " +
+			"physical iOS devices — no remote interface to Developer Settings",
+	)
+}
+
+// iosSyslogLineRE matches a line produced by `pymobiledevice3 syslog live`
+// in its default text format:
+//
+//	<Timestamp> <Device> <Process>(<subsystem>) [<level>] <Message>
+//
+// Example:
+//
+//	Mar 15 14:23:01.123 Pippa MyApp(com.example.app)[1234] <Error>: crash happened
+//
+// The regex is intentionally permissive to handle variations (missing
+// subsystem, different bracket styles, etc.).
+var iosSyslogLineRE = regexp.MustCompile(
+	`^(\w{3}\s+\d+\s+[\d:.]+)\s+\S+\s+(\S+?)\[` + // timestamp + device + process[pid
+		`\d+\]\s+<(\w+)>:\s+(.*)$`, // level: message
+)
+
+// iosSyslogTimestampLayouts are tried in order when parsing timestamps from
+// `pymobiledevice3 syslog live` output. The tool emits dates without a year,
+// so we parse them relative to the current year.
+var iosSyslogTimestampLayouts = []string{
+	"Jan  2 15:04:05.000",
+	"Jan _2 15:04:05.000",
+	"Jan 2 15:04:05.000",
+	"Jan  2 15:04:05",
+	"Jan _2 15:04:05",
+	"Jan 2 15:04:05",
+}
+
+// ParseIOSSyslogLine parses a single line from `pymobiledevice3 syslog live`
+// output. Exported for testing; internal callers use parseIOSSyslogLine.
+func ParseIOSSyslogLine(line string) (LogLine, bool) {
+	m := iosSyslogLineRE.FindStringSubmatch(line)
+	if m == nil {
+		return LogLine{}, false
+	}
+	ts := parseIOSSyslogTimestamp(m[1])
+	return LogLine{
+		Timestamp: ts,
+		Process:   m[2],
+		Level:     m[3],
+		Message:   m[4],
+	}, true
+}
+
+// parseIOSSyslogTimestamp parses a syslog timestamp string, appending the
+// current year since pymobiledevice3 does not include it.
+func parseIOSSyslogTimestamp(s string) time.Time {
+	year := time.Now().Year()
+	s = strings.TrimSpace(s)
+	for _, layout := range iosSyslogTimestampLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.AddDate(year, 0, 0)
+		}
+	}
+	return time.Time{}
+}
+
+// LogRange returns log lines from `pymobiledevice3 syslog live` between
+// since and until. Because pymobiledevice3 does not support archived-log
+// timestamp queries in a stable CLI way, we run the live stream briefly,
+// collecting lines within the window. For bounded historic queries, callers
+// should provide a reasonable since/until window; this implementation
+// falls back to returning the recent live output.
+//
+// Filter fields: Process (--procname), Subsystem (--subsystem), Regex
+// (applied client-side to Message).
+func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("pymobiledevice3"); err != nil {
+		return nil, fmt.Errorf("pymobiledevice3 not found: %w", err)
+	}
+
+	args := []string{"syslog", "live", "--udid", id}
+	if filter.Process != "" {
+		args = append(args, "--procname", filter.Process)
+	}
+	if filter.Subsystem != "" {
+		args = append(args, "--subsystem", filter.Subsystem)
+	}
+
+	// For range queries we need to drain until `until` passes. Cap at 30s
+	// to avoid hanging forever when until is zero (no upper bound).
+	deadline := until
+	if deadline.IsZero() || deadline.After(time.Now().Add(30*time.Second)) {
+		deadline = time.Now().Add(5 * time.Second)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "pymobiledevice3", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start syslog live: %w", err)
+	}
+
+	var regexFilter *regexp.Regexp
+	if filter.Regex != "" {
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			return nil, fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	var lines []LogLine
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		ll, ok := ParseIOSSyslogLine(line)
+		if !ok {
+			continue
+		}
+		if !since.IsZero() && ll.Timestamp.Before(since) {
+			continue
+		}
+		if !until.IsZero() && ll.Timestamp.After(until) {
+			continue
+		}
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		lines = append(lines, ll)
+	}
+
+	// Deadline-based cancellation is expected; suppress context errors.
+	_ = cmd.Wait()
+	return lines, nil
+}
+
+// LogStream pumps live syslog lines from the device into out until ctx is
+// cancelled. Uses `pymobiledevice3 syslog live`. Filter fields are applied
+// server-side (pymobiledevice3 flags) and client-side (Regex).
+func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("pymobiledevice3"); err != nil {
+		return fmt.Errorf("pymobiledevice3 not found: %w", err)
+	}
+
+	args := []string{"syslog", "live", "--udid", id}
+	if filter.Process != "" {
+		args = append(args, "--procname", filter.Process)
+	}
+	if filter.Subsystem != "" {
+		args = append(args, "--subsystem", filter.Subsystem)
+	}
+
+	var regexFilter *regexp.Regexp
+	if filter.Regex != "" {
+		var err error
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			return fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "pymobiledevice3", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start syslog live: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		ll, ok := ParseIOSSyslogLine(scanner.Text())
+		if !ok {
+			continue
+		}
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		select {
+		case out <- ll:
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return nil
+		}
+	}
+	_ = cmd.Wait()
+	return nil
 }
 
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.

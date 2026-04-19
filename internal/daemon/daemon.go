@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -20,12 +22,21 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/marcelocantos/spyder/internal/autoawake"
+	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
+	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/tunneld"
+)
+
+// Run-artefact retention defaults. Overridable via env so the Homebrew
+// service plist can tune without rebuilding.
+const (
+	defaultRunsMaxAgeDays = 30
+	defaultRunsMaxSizeGB  = 20
 )
 
 // Config configures a spyder server instance.
@@ -124,11 +135,37 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 		resvStore = nil
 	}
 
+	runsStore, err := runs.New(paths.RunsBase(),
+		runs.WithPolicy(runsPolicyFromEnv()))
+	if err != nil {
+		slog.Warn("runs store unavailable — artefact archiving disabled",
+			"path", paths.RunsBase(), "error", err)
+		runsStore = nil
+	} else if res, perr := runsStore.Prune(); perr != nil {
+		slog.Warn("runs prune failed", "error", perr)
+	} else if len(res.Removed) > 0 {
+		slog.Info("runs pruned on startup",
+			"removed", len(res.Removed), "retained", res.Retained)
+	}
+
+	blsStore, err := baselines.New(paths.BaselinesBase())
+	if err != nil {
+		slog.Warn("baselines store unavailable — visual-regression tools disabled",
+			"path", paths.BaselinesBase(), "error", err)
+		blsStore = nil
+	}
+
 	handlerOpts := []spydermcp.HandlerOption{
 		spydermcp.WithInventory(invStore),
 	}
 	if resvStore != nil {
 		handlerOpts = append(handlerOpts, spydermcp.WithReservations(resvStore))
+	}
+	if runsStore != nil {
+		handlerOpts = append(handlerOpts, spydermcp.WithRuns(runsStore))
+	}
+	if blsStore != nil {
+		handlerOpts = append(handlerOpts, spydermcp.WithBaselines(blsStore))
 	}
 	handler := spydermcp.NewHandler(tunClient, handlerOpts...)
 
@@ -143,4 +180,34 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
 	return mux, tunClient, resvStore
+}
+
+// runsPolicyFromEnv reads the retention overrides from environment
+// variables. Zero either knob disables that bound; negative values
+// are treated as zero.
+func runsPolicyFromEnv() runs.Policy {
+	days := envInt("SPYDER_RUNS_MAX_AGE_DAYS", defaultRunsMaxAgeDays)
+	gb := envInt("SPYDER_RUNS_MAX_SIZE_GB", defaultRunsMaxSizeGB)
+	p := runs.Policy{}
+	if days > 0 {
+		p.MaxAge = time.Duration(days) * 24 * time.Hour
+	}
+	if gb > 0 {
+		p.MaxSize = int64(gb) * 1024 * 1024 * 1024
+	}
+	return p
+}
+
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		slog.Warn("ignoring non-integer env override",
+			"key", key, "value", v, "using", fallback)
+		return fallback
+	}
+	return n
 }

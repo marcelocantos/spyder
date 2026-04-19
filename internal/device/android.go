@@ -4,15 +4,22 @@
 package device
 
 import (
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/network"
 )
 
 // AndroidAdapter talks to Android devices via adb. Unlike iOS it does not
@@ -271,6 +278,732 @@ func (a *AndroidAdapter) TerminateApp(id, bundleID string) error {
 	if err != nil {
 		return fmt.Errorf("adb force-stop: %v\n%s", err, truncate(string(stderr), 200))
 	}
+	return nil
+}
+
+// androidRotationValues maps canonical orientation names to the Android
+// user_rotation setting value. Android's user_rotation is a clockwise
+// rotation index: 0=portrait, 1=landscape-left (90° CW), 2=portrait-upside-down
+// (180°), 3=landscape-right (270° CW / 90° CCW).
+var androidRotationValues = map[string]int{
+	"portrait":             0,
+	"landscape-left":       1,
+	"portrait-upside-down": 2,
+	"landscape-right":      3,
+}
+
+// isEmulatorSerial returns true when serial matches the `emulator-*`
+// pattern that `adb devices` uses for running Android emulators.
+func isEmulatorSerial(serial string) bool {
+	return strings.HasPrefix(serial, "emulator-")
+}
+
+// androidCurrentRotation reads the emulator's current user_rotation
+// via `adb shell settings get system user_rotation`. Returns 0..3.
+func androidCurrentRotation(serial string) (int, error) {
+	out, stderr, err := runCapture("adb", "-s", serial, "shell", "settings", "get", "system", "user_rotation")
+	if err != nil {
+		return 0, fmt.Errorf("adb settings get user_rotation: %v\n%s", err, truncate(string(stderr), 160))
+	}
+	val, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil {
+		return 0, fmt.Errorf("parse user_rotation %q: %w", strings.TrimSpace(string(out)), err)
+	}
+	return val, nil
+}
+
+// Rotate drives an Android emulator to the specified orientation by
+// reading its current rotation and issuing the required number of
+// `adb emu rotate` (90° CW) commands. Physical Android devices return
+// an error — only emulator serials (matching "emulator-*") are supported.
+func (a *AndroidAdapter) Rotate(id, orientation string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if !isEmulatorSerial(id) {
+		return errors.New("rotation on real Android devices is not supported; only Android emulators (serial prefix 'emulator-') support programmatic rotation")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	target, ok := androidRotationValues[orientation]
+	if !ok {
+		return fmt.Errorf("unsupported orientation %q; valid values: portrait, landscape-left, landscape-right, portrait-upside-down", orientation)
+	}
+	current, err := androidCurrentRotation(id)
+	if err != nil {
+		return fmt.Errorf("read current rotation: %w", err)
+	}
+	// adb emu rotate toggles 90° CW each call. Calculate how many rotations
+	// are needed to reach the target orientation from the current one.
+	steps := (target - current + 4) % 4
+	for range steps {
+		_, stderr, err := runCapture("adb", "-s", id, "emu", "rotate")
+		if err != nil {
+			return fmt.Errorf("adb emu rotate: %v\n%s", err, truncate(string(stderr), 160))
+		}
+	}
+	return nil
+}
+
+// Crashes fetches crash reports from an Android device. It first attempts
+// to pull tombstones from /data/tombstones/ via adb (root-capable devices
+// only). When that fails or returns nothing, it falls back to parsing
+// `adb logcat -b crash` output.
+//
+// The since filter is applied to tombstone mtimes (when available) and
+// to the logcat timestamp. The process filter matches the process tag
+// embedded in logcat lines. Reports are returned newest-first.
+func (a *AndroidAdapter) Crashes(id string, since time.Time, process string) ([]CrashReport, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return nil, fmt.Errorf("adb not found in PATH: %w", err)
+	}
+
+	// Attempt tombstone pull first.
+	reports, tombErr := androidTombstoneCrashes(id, since, process)
+	if tombErr == nil && len(reports) > 0 {
+		return reports, nil
+	}
+
+	// Fall back to logcat crash buffer.
+	return androidLogcatCrashes(id, since, process)
+}
+
+// androidTombstoneCrashes tries to pull tombstone files from
+// /data/tombstones/ via adb pull. Only works on rooted or
+// adb-root-enabled devices.
+func androidTombstoneCrashes(id string, since time.Time, process string) ([]CrashReport, error) {
+	tmp, err := os.MkdirTemp("", "spyder-tombstones-*")
+	if err != nil {
+		return nil, fmt.Errorf("temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	out, stderr, err := runCapture("adb", "-s", id, "pull", "/data/tombstones/.", tmp)
+	if err != nil {
+		// Not root or directory doesn't exist — expected on non-rooted devices.
+		return nil, fmt.Errorf("adb pull /data/tombstones: %v\n%s",
+			err, truncate(string(stderr)+string(out), 200))
+	}
+
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return nil, fmt.Errorf("read pulled tombstones: %w", err)
+	}
+
+	var reports []CrashReport
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		fpath := filepath.Join(tmp, e.Name())
+		fi, err := e.Info()
+		if err != nil {
+			continue
+		}
+		mtime := fi.ModTime().UTC()
+		if !since.IsZero() && mtime.Before(since) {
+			continue
+		}
+		data, err := os.ReadFile(fpath)
+		if err != nil {
+			continue
+		}
+		cr := parseTombstone(data, mtime, process)
+		if cr == nil {
+			continue
+		}
+		reports = append(reports, *cr)
+	}
+
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Timestamp.After(reports[j].Timestamp)
+	})
+	return reports, nil
+}
+
+// parseTombstone extracts a CrashReport from a tombstone file. Returns
+// nil when the process filter is set and the tombstone doesn't match.
+func parseTombstone(data []byte, mtime time.Time, processFilter string) *CrashReport {
+	cr := CrashReport{Timestamp: mtime, Raw: string(data)}
+	// Tombstone header lines look like:
+	//   pid: 1234, tid: 1234, name: my_process  >>> com.example.app <<<
+	// or just:
+	//   Cmd line: com.example.app
+	for _, line := range strings.SplitN(string(data), "\n", 30) {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "pid:") {
+			// Extract name: field.
+			if i := strings.Index(line, "name: "); i >= 0 {
+				rest := line[i+len("name: "):]
+				if j := strings.Index(rest, " "); j > 0 {
+					cr.Process = rest[:j]
+				} else {
+					cr.Process = strings.TrimSpace(rest)
+				}
+			}
+		} else if strings.HasPrefix(line, "Cmd line:") {
+			cr.Process = strings.TrimSpace(strings.TrimPrefix(line, "Cmd line:"))
+		} else if strings.HasPrefix(line, "signal ") || strings.HasPrefix(line, "Abort message:") {
+			if cr.Reason == "" {
+				cr.Reason = line
+			}
+		}
+		if cr.Process != "" && cr.Reason != "" {
+			break
+		}
+	}
+
+	if processFilter != "" && !strings.EqualFold(cr.Process, processFilter) {
+		return nil
+	}
+	return &cr
+}
+
+// logcatCrashRE matches the start of an AndroidRuntime crash block:
+//
+//	MM-DD HH:MM:SS.mmm  PID  TID E AndroidRuntime: FATAL EXCEPTION: <thread>
+var logcatCrashRE = regexp.MustCompile(`^(\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d+)\s+\d+\s+\d+\s+\w\s+(\S+)\s*:\s+(.*)`)
+
+// androidLogcatCrashes reads the crash logcat buffer and parses crash
+// blocks. When since is non-zero, it passes the timestamp to logcat via
+// -T; otherwise it reads the full crash buffer.
+func androidLogcatCrashes(id string, since time.Time, processFilter string) ([]CrashReport, error) {
+	args := []string{"-s", id, "logcat", "-b", "crash", "-d", "-v", "threadtime"}
+	if !since.IsZero() {
+		// adb logcat -T accepts "MM-DD HH:MM:SS.mmm" or a Unix timestamp.
+		args = append(args, "-T", since.Format("01-02 15:04:05.000"))
+	}
+	out, stderr, err := runCapture("adb", args...)
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return nil, fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("adb logcat: %v\n%s", err, truncate(string(stderr), 200))
+	}
+	return parseLogcatCrashBuffer(string(out), since, processFilter), nil
+}
+
+// parseLogcatCrashBuffer splits logcat output into per-process crash
+// blocks and returns one CrashReport per block.
+func parseLogcatCrashBuffer(output string, since time.Time, processFilter string) []CrashReport {
+	var reports []CrashReport
+	var curProc, curReason string
+	var curTS time.Time
+	var curLines []string
+
+	flush := func() {
+		if curProc == "" {
+			return
+		}
+		if processFilter != "" && !strings.EqualFold(curProc, processFilter) {
+			curProc, curReason, curTS, curLines = "", "", time.Time{}, nil
+			return
+		}
+		reports = append(reports, CrashReport{
+			Process:   curProc,
+			Reason:    curReason,
+			Timestamp: curTS,
+			Raw:       strings.Join(curLines, "\n"),
+		})
+		curProc, curReason, curTS, curLines = "", "", time.Time{}, nil
+	}
+
+	for _, line := range strings.Split(output, "\n") {
+		m := logcatCrashRE.FindStringSubmatch(line)
+		if m == nil {
+			if curProc != "" {
+				curLines = append(curLines, line)
+			}
+			continue
+		}
+		tsStr, tag, msg := m[1], m[2], m[3]
+		// Logcat timestamp has no year; assume current year.
+		ts, err := time.Parse("2006 01-02 15:04:05.000", fmt.Sprintf("%d %s", time.Now().Year(), tsStr))
+		if err != nil {
+			ts = time.Time{}
+		} else {
+			ts = ts.UTC()
+		}
+		if !since.IsZero() && !ts.IsZero() && ts.Before(since) {
+			continue
+		}
+		if strings.Contains(msg, "FATAL EXCEPTION") {
+			// A FATAL EXCEPTION line starts a new crash block.
+			flush()
+			curProc = tag
+			curTS = ts
+			curReason = msg
+			curLines = []string{line}
+		} else if curProc != "" {
+			// Continuation line within an open crash block.
+			curLines = append(curLines, line)
+		}
+	}
+	flush()
+
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].Timestamp.After(reports[j].Timestamp)
+	})
+	return reports
+}
+
+// androidDeviceRecordPath is where screenrecord writes on the device.
+const androidDeviceRecordPath = "/sdcard/spyder-recording.mp4"
+
+// StartRecording starts `adb shell screenrecord` on the device. The
+// screenrecord binary writes to androidDeviceRecordPath on the device;
+// dest is the local path the file will be pulled to by the stopFn.
+//
+// The command runs in the background; stopFn sends SIGINT so the mp4 is
+// properly finalised before we pull it.
+func (a *AndroidAdapter) StartRecording(id, dest string) (func() error, int, error) {
+	if id == "" {
+		return nil, 0, errors.New("adb: device identifier is empty")
+	}
+	if dest == "" {
+		return nil, 0, errors.New("adb: dest path is required")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return nil, 0, fmt.Errorf("adb not found in PATH: %w", err)
+	}
+
+	// Remove stale recording from a previous interrupted session.
+	_, _, _ = runCapture("adb", "-s", id, "shell", "rm", "-f", androidDeviceRecordPath)
+
+	cmd := exec.Command("adb", "-s", id, "shell", "screenrecord",
+		"--bit-rate", "4000000",
+		androidDeviceRecordPath,
+	)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	if err := cmd.Start(); err != nil {
+		return nil, 0, fmt.Errorf("adb screenrecord: %w", err)
+	}
+
+	pid := cmd.Process.Pid
+	stopFn := func() error {
+		// SIGINT the local adb shell; it propagates to screenrecord on device.
+		if sigErr := cmd.Process.Signal(syscall.SIGINT); sigErr != nil && !errors.Is(sigErr, os.ErrProcessDone) {
+			// Fall back to killing screenrecord on device via adb killall.
+			_, _, _ = runCapture("adb", "-s", id, "shell", "killall", "-SIGINT", "screenrecord")
+		}
+		// Wait for the local adb shell to exit.
+		done := make(chan error, 1)
+		go func() { done <- cmd.Wait() }()
+		select {
+		case <-time.After(15 * time.Second):
+			_ = cmd.Process.Kill()
+			<-done
+		case <-done:
+		}
+		// Pull the recorded file to dest.
+		if _, _, pullErr := runCapture("adb", "-s", id, "pull", androidDeviceRecordPath, dest); pullErr != nil {
+			return fmt.Errorf("adb pull %s → %s: %w", androidDeviceRecordPath, dest, pullErr)
+		}
+		// Clean up on device.
+		_, _, _ = runCapture("adb", "-s", id, "shell", "rm", "-f", androidDeviceRecordPath)
+		return nil
+	}
+
+	return stopFn, pid, nil
+}
+
+// StopRecording signals the local adb shell (which propagates to screenrecord
+// on device) via SIGINT. For full cleanup including the device-side pull,
+// use the stopFn returned by StartRecording directly. This method exists to
+// satisfy the Adapter interface.
+func (a *AndroidAdapter) StopRecording(id string, pid int) error {
+	if pid <= 0 {
+		return fmt.Errorf("adb StopRecording: invalid pid %d", pid)
+	}
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return fmt.Errorf("adb StopRecording: find process %d: %w", pid, err)
+	}
+	if sigErr := proc.Signal(syscall.SIGINT); sigErr != nil && !errors.Is(sigErr, os.ErrProcessDone) {
+		_, _, _ = runCapture("adb", "-s", id, "shell", "killall", "-SIGINT", "screenrecord")
+	}
+	return nil
+}
+
+// InstallApp installs an APK via `adb -s <serial> install -r <path>`.
+// The -r flag replaces an existing installation if present.
+func (a *AndroidAdapter) InstallApp(id, path string) error {
+	if id == "" || path == "" {
+		return errors.New("device id and path are required")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "install", "-r", path)
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return fmt.Errorf("adb install: %v\n%s", err, truncate(combined, 300))
+	}
+	// adb install may exit 0 but include FAILURE in stdout.
+	if strings.Contains(strings.ToUpper(string(out)), "FAILURE") {
+		return fmt.Errorf("adb install failed: %s", truncate(string(out), 300))
+	}
+	return nil
+}
+
+// UninstallApp removes a package via `adb -s <serial> uninstall <package>`.
+func (a *AndroidAdapter) UninstallApp(id, bundleID string) error {
+	if id == "" || bundleID == "" {
+		return errors.New("device id and bundle_id are required")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "uninstall", bundleID)
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return fmt.Errorf("adb uninstall: %v\n%s", err, truncate(combined, 300))
+	}
+	return nil
+}
+
+// AppPID returns the process id of a running app via `adb shell pidof <pkg>`.
+// Returns an error if the app is not running or pidof output is empty.
+func (a *AndroidAdapter) AppPID(id, bundleID string) (int, error) {
+	if id == "" || bundleID == "" {
+		return 0, errors.New("device id and bundle_id are required")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return 0, fmt.Errorf("adb not found in PATH: %w", err)
+	}
+	out, stderr, err := runCapture("adb", "-s", id, "shell", "pidof", bundleID)
+	if isAndroidDeviceNotConnected(string(stderr)) {
+		return 0, fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("app not running: %s", bundleID)
+	}
+	s := strings.TrimSpace(string(out))
+	if s == "" {
+		return 0, fmt.Errorf("app not running: %s", bundleID)
+	}
+	// pidof may return multiple PIDs; we take the first.
+	fields := strings.Fields(s)
+	pid, perr := strconv.Atoi(fields[0])
+	if perr != nil || pid <= 0 {
+		return 0, fmt.Errorf("unexpected pidof output for %s: %q", bundleID, s)
+	}
+	return pid, nil
+}
+
+// ApplyNetwork shapes network conditions on an Android emulator via the
+// adb telnet console "network speed" and "network delay" commands.
+//
+// This ONLY works on Android emulators (avd) — not on physical Android
+// devices. adb console commands are tunnelled to the emulator's control
+// socket; they are silently ignored or errored by real hardware because
+// real hardware has no emulator control plane.
+//
+// Packet-loss profiles (lossy-<pct>) are not supported by the adb console
+// protocol. The adb emu network commands control speed and delay only.
+// If you need loss emulation on Android, use Android Studio's built-in
+// network profiler, or apply it at the host OS/router level.
+func (a *AndroidAdapter) ApplyNetwork(id string, p network.NetworkProfile) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+
+	// Validate emulator accessibility: adb forward --list produces
+	// output only for emulators (emulator-XXXX serials). Physical
+	// devices will still accept the emu commands at the transport level,
+	// but they'll silently fail. We proceed regardless and let the
+	// emulator console error surface naturally.
+
+	if p.IsOffline {
+		// Offline: set speed to 0 in both directions. The adb console
+		// accepts "0" as a valid speed value meaning "no traffic".
+		if err := adbEmu(id, "network", "speed", "0"); err != nil {
+			return fmt.Errorf("apply offline (speed 0): %w", err)
+		}
+		return nil
+	}
+
+	// Apply speed limit.
+	if kw, ok := network.ADBSpeedClass(p); ok {
+		if err := adbEmu(id, "network", "speed", kw); err != nil {
+			return fmt.Errorf("apply speed %s: %w", kw, err)
+		}
+	} else if p.UploadKbps > 0 || p.DownloadKbps > 0 {
+		// Numeric: "adb emu network speed <up> <down>"
+		upStr := strconv.Itoa(p.UploadKbps)
+		downStr := strconv.Itoa(p.DownloadKbps)
+		if err := adbEmu(id, "network", "speed", upStr, downStr); err != nil {
+			return fmt.Errorf("apply speed %s/%s kbps: %w", upStr, downStr, err)
+		}
+	} else {
+		// Full speed (wifi / no limit).
+		if err := adbEmu(id, "network", "speed", "full"); err != nil {
+			return fmt.Errorf("apply full speed: %w", err)
+		}
+	}
+
+	// Apply delay.
+	if kw, ok := network.ADBDelayClass(p); ok {
+		if err := adbEmu(id, "network", "delay", kw); err != nil {
+			return fmt.Errorf("apply delay %s: %w", kw, err)
+		}
+	} else if p.DelayMs > 0 {
+		if err := adbEmu(id, "network", "delay", strconv.Itoa(p.DelayMs)); err != nil {
+			return fmt.Errorf("apply delay %d ms: %w", p.DelayMs, err)
+		}
+	} else {
+		if err := adbEmu(id, "network", "delay", "none"); err != nil {
+			return fmt.Errorf("apply delay none: %w", err)
+		}
+	}
+
+	if p.LossPct > 0 {
+		// Document the gap rather than silently ignoring it.
+		return fmt.Errorf(
+			"profile %q applied (speed/delay), but packet-loss (%d%%) is not supported "+
+				"by the adb emulator console — use Android Studio's network profiler or a "+
+				"host-level traffic shaper (tc/dummynet) for loss emulation",
+			p.Name, p.LossPct,
+		)
+	}
+
+	return nil
+}
+
+// ClearNetwork restores full-speed / no-delay conditions on an Android
+// emulator by setting speed=full and delay=none.
+func (a *AndroidAdapter) ClearNetwork(id string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if err := adbEmu(id, "network", "speed", "full"); err != nil {
+		return fmt.Errorf("clear network speed: %w", err)
+	}
+	if err := adbEmu(id, "network", "delay", "none"); err != nil {
+		return fmt.Errorf("clear network delay: %w", err)
+	}
+	return nil
+}
+
+// adbEmu sends a command to the emulator console via `adb -s <id> emu
+// <args...>`. The emulator console commands are available only on
+// Android Virtual Devices (avd) — physical devices do not expose a
+// console and will return an error.
+func adbEmu(id string, args ...string) error {
+	cmdArgs := append([]string{"-s", id, "emu"}, args...)
+	out, stderr, err := runCapture("adb", cmdArgs...)
+	if err != nil {
+		combined := string(stderr) + " " + string(out)
+		if isAndroidDeviceNotConnected(combined) {
+			return fmt.Errorf("device not connected: %s", id)
+		}
+		return fmt.Errorf("%w: %s", err, truncate(string(stderr), 200))
+	}
+	// The emulator console echoes "OK" on success. Some versions echo
+	// "KO: ..." on failure but still exit 0. Surface that as an error.
+	outStr := strings.TrimSpace(string(out))
+	if strings.HasPrefix(outStr, "KO:") {
+		// Physical device or unsupported command.
+		msg := strings.TrimPrefix(outStr, "KO:")
+		msg = strings.TrimSpace(msg)
+		if strings.Contains(strings.ToLower(msg), "not supported") ||
+			strings.Contains(strings.ToLower(msg), "unknown command") {
+			return fmt.Errorf(
+				"adb emu network commands are only supported on Android emulators, "+
+					"not physical devices (emulator replied: %s)", msg)
+		}
+		return fmt.Errorf("emulator console error: %s", msg)
+	}
+	return nil
+}
+
+// androidLogcatLineRE matches the "threadtime" logcat format:
+//
+//	MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG  : Message
+//
+// Example:
+//
+//	04-15 14:23:01.123  1234  5678 E MyTag  : something went wrong
+var androidLogcatLineRE = regexp.MustCompile(
+	`^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+\d+\s+\d+\s+([A-Z])\s+(\S+)\s*:\s+(.*)$`,
+)
+
+// ParseAndroidLogcatLine parses a single line from `adb logcat --format=threadtime`.
+// Exported for testing.
+func ParseAndroidLogcatLine(line string) (LogLine, bool) {
+	m := androidLogcatLineRE.FindStringSubmatch(line)
+	if m == nil {
+		return LogLine{}, false
+	}
+	ts := parseAndroidLogcatTimestamp(m[1])
+	return LogLine{
+		Timestamp: ts,
+		Level:     expandAndroidLevel(m[2]),
+		Tag:       strings.TrimSpace(m[3]),
+		Message:   m[4],
+	}, true
+}
+
+// parseAndroidLogcatTimestamp parses MM-DD HH:MM:SS.mmm (no year). We
+// use the current year since logcat doesn't include it.
+func parseAndroidLogcatTimestamp(s string) time.Time {
+	year := time.Now().Year()
+	t, err := time.Parse("01-02 15:04:05.000", s)
+	if err != nil {
+		t, err = time.Parse("01-02 15:04:05.99", s)
+	}
+	if err != nil {
+		return time.Time{}
+	}
+	return t.AddDate(year, 0, 0)
+}
+
+// expandAndroidLevel converts a single-letter logcat priority to a word.
+func expandAndroidLevel(l string) string {
+	switch l {
+	case "V":
+		return "verbose"
+	case "D":
+		return "debug"
+	case "I":
+		return "info"
+	case "W":
+		return "warning"
+	case "E":
+		return "error"
+	case "F":
+		return "fatal"
+	case "S":
+		return "silent"
+	default:
+		return strings.ToLower(l)
+	}
+}
+
+// LogRange returns log lines from `adb logcat` between since and until.
+// Uses --format=threadtime for structured output. Tag filter is passed
+// as a logcat argument; process/regex are applied client-side.
+func (a *AndroidAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return nil, fmt.Errorf("adb not found: %w", err)
+	}
+
+	args := []string{"-s", id, "logcat", "--format=threadtime", "-d"}
+	if !since.IsZero() {
+		// -t accepts "MM-DD HH:MM:SS.mmm" format.
+		args = append(args, "-t", since.Format("01-02 15:04:05.000"))
+	}
+	if filter.Tag != "" {
+		args = append(args, filter.Tag+":V", "*:S")
+	}
+
+	var regexFilter *regexp.Regexp
+	var err error
+	if filter.Regex != "" {
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	out, stderr, runErr := runCapture("adb", args...)
+	if runErr != nil {
+		return nil, fmt.Errorf("adb logcat: %v\n%s", runErr, truncate(string(stderr), 200))
+	}
+
+	var lines []LogLine
+	for line := range strings.SplitSeq(string(out), "\n") {
+		ll, ok := ParseAndroidLogcatLine(line)
+		if !ok {
+			continue
+		}
+		if !since.IsZero() && ll.Timestamp.Before(since) {
+			continue
+		}
+		if !until.IsZero() && ll.Timestamp.After(until) {
+			continue
+		}
+		if filter.Process != "" && !strings.EqualFold(ll.Tag, filter.Process) &&
+			!strings.Contains(strings.ToLower(ll.Tag), strings.ToLower(filter.Process)) {
+			continue
+		}
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		lines = append(lines, ll)
+	}
+	return lines, nil
+}
+
+// LogStream pumps live logcat lines into out until ctx is cancelled.
+func (a *AndroidAdapter) LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("adb not found: %w", err)
+	}
+
+	args := []string{"-s", id, "logcat", "--format=threadtime"}
+	if filter.Tag != "" {
+		args = append(args, filter.Tag+":V", "*:S")
+	}
+
+	var regexFilter *regexp.Regexp
+	if filter.Regex != "" {
+		var err error
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			return fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "adb", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start adb logcat: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		ll, ok := ParseAndroidLogcatLine(scanner.Text())
+		if !ok {
+			continue
+		}
+		if filter.Process != "" && !strings.EqualFold(ll.Tag, filter.Process) &&
+			!strings.Contains(strings.ToLower(ll.Tag), strings.ToLower(filter.Process)) {
+			continue
+		}
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		select {
+		case out <- ll:
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return nil
+		}
+	}
+	_ = cmd.Wait()
 	return nil
 }
 

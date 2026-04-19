@@ -23,3 +23,18 @@ func Base() string {
 func InventoryPath() string {
 	return filepath.Join(Base(), "inventory.json")
 }
+
+// RunsBase returns the root directory for run-artefact bundles
+// (~/.spyder/runs). Each reservation owns a subdirectory under this
+// path containing a manifest.json plus captured screenshots, logs,
+// recordings, and crash reports.
+func RunsBase() string {
+	return filepath.Join(Base(), "runs")
+}
+
+// BaselinesBase returns the root directory for the visual-regression
+// baseline store (~/.spyder/baselines). Baselines are organised as
+// <suite>/<variant>/<case>.{png,manifest.json}.
+func BaselinesBase() string {
+	return filepath.Join(Base(), "baselines")
+}

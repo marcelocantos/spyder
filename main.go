@@ -30,6 +30,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/reservations"
+	"github.com/marcelocantos/spyder/internal/runs"
 )
 
 //go:embed agents-guide.md
@@ -67,10 +68,21 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   list-apps     List installed third-party apps
   launch-app    Launch an app by bundle id (--as OWNER)
   terminate-app Terminate an app by bundle id (--as OWNER)
+  rotate        Rotate a simulator/emulator (--to <orientation>, --as OWNER)
+  install       Install a .app/.ipa/.apk on a device (--as OWNER)
+  uninstall     Remove an app by bundle id (--as OWNER)
+  deploy        Atomic deploy: terminate → install → launch → verify pid (--bundle-id, --as OWNER)
   reserve       Acquire an exclusive lock (--as OWNER, --ttl SECONDS, --note)
   release       Release a reservation you hold (--as OWNER)
   renew         Extend a reservation you hold (--as OWNER, --ttl SECONDS)
   reservations  List all active reservations (--json)
+  runs          Inspect run-artefact bundles (list|show|artefacts)
+  crashes       Fetch crash reports (--since RFC3339, --process NAME, --as OWNER, --json)
+  diff          Compare a screenshot against its stored baseline (--variant, --tolerance, --json)
+  baseline      Manage visual baselines; subcommand: update
+  record        Start or stop a screen recording (--start | --stop, --as OWNER)
+  net           Apply or clear network conditions (--profile NAME | --clear, --as OWNER)
+  log           Fetch or tail device logs (--follow for live SSE stream)
 
 Serve:
   spyder serve [--addr :3030]
@@ -217,23 +229,30 @@ func runCmd(args []string) {
 	}
 
 	owner := deriveOwner(parsed.Owner)
+	invStore := inventory.New()
+	normalize := func(ref string) string {
+		if entry, ok := invStore.Lookup(ref); ok && entry.Alias != "" {
+			return entry.Alias
+		}
+		return ref
+	}
 	resvStore, resvErr := reservations.New(
 		filepath.Join(paths.Base(), "reservations.json"),
-		reservations.WithNormalizer(func(ref string) string {
-			invStore := inventory.New()
-			if entry, ok := invStore.Lookup(ref); ok && entry.Alias != "" {
-				return entry.Alias
-			}
-			return ref
-		}),
+		reservations.WithNormalizer(normalize),
 	)
 	if resvErr != nil {
 		fmt.Fprintf(os.Stderr, "spyder run: reservations unavailable: %v\n", resvErr)
 		os.Exit(1)
 	}
+	// runsStore is best-effort — if it fails we still run the command.
+	runsStore, runsErr := runs.New(paths.RunsBase())
+	if runsErr != nil {
+		fmt.Fprintf(os.Stderr, "spyder run: runs store unavailable: %v\n", runsErr)
+		runsStore = nil
+	}
 
-	if _, err := resvStore.Acquire(parsed.Device, owner, reservations.DefaultTTL,
-		fmt.Sprintf("spyder run: %s", strings.Join(parsed.Command, " "))); err != nil {
+	note := fmt.Sprintf("spyder run: %s", strings.Join(parsed.Command, " "))
+	if _, err := resvStore.Acquire(parsed.Device, owner, reservations.DefaultTTL, note); err != nil {
 		if reservations.IsConflict(err) {
 			fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
 			os.Exit(3)
@@ -242,10 +261,26 @@ func runCmd(args []string) {
 		os.Exit(1)
 	}
 
+	var runID string
+	if runsStore != nil {
+		canonical := normalize(parsed.Device)
+		if r, err := runsStore.Open(canonical, owner, note); err != nil {
+			fmt.Fprintf(os.Stderr, "spyder run: open run: %v\n", err)
+		} else {
+			runID = r.ID
+			fmt.Fprintf(os.Stderr, "spyder run: opened run %s\n", runID)
+		}
+	}
+
 	// Guarantee release + restore on any exit path (success, error,
 	// SIGINT). The child inherits our stdio, so a SIGINT on our
 	// process group also terminates it before we reach this block.
 	release := func() {
+		if runsStore != nil && runID != "" {
+			if err := runsStore.Close(runID); err != nil {
+				fmt.Fprintf(os.Stderr, "spyder run: close run %s: %v\n", runID, err)
+			}
+		}
 		if err := resvStore.Release(parsed.Device, owner); err != nil {
 			fmt.Fprintf(os.Stderr, "spyder run: release %s: %v\n", parsed.Device, err)
 		}

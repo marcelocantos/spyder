@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -52,10 +53,21 @@ func init() {
 		{"list-apps", "spyder list-apps <device> [--json]", runListApps},
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
 		{"terminate-app", "spyder terminate-app <device> <bundle-id> [--as OWNER]", runTerminateApp},
+		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
+		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
+		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
 		{"reserve", "spyder reserve <device> [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
+		{"runs", "spyder runs <list|show|artefacts> [args...]", runRuns},
+		{"rotate", "spyder rotate <device> --to <orientation> [--as OWNER]", runRotate},
+		{"crashes", "spyder crashes <device> [--since RFC3339] [--process NAME] [--as OWNER] [--json]", runCrashes},
+		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
+		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
+		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
+		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
+		{"log", "spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow]", runLog},
 	}
 }
 
@@ -440,6 +452,63 @@ func runTerminateApp(args []string) {
 	dispatchAndExit("terminate_app", a, false)
 }
 
+func runInstall(args []string) {
+	pf, err := parseFlags(args, []string{"--as"}, nil)
+	if err != nil {
+		fatalUsage("install", err)
+	}
+	requirePositional("install", pf, 2)
+	a := map[string]any{
+		"device": pf.positional[0],
+		"path":   pf.positional[1],
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	dispatchAndExit("install_app", a, false)
+}
+
+func runUninstall(args []string) {
+	pf, err := parseFlags(args, []string{"--as"}, nil)
+	if err != nil {
+		fatalUsage("uninstall", err)
+	}
+	requirePositional("uninstall", pf, 2)
+	a := map[string]any{
+		"device":    pf.positional[0],
+		"bundle_id": pf.positional[1],
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	dispatchAndExit("uninstall_app", a, false)
+}
+
+func runDeploy(args []string) {
+	pf, err := parseFlags(args, []string{"--as", "--bundle-id"}, nil)
+	if err != nil {
+		fatalUsage("deploy", err)
+	}
+	requirePositional("deploy", pf, 2)
+	a := map[string]any{
+		"device": pf.positional[0],
+		"path":   pf.positional[1],
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	if bid := pf.flags["--bundle-id"]; bid != "" {
+		a["bundle_id"] = bid
+	}
+	dispatchAndExit("deploy_app", a, false)
+}
+
 func runReserve(args []string) {
 	pf, err := parseFlags(args, []string{"--as", "--ttl", "--note"}, nil)
 	if err != nil {
@@ -500,6 +569,488 @@ func runReservations(args []string) {
 		fatalUsage("reservations", err)
 	}
 	dispatchAndExit("reservations", map[string]any{}, pf.bools["--json"])
+}
+
+// runRuns dispatches `spyder runs <subcommand>` — a two-level
+// subcommand group for run-artefact inspection. Kept close to the
+// flat-subcommand style above; each leaf is a tiny REST wrapper.
+func runRuns(args []string) {
+	if len(args) == 0 {
+		fatalUsage("runs", fmt.Errorf("missing subcommand — expected list|show|artefacts"))
+	}
+	switch args[0] {
+	case "list":
+		runRunsList(args[1:])
+	case "show":
+		runRunsShow(args[1:])
+	case "artefacts":
+		runRunsArtefacts(args[1:])
+	default:
+		fatalUsage("runs", fmt.Errorf("unknown subcommand %q — expected list|show|artefacts", args[0]))
+	}
+}
+
+func runRunsList(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("runs", err)
+	}
+	dispatchAndExit("runs_list", map[string]any{}, pf.bools["--json"])
+}
+
+func runRunsShow(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("runs", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("runs", fmt.Errorf("show expects one run-id"))
+	}
+	dispatchAndExit("runs_show",
+		map[string]any{"run_id": pf.positional[0]},
+		pf.bools["--json"])
+}
+
+// runRunsArtefacts reuses runs_show and extracts just the artefacts
+// array so scripts can pipe it. Defaults to a tabular render; --json
+// emits the raw array.
+func runRunsArtefacts(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("runs", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("runs", fmt.Errorf("artefacts expects one run-id"))
+	}
+	res, err := postTool("runs_show", map[string]any{"run_id": pf.positional[0]})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spyder runs artefacts: %v\n", err)
+		os.Exit(1)
+	}
+	if res.IsError {
+		fmt.Fprintln(os.Stderr, res.firstText())
+		os.Exit(1)
+	}
+	var run struct {
+		ID        string `json:"id"`
+		Artefacts []struct {
+			Name      string `json:"name"`
+			Source    string `json:"source"`
+			MIMEType  string `json:"mime_type"`
+			Size      int64  `json:"size"`
+			CreatedAt string `json:"created_at"`
+		} `json:"artefacts"`
+	}
+	if err := json.Unmarshal([]byte(res.firstText()), &run); err != nil {
+		fmt.Fprintf(os.Stderr, "spyder runs artefacts: parse: %v\n", err)
+		os.Exit(1)
+	}
+	if pf.bools["--json"] {
+		data, _ := json.MarshalIndent(run.Artefacts, "", "  ")
+		fmt.Println(string(data))
+		return
+	}
+	if len(run.Artefacts) == 0 {
+		fmt.Printf("no artefacts recorded for %s\n", run.ID)
+		return
+	}
+	fmt.Printf("%-40s %-12s %-20s %10s %s\n", "NAME", "SOURCE", "MIME", "SIZE", "CREATED")
+	for _, a := range run.Artefacts {
+		fmt.Printf("%-40s %-12s %-20s %10d %s\n",
+			a.Name, a.Source, a.MIMEType, a.Size, a.CreatedAt)
+	}
+}
+
+func runRotate(args []string) {
+	pf, err := parseFlags(args, []string{"--to", "--as"}, nil)
+	if err != nil {
+		fatalUsage("rotate", err)
+	}
+	requirePositional("rotate", pf, 1)
+	orientation := pf.flags["--to"]
+	if orientation == "" {
+		fatalUsage("rotate", fmt.Errorf("--to is required (portrait, landscape-left, landscape-right, portrait-upside-down)"))
+	}
+	a := map[string]any{
+		"device":      pf.positional[0],
+		"orientation": orientation,
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	dispatchAndExit("rotate", a, false)
+}
+
+func runCrashes(args []string) {
+	pf, err := parseFlags(args, []string{"--since", "--process", "--as"}, []string{"--json"})
+	if err != nil {
+		fatalUsage("crashes", err)
+	}
+	requirePositional("crashes", pf, 1)
+	a := map[string]any{"device": pf.positional[0]}
+	if s := pf.flags["--since"]; s != "" {
+		a["since"] = s
+	}
+	if p := pf.flags["--process"]; p != "" {
+		a["process"] = p
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	}
+	dispatchAndExit("crashes", a, pf.bools["--json"])
+}
+
+// --- sim subcommands ------------------------------------------------
+
+// runSim dispatches `spyder sim <subcommand>` for iOS simulator lifecycle.
+func runSim(args []string) {
+	if len(args) == 0 {
+		fatalUsage("sim", fmt.Errorf("missing subcommand — expected list|create|boot|shutdown|delete"))
+	}
+	switch args[0] {
+	case "list":
+		runSimList(args[1:])
+	case "create":
+		runSimCreate(args[1:])
+	case "boot":
+		runSimBoot(args[1:])
+	case "shutdown":
+		runSimShutdown(args[1:])
+	case "delete":
+		runSimDelete(args[1:])
+	default:
+		fatalUsage("sim", fmt.Errorf("unknown subcommand %q — expected list|create|boot|shutdown|delete", args[0]))
+	}
+}
+
+func runSimList(args []string) {
+	pf, err := parseFlags(args, []string{"--state"}, []string{"--json"})
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	a := map[string]any{}
+	if s := pf.flags["--state"]; s != "" {
+		a["state"] = s
+	}
+	dispatchAndExit("sim_list", a, pf.bools["--json"])
+}
+
+func runSimCreate(args []string) {
+	pf, err := parseFlags(args, []string{"--type", "--runtime"}, []string{"--json"})
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("create: expected <name> (with --type and --runtime flags)"))
+	}
+	deviceType := pf.flags["--type"]
+	if deviceType == "" {
+		fatalUsage("sim", fmt.Errorf("create: --type <device-type-id> is required"))
+	}
+	runtime := pf.flags["--runtime"]
+	if runtime == "" {
+		fatalUsage("sim", fmt.Errorf("create: --runtime <runtime-id> is required"))
+	}
+	dispatchAndExit("sim_create", map[string]any{
+		"name":           pf.positional[0],
+		"device_type_id": deviceType,
+		"runtime_id":     runtime,
+	}, pf.bools["--json"])
+}
+
+func runSimBoot(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("boot: expected <udid>"))
+	}
+	dispatchAndExit("sim_boot", map[string]any{"udid": pf.positional[0]}, false)
+}
+
+func runSimShutdown(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("shutdown: expected <udid>"))
+	}
+	dispatchAndExit("sim_shutdown", map[string]any{"udid": pf.positional[0]}, false)
+}
+
+func runSimDelete(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("sim", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("delete: expected <udid>"))
+	}
+	dispatchAndExit("sim_delete", map[string]any{"udid": pf.positional[0]}, false)
+}
+
+// --- emu subcommands ------------------------------------------------
+
+// runEmu dispatches `spyder emu <subcommand>` for Android emulator lifecycle.
+func runEmu(args []string) {
+	if len(args) == 0 {
+		fatalUsage("emu", fmt.Errorf("missing subcommand — expected list|create|boot|shutdown|delete"))
+	}
+	switch args[0] {
+	case "list":
+		runEmuList(args[1:])
+	case "create":
+		runEmuCreate(args[1:])
+	case "boot":
+		runEmuBoot(args[1:])
+	case "shutdown":
+		runEmuShutdown(args[1:])
+	case "delete":
+		runEmuDelete(args[1:])
+	default:
+		fatalUsage("emu", fmt.Errorf("unknown subcommand %q — expected list|create|boot|shutdown|delete", args[0]))
+	}
+}
+
+func runEmuList(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	dispatchAndExit("emu_list", map[string]any{}, pf.bools["--json"])
+}
+
+func runEmuCreate(args []string) {
+	pf, err := parseFlags(args, []string{"--image", "--device"}, []string{"--json"})
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("emu", fmt.Errorf("create: expected <name> (with --image and --device flags)"))
+	}
+	image := pf.flags["--image"]
+	if image == "" {
+		fatalUsage("emu", fmt.Errorf("create: --image <system-image-package> is required"))
+	}
+	deviceProfile := pf.flags["--device"]
+	if deviceProfile == "" {
+		fatalUsage("emu", fmt.Errorf("create: --device <device-profile> is required"))
+	}
+	dispatchAndExit("emu_create", map[string]any{
+		"name":           pf.positional[0],
+		"system_image":   image,
+		"device_profile": deviceProfile,
+	}, pf.bools["--json"])
+}
+
+func runEmuBoot(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("emu", fmt.Errorf("boot: expected <avd-name>"))
+	}
+	dispatchAndExit("emu_boot", map[string]any{"name": pf.positional[0]}, false)
+}
+
+func runEmuShutdown(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("emu", fmt.Errorf("shutdown: expected <serial> (e.g. emulator-5554)"))
+	}
+	dispatchAndExit("emu_shutdown", map[string]any{"serial": pf.positional[0]}, false)
+}
+
+func runEmuDelete(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("emu", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("emu", fmt.Errorf("delete: expected <avd-name>"))
+	}
+	dispatchAndExit("emu_delete", map[string]any{"name": pf.positional[0]}, false)
+}
+
+func runRecord(args []string) {
+	pf, err := parseFlags(args, []string{"--as"}, []string{"--start", "--stop"})
+	if err != nil {
+		fatalUsage("record", err)
+	}
+	requirePositional("record", pf, 1)
+	dev := pf.positional[0]
+	start := pf.bools["--start"]
+	stop := pf.bools["--stop"]
+	if start == stop {
+		fatalUsage("record", fmt.Errorf("exactly one of --start or --stop is required"))
+	}
+	a := map[string]any{"device": dev}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	if start {
+		dispatchAndExit("record_start", a, false)
+	} else {
+		dispatchAndExit("record_stop", a, false)
+	}
+}
+
+func runNet(args []string) {
+	pf, err := parseFlags(args, []string{"--profile", "--as"}, []string{"--clear"})
+	if err != nil {
+		fatalUsage("net", err)
+	}
+	requirePositional("net", pf, 1)
+	dev := pf.positional[0]
+	profile := pf.flags["--profile"]
+	clear := pf.bools["--clear"]
+
+	if profile == "" && !clear {
+		fatalUsage("net", fmt.Errorf("supply --profile NAME or --clear"))
+	}
+	if profile != "" && clear {
+		fatalUsage("net", fmt.Errorf("--profile and --clear are mutually exclusive"))
+	}
+
+	a := map[string]any{
+		"device": dev,
+		"owner":  deriveOwner(pf.flags["--as"]),
+	}
+	if clear {
+		a["clear"] = true
+	} else {
+		a["profile"] = profile
+	}
+	dispatchAndExit("network", a, false)
+}
+
+func runLog(args []string) {
+	pf, err := parseFlags(args,
+		[]string{"--process", "--subsystem", "--tag", "--regex", "--since", "--until"},
+		[]string{"--follow", "--json"},
+	)
+	if err != nil {
+		fatalUsage("log", err)
+	}
+	requirePositional("log", pf, 1)
+
+	dev := pf.positional[0]
+	follow := pf.bools["--follow"]
+	jsonMode := pf.bools["--json"]
+
+	if follow {
+		// SSE live stream: POST to /api/v1/log_stream, print each event.
+		body := map[string]any{"device": dev}
+		if p := pf.flags["--process"]; p != "" {
+			body["process"] = p
+		}
+		if s := pf.flags["--subsystem"]; s != "" {
+			body["subsystem"] = s
+		}
+		if t := pf.flags["--tag"]; t != "" {
+			body["tag"] = t
+		}
+		if r := pf.flags["--regex"]; r != "" {
+			body["regex"] = r
+		}
+		streamSSELog(body, jsonMode)
+		return
+	}
+
+	// Bounded range query: POST to /api/v1/logs.
+	a := map[string]any{"device": dev}
+	for _, flag := range []string{"--process", "--subsystem", "--tag", "--regex", "--since", "--until"} {
+		if v := pf.flags[flag]; v != "" {
+			key := strings.TrimPrefix(flag, "--")
+			a[key] = v
+		}
+	}
+	dispatchAndExit("logs", a, jsonMode)
+}
+
+// streamSSELog POSTs to the SSE log_stream endpoint and prints each event line.
+func streamSSELog(body map[string]any, jsonMode bool) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spyder log: encode: %v\n", err)
+		os.Exit(1)
+	}
+	base := daemonBaseURL()
+	url := base + rest.StreamPath
+	resp, err := http.Post(url, "application/json", bytes.NewReader(encoded))
+	if err != nil {
+		if isConnRefused(err) && base == defaultDaemonURL {
+			if spawnErr := autoStartDaemon(); spawnErr == nil {
+				resp, err = http.Post(url, "application/json", bytes.NewReader(encoded))
+			}
+		}
+		if err != nil {
+			if isConnRefused(err) {
+				fmt.Fprintf(os.Stderr, "spyder log: daemon not reachable at %s\n", base)
+			} else {
+				fmt.Fprintf(os.Stderr, "spyder log: %v\n", err)
+			}
+			os.Exit(1)
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "spyder log: daemon %d: %s\n", resp.StatusCode, strings.TrimSpace(string(raw)))
+		os.Exit(1)
+	}
+
+	// Read SSE events line by line. Each event ends with a blank line.
+	// Lines starting with "data: " carry the JSON payload.
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if jsonMode {
+			fmt.Println(data)
+			continue
+		}
+		// Pretty-print the LogLine fields.
+		var ll struct {
+			Timestamp string `json:"timestamp"`
+			Process   string `json:"process"`
+			Level     string `json:"level"`
+			Tag       string `json:"tag"`
+			Message   string `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(data), &ll); err != nil {
+			fmt.Println(data)
+			continue
+		}
+		parts := []string{ll.Timestamp}
+		if ll.Process != "" {
+			parts = append(parts, ll.Process)
+		} else if ll.Tag != "" {
+			parts = append(parts, ll.Tag)
+		}
+		if ll.Level != "" {
+			parts = append(parts, "["+ll.Level+"]")
+		}
+		parts = append(parts, ll.Message)
+		fmt.Println(strings.Join(parts, " "))
+	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		fmt.Fprintf(os.Stderr, "spyder log: read: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // --- helpers --------------------------------------------------------
