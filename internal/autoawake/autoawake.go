@@ -245,6 +245,25 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 			}
 			continue
 		}
+		if isTrustError(err) {
+			// Developer profile not trusted on this device (typically
+			// a fresh-install / post-delete case). Like the lock
+			// prompt, this needs a user action on the device — fire
+			// a persistent macOS alert so the user isn't hunting
+			// through logs to figure out why nothing happened.
+			slog.Info("autoawake: device requires developer trust — alerting user",
+				"udid", udid, "alias", alias)
+			trustGroup := "spyder-trust-" + udid
+			go func() {
+				if nerr := notify.MacOSAlert("spyder",
+					fmt.Sprintf("Trust the developer profile on %s to enable keep-awake (Settings → General → VPN & Device Management → tap your developer name → Trust)", alias),
+					trustGroup); nerr != nil {
+					slog.Warn("autoawake: alert failed", "error", nerr)
+				}
+			}()
+			dismiss()
+			return
+		}
 		// Some other failure — not worth retrying.
 		slog.Warn("autoawake: launch failed", "udid", udid, "alias", alias, "error", summariseErr(err))
 		dismiss()
@@ -252,6 +271,18 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 	}
 	slog.Info("autoawake: giving up on locked device", "udid", udid, "alias", alias)
 	dismiss()
+}
+
+// isTrustError recognises pymobiledevice3's DvtException when a
+// developer profile hasn't been explicitly trusted on the device.
+// Typical after a fresh install on a never-before-paired device or
+// after the only previously-installed app from the same developer is
+// deleted (iOS tears down the trust entry along with it).
+func isTrustError(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "'Security'") ||
+		strings.Contains(s, "invalid code signature") ||
+		strings.Contains(s, "not been explicitly trusted")
 }
 
 // summariseErr strips pymobiledevice3's rich-console traceback

@@ -201,7 +201,44 @@ Environment variables:
 - `SPYDER_KEEPAWAKE_PROJECT` — directory containing KeepAwake's `project.yml`.
   Defaults to searching upward from the working directory. If not found,
   auto-deploy is disabled but auto-launch still works for pre-installed
-  KeepAwake.
+  KeepAwake. **(Planned for removal once the project is `go:embed`ded
+  into the binary.)**
+
+### Brew-services environment (launchd)
+
+When spyder runs as a Homebrew service, launchd doesn't inherit your
+shell env. The v0.3+ formula sets a default `PATH` that covers
+`/opt/homebrew/bin` and the usual system paths. Two things may still
+need manual setup:
+
+**1. Non-Homebrew `pymobiledevice3`.** If your install lives outside
+`/opt/homebrew/bin` (e.g. `pipx` in `~/.local/bin`, or a `uv`-managed
+venv in `~/.py/bin`), either add a Homebrew-blessed install (preferred)
+or override `PATH` for the spyder service:
+
+```bash
+launchctl setenv PATH "/opt/homebrew/bin:/Users/you/.py/bin:/usr/bin:/bin"
+brew services restart spyder
+```
+
+`launchctl setenv` affects every user-level launchd job; an alternative
+is editing `~/Library/LaunchAgents/homebrew.mxcl.spyder.plist` directly
+with an `EnvironmentVariables` block (but Homebrew rewrites that plist
+on reinstall, so it's transient).
+
+**2. KeepAwake project location.** `SPYDER_KEEPAWAKE_PROJECT` must
+point at your local spyder clone's `ios/KeepAwake/` so auto-deploy can
+run `xcodegen` + `xcodebuild`. Set it for the service the same way:
+
+```bash
+launchctl setenv SPYDER_KEEPAWAKE_PROJECT /path/to/spyder/ios/KeepAwake
+brew services restart spyder
+```
+
+Without it, auto-launch still works for devices that already have
+KeepAwake installed; auto-deploy is silently skipped for first-install
+devices. Logs show `autoawake: ready project_dir=…` (good) or
+`autoawake: KeepAwake project not found — auto-deploy disabled`.
 
 ## Common gotchas
 
@@ -215,7 +252,11 @@ Environment variables:
 - **`launch_app` / `terminate_app` return `'Security'` DvtException** → the
   app's developer profile isn't trusted on this device. Go to Settings →
   General → VPN & Device Management → tap the developer name → Trust. Only
-  applies to side-loaded / developer-signed apps.
+  applies to side-loaded / developer-signed apps. Auto-awake fires a
+  persistent macOS alert for this case so you're not hunting through
+  logs. Note: iOS discards the developer entry when the *only* app from
+  that developer is uninstalled — reinstalling will require another
+  Trust tap.
 - **`launch_app` returns `'Locked'` DvtException on iOS** → unlock the device.
   The `keepawake` auto-launcher fires a persistent macOS alert in this case.
 - **Stale screenshot after auto-awake's launch** → DVT launches to foreground
