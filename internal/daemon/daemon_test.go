@@ -19,7 +19,7 @@ import (
 // httptest.Server mounted at /mcp so we can POST JSON-RPC at it.
 func mcpTestServer(t *testing.T) (url string, teardown func()) {
 	t.Helper()
-	httpSrv, _ := Build(Config{
+	httpSrv, _, _ := Build(Config{
 		Version:     "test",
 		TunneldAddr: "127.0.0.1:1", // guaranteed-unreachable so probe fails quietly
 	})
