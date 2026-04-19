@@ -56,6 +56,7 @@ func init() {
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
+		{"rotate", "spyder rotate <device> --to <orientation> [--as OWNER]", runRotate},
 		{"runs", "spyder runs <list|show|artefacts> [args...]", runRuns},
 	}
 }
@@ -591,6 +592,24 @@ func runRunsArtefacts(args []string) {
 		fmt.Printf("%-40s %-12s %-20s %10d %s\n",
 			a.Name, a.Source, a.MIMEType, a.Size, a.CreatedAt)
 	}
+}
+
+func runRotate(args []string) {
+	pf, err := parseFlags(args, []string{"--to", "--as"}, nil)
+	if err != nil {
+		fatalUsage("rotate", err)
+	}
+	requirePositional("rotate", pf, 1)
+	orientation := pf.flags["--to"]
+	if orientation == "" {
+		fatalUsage("rotate", fmt.Errorf("--to is required (portrait, landscape-left, landscape-right, portrait-upside-down)"))
+	}
+	a := map[string]any{
+		"device":      pf.positional[0],
+		"orientation": orientation,
+		"owner":       deriveOwner(pf.flags["--as"]),
+	}
+	dispatchAndExit("rotate", a, false)
 }
 
 // --- helpers --------------------------------------------------------

@@ -274,6 +274,74 @@ func (a *AndroidAdapter) TerminateApp(id, bundleID string) error {
 	return nil
 }
 
+// androidRotationValues maps canonical orientation names to Android's
+// user_rotation setting values (0=portrait, 1=landscape-left,
+// 2=portrait-upside-down, 3=landscape-right).
+var androidRotationValues = map[string]int{
+	"portrait":             0,
+	"landscape-left":       1,
+	"portrait-upside-down": 2,
+	"landscape-right":      3,
+}
+
+// isEmulatorSerial returns true when the Android serial looks like an
+// emulator (e.g. "emulator-5554"). Physical devices use USB serials
+// that don't carry this prefix.
+func isEmulatorSerial(serial string) bool {
+	return strings.HasPrefix(serial, "emulator-")
+}
+
+// androidCurrentRotation reads the current rotation index (0–3) from
+// the emulator via `adb shell settings get system user_rotation`.
+func androidCurrentRotation(serial string) (int, error) {
+	out, stderr, err := runCapture("adb", "-s", serial, "shell", "settings", "get", "system", "user_rotation")
+	if err != nil {
+		return 0, fmt.Errorf("read rotation: %v\n%s", err, truncate(string(stderr), 120))
+	}
+	v := strings.TrimSpace(string(out))
+	switch v {
+	case "0":
+		return 0, nil
+	case "1":
+		return 1, nil
+	case "2":
+		return 2, nil
+	case "3":
+		return 3, nil
+	default:
+		return 0, fmt.Errorf("unexpected user_rotation value %q", v)
+	}
+}
+
+// Rotate sets the screen orientation of an Android emulator by issuing
+// `adb emu rotate` (which toggles 90° clockwise) the number of times
+// needed to land on the target orientation. Physical devices return an
+// error.
+func (a *AndroidAdapter) Rotate(id, orientation string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if !isEmulatorSerial(id) {
+		return fmt.Errorf("rotate is not supported on physical Android devices (serial=%s); use an emulator", id)
+	}
+	target, ok := androidRotationValues[orientation]
+	if !ok {
+		return fmt.Errorf("unknown orientation %q; valid values: portrait, landscape-left, landscape-right, portrait-upside-down", orientation)
+	}
+	current, err := androidCurrentRotation(id)
+	if err != nil {
+		return err
+	}
+	steps := (target - current + 4) % 4
+	for i := 0; i < steps; i++ {
+		_, stderr, err := runCapture("adb", "-s", id, "emu", "rotate")
+		if err != nil {
+			return fmt.Errorf("adb emu rotate (step %d/%d): %v\n%s", i+1, steps, err, truncate(string(stderr), 120))
+		}
+	}
+	return nil
+}
+
 // Screenshot captures a PNG via `adb shell screencap -p`. The subcommand
 // writes the PNG to stdout, which we return unchanged.
 func (a *AndroidAdapter) Screenshot(id string) ([]byte, error) {

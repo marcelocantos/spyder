@@ -104,6 +104,8 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleRenew(args)
 	case "reservations":
 		return h.handleReservations(args)
+	case "rotate":
+		return h.handleRotate(args)
 	case "runs_list":
 		return h.handleRunsList(args)
 	case "runs_show":
@@ -246,6 +248,21 @@ func Definitions() []mcpgo.Tool {
 
 		mcpgo.NewTool("reservations",
 			mcpgo.WithDescription("List all active reservations across all devices. Read-only."),
+		),
+
+		mcpgo.NewTool("rotate",
+			mcpgo.WithDescription("Rotate an iOS simulator or Android emulator to a specific screen orientation. Physical devices return an error. iOS uses `xcrun simctl io <id> rotate`; Android uses `adb emu rotate` (which toggles 90° clockwise) driven N times to reach the target. Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Simulator UDID or emulator serial (e.g. emulator-5554)"),
+			),
+			mcpgo.WithString("orientation",
+				mcpgo.Required(),
+				mcpgo.Description("Target orientation: portrait, landscape-left, landscape-right, or portrait-upside-down"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
 		),
 
 		mcpgo.NewTool("runs_list",

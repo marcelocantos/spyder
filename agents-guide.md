@@ -105,6 +105,7 @@ everything it can see.
 | `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
 | `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses DVT launch (needs tunneld); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
+| `rotate` | Rotate a simulator/emulator to a named orientation. | `{device, orientation, owner?}`. Orientations: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. Physical devices return an error. iOS uses `xcrun simctl io rotate`; Android uses `adb emu rotate` (N steps). |
 | `reserve` | Acquire an exclusive device hold. | `{device, owner, ttl_seconds?, note?}`. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. |
 | `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
@@ -117,7 +118,7 @@ everything it can see.
 For parallel dev sessions (e.g. one agent working on TiltBuggy while another
 works on another game), acquire an exclusive hold on a device with `reserve`
 before mutating operations. Mutating tools (`keepawake`, `screenshot`,
-`launch_app`, `terminate_app`) reject with a structured conflict error
+`launch_app`, `terminate_app`, `rotate`) reject with a structured conflict error
 naming the holder if someone else is holding the device. Read tools
 (`devices`, `resolve`, `device_state`, `reservations`) are unaffected.
 

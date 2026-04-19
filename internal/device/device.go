@@ -63,4 +63,12 @@ type Adapter interface {
 	// tunneld (dvt process-id-for-bundle-id + kill); Android uses
 	// adb am force-stop.
 	TerminateApp(id, bundleID string) error
+
+	// Rotate sets the screen orientation of a simulator or emulator.
+	// Valid orientations: portrait, landscape-left, landscape-right,
+	// portrait-upside-down. Physical devices return an error.
+	// iOS uses `xcrun simctl io <id> rotate`; Android uses `adb emu rotate`
+	// (which toggles 90° clockwise per call) driven N times to reach the
+	// target orientation.
+	Rotate(id, orientation string) error
 }

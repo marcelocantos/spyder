@@ -317,6 +317,33 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 	return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
 }
 
+func (h *Handler) handleRotate(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	orientation, err := requireString(args, "orientation")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := adapter.Rotate(id, orientation); err != nil {
+		return toolErr("rotate %s on %s: %v", orientation, dev, err)
+	}
+	return toolText(fmt.Sprintf("rotated %s to %s", dev, orientation))
+}
+
 // authorize checks that the caller (identified by owner) may perform
 // a mutating operation against dev. Returns nil if allowed;
 // a *mcpgo.CallToolResult with IsError=true otherwise. Passes through

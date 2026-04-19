@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -470,6 +471,49 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// iosSimOrientations maps canonical orientation names to the argument
+// simctl expects.
+var iosSimOrientations = map[string]string{
+	"portrait":             "portrait",
+	"landscape-left":       "landscapeLeft",
+	"landscape-right":      "landscapeRight",
+	"portrait-upside-down": "portraitUpsideDown",
+}
+
+// iosPhysicalUDIDRE matches the hardware UDID format emitted by
+// `xcrun xctrace list devices` and `pymobiledevice3 usbmux list`:
+// 8 hex chars, a dash, then 16 hex chars. Simulator UDIDs use the
+// standard UUID format (8-4-4-4-12 groups) and do NOT match this.
+var iosPhysicalUDIDRE = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$`)
+
+// isSimulatorID returns true when id looks like a simulator UUID
+// (i.e. it does NOT match the hardware UDID format). Physical device
+// UDIDs are 8hex-16hex; simulator UUIDs are standard 8-4-4-4-12.
+func isSimulatorID(id string) bool {
+	return !iosPhysicalUDIDRE.MatchString(id)
+}
+
+// Rotate sets the screen orientation of an iOS simulator via
+// `xcrun simctl io <id> rotate <orientation>`. Physical devices
+// (identified by 8hex-16hex UDID format) return an error.
+func (a *IOSAdapter) Rotate(id, orientation string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if !isSimulatorID(id) {
+		return fmt.Errorf("rotate is not supported on physical iOS devices (id=%s); use a simulator", id)
+	}
+	arg, ok := iosSimOrientations[orientation]
+	if !ok {
+		return fmt.Errorf("unknown orientation %q; valid values: portrait, landscape-left, landscape-right, portrait-upside-down", orientation)
+	}
+	_, stderr, err := runCapture("xcrun", "simctl", "io", id, "rotate", arg)
+	if err != nil {
+		return fmt.Errorf("simctl rotate: %v\n%s", err, truncate(string(stderr), 240))
+	}
+	return nil
 }
 
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.

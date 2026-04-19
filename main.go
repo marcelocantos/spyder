@@ -72,6 +72,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   release       Release a reservation you hold (--as OWNER)
   renew         Extend a reservation you hold (--as OWNER, --ttl SECONDS)
   reservations  List all active reservations (--json)
+  rotate        Rotate a simulator/emulator (--to <orientation>, --as OWNER)
   runs          Inspect run-artefact bundles (list|show|artefacts)
 
 Serve:

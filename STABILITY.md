@@ -35,6 +35,7 @@ Snapshot as of `v0.4.0`.
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
 | `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
+| `rotate` | `{device: string, orientation: string, owner?: string}` (device and orientation required). Orientation values: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. | Text confirmation. | Stable |
 | `reserve` | `{device: string, owner: string, ttl_seconds?: number, note?: string}` (device and owner required). | JSON-encoded `reservations.Reservation` (device, owner, expires_at, note, created_at). | Stable |
 | `release` | `{device: string, owner: string}`. | Text confirmation. | Stable |
 | `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
@@ -69,6 +70,7 @@ can match on these phrases.
 | `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
 | `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |
 | `spyder reservations [--json]` | REST proxy to `reservations`. | Stable |
+| `spyder rotate <device> --to <orientation> [--as OWNER]` | REST proxy to `rotate`. | Stable |
 | `spyder runs list [--json]` | REST proxy to `runs_list`. | Needs review |
 | `spyder runs show <run-id> [--json]` | REST proxy to `runs_show`. | Needs review |
 | `spyder runs artefacts <run-id> [--json]` | REST proxy to `runs_show`; prints just the artefacts table. | Needs review |
