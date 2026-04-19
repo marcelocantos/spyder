@@ -18,7 +18,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-19 — /release v0.2.0
 
-- **Commit**: pending
+- **Commit**: `0d64971`
 - **Outcome**: Feature release. Shipped the reservation system (🎯T11:
   `reserve`/`release`/`renew`/`reservations` MCP tools; strict
   enforcement on every mutating tool; `spyder run` auto-reserves with
