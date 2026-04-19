@@ -47,12 +47,155 @@ type cachedState struct {
 // NewIOSAdapter returns a new iOS adapter.
 func NewIOSAdapter() *IOSAdapter { return &IOSAdapter{cache: map[string]cachedState{}} }
 
-// List returns connected iOS devices.
+// List returns connected iOS devices by fusing two sources:
+//
+//   - `pymobiledevice3 usbmux list` for USB-connected devices (keyed by
+//     hardware UDID; gives device name + product type + iOS version).
+//   - `xcrun devicectl list devices` for paired CoreDevice devices
+//     (gives marketingName, CoreDevice UUID, and richer metadata; may
+//     include devices that aren't currently USB-connected).
+//
+// Devices present in both sources are fused into a single entry keyed
+// by hardware UDID; devices present in only one source are listed
+// with whatever metadata is available. If both shell-outs fail, the
+// function returns an empty list rather than an error — matching the
+// Android adapter's behaviour when adb is absent.
 func (a *IOSAdapter) List() ([]Info, error) {
-	// TODO: shell out to `pymobiledevice3 usbmux list --usbmux --no-color`
-	// and parse the JSON array. Fall back to `xcrun xctrace list devices`
-	// if pymobiledevice3 is unavailable.
-	return nil, errors.New("iOS List not yet implemented")
+	var devices []Info
+
+	if _, err := exec.LookPath("pymobiledevice3"); err == nil {
+		if out, _, err := runCapture("pymobiledevice3", "usbmux", "list"); err == nil {
+			if parsed, err := parseUsbmuxList(out); err == nil {
+				devices = append(devices, parsed...)
+			}
+		}
+	}
+
+	if _, err := exec.LookPath("xcrun"); err == nil {
+		tmp, err := os.MkdirTemp("", "spyder-devctl-*")
+		if err == nil {
+			defer os.RemoveAll(tmp)
+			jsonPath := filepath.Join(tmp, "devices.json")
+			_, _, _ = runCapture("xcrun", "devicectl", "list", "devices",
+				"--quiet", "--json-output", jsonPath)
+			if data, err := os.ReadFile(jsonPath); err == nil {
+				if parsed, err := parseDevicectlList(data); err == nil {
+					devices = mergeIOSDevices(devices, parsed)
+				}
+			}
+		}
+	}
+
+	return devices, nil
+}
+
+// parseUsbmuxList parses `pymobiledevice3 usbmux list` output (JSON
+// array of USB-connected device records). Returns one Info per entry.
+func parseUsbmuxList(data []byte) ([]Info, error) {
+	var raw []struct {
+		UniqueDeviceID string `json:"UniqueDeviceID"`
+		DeviceName     string `json:"DeviceName"`
+		DeviceClass    string `json:"DeviceClass"`
+		ProductType    string `json:"ProductType"`
+		ProductVersion string `json:"ProductVersion"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("usbmux list JSON: %w", err)
+	}
+	out := make([]Info, 0, len(raw))
+	for _, r := range raw {
+		if r.UniqueDeviceID == "" {
+			continue
+		}
+		info := Info{
+			UUID:     r.UniqueDeviceID,
+			Name:     r.DeviceName,
+			Platform: "ios",
+			Model:    r.ProductType,
+		}
+		if r.ProductVersion != "" {
+			info.OS = "iOS " + r.ProductVersion
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+// parseDevicectlList parses the `xcrun devicectl list devices
+// --json-output` document. devicectl emits a nested structure
+// (result.devices[]); we flatten to []Info and pick the richest
+// human-friendly fields available (marketingName over productType,
+// device.name over the CoreDevice identifier).
+func parseDevicectlList(data []byte) ([]Info, error) {
+	var doc struct {
+		Result struct {
+			Devices []struct {
+				Identifier         string `json:"identifier"`
+				HardwareProperties struct {
+					UDID          string `json:"udid"`
+					MarketingName string `json:"marketingName"`
+					ProductType   string `json:"productType"`
+				} `json:"hardwareProperties"`
+				DeviceProperties struct {
+					Name            string `json:"name"`
+					OSVersionNumber string `json:"osVersionNumber"`
+				} `json:"deviceProperties"`
+			} `json:"devices"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("devicectl list JSON: %w", err)
+	}
+	out := make([]Info, 0, len(doc.Result.Devices))
+	for _, d := range doc.Result.Devices {
+		udid := d.HardwareProperties.UDID
+		if udid == "" {
+			udid = d.Identifier // fall back to CoreDevice UUID
+		}
+		info := Info{
+			UUID:     udid,
+			Name:     d.DeviceProperties.Name,
+			Platform: "ios",
+		}
+		if d.HardwareProperties.MarketingName != "" {
+			info.Model = d.HardwareProperties.MarketingName
+		} else {
+			info.Model = d.HardwareProperties.ProductType
+		}
+		if d.DeviceProperties.OSVersionNumber != "" {
+			info.OS = "iOS " + d.DeviceProperties.OSVersionNumber
+		}
+		out = append(out, info)
+	}
+	return out, nil
+}
+
+// mergeIOSDevices overlays devicectl-sourced entries onto a usbmux-
+// sourced baseline, keyed by hardware UDID. devicectl's marketingName
+// and name typically beat usbmux's ProductType/DeviceName for
+// human-readability, so they win on conflict.
+func mergeIOSDevices(base, overlay []Info) []Info {
+	byUDID := make(map[string]int, len(base))
+	for i, b := range base {
+		byUDID[b.UUID] = i
+	}
+	for _, o := range overlay {
+		if idx, ok := byUDID[o.UUID]; ok {
+			if o.Name != "" {
+				base[idx].Name = o.Name
+			}
+			if o.Model != "" {
+				base[idx].Model = o.Model
+			}
+			if o.OS != "" {
+				base[idx].OS = o.OS
+			}
+			continue
+		}
+		base = append(base, o)
+		byUDID[o.UUID] = len(base) - 1
+	}
+	return base
 }
 
 // State reports iOS device state. Shells out to pymobiledevice3 for
