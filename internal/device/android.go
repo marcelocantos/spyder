@@ -41,7 +41,7 @@ func (a *AndroidAdapter) List() ([]Info, error) {
 		return nil, fmt.Errorf("adb devices: %w", err)
 	}
 	var devices []Info
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "List of devices") {
 			continue
@@ -148,7 +148,7 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 // Wireless/Dock is powered.
 func parseAndroidBattery(data []byte) (level int, charging bool, err error) {
 	levelFound := false
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if k, v, ok := strings.Cut(line, ":"); ok {
 			k = strings.TrimSpace(k)
@@ -181,7 +181,7 @@ func androidForegroundApp(id string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%s", truncate(string(stderr), 120))
 	}
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		if !strings.Contains(line, "mFocusedApp=") && !strings.Contains(line, "mResumedActivity") {
 			continue
 		}
@@ -229,10 +229,10 @@ func (a *AndroidAdapter) ListApps(id string) ([]AppInfo, error) {
 		return nil, fmt.Errorf("adb pm list packages: %w", err)
 	}
 	apps := []AppInfo{}
-	for _, line := range strings.Split(string(out), "\n") {
+	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "package:") {
-			apps = append(apps, AppInfo{BundleID: strings.TrimPrefix(line, "package:")})
+		if pkg, ok := strings.CutPrefix(line, "package:"); ok {
+			apps = append(apps, AppInfo{BundleID: pkg})
 		}
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
