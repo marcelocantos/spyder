@@ -17,7 +17,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.1.0`.
+Snapshot as of `v0.2.0`.
 
 ## Interaction surface catalogue
 
@@ -28,11 +28,15 @@ Snapshot as of `v0.1.0`.
 | `devices` | `{platform?: "ios"\|"android"\|"all"}` (default `all`). | JSON array of `device.Info` (`uuid`, `name`, `platform`, `model`, `os`, `alias`). When `platform=all` and an adapter errors, wraps as `{devices: [...], errors: [...]}`. | Stable |
 | `resolve` | `{name: string}` (required). | JSON-encoded `inventory.Entry` (`alias`, `platform`, `ios_uuid`, `ios_coredevice`, `android_serial`, `notes`). | Needs review — passthrough shape for unknown IDs may evolve |
 | `device_state` | `{device: string}` (required; alias or raw UUID/serial). | JSON-encoded `device.State` (`battery_level?`, `charging?`, `thermal_state?`, `foreground_app?`, `storage_free_mb?`, `notes?`). | Needs review — pointer-typed optionals, field additions expected |
-| `screenshot` | `{device: string}` (required). | MCP image content block (base64 PNG, `image/png`). | Stable |
-| `keepawake` | `{device: string}` (required). | Text result; platform-specific wording for Android no-op. | Stable |
+| `screenshot` | `{device: string, owner?: string}` (device required; owner for reservation auth). | MCP image content block (base64 PNG, `image/png`). | Stable |
+| `keepawake` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text result; platform-specific wording for Android no-op. | Stable |
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
-| `launch_app` | `{device: string, bundle_id: string}` (both required). | Text confirmation. | Stable |
-| `terminate_app` | `{device: string, bundle_id: string}` (both required). | Text confirmation. | Stable |
+| `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
+| `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
+| `reserve` | `{device: string, owner: string, ttl_seconds?: number, note?: string}` (device and owner required). | JSON-encoded `reservations.Reservation` (device, owner, expires_at, note, created_at). | Stable |
+| `release` | `{device: string, owner: string}`. | Text confirmation. | Stable |
+| `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
+| `reservations` | (no args). | JSON array of active `Reservation` records. | Stable |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -45,7 +49,7 @@ can match on these phrases.
 |---|---|---|
 | `spyder` (no args) | Prints usage to stdout. | Stable |
 | `spyder serve [--addr :PORT] [--tunneld-addr HOST:PORT]` | HTTP MCP server + auto-awake supervisor. Blocks until SIGINT/SIGTERM. | Stable |
-| `spyder run [--device ALIAS\|-d ALIAS] -- <cmd> [args...]` | Runs command; foregrounds KeepAwake on exit. Forwards exit code. | Stable |
+| `spyder run [--device ALIAS\|-d ALIAS] [--as OWNER] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); foregrounds KeepAwake and releases reservation on exit; opportunistically renews during long runs. Forwards exit code. | Stable |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |
 | `spyder help-agent` / `--help-agent` / `-help-agent` | Usage + embedded agents-guide.md. | Stable |
@@ -61,6 +65,25 @@ Exit codes: `0` success; `1` server startup / unclassified child-process error;
 - Transport: mcp-go's streamable HTTP (JSON-RPC over POST; `Mcp-Session-Id`
   header for session continuity).
 - Server info: `{name: "spyder", version: "<tag>"}`.
+
+### Reservation file
+
+Path: `~/.spyder/reservations.json`. Schema: JSON array of
+`reservations.Reservation` records with atomic-rename writes so
+concurrent writers (the daemon and `spyder run`) don't corrupt state.
+
+```json
+{
+  "device": "string (canonical, alias if known)",
+  "owner": "string",
+  "expires_at": "RFC3339 timestamp",
+  "note": "string (optional)",
+  "created_at": "RFC3339 timestamp"
+}
+```
+
+Expired entries pruned on load and on any access. Default TTL 3600 s;
+max TTL 86400 s. **Stable.**
 
 ### Inventory file
 

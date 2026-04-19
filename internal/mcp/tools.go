@@ -8,11 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/reservations"
 )
 
 func requireString(args map[string]any, key string) (string, error) {
@@ -118,10 +120,14 @@ func (h *Handler) handleKeepAwake(args map[string]any) (*mcpgo.CallToolResult, e
 	if err != nil {
 		return nil, err
 	}
+	owner := optString(args, "owner")
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
@@ -162,10 +168,14 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 	if err != nil {
 		return nil, err
 	}
+	owner := optString(args, "owner")
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
@@ -213,8 +223,12 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 	if err != nil {
 		return nil, err
 	}
+	owner := optString(args, "owner")
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
@@ -239,8 +253,12 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 	if err != nil {
 		return nil, err
 	}
+	owner := optString(args, "owner")
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if res := h.authorize(dev, owner); res != nil {
+		return res, nil
+	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
@@ -254,6 +272,105 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 		return toolErr("terminate_app %s on %s: %v", bundleID, dev, err)
 	}
 	return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
+}
+
+// authorize checks that the caller (identified by owner) may perform
+// a mutating operation against dev. Returns nil if allowed;
+// a *mcpgo.CallToolResult with IsError=true otherwise. Passes through
+// when no reservation store is wired (tests/embedded use).
+func (h *Handler) authorize(dev, owner string) *mcpgo.CallToolResult {
+	if h.reservations == nil {
+		return nil
+	}
+	if err := h.reservations.Authorize(dev, owner); err != nil {
+		res, _ := toolErr("%v", err)
+		return res
+	}
+	return nil
+}
+
+// --- reservation tools -------------------------------------------------
+
+func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.reservations == nil {
+		return toolErr("reservations not configured on this server")
+	}
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner, err := requireString(args, "owner")
+	if err != nil {
+		return nil, err
+	}
+	ttl := time.Duration(optNumber(args, "ttl_seconds")) * time.Second
+	note := optString(args, "note")
+
+	r, err := h.reservations.Acquire(dev, owner, ttl, note)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(r)
+}
+
+func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.reservations == nil {
+		return toolErr("reservations not configured on this server")
+	}
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner, err := requireString(args, "owner")
+	if err != nil {
+		return nil, err
+	}
+	if err := h.reservations.Release(dev, owner); err != nil {
+		return toolErr("%v", err)
+	}
+	return toolText(fmt.Sprintf("released reservation on %s", dev))
+}
+
+func (h *Handler) handleRenew(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.reservations == nil {
+		return toolErr("reservations not configured on this server")
+	}
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner, err := requireString(args, "owner")
+	if err != nil {
+		return nil, err
+	}
+	ttl := time.Duration(optNumber(args, "ttl_seconds")) * time.Second
+	r, err := h.reservations.Renew(dev, owner, ttl)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(r)
+}
+
+func (h *Handler) handleReservations(_ map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.reservations == nil {
+		return toolJSON([]reservations.Reservation{})
+	}
+	return toolJSON(h.reservations.List())
+}
+
+// optNumber extracts a float64-coerced integer-ish value. MCP
+// arguments arrive as map[string]any where JSON numbers decode to
+// float64; we cast to int64 seconds for time.Duration.
+func optNumber(args map[string]any, key string) int64 {
+	switch v := args[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return 0
 }
 
 // resolveAdapter maps a user-provided device reference (alias or raw UUID)

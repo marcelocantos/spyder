@@ -13,16 +13,23 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
+	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/marcelocantos/spyder/internal/daemon"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/paths"
+	"github.com/marcelocantos/spyder/internal/reservations"
 )
 
 //go:embed agents-guide.md
@@ -119,12 +126,17 @@ func runServe(args []string) {
 	}
 }
 
-// parseRunArgs parses the flag portion of `spyder run`. Returns the
-// target device alias and the command tail, or an error for the
-// caller to surface. Extracted from runCmd so it can be unit-tested
-// without touching exec/os.
-func parseRunArgs(args []string) (dev string, cmd []string, err error) {
-	dev = defaultRunDevice
+// runArgs are the parsed CLI flags for `spyder run`.
+type runArgs struct {
+	Device  string
+	Owner   string // empty = derive from filepath.Base(cwd)
+	Command []string
+}
+
+// parseRunArgs parses the flag portion of `spyder run`. Extracted so
+// it can be unit-tested without touching exec/os.
+func parseRunArgs(args []string) (runArgs, error) {
+	out := runArgs{Device: defaultRunDevice}
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		if args[0] == "--" {
 			args = args[1:]
@@ -133,18 +145,39 @@ func parseRunArgs(args []string) (dev string, cmd []string, err error) {
 		switch args[0] {
 		case "--device", "-d":
 			if len(args) < 2 {
-				return "", nil, fmt.Errorf("--device requires a value")
+				return runArgs{}, fmt.Errorf("--device requires a value")
 			}
-			dev = args[1]
+			out.Device = args[1]
+			args = args[2:]
+		case "--as":
+			if len(args) < 2 {
+				return runArgs{}, fmt.Errorf("--as requires a value")
+			}
+			out.Owner = args[1]
 			args = args[2:]
 		default:
-			return "", nil, fmt.Errorf("unknown flag %q", args[0])
+			return runArgs{}, fmt.Errorf("unknown flag %q", args[0])
 		}
 	}
 	if len(args) == 0 {
-		return "", nil, fmt.Errorf("no command provided — usage: spyder run [--device X] -- <cmd> [args...]")
+		return runArgs{}, fmt.Errorf("no command provided — usage: spyder run [--device X] [--as OWNER] -- <cmd> [args...]")
 	}
-	return dev, args, nil
+	out.Command = args
+	return out, nil
+}
+
+// deriveOwner returns the supplied owner or falls back to
+// filepath.Base(cwd). Used by `spyder run` to pick a sensible
+// project-oriented identity without requiring a flag.
+func deriveOwner(supplied string) string {
+	if supplied != "" {
+		return supplied
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "spyder-run"
+	}
+	return filepath.Base(wd)
 }
 
 // runCmd implements the `spyder run [--device X] -- <cmd> [args]`
@@ -153,13 +186,70 @@ func parseRunArgs(args []string) (dev string, cmd []string, err error) {
 // the command's exit code (KeepAwake restore failure is logged but
 // does not override the exit code — the test result is authoritative).
 func runCmd(args []string) {
-	dev, cmdArgs, err := parseRunArgs(args)
+	parsed, err := parseRunArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
 		os.Exit(2)
 	}
 
-	child := exec.Command(cmdArgs[0], cmdArgs[1:]...)
+	owner := deriveOwner(parsed.Owner)
+	resvStore, resvErr := reservations.New(
+		filepath.Join(paths.Base(), "reservations.json"),
+		reservations.WithNormalizer(func(ref string) string {
+			invStore := inventory.New()
+			if entry, ok := invStore.Lookup(ref); ok && entry.Alias != "" {
+				return entry.Alias
+			}
+			return ref
+		}),
+	)
+	if resvErr != nil {
+		fmt.Fprintf(os.Stderr, "spyder run: reservations unavailable: %v\n", resvErr)
+		os.Exit(1)
+	}
+
+	if _, err := resvStore.Acquire(parsed.Device, owner, reservations.DefaultTTL,
+		fmt.Sprintf("spyder run: %s", strings.Join(parsed.Command, " "))); err != nil {
+		if reservations.IsConflict(err) {
+			fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
+			os.Exit(3)
+		}
+		fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Guarantee release + restore on any exit path (success, error,
+	// SIGINT). The child inherits our stdio, so a SIGINT on our
+	// process group also terminates it before we reach this block.
+	release := func() {
+		if err := resvStore.Release(parsed.Device, owner); err != nil {
+			fmt.Fprintf(os.Stderr, "spyder run: release %s: %v\n", parsed.Device, err)
+		}
+		if err := restoreKeepAwake(parsed.Device); err != nil {
+			fmt.Fprintf(os.Stderr, "spyder run: restore KeepAwake on %s: %v\n", parsed.Device, err)
+		} else {
+			fmt.Fprintf(os.Stderr, "spyder run: KeepAwake restored on %s\n", parsed.Device)
+		}
+	}
+
+	// Opportunistic renewal so long-running commands don't expire
+	// mid-run. Ticker interval is less than half the TTL for safety.
+	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+	go func() {
+		tick := time.NewTicker(reservations.DefaultTTL / 3)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				_, _ = resvStore.Renew(parsed.Device, owner, reservations.DefaultTTL)
+			}
+		}
+	}()
+
+	child := exec.CommandContext(ctx, parsed.Command[0], parsed.Command[1:]...)
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
@@ -174,13 +264,7 @@ func runCmd(args []string) {
 			exitCode = 1
 		}
 	}
-
-	if err := restoreKeepAwake(dev); err != nil {
-		fmt.Fprintf(os.Stderr, "spyder run: restore KeepAwake on %s: %v\n", dev, err)
-	} else {
-		fmt.Fprintf(os.Stderr, "spyder run: KeepAwake restored on %s\n", dev)
-	}
-
+	release()
 	os.Exit(exitCode)
 }
 

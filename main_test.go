@@ -83,7 +83,7 @@ func TestParseRunArgs(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			dev, cmd, err := parseRunArgs(c.args)
+			got, err := parseRunArgs(c.args)
 			if c.wantErr != "" {
 				if err == nil {
 					t.Fatalf("parseRunArgs(%v) err = nil; want error containing %q",
@@ -98,13 +98,36 @@ func TestParseRunArgs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parseRunArgs(%v) err = %v", c.args, err)
 			}
-			if dev != c.wantDev {
-				t.Errorf("dev = %q; want %q", dev, c.wantDev)
+			if got.Device != c.wantDev {
+				t.Errorf("dev = %q; want %q", got.Device, c.wantDev)
 			}
-			if !reflect.DeepEqual(cmd, c.wantCmd) {
-				t.Errorf("cmd = %v; want %v", cmd, c.wantCmd)
+			if !reflect.DeepEqual(got.Command, c.wantCmd) {
+				t.Errorf("cmd = %v; want %v", got.Command, c.wantCmd)
 			}
 		})
+	}
+}
+
+func TestParseRunArgs_AsFlag(t *testing.T) {
+	got, err := parseRunArgs([]string{"--as", "myproject", "--", "echo", "hi"})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got.Owner != "myproject" {
+		t.Errorf("Owner = %q; want myproject", got.Owner)
+	}
+}
+
+func TestDeriveOwner_FallbackToCwd(t *testing.T) {
+	// Supplied non-empty wins.
+	if got := deriveOwner("explicit"); got != "explicit" {
+		t.Errorf("deriveOwner('explicit') = %q; want explicit", got)
+	}
+	// Empty → derived from cwd basename.
+	// Just check it's non-empty; the actual basename depends on the
+	// test invocation directory.
+	if got := deriveOwner(""); got == "" {
+		t.Error("deriveOwner('') returned empty; want cwd basename")
 	}
 }
 

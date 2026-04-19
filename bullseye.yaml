@@ -170,6 +170,30 @@ targets:
     origin: manual
     discovered: 2026-04-18
     achieved: 2026-04-18
+  T11:
+    name: Reservation system for parallel dev sessions across devices
+    status: identified
+    value: 13.0
+    cost: 5.0
+    acceptance:
+    - 'Four new MCP tools: reserve, release, renew, reservations — each with structured result shapes (reservation_id, device, owner, expires_at, note)'
+    - 'Existing mutating tools (keepawake, screenshot, launch_app, terminate_app) gain strict-reservation enforcement: reject with a clear conflict error if someone else holds the device; proceed if free or owner matches'
+    - Read tools (devices, resolve, device_state, reservations) are unaffected by reservations
+    - spyder run [--as <owner>] auto-acquires a reservation for the command's lifetime; owner defaults to filepath.Base(cwd); opportunistic renewal so long-running commands don't expire mid-run; release on exit (defer) regardless of success/failure/panic
+    - Auto-awake supervisor uses owner id "autoawake"; skips devices held by anyone else (no yank-focus mid-test)
+    - Reservations persist to ~/.spyder/reservations.json; expired entries pruned on daemon startup and on any access
+    - 'Device identity is normalized via inventory: reserving "Pippa" also blocks operations against Pippa''s raw UDID/CoreDevice UUID and vice versa'
+    - Default TTL 3600s; max 86400s; renew accepts the same bounds
+    - Unit tests cover acquire / release / renew / conflict / TTL expiry / persistence round-trip / normalization
+    context: |-
+      User runs multiple parallel dev sessions (separate Claude Code instances, separate projects) that all talk to the same device fleet via spyder. Without coordination, session B's launch_app or keepawake yanks focus during session A's xcodebuild test. spyder is the natural owner of this state — it's a single daemon per host, every client flows through it, and it already owns device inventory.\n\nDesign agreed with user on 2026-04-19:\n- Strict on mutating tools, advisory on read tools.\n- Owner identity is a free-form string; convention is filepath.Base(cwd). Not server-assigned — keeps 'Pippa is held by tiltbuggy' readable.\n- Agents aren't required to reserve before mutating calls: if the device is free, the call just works. They only pay the token cost when they want an exclusive hold.\n- spyder run is the blessed path that makes this ergonomic: it auto-reserves, opportunistically renews, and releases on exit.\n- Auto-awake cooperates — skips devices held by non-self; doesn't hold its own reservations (launches are fast).\n- Persistence via ~/.spyder/reservations.json so brew services restart doesn't orphan a live spyder run.\n\nDeferred: force: true override, interactive macOS notification UX, multi-device reservations in a single call.</context>
+      <parameter name="observable">true
+    tags:
+    - mcp-tool
+    - session-state
+    - concurrency
+    origin: manual
+    discovered: 2026-04-19
   T2:
     name: Device inventory resolves symbolic aliases to all platform-specific UUIDs a device has
     status: achieved

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -17,7 +18,10 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/marcelocantos/spyder/internal/autoawake"
+	"github.com/marcelocantos/spyder/internal/inventory"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
+	"github.com/marcelocantos/spyder/internal/paths"
+	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/tunneld"
 )
 
@@ -42,10 +46,14 @@ func Start(cfg Config) error {
 // (or the underlying HTTP server errors). Exposed for tests and for
 // embedders that want to own signal handling.
 func Run(ctx context.Context, cfg Config) error {
-	httpSrv, tunClient := Build(cfg)
+	httpSrv, tunClient, resvStore := Build(cfg)
 
 	if !cfg.DisableAutoAwake {
-		go autoawake.New(tunClient).Run(ctx)
+		awakeOpts := []autoawake.Option{}
+		if resvStore != nil {
+			awakeOpts = append(awakeOpts, autoawake.WithReservations(resvStore))
+		}
+		go autoawake.New(tunClient, awakeOpts...).Run(ctx)
 	}
 
 	slog.Info("spyder mcp server listening", "addr", cfg.Addr, "endpoint", "/mcp")
@@ -70,11 +78,12 @@ func Run(ctx context.Context, cfg Config) error {
 
 // Build wires up the MCP server and the streamable-HTTP handler
 // without starting a listener or the autoawake supervisor. Tests
-// (and embedders) can compose this with their own transport.
-//
-// The returned StreamableHTTPServer is a drop-in http.Handler via
-// its ServeHTTP method, suitable for httptest.NewServer.
-func Build(cfg Config) (*server.StreamableHTTPServer, *tunneld.Client) {
+// (and embedders) can compose this with their own transport. The
+// returned StreamableHTTPServer is a drop-in http.Handler via its
+// ServeHTTP method, suitable for httptest.NewServer. The reservation
+// store may be nil if ~/.spyder/reservations.json is unreadable;
+// callers that need strict enforcement should check.
+func Build(cfg Config) (*server.StreamableHTTPServer, *tunneld.Client, *reservations.Store) {
 	tunneldAddr := cfg.TunneldAddr
 	if tunneldAddr == "" {
 		tunneldAddr = tunneld.DefaultAddr
@@ -93,7 +102,30 @@ func Build(cfg Config) (*server.StreamableHTTPServer, *tunneld.Client) {
 		server.WithToolCapabilities(true),
 	)
 
-	handler := spydermcp.NewHandler(tunClient)
+	invStore := inventory.New()
+	resvPath := filepath.Join(paths.Base(), "reservations.json")
+	resvStore, err := reservations.New(
+		resvPath,
+		reservations.WithNormalizer(func(ref string) string {
+			if entry, ok := invStore.Lookup(ref); ok && entry.Alias != "" {
+				return entry.Alias
+			}
+			return ref
+		}),
+	)
+	if err != nil {
+		slog.Warn("reservations unavailable; strict mode disabled",
+			"path", resvPath, "error", err)
+		resvStore = nil
+	}
+
+	handlerOpts := []spydermcp.HandlerOption{
+		spydermcp.WithInventory(invStore),
+	}
+	if resvStore != nil {
+		handlerOpts = append(handlerOpts, spydermcp.WithReservations(resvStore))
+	}
+	handler := spydermcp.NewHandler(tunClient, handlerOpts...)
 
 	for _, tool := range spydermcp.Definitions() {
 		toolName := tool.Name
@@ -102,5 +134,5 @@ func Build(cfg Config) (*server.StreamableHTTPServer, *tunneld.Client) {
 		})
 	}
 
-	return server.NewStreamableHTTPServer(srv), tunClient
+	return server.NewStreamableHTTPServer(srv), tunClient, resvStore
 }

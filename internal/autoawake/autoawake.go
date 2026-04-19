@@ -26,8 +26,13 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/notify"
+	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/tunneld"
 )
+
+// OwnerID is the reservation owner identity used by auto-awake.
+// Exported so callers can reference it when checking reservations.
+const OwnerID = "autoawake"
 
 const (
 	pollInterval             = 2 * time.Second
@@ -39,9 +44,10 @@ const (
 // Supervisor polls tunneld and ensures KeepAwake is running on every
 // iOS device that appears.
 type Supervisor struct {
-	tunneld   *tunneld.Client
-	inventory *inventory.Store
-	ios       *device.IOSAdapter
+	tunneld      *tunneld.Client
+	inventory    *inventory.Store
+	ios          *device.IOSAdapter
+	reservations *reservations.Store // optional: if set, honour other holders' reservations
 
 	// projectDir is the path containing ios/KeepAwake's project.yml.
 	// Discovered on first auto-deploy; empty means deploy is disabled.
@@ -51,16 +57,30 @@ type Supervisor struct {
 	inFlight map[string]bool // UDIDs currently being handled
 }
 
+// Option configures a Supervisor at construction.
+type Option func(*Supervisor)
+
+// WithReservations injects a reservation store so the supervisor
+// skips devices held by non-self owners. If omitted, the supervisor
+// acts unconditionally.
+func WithReservations(s *reservations.Store) Option {
+	return func(sv *Supervisor) { sv.reservations = s }
+}
+
 // New constructs a Supervisor. Pass the already-initialised tunneld
 // client from daemon.Start.
-func New(tun *tunneld.Client) *Supervisor {
-	return &Supervisor{
+func New(tun *tunneld.Client, opts ...Option) *Supervisor {
+	sv := &Supervisor{
 		tunneld:    tun,
 		inventory:  inventory.New(),
 		ios:        device.NewIOSAdapter(),
 		projectDir: findKeepAwakeProject(),
 		inFlight:   map[string]bool{},
 	}
+	for _, opt := range opts {
+		opt(sv)
+	}
+	return sv
 }
 
 // Run blocks polling tunneld until ctx is cancelled.
@@ -139,6 +159,16 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 
 	alias := s.aliasOf(udid)
 	slog.Info("autoawake: new device", "udid", udid, "alias", alias)
+
+	// Respect reservations owned by anyone else — we don't want to
+	// yank focus into KeepAwake while the user's mid-test.
+	if s.reservations != nil {
+		if err := s.reservations.Authorize(udid, OwnerID); err != nil {
+			slog.Info("autoawake: skipping device held by another owner",
+				"udid", udid, "alias", alias, "error", err)
+			return
+		}
+	}
 
 	// Wait briefly for tunneld/DDI to settle before DVT calls.
 	select {

@@ -59,6 +59,7 @@ everything below plus gotchas, device-inventory format, and the full
 | `list_apps` | Installed third-party apps. |
 | `launch_app` | Foreground an arbitrary app by bundle id. |
 | `terminate_app` | Stop an app by bundle id. |
+| `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
 
 ## Test-run wrapper
 
@@ -69,6 +70,13 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
 
 Runs the command, waits for it to exit, then foregrounds KeepAwake on the
 device regardless of success/failure. Forwards the command's exit code.
+
+Spyder auto-acquires an exclusive reservation on the device for the
+command's lifetime (owner defaults to `filepath.Base(cwd)` — pass
+`--as <owner>` to override). Other parallel sessions that try to
+mutate the same device via MCP will get a clean conflict error
+naming the current holder. Opportunistic renewal keeps long runs
+alive; release on exit is guaranteed.
 
 ## Auto-awake supervisor
 

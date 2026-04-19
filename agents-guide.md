@@ -105,6 +105,35 @@ everything it can see.
 | `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
 | `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses DVT launch (needs tunneld); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
+| `reserve` | Acquire an exclusive device hold. | `{device, owner, ttl_seconds?, note?}`. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. |
+| `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. |
+| `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
+| `reservations` | List active reservations. | Read-only. |
+
+## Reservations
+
+For parallel dev sessions (e.g. one agent working on TiltBuggy while another
+works on another game), acquire an exclusive hold on a device with `reserve`
+before mutating operations. Mutating tools (`keepawake`, `screenshot`,
+`launch_app`, `terminate_app`) reject with a structured conflict error
+naming the holder if someone else is holding the device. Read tools
+(`devices`, `resolve`, `device_state`, `reservations`) are unaffected.
+
+```json
+{"name": "reserve", "arguments": {"device": "Pippa", "owner": "tiltbuggy", "ttl_seconds": 3600, "note": "UI regression run"}}
+```
+
+Agents don't *have* to reserve: if the device is free, mutating calls just
+work. Reservations are only necessary for long-running sequences where
+another session could race you. `spyder run` auto-reserves for the wrapped
+command's lifetime (owner defaults to `filepath.Base(cwd)`), opportunistically
+renews, and releases on exit — no explicit reserve/release needed for the
+common test-run pattern.
+
+To pass owner-authentication on a mutating call while someone else holds
+the device, pass `"owner": "<your-owner>"` in the arguments map. The
+server resolves canonical identity via the inventory, so reserving
+"Pippa" also blocks operations on her raw UDID and vice versa.
 
 ## The `spyder run` test wrapper
 
