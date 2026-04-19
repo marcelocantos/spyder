@@ -11,12 +11,12 @@ import (
 
 func TestParse_namedProfiles(t *testing.T) {
 	cases := []struct {
-		name         string
-		wantUp       int
-		wantDown     int
-		wantDelay    int
-		wantLoss     int
-		wantOffline  bool
+		name        string
+		wantUp      int
+		wantDown    int
+		wantDelay   int
+		wantLoss    int
+		wantOffline bool
 	}{
 		{"wifi", 0, 0, 0, 0, false},
 		{"4g", 5760, 14400, 20, 0, false},
@@ -121,9 +121,9 @@ func TestParse_unknownProfile(t *testing.T) {
 
 func TestADBSpeedClass(t *testing.T) {
 	cases := []struct {
-		profile  string
-		wantKw   string
-		wantOK   bool
+		profile string
+		wantKw  string
+		wantOK  bool
 	}{
 		{"4g", "hsdpa", true},
 		{"3g", "umts", true},
