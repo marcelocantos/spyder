@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
@@ -66,6 +67,7 @@ func init() {
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
+		{"log", "spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow]", runLog},
 	}
 }
 
@@ -930,6 +932,125 @@ func runNet(args []string) {
 		a["profile"] = profile
 	}
 	dispatchAndExit("network", a, false)
+}
+
+func runLog(args []string) {
+	pf, err := parseFlags(args,
+		[]string{"--process", "--subsystem", "--tag", "--regex", "--since", "--until"},
+		[]string{"--follow", "--json"},
+	)
+	if err != nil {
+		fatalUsage("log", err)
+	}
+	requirePositional("log", pf, 1)
+
+	dev := pf.positional[0]
+	follow := pf.bools["--follow"]
+	jsonMode := pf.bools["--json"]
+
+	if follow {
+		// SSE live stream: POST to /api/v1/log_stream, print each event.
+		body := map[string]any{"device": dev}
+		if p := pf.flags["--process"]; p != "" {
+			body["process"] = p
+		}
+		if s := pf.flags["--subsystem"]; s != "" {
+			body["subsystem"] = s
+		}
+		if t := pf.flags["--tag"]; t != "" {
+			body["tag"] = t
+		}
+		if r := pf.flags["--regex"]; r != "" {
+			body["regex"] = r
+		}
+		streamSSELog(body, jsonMode)
+		return
+	}
+
+	// Bounded range query: POST to /api/v1/logs.
+	a := map[string]any{"device": dev}
+	for _, flag := range []string{"--process", "--subsystem", "--tag", "--regex", "--since", "--until"} {
+		if v := pf.flags[flag]; v != "" {
+			key := strings.TrimPrefix(flag, "--")
+			a[key] = v
+		}
+	}
+	dispatchAndExit("logs", a, jsonMode)
+}
+
+// streamSSELog POSTs to the SSE log_stream endpoint and prints each event line.
+func streamSSELog(body map[string]any, jsonMode bool) {
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "spyder log: encode: %v\n", err)
+		os.Exit(1)
+	}
+	base := daemonBaseURL()
+	url := base + rest.StreamPath
+	resp, err := http.Post(url, "application/json", bytes.NewReader(encoded))
+	if err != nil {
+		if isConnRefused(err) && base == defaultDaemonURL {
+			if spawnErr := autoStartDaemon(); spawnErr == nil {
+				resp, err = http.Post(url, "application/json", bytes.NewReader(encoded))
+			}
+		}
+		if err != nil {
+			if isConnRefused(err) {
+				fmt.Fprintf(os.Stderr, "spyder log: daemon not reachable at %s\n", base)
+			} else {
+				fmt.Fprintf(os.Stderr, "spyder log: %v\n", err)
+			}
+			os.Exit(1)
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "spyder log: daemon %d: %s\n", resp.StatusCode, strings.TrimSpace(string(raw)))
+		os.Exit(1)
+	}
+
+	// Read SSE events line by line. Each event ends with a blank line.
+	// Lines starting with "data: " carry the JSON payload.
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if jsonMode {
+			fmt.Println(data)
+			continue
+		}
+		// Pretty-print the LogLine fields.
+		var ll struct {
+			Timestamp string `json:"timestamp"`
+			Process   string `json:"process"`
+			Level     string `json:"level"`
+			Tag       string `json:"tag"`
+			Message   string `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(data), &ll); err != nil {
+			fmt.Println(data)
+			continue
+		}
+		parts := []string{ll.Timestamp}
+		if ll.Process != "" {
+			parts = append(parts, ll.Process)
+		} else if ll.Tag != "" {
+			parts = append(parts, ll.Tag)
+		}
+		if ll.Level != "" {
+			parts = append(parts, "["+ll.Level+"]")
+		}
+		parts = append(parts, ll.Message)
+		fmt.Println(strings.Join(parts, " "))
+	}
+	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
+		fmt.Fprintf(os.Stderr, "spyder log: read: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // --- helpers --------------------------------------------------------

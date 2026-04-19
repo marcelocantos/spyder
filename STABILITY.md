@@ -61,6 +61,7 @@ Snapshot as of `v0.4.0`.
 | `record_start` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with subprocess PID and output path. | Needs review — iOS simulator UDID must be passed directly; iOS physical devices return an immediate error. |
 | `record_stop` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with the local mp4 path. | Needs review |
 | `network` | `{device: string, owner: string, profile?: string}` or `{device: string, owner: string, clear: true}`. Exactly one of profile or clear required. | Text confirmation. | Beta — Android emulator only; iOS and physical Android return clear errors. |
+| `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); field set and timestamp precision may evolve |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
@@ -110,6 +111,7 @@ can match on these phrases.
 | `spyder emu delete <name>` | REST proxy to `emu_delete`. | Needs review |
 | `spyder record <device> --start \| --stop [--as OWNER]` | REST proxy to `record_start` / `record_stop`. Starts or stops a screen recording on an iOS simulator or Android device. | Needs review |
 | `spyder net <device> [--profile NAME\|--clear] [--as OWNER]` | REST proxy to `network`. Requires exactly one of `--profile` or `--clear`. | Beta — Android emulator only. |
+| `spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow] [--json]` | Without `--follow`: REST proxy to `logs` MCP tool (bounded JSON array). With `--follow`: SSE live stream via `POST /api/v1/log_stream`. | Needs review — iOS range quirks; live streaming is REST-only |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
@@ -142,6 +144,11 @@ code for `spyder run` when the command itself exits non-zero.
   `isError:true` in the body — transport success, tool failure.
 - Reservation state is shared with the MCP transport: a lock taken via
   one channel is honoured on the other.
+- **SSE log stream:** `POST /api/v1/log_stream` accepts `{device, process?,
+  subsystem?, tag?, regex?}` and returns `Content-Type: text/event-stream`.
+  Each event is `data: <JSON LogLine>\n\n`. The stream runs until the client
+  disconnects. This is the only endpoint that returns a streaming response.
+  Stability: **Needs review** — shape may evolve before 1.0.
 
 ### Reservation file
 

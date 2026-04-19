@@ -4,6 +4,8 @@
 package device
 
 import (
+	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -824,6 +826,184 @@ func adbEmu(id string, args ...string) error {
 		}
 		return fmt.Errorf("emulator console error: %s", msg)
 	}
+	return nil
+}
+
+// androidLogcatLineRE matches the "threadtime" logcat format:
+//
+//	MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG  : Message
+//
+// Example:
+//
+//	04-15 14:23:01.123  1234  5678 E MyTag  : something went wrong
+var androidLogcatLineRE = regexp.MustCompile(
+	`^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+\d+\s+\d+\s+([A-Z])\s+(\S+)\s*:\s+(.*)$`,
+)
+
+// ParseAndroidLogcatLine parses a single line from `adb logcat --format=threadtime`.
+// Exported for testing.
+func ParseAndroidLogcatLine(line string) (LogLine, bool) {
+	m := androidLogcatLineRE.FindStringSubmatch(line)
+	if m == nil {
+		return LogLine{}, false
+	}
+	ts := parseAndroidLogcatTimestamp(m[1])
+	return LogLine{
+		Timestamp: ts,
+		Level:     expandAndroidLevel(m[2]),
+		Tag:       strings.TrimSpace(m[3]),
+		Message:   m[4],
+	}, true
+}
+
+// parseAndroidLogcatTimestamp parses MM-DD HH:MM:SS.mmm (no year). We
+// use the current year since logcat doesn't include it.
+func parseAndroidLogcatTimestamp(s string) time.Time {
+	year := time.Now().Year()
+	t, err := time.Parse("01-02 15:04:05.000", s)
+	if err != nil {
+		t, err = time.Parse("01-02 15:04:05.99", s)
+	}
+	if err != nil {
+		return time.Time{}
+	}
+	return t.AddDate(year, 0, 0)
+}
+
+// expandAndroidLevel converts a single-letter logcat priority to a word.
+func expandAndroidLevel(l string) string {
+	switch l {
+	case "V":
+		return "verbose"
+	case "D":
+		return "debug"
+	case "I":
+		return "info"
+	case "W":
+		return "warning"
+	case "E":
+		return "error"
+	case "F":
+		return "fatal"
+	case "S":
+		return "silent"
+	default:
+		return strings.ToLower(l)
+	}
+}
+
+// LogRange returns log lines from `adb logcat` between since and until.
+// Uses --format=threadtime for structured output. Tag filter is passed
+// as a logcat argument; process/regex are applied client-side.
+func (a *AndroidAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return nil, fmt.Errorf("adb not found: %w", err)
+	}
+
+	args := []string{"-s", id, "logcat", "--format=threadtime", "-d"}
+	if !since.IsZero() {
+		// -t accepts "MM-DD HH:MM:SS.mmm" format.
+		args = append(args, "-t", since.Format("01-02 15:04:05.000"))
+	}
+	if filter.Tag != "" {
+		args = append(args, filter.Tag+":V", "*:S")
+	}
+
+	var regexFilter *regexp.Regexp
+	var err error
+	if filter.Regex != "" {
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	out, stderr, runErr := runCapture("adb", args...)
+	if runErr != nil {
+		return nil, fmt.Errorf("adb logcat: %v\n%s", runErr, truncate(string(stderr), 200))
+	}
+
+	var lines []LogLine
+	for line := range strings.SplitSeq(string(out), "\n") {
+		ll, ok := ParseAndroidLogcatLine(line)
+		if !ok {
+			continue
+		}
+		if !since.IsZero() && ll.Timestamp.Before(since) {
+			continue
+		}
+		if !until.IsZero() && ll.Timestamp.After(until) {
+			continue
+		}
+		if filter.Process != "" && !strings.EqualFold(ll.Tag, filter.Process) &&
+			!strings.Contains(strings.ToLower(ll.Tag), strings.ToLower(filter.Process)) {
+			continue
+		}
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		lines = append(lines, ll)
+	}
+	return lines, nil
+}
+
+// LogStream pumps live logcat lines into out until ctx is cancelled.
+func (a *AndroidAdapter) LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("adb"); err != nil {
+		return fmt.Errorf("adb not found: %w", err)
+	}
+
+	args := []string{"-s", id, "logcat", "--format=threadtime"}
+	if filter.Tag != "" {
+		args = append(args, filter.Tag+":V", "*:S")
+	}
+
+	var regexFilter *regexp.Regexp
+	if filter.Regex != "" {
+		var err error
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			return fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "adb", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start adb logcat: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		ll, ok := ParseAndroidLogcatLine(scanner.Text())
+		if !ok {
+			continue
+		}
+		if filter.Process != "" && !strings.EqualFold(ll.Tag, filter.Process) &&
+			!strings.Contains(strings.ToLower(ll.Tag), strings.ToLower(filter.Process)) {
+			continue
+		}
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		select {
+		case out <- ll:
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return nil
+		}
+	}
+	_ = cmd.Wait()
 	return nil
 }
 

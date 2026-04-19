@@ -6,9 +6,12 @@
 // (pymobiledevice3, devicectl, adb).
 package device
 
-import "time"
+import (
+	"context"
+	"time"
 
-import "github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/network"
+)
 
 // Info summarises a single connected device.
 type Info struct {
@@ -18,6 +21,28 @@ type Info struct {
 	Model    string `json:"model,omitempty"`
 	OS       string `json:"os,omitempty"`
 	Alias    string `json:"alias,omitempty"` // populated from inventory
+}
+
+// LogFilter restricts which log lines are returned by LogRange or LogStream.
+// Zero-value means no filtering on that field.
+type LogFilter struct {
+	// Process filters by process name (iOS: --procname; Android: grep on tag/process column).
+	Process string
+	// Subsystem filters by iOS subsystem (com.apple.foo). Ignored on Android.
+	Subsystem string
+	// Tag filters by Android logcat tag (e.g. "MyApp"). Ignored on iOS.
+	Tag string
+	// Regex is applied to the message body on both platforms.
+	Regex string
+}
+
+// LogLine is a single parsed log entry from a device.
+type LogLine struct {
+	Timestamp time.Time `json:"timestamp"`
+	Process   string    `json:"process,omitempty"`
+	Level     string    `json:"level,omitempty"`
+	Tag       string    `json:"tag,omitempty"`
+	Message   string    `json:"message"`
 }
 
 // State reports device runtime state. Fields are optional: nil pointers
@@ -141,4 +166,16 @@ type Adapter interface {
 	// restores full-speed connectivity. Support varies by platform in
 	// the same way as ApplyNetwork.
 	ClearNetwork(id string) error
+
+	// LogRange returns log lines between since and until (inclusive).
+	// A zero since means "from the beginning of available logs"; a zero
+	// until means "up to now". The returned slice may be empty when no
+	// lines match. iOS uses pymobiledevice3 syslog; Android uses adb logcat.
+	LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error)
+
+	// LogStream streams filtered log lines from the device into out until
+	// ctx is cancelled. The caller is responsible for closing out after
+	// LogStream returns. iOS uses `pymobiledevice3 syslog live`; Android
+	// uses `adb logcat`. Returns nil when ctx is cancelled normally.
+	LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error
 }

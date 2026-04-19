@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -36,6 +37,8 @@ type stubAdapter struct {
 	appPID          func(id, bundle string) (int, error)
 	applyNetwork    func(id string, p network.NetworkProfile) error
 	clearNetwork    func(id string) error
+	logRange        func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
+	logStream       func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -135,6 +138,18 @@ func (s *stubAdapter) ClearNetwork(id string) error {
 		return nil
 	}
 	return s.clearNetwork(id)
+}
+func (s *stubAdapter) LogRange(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error) {
+	if s.logRange == nil {
+		return nil, nil
+	}
+	return s.logRange(id, filter, since, until)
+}
+func (s *stubAdapter) LogStream(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error {
+	if s.logStream == nil {
+		return nil
+	}
+	return s.logStream(ctx, id, filter, out)
 }
 
 // stubTunneld is a TunneldGate with controllable Require behaviour.

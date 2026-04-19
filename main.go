@@ -82,6 +82,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   baseline      Manage visual baselines; subcommand: update
   record        Start or stop a screen recording (--start | --stop, --as OWNER)
   net           Apply or clear network conditions (--profile NAME | --clear, --as OWNER)
+  log           Fetch or tail device logs (--follow for live SSE stream)
 
 Serve:
   spyder serve [--addr :3030]

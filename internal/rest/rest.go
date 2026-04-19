@@ -31,20 +31,33 @@ import (
 // Prefix is the URL prefix under which REST endpoints live.
 const Prefix = "/api/v1/"
 
+// StreamPath is the URL path for the SSE live log stream endpoint.
+const StreamPath = Prefix + "log_stream"
+
 // NewHandler returns an http.Handler that routes Prefix/<tool>
 // POST requests to h.Dispatch. Unknown tools return 404; non-POST
-// methods return 405; malformed JSON bodies return 400.
+// methods return 405; malformed JSON bodies return 400. The special
+// path /api/v1/log_stream is handled by the SSE streaming handler.
 func NewHandler(h *spydermcp.Handler) http.Handler {
-	return &restHandler{h: h}
+	return &restHandler{
+		h:      h,
+		stream: NewStreamHandler(h),
+	}
 }
 
 type restHandler struct {
-	h *spydermcp.Handler
+	h      *spydermcp.Handler
+	stream http.Handler
 }
 
 func (rh *restHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, Prefix) {
 		http.NotFound(w, r)
+		return
+	}
+	// The SSE log_stream endpoint has its own handler.
+	if r.URL.Path == StreamPath {
+		rh.stream.ServeHTTP(w, r)
 		return
 	}
 	tool := strings.TrimPrefix(r.URL.Path, Prefix)

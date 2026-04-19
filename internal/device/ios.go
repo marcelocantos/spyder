@@ -4,13 +4,16 @@
 package device
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -835,6 +838,198 @@ func (a *IOSAdapter) ClearNetwork(_ string) error {
 			"iOS simulator — no public CLI for Link Conditioner (contributions welcome); " +
 			"physical iOS devices — no remote interface to Developer Settings",
 	)
+}
+
+// iosSyslogLineRE matches a line produced by `pymobiledevice3 syslog live`
+// in its default text format:
+//
+//	<Timestamp> <Device> <Process>(<subsystem>) [<level>] <Message>
+//
+// Example:
+//
+//	Mar 15 14:23:01.123 Pippa MyApp(com.example.app)[1234] <Error>: crash happened
+//
+// The regex is intentionally permissive to handle variations (missing
+// subsystem, different bracket styles, etc.).
+var iosSyslogLineRE = regexp.MustCompile(
+	`^(\w{3}\s+\d+\s+[\d:.]+)\s+\S+\s+(\S+?)\[` + // timestamp + device + process[pid
+		`\d+\]\s+<(\w+)>:\s+(.*)$`, // level: message
+)
+
+// iosSyslogTimestampLayouts are tried in order when parsing timestamps from
+// `pymobiledevice3 syslog live` output. The tool emits dates without a year,
+// so we parse them relative to the current year.
+var iosSyslogTimestampLayouts = []string{
+	"Jan  2 15:04:05.000",
+	"Jan _2 15:04:05.000",
+	"Jan 2 15:04:05.000",
+	"Jan  2 15:04:05",
+	"Jan _2 15:04:05",
+	"Jan 2 15:04:05",
+}
+
+// ParseIOSSyslogLine parses a single line from `pymobiledevice3 syslog live`
+// output. Exported for testing; internal callers use parseIOSSyslogLine.
+func ParseIOSSyslogLine(line string) (LogLine, bool) {
+	m := iosSyslogLineRE.FindStringSubmatch(line)
+	if m == nil {
+		return LogLine{}, false
+	}
+	ts := parseIOSSyslogTimestamp(m[1])
+	return LogLine{
+		Timestamp: ts,
+		Process:   m[2],
+		Level:     m[3],
+		Message:   m[4],
+	}, true
+}
+
+// parseIOSSyslogTimestamp parses a syslog timestamp string, appending the
+// current year since pymobiledevice3 does not include it.
+func parseIOSSyslogTimestamp(s string) time.Time {
+	year := time.Now().Year()
+	s = strings.TrimSpace(s)
+	for _, layout := range iosSyslogTimestampLayouts {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.AddDate(year, 0, 0)
+		}
+	}
+	return time.Time{}
+}
+
+// LogRange returns log lines from `pymobiledevice3 syslog live` between
+// since and until. Because pymobiledevice3 does not support archived-log
+// timestamp queries in a stable CLI way, we run the live stream briefly,
+// collecting lines within the window. For bounded historic queries, callers
+// should provide a reasonable since/until window; this implementation
+// falls back to returning the recent live output.
+//
+// Filter fields: Process (--procname), Subsystem (--subsystem), Regex
+// (applied client-side to Message).
+func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
+	if id == "" {
+		return nil, errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("pymobiledevice3"); err != nil {
+		return nil, fmt.Errorf("pymobiledevice3 not found: %w", err)
+	}
+
+	args := []string{"syslog", "live", "--udid", id}
+	if filter.Process != "" {
+		args = append(args, "--procname", filter.Process)
+	}
+	if filter.Subsystem != "" {
+		args = append(args, "--subsystem", filter.Subsystem)
+	}
+
+	// For range queries we need to drain until `until` passes. Cap at 30s
+	// to avoid hanging forever when until is zero (no upper bound).
+	deadline := until
+	if deadline.IsZero() || deadline.After(time.Now().Add(30*time.Second)) {
+		deadline = time.Now().Add(5 * time.Second)
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "pymobiledevice3", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("start syslog live: %w", err)
+	}
+
+	var regexFilter *regexp.Regexp
+	if filter.Regex != "" {
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			return nil, fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	var lines []LogLine
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		line := scanner.Text()
+		ll, ok := ParseIOSSyslogLine(line)
+		if !ok {
+			continue
+		}
+		if !since.IsZero() && ll.Timestamp.Before(since) {
+			continue
+		}
+		if !until.IsZero() && ll.Timestamp.After(until) {
+			continue
+		}
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		lines = append(lines, ll)
+	}
+
+	// Deadline-based cancellation is expected; suppress context errors.
+	_ = cmd.Wait()
+	return lines, nil
+}
+
+// LogStream pumps live syslog lines from the device into out until ctx is
+// cancelled. Uses `pymobiledevice3 syslog live`. Filter fields are applied
+// server-side (pymobiledevice3 flags) and client-side (Regex).
+func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	if _, err := exec.LookPath("pymobiledevice3"); err != nil {
+		return fmt.Errorf("pymobiledevice3 not found: %w", err)
+	}
+
+	args := []string{"syslog", "live", "--udid", id}
+	if filter.Process != "" {
+		args = append(args, "--procname", filter.Process)
+	}
+	if filter.Subsystem != "" {
+		args = append(args, "--subsystem", filter.Subsystem)
+	}
+
+	var regexFilter *regexp.Regexp
+	if filter.Regex != "" {
+		var err error
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			return fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	cmd := exec.CommandContext(ctx, "pymobiledevice3", args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("pipe: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start syslog live: %w", err)
+	}
+
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		ll, ok := ParseIOSSyslogLine(scanner.Text())
+		if !ok {
+			continue
+		}
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		select {
+		case out <- ll:
+		case <-ctx.Done():
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return nil
+		}
+	}
+	_ = cmd.Wait()
+	return nil
 }
 
 // LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.

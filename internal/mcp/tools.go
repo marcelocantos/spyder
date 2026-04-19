@@ -20,12 +20,61 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
-	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/simemu"
 )
+
+// handleLogsRange returns log lines between since and until for a device.
+// Read-only; not subject to reservation checks.
+func (h *Handler) handleLogsRange(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+
+	filter := device.LogFilter{
+		Process:   optString(args, "process"),
+		Subsystem: optString(args, "subsystem"),
+		Tag:       optString(args, "tag"),
+		Regex:     optString(args, "regex"),
+	}
+
+	var since, until time.Time
+	if s := optString(args, "since"); s != "" {
+		t, err := time.Parse(time.RFC3339, s)
+		if err != nil {
+			return toolErr("since: invalid RFC3339 timestamp: %v", err)
+		}
+		since = t
+	}
+	if u := optString(args, "until"); u != "" {
+		t, err := time.Parse(time.RFC3339, u)
+		if err != nil {
+			return toolErr("until: invalid RFC3339 timestamp: %v", err)
+		}
+		until = t
+	}
+
+	h.mu.Lock()
+	adapter, _, id, adapterErr := h.resolveAdapter(dev)
+	h.mu.Unlock()
+
+	if adapterErr != nil {
+		return toolErr("%v", adapterErr)
+	}
+
+	lines, err := adapter.LogRange(id, filter, since, until)
+	if err != nil {
+		return toolErr("log range on %s: %v", dev, err)
+	}
+	if lines == nil {
+		lines = []device.LogLine{}
+	}
+	return toolJSON(lines)
+}
 
 func requireString(args map[string]any, key string) (string, error) {
 	v, ok := args[key].(string)
@@ -415,7 +464,6 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 			}
 		}
 	}
-
 
 	// Best-effort network clear: if this owner applied a network profile
 	// on this device, clear it on reservation release.  Errors are
@@ -963,6 +1011,7 @@ func sanitizeFilename(s string) string {
 
 // Compile-time check: recording.IsConflict must be callable.
 var _ = recording.IsConflict
+
 // validateAppPath rejects paths with ".." traversal components and
 // paths that do not exist. Returns the cleaned absolute path.
 func validateAppPath(path string) (string, error) {

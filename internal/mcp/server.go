@@ -16,8 +16,8 @@ import (
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
-	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
 )
@@ -110,6 +110,36 @@ func NewHandler(tun TunneldGate, opts ...HandlerOption) *Handler {
 	return h
 }
 
+// NewHandlerWithAdapters creates a handler with explicit adapter overrides.
+// Useful for tests that inject stub adapters without going through HandlerOption
+// indirection. Either ios or android may be nil to use the real adapter.
+func NewHandlerWithAdapters(tun TunneldGate, ios, android device.Adapter) *Handler {
+	h := &Handler{
+		inventory: inventory.New(),
+		ios:       device.NewIOSAdapter(),
+		android:   device.NewAndroidAdapter(),
+		tunneld:   tun,
+	}
+	if ios != nil {
+		h.ios = ios
+	}
+	if android != nil {
+		h.android = android
+	}
+	return h
+}
+
+// ResolveAdapterForStream exposes adapter resolution for the REST SSE
+// streaming endpoint. Returns the adapter and the platform-specific device
+// id. The caller must not hold h.mu when calling this; it acquires the lock
+// internally.
+func (h *Handler) ResolveAdapterForStream(dev string) (device.Adapter, string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	adapter, _, id, err := h.resolveAdapter(dev)
+	return adapter, id, err
+}
+
 // Dispatch routes a tool call by name to its handler.
 func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
 	switch name {
@@ -186,6 +216,8 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleRecordStop(args)
 	case "network":
 		return h.handleNetwork(args)
+	case "logs":
+		return h.handleLogsRange(args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -568,6 +600,35 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("clear",
 				mcpgo.Description("If true, clear the applied profile and restore full-speed connectivity. Mutually exclusive with profile."),
+			),
+		),
+
+		mcpgo.NewTool("logs",
+			mcpgo.WithDescription("Fetch log lines from a device between two timestamps. "+
+				"iOS uses pymobiledevice3 syslog live; Android uses adb logcat. "+
+				"For live streaming (--follow), use the REST SSE endpoint POST /api/v1/log_stream instead — "+
+				"MCP transport does not support streaming. Read-only."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID"),
+			),
+			mcpgo.WithString("since",
+				mcpgo.Description("Start timestamp (RFC3339, e.g. 2026-04-19T14:00:00Z). Defaults to recent output."),
+			),
+			mcpgo.WithString("until",
+				mcpgo.Description("End timestamp (RFC3339). Defaults to now."),
+			),
+			mcpgo.WithString("process",
+				mcpgo.Description("Filter by process name (iOS: --procname; Android: tag/process contains match)"),
+			),
+			mcpgo.WithString("subsystem",
+				mcpgo.Description("Filter by iOS subsystem (e.g. com.apple.networking). Ignored on Android."),
+			),
+			mcpgo.WithString("tag",
+				mcpgo.Description("Filter by Android logcat tag. Ignored on iOS."),
+			),
+			mcpgo.WithString("regex",
+				mcpgo.Description("Regular expression applied to the message body on both platforms."),
 			),
 		),
 	}

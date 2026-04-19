@@ -70,8 +70,9 @@ everything below plus gotchas, device-inventory format, and the full
 | `baselines_list` | List all stored baselines for a suite. |
 | `record_start` / `record_stop` | Start and stop a screen recording (mp4). iOS simulators via `xcrun simctl io recordVideo`; Android via `adb shell screenrecord`. **iOS physical devices are not supported** — use a simulator. |
 | `network` | Apply or clear network condition shaping. Android emulators only — see STABILITY.md for platform limits. |
+| `logs` | Fetch log lines between two timestamps. Filters: `process`, `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
 
-## REST API
+## REST API and live log streaming
 
 Every MCP tool is also exposed as plain HTTP+JSON on the same listener:
 
@@ -88,6 +89,18 @@ Responses are JSON-encoded `mcp.CallToolResult` objects
 (`{"content":[{"type":"text","text":"…"}], "isError":false}`).
 Image-bearing tools (`screenshot`) yield `type:"image"` with base64
 `data` + `mimeType`, identical to MCP.
+
+For live log tailing, use the SSE endpoint:
+
+```bash
+# Stream filtered log lines until Ctrl-C.
+curl -N -X POST http://127.0.0.1:3030/api/v1/log_stream \
+  -H 'Content-Type: application/json' \
+  -d '{"device":"Pippa","process":"MyApp","regex":"error"}'
+```
+
+Each SSE event is `data: <JSON LogLine>` on a single line, followed by a
+blank line. The stream runs until the client disconnects.
 
 Reservation state is shared between transports — an agent holding a
 reservation via MCP blocks a shell script hitting REST and vice versa.
