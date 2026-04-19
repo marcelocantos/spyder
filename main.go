@@ -256,8 +256,7 @@ func runCmd(args []string) {
 	runErr := child.Run()
 	exitCode := 0
 	if runErr != nil {
-		var ee *exec.ExitError
-		if errors.As(runErr, &ee) {
+		if ee, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			exitCode = ee.ExitCode()
 		} else {
 			fmt.Fprintf(os.Stderr, "spyder run: %v\n", runErr)

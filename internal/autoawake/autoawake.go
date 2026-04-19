@@ -302,14 +302,17 @@ func (s *Supervisor) isKeepAwakeInstalled(udid string) (bool, error) {
 
 // isKeepAwakeRunning resolves the PID of KeepAwake via DVT. A valid
 // PID means running; "app not running" is treated as false without
-// bubbling the error.
+// bubbling the error. Uses substring matches for the "->" / ":"
+// separators so bundle ids containing '-' (e.g. "com.foo-bar.baz")
+// aren't mis-parsed.
 func (s *Supervisor) isKeepAwakeRunning(udid string) (bool, error) {
 	cmd := exec.Command("pymobiledevice3", "developer", "dvt", "process-id-for-bundle-id",
 		device.KeepAwakeBundleID, "--udid", udid)
 	out, _ := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
-	// pymobiledevice3 formats the result variously; accept any trailing integer > 0.
-	if i := strings.LastIndexAny(text, " :->"); i >= 0 {
+	if i := strings.LastIndex(text, "->"); i >= 0 {
+		text = strings.TrimSpace(text[i+2:])
+	} else if i := strings.LastIndex(text, ":"); i >= 0 {
 		text = strings.TrimSpace(text[i+1:])
 	}
 	if pid, err := strconv.Atoi(text); err == nil && pid > 0 {
