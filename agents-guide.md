@@ -109,7 +109,7 @@ everything it can see.
 | `install_app` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | iOS: `xcrun devicectl device install app`; Android: `adb install -r`. |
 | `uninstall_app` | Remove an app by bundle id / package name. | iOS: `xcrun devicectl device uninstall app --bundle-identifier`; Android: `adb uninstall`. |
 | `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS needs tunneld for launch + pid-verify. Fail-fast on install error; "not running" from terminate is ignored. |
-| `reserve` | Acquire an exclusive device hold. | `{device, owner, ttl_seconds?, note?}`. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. |
+| `reserve` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Also stops any active recording owned by the releaser. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Any applied network profile is cleared automatically. |
 | `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
@@ -325,8 +325,117 @@ before mutating operations. Mutating tools (`keepawake`, `screenshot`,
 naming the holder if someone else is holding the device. Read tools
 (`devices`, `resolve`, `device_state`, `reservations`) are unaffected.
 
+### Literal device reservation
+
+Pin a specific device by alias or UUID:
+
 ```json
 {"name": "reserve", "arguments": {"device": "Pippa", "owner": "tiltbuggy", "ttl_seconds": 3600, "note": "UI regression run"}}
+```
+
+### Fuzzy reservation (selector)
+
+When you don't need a specific device — just *any* iOS iPad, or *any* Android
+phone with API ≥ 33 — pass a `selector` instead of `device`. The server
+resolves the selector against the live device set and inventory, picks the
+best available candidate, and returns a reservation bound to a concrete UUID.
+**The caller never has to know which device was picked.**
+
+#### Selector schema
+
+```json
+{
+  "platform":            "ios | android",          // required
+  "model_family":        "ipad | iphone | phone | tablet | ...",  // optional
+  "os_min":              "17.3",                   // optional, inclusive lower bound
+  "os_max":              "17.9",                   // optional, inclusive upper bound
+  "orientation_capable": true,                     // optional; requires sim/emu
+  "tags":                ["arm64", "ci"],           // optional; all must be present
+  "attrs":               {"env": "staging"}        // optional; exact key/value match
+}
+```
+
+`model_family` is matched case-insensitively against the `model` field returned
+by `spyder devices` and against the `tags` array on the inventory entry. This
+means you can add `"ipad"` to the `tags` of a physical iPad entry to make it
+participate in `model_family: ipad` selection.
+
+`orientation_capable` requires that the candidate supports programmatic
+rotation (i.e. is a simulator or emulator). Physical devices are excluded
+because rotation on physical hardware is a sensor, not a software-controlled
+feature.
+
+`tags` and `attrs` are matched against the inventory entry. Inventory entries
+can now carry these optional fields:
+
+```json
+{
+  "alias": "Pippa",
+  "platform": "ios",
+  "ios_uuid": "00008103-000D39301A6A201E",
+  "tags": ["ipad", "arm64"],
+  "attrs": {"env": "ci", "zone": "lab-a"}
+}
+```
+
+#### Resolution preference order
+
+1. **Idle physical device** matching all predicate fields.
+2. **Idle sim/emu** from the pool (🎯T24, not yet wired — skipped when pool unavailable).
+3. **Error** with structured near-miss detail (up to 3 near-misses, each naming the one predicate that failed).
+
+#### Worked examples
+
+iOS iPad (any):
+
+```json
+{"name": "reserve", "arguments": {
+  "selector": "{\"platform\":\"ios\",\"model_family\":\"ipad\"}",
+  "owner": "tiltbuggy"
+}}
+```
+
+Android phone with API ≥ 33:
+
+```json
+{"name": "reserve", "arguments": {
+  "selector": "{\"platform\":\"android\",\"model_family\":\"phone\",\"os_min\":\"33\"}",
+  "owner": "tiltbuggy"
+}}
+```
+
+iOS simulator only (for rotation tests):
+
+```json
+{"name": "reserve", "arguments": {
+  "selector": "{\"platform\":\"ios\",\"orientation_capable\":true}",
+  "owner": "tiltbuggy"
+}}
+```
+
+Device with CI-environment tag:
+
+```json
+{"name": "reserve", "arguments": {
+  "selector": "{\"platform\":\"ios\",\"tags\":[\"ci\"]}",
+  "owner": "tiltbuggy"
+}}
+```
+
+#### CLI
+
+```bash
+# Selector JSON
+spyder reserve --selector '{"platform":"ios","model_family":"ipad"}' --as tiltbuggy
+
+# Shorthand flags (equivalent)
+spyder reserve --platform ios --model ipad --as tiltbuggy
+
+# With tags
+spyder reserve --platform android --tag arm64 --tag ci --as tiltbuggy
+
+# Literal device (unchanged)
+spyder reserve Pippa --as tiltbuggy
 ```
 
 Agents don't *have* to reserve: if the device is free, mutating calls just

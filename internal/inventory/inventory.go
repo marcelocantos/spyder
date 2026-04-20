@@ -25,12 +25,14 @@ var standardUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f
 
 // Entry records a known device with its platform-specific identifiers.
 type Entry struct {
-	Alias         string `json:"alias"`
-	Platform      string `json:"platform"`                 // "ios" or "android"
-	IOSUUID       string `json:"ios_uuid,omitempty"`       // pymobiledevice3 / xctrace
-	IOSCoreDevice string `json:"ios_coredevice,omitempty"` // devicectl
-	AndroidSerial string `json:"android_serial,omitempty"` // adb
-	Notes         string `json:"notes,omitempty"`
+	Alias         string            `json:"alias"`
+	Platform      string            `json:"platform"`                 // "ios" or "android"
+	IOSUUID       string            `json:"ios_uuid,omitempty"`       // pymobiledevice3 / xctrace
+	IOSCoreDevice string            `json:"ios_coredevice,omitempty"` // devicectl
+	AndroidSerial string            `json:"android_serial,omitempty"` // adb
+	Notes         string            `json:"notes,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`  // free-form labels for selector matching
+	Attrs         map[string]string `json:"attrs,omitempty"` // key/value pairs for exact-match selector predicates
 }
 
 // Store holds the inventory, loaded lazily from disk.
@@ -90,6 +92,17 @@ func (s *Store) AliasFor(uuid string) string {
 		}
 	}
 	return ""
+}
+
+// Entries returns a snapshot of all inventory entries. Used by the
+// selector resolver to build the candidate list.
+func (s *Store) Entries() []Entry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	out := make([]Entry, len(s.entries))
+	copy(out, s.entries)
+	return out
 }
 
 func (s *Store) loadLocked() {

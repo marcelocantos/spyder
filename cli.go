@@ -56,7 +56,7 @@ func init() {
 		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
 		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
-		{"reserve", "spyder reserve <device> [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
+		{"reserve", "spyder reserve (<device>|--selector JSON|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
@@ -510,13 +510,78 @@ func runDeploy(args []string) {
 }
 
 func runReserve(args []string) {
-	pf, err := parseFlags(args, []string{"--as", "--ttl", "--note"}, nil)
+	// --tag may be repeated; parseFlags only handles single-value flags, so
+	// we pre-scan for --tag values before passing to parseFlags.
+	var tagValues []string
+	filteredArgs := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--tag" {
+			if i+1 >= len(args) {
+				fatalUsage("reserve", fmt.Errorf("--tag requires a value"))
+			}
+			tagValues = append(tagValues, args[i+1])
+			i++
+			continue
+		}
+		filteredArgs = append(filteredArgs, args[i])
+	}
+
+	pf, err := parseFlags(filteredArgs,
+		[]string{"--as", "--ttl", "--note", "--selector", "--platform", "--model"},
+		nil,
+	)
 	if err != nil {
 		fatalUsage("reserve", err)
 	}
-	requirePositional("reserve", pf, 1)
-	a := map[string]any{"device": pf.positional[0]}
+
+	a := map[string]any{}
 	a["owner"] = deriveOwner(pf.flags["--as"])
+
+	// Determine reservation target: positional device, --selector, or shorthand flags.
+	selectorJSON := pf.flags["--selector"]
+	platform := pf.flags["--platform"]
+	model := pf.flags["--model"]
+
+	literalDevice := ""
+	if len(pf.positional) > 0 {
+		literalDevice = pf.positional[0]
+	}
+
+	switch {
+	case literalDevice != "" && (selectorJSON != "" || platform != "" || len(tagValues) > 0 || model != ""):
+		fatalUsage("reserve", fmt.Errorf("supply either a positional device or selector flags, not both"))
+
+	case selectorJSON != "" && (platform != "" || len(tagValues) > 0 || model != ""):
+		fatalUsage("reserve", fmt.Errorf("--selector and shorthand flags (--platform, --model, --tag) are mutually exclusive"))
+
+	case literalDevice != "":
+		a["device"] = literalDevice
+
+	case selectorJSON != "":
+		a["selector"] = selectorJSON
+
+	case platform != "" || len(tagValues) > 0 || model != "":
+		// Build selector JSON from shorthand flags.
+		if platform == "" {
+			fatalUsage("reserve", fmt.Errorf("--platform is required when using selector shorthand flags"))
+		}
+		sel := map[string]any{"platform": platform}
+		if model != "" {
+			sel["model_family"] = model
+		}
+		if len(tagValues) > 0 {
+			sel["tags"] = tagValues
+		}
+		selBytes, merr := json.Marshal(sel)
+		if merr != nil {
+			fatalUsage("reserve", fmt.Errorf("building selector: %v", merr))
+		}
+		a["selector"] = string(selBytes)
+
+	default:
+		fatalUsage("reserve", fmt.Errorf("supply a device (positional) or --selector/--platform"))
+	}
+
 	if v := pf.flags["--ttl"]; v != "" {
 		n, perr := parsePositiveInt(v)
 		if perr != nil {

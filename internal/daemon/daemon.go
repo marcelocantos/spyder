@@ -26,6 +26,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/inventory"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
+	"github.com/marcelocantos/spyder/internal/pool"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
@@ -155,6 +156,18 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 		blsStore = nil
 	}
 
+	// Build the sim/emu pool if pool.yaml exists. Missing file is not an error
+	// — the pool tools return a clear "not configured" message instead.
+	var poolInst *pool.Pool
+	poolCfgPath := paths.PoolConfigPath()
+	if poolCfg, poolErr := pool.LoadConfig(poolCfgPath); poolErr == nil {
+		poolInst = pool.New(poolCfg, pool.RealExecutor{})
+		slog.Info("pool configured", "templates", len(poolCfg.Templates), "path", poolCfgPath)
+	} else if !errors.Is(poolErr, os.ErrNotExist) {
+		slog.Warn("pool config invalid — pool disabled",
+			"path", poolCfgPath, "error", poolErr)
+	}
+
 	handlerOpts := []spydermcp.HandlerOption{
 		spydermcp.WithInventory(invStore),
 	}
@@ -167,7 +180,19 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 	if blsStore != nil {
 		handlerOpts = append(handlerOpts, spydermcp.WithBaselines(blsStore))
 	}
+	if poolInst != nil {
+		handlerOpts = append(handlerOpts, spydermcp.WithPoolManager(poolInst))
+	}
 	handler := spydermcp.NewHandler(tunClient, handlerOpts...)
+
+	// Kick off pool reconciliation in the background so startup latency
+	// stays low even when creating/booting sims takes tens of seconds.
+	if poolInst != nil {
+		go func() {
+			poolInst.Reconcile(context.Background())
+			slog.Info("pool: initial reconcile complete")
+		}()
+	}
 
 	for _, tool := range spydermcp.Definitions() {
 		toolName := tool.Name
@@ -196,6 +221,11 @@ func runsPolicyFromEnv() runs.Policy {
 		p.MaxSize = int64(gb) * 1024 * 1024 * 1024
 	}
 	return p
+}
+
+// isNotExist returns true when err wraps os.ErrNotExist (file not found).
+func isNotExist(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func envInt(key string, fallback int) int {
