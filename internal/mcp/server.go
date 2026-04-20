@@ -20,6 +20,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/selector"
 )
 
 // appliedNetwork tracks a network profile applied to a device by a
@@ -27,6 +28,17 @@ import (
 type appliedNetwork struct {
 	profile network.NetworkProfile
 	owner   string
+}
+
+// PoolManager is the management interface for the sim/emu pool (🎯T24).
+// Satisfied by *pool.Pool via the poolManagerAdapter wrapper in daemon.go.
+// Using any for Status avoids importing pool from mcp (mcp is already a
+// large fan-out package; keeping it pool-agnostic is cleaner).
+type PoolManager interface {
+	// PoolStatus returns a JSON-serialisable snapshot of all templates.
+	PoolStatus() any
+	PoolWarm(template string, n int) error
+	PoolDrain(template string) error
 }
 
 // Handler implements the spyder tool handler.
@@ -40,7 +52,9 @@ type Handler struct {
 	runs         *runs.Store
 	bls          *baselines.Store
 	recordings   *recording.Registry
-	runsBaseDir  string // base dir for active-run temp files; empty = os.TempDir()
+	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
+	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
+	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -90,6 +104,21 @@ func WithBaselines(s *baselines.Store) HandlerOption {
 // Defaults to os.TempDir() when empty.
 func WithRunsBaseDir(dir string) HandlerOption {
 	return func(h *Handler) { h.runsBaseDir = dir }
+}
+
+// WithPoolResolver injects the sim/emu pool resolver used by the selector
+// when no physical device matches (🎯T23 hook). When nil (the
+// default) the pool step is skipped and selector resolution fails if no
+// physical candidate matches.
+func WithPoolResolver(p selector.PoolResolver) HandlerOption {
+	return func(h *Handler) { h.pool = p }
+}
+
+// WithPoolManager injects the sim/emu pool manager for pool_list/warm/drain
+// tools (🎯T24). When nil, pool management tools return a "pool not
+// configured" error.
+func WithPoolManager(pm PoolManager) HandlerOption {
+	return func(h *Handler) { h.poolMgr = pm }
 }
 
 // NewHandler creates a new spyder tool handler. tun may be nil for
@@ -218,6 +247,13 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleNetwork(args)
 	case "logs":
 		return h.handleLogsRange(args)
+	// --- pool tools (🎯T24) -----------------------------------------------
+	case "pool_list":
+		return h.handlePoolList(args)
+	case "pool_warm":
+		return h.handlePoolWarm(args)
+	case "pool_drain":
+		return h.handlePoolDrain(args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -364,10 +400,12 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("reserve",
-			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (keepawake, screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place."),
+			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (keepawake, screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked."),
 			mcpgo.WithString("device",
-				mcpgo.Required(),
-				mcpgo.Description("Device alias or UUID"),
+				mcpgo.Description("Device alias or UUID (literal pin; mutually exclusive with selector)"),
+			),
+			mcpgo.WithString("selector",
+				mcpgo.Description("JSON selector predicate for fuzzy device matching (mutually exclusive with device). Fields: platform (required), model_family, os_min, os_max, orientation_capable, tags (array), attrs (object). Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}"),
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Required(),
@@ -629,6 +667,32 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("regex",
 				mcpgo.Description("Regular expression applied to the message body on both platforms."),
+			),
+		),
+
+		// ---- sim/emu pool tools ------------------------------------------
+
+		mcpgo.NewTool("pool_list",
+			mcpgo.WithDescription("List the current state of all pool templates — how many sim/emu instances are in the available, running, and reserved tiers. Read-only; does not trigger any lifecycle actions."),
+		),
+
+		mcpgo.NewTool("pool_warm",
+			mcpgo.WithDescription("Force pre-boot N additional instances for a pool template, transitioning them from available to running tier so they are ready for near-instant acquisition."),
+			mcpgo.WithString("template",
+				mcpgo.Required(),
+				mcpgo.Description("Pool template name as declared in ~/.spyder/pool.yaml"),
+			),
+			mcpgo.WithNumber("count",
+				mcpgo.Required(),
+				mcpgo.Description("Number of additional instances to pre-boot"),
+			),
+		),
+
+		mcpgo.NewTool("pool_drain",
+			mcpgo.WithDescription("Shut down and delete all idle (available and running) instances for a pool template. Reserved instances are force-terminated first. Use this to reclaim disk/memory, then pool_warm to refill."),
+			mcpgo.WithString("template",
+				mcpgo.Required(),
+				mcpgo.Description("Pool template name as declared in ~/.spyder/pool.yaml"),
 			),
 		),
 	}

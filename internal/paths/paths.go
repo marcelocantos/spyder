@@ -38,3 +38,9 @@ func RunsBase() string {
 func BaselinesBase() string {
 	return filepath.Join(Base(), "baselines")
 }
+
+// PoolConfigPath returns the path to the sim/emu pool catalogue
+// (~/.spyder/pool.yaml).
+func PoolConfigPath() string {
+	return filepath.Join(Base(), "pool.yaml")
+}

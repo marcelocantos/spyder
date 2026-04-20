@@ -56,7 +56,7 @@ func init() {
 		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
 		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
-		{"reserve", "spyder reserve <device> [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
+		{"reserve", "spyder reserve (<device>|--selector JSON|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
@@ -68,6 +68,7 @@ func init() {
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
 		{"log", "spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow]", runLog},
+		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 	}
 }
 
@@ -510,13 +511,78 @@ func runDeploy(args []string) {
 }
 
 func runReserve(args []string) {
-	pf, err := parseFlags(args, []string{"--as", "--ttl", "--note"}, nil)
+	// --tag may be repeated; parseFlags only handles single-value flags, so
+	// we pre-scan for --tag values before passing to parseFlags.
+	var tagValues []string
+	filteredArgs := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--tag" {
+			if i+1 >= len(args) {
+				fatalUsage("reserve", fmt.Errorf("--tag requires a value"))
+			}
+			tagValues = append(tagValues, args[i+1])
+			i++
+			continue
+		}
+		filteredArgs = append(filteredArgs, args[i])
+	}
+
+	pf, err := parseFlags(filteredArgs,
+		[]string{"--as", "--ttl", "--note", "--selector", "--platform", "--model"},
+		nil,
+	)
 	if err != nil {
 		fatalUsage("reserve", err)
 	}
-	requirePositional("reserve", pf, 1)
-	a := map[string]any{"device": pf.positional[0]}
+
+	a := map[string]any{}
 	a["owner"] = deriveOwner(pf.flags["--as"])
+
+	// Determine reservation target: positional device, --selector, or shorthand flags.
+	selectorJSON := pf.flags["--selector"]
+	platform := pf.flags["--platform"]
+	model := pf.flags["--model"]
+
+	literalDevice := ""
+	if len(pf.positional) > 0 {
+		literalDevice = pf.positional[0]
+	}
+
+	switch {
+	case literalDevice != "" && (selectorJSON != "" || platform != "" || len(tagValues) > 0 || model != ""):
+		fatalUsage("reserve", fmt.Errorf("supply either a positional device or selector flags, not both"))
+
+	case selectorJSON != "" && (platform != "" || len(tagValues) > 0 || model != ""):
+		fatalUsage("reserve", fmt.Errorf("--selector and shorthand flags (--platform, --model, --tag) are mutually exclusive"))
+
+	case literalDevice != "":
+		a["device"] = literalDevice
+
+	case selectorJSON != "":
+		a["selector"] = selectorJSON
+
+	case platform != "" || len(tagValues) > 0 || model != "":
+		// Build selector JSON from shorthand flags.
+		if platform == "" {
+			fatalUsage("reserve", fmt.Errorf("--platform is required when using selector shorthand flags"))
+		}
+		sel := map[string]any{"platform": platform}
+		if model != "" {
+			sel["model_family"] = model
+		}
+		if len(tagValues) > 0 {
+			sel["tags"] = tagValues
+		}
+		selBytes, merr := json.Marshal(sel)
+		if merr != nil {
+			fatalUsage("reserve", fmt.Errorf("building selector: %v", merr))
+		}
+		a["selector"] = string(selBytes)
+
+	default:
+		fatalUsage("reserve", fmt.Errorf("supply a device (positional) or --selector/--platform"))
+	}
+
 	if v := pf.flags["--ttl"]; v != "" {
 		n, perr := parsePositiveInt(v)
 		if perr != nil {
@@ -1051,6 +1117,65 @@ func streamSSELog(body map[string]any, jsonMode bool) {
 		fmt.Fprintf(os.Stderr, "spyder log: read: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// --- pool subcommands -----------------------------------------------
+
+// runPool dispatches `spyder pool <subcommand>` for sim/emu pool management.
+func runPool(args []string) {
+	if len(args) == 0 {
+		fatalUsage("pool", fmt.Errorf("missing subcommand — expected list|warm|drain"))
+	}
+	switch args[0] {
+	case "list":
+		runPoolList(args[1:])
+	case "warm":
+		runPoolWarm(args[1:])
+	case "drain":
+		runPoolDrain(args[1:])
+	default:
+		fatalUsage("pool", fmt.Errorf("unknown subcommand %q — expected list|warm|drain", args[0]))
+	}
+}
+
+func runPoolList(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("pool", err)
+	}
+	dispatchAndExit("pool_list", map[string]any{}, pf.bools["--json"])
+}
+
+func runPoolWarm(args []string) {
+	pf, err := parseFlags(args, []string{"--count"}, nil)
+	if err != nil {
+		fatalUsage("pool", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("pool", fmt.Errorf("warm: expected <template>"))
+	}
+	a := map[string]any{"template": pf.positional[0]}
+	countStr := pf.flags["--count"]
+	if countStr == "" {
+		countStr = "1"
+	}
+	n, perr := parsePositiveInt(countStr)
+	if perr != nil {
+		fatalUsage("pool", fmt.Errorf("--count: %v", perr))
+	}
+	a["count"] = n
+	dispatchAndExit("pool_warm", a, false)
+}
+
+func runPoolDrain(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("pool", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("pool", fmt.Errorf("drain: expected <template>"))
+	}
+	dispatchAndExit("pool_drain", map[string]any{"template": pf.positional[0]}, false)
 }
 
 // --- helpers --------------------------------------------------------

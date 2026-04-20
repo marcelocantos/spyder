@@ -63,7 +63,7 @@ everything below plus gotchas, device-inventory format, and the full
 | `install_app` | Install a .app/.ipa (iOS) or .apk (Android) on a device. |
 | `uninstall_app` | Remove an app by bundle id / package name. |
 | `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. |
-| `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. |
+| `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. `reserve` accepts a literal `device` pin or a `selector` JSON predicate for fuzzy matching — see [agents-guide.md](agents-guide.md#fuzzy-reservation-selector). |
 | `runs_list` / `runs_show` | Inspect per-reservation artefact bundles under `~/.spyder/runs/`. |
 | `baseline_update` | Store a reference screenshot (and optional UI manifest) as a visual baseline. |
 | `diff` | Compare a candidate screenshot against the stored baseline. Returns pixel RMS error, manifest structural diff (added/removed/moved elements with bounding boxes), and a pass/fail verdict. |

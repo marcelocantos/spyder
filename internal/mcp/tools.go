@@ -24,6 +24,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/selector"
 	"github.com/marcelocantos/spyder/internal/simemu"
 )
 
@@ -391,13 +392,158 @@ func (h *Handler) authorize(dev, owner string) *mcpgo.CallToolResult {
 
 // --- reservation tools -------------------------------------------------
 
+// resolveReserveDevice resolves the concrete device reference from the
+// reserve args. Returns the canonical device string (alias or UUID) to
+// pass to Acquire, or an error result when args are invalid.
+func (h *Handler) resolveReserveDevice(args map[string]any) (string, *mcpgo.CallToolResult) {
+	devStr := optString(args, "device")
+	selRaw := optString(args, "selector")
+
+	if devStr != "" && selRaw != "" {
+		res, _ := toolErr("reserve: supply either device or selector, not both")
+		return "", res
+	}
+	if devStr == "" && selRaw == "" {
+		res, _ := toolErr("reserve: one of device or selector is required")
+		return "", res
+	}
+
+	if devStr != "" {
+		return devStr, nil
+	}
+
+	// Parse selector JSON.
+	var sel selector.Selector
+	if err := json.Unmarshal([]byte(selRaw), &sel); err != nil {
+		res, _ := toolErr("reserve: invalid selector JSON: %v", err)
+		return "", res
+	}
+	if sel.Platform == "" {
+		res, _ := toolErr("reserve: selector.platform is required")
+		return "", res
+	}
+
+	// Build candidate list from live devices + inventory entries.
+	candidates := h.buildCandidates(sel.Platform)
+
+	info, err := selector.Resolve(sel, candidates, h.pool)
+	if err != nil {
+		res, _ := toolErr("reserve: %v", err)
+		return "", res
+	}
+
+	// Determine the canonical reference: alias if known, else UUID.
+	if alias := h.inventory.AliasFor(info.UUID); alias != "" {
+		return alias, nil
+	}
+	return info.UUID, nil
+}
+
+// buildCandidates assembles a []selector.Candidate from the live device
+// set (for the given platform) combined with inventory entries.
+// Errors from List() are silently dropped — we use whatever is available.
+func (h *Handler) buildCandidates(platform string) []selector.Candidate {
+	// Fetch live device list.
+	var liveDevices []device.Info
+	fetchForPlatform := func(p string, adapter device.Adapter) {
+		if platform != "all" && !strings.EqualFold(p, platform) {
+			return
+		}
+		ds, err := adapter.List()
+		if err != nil {
+			return
+		}
+		liveDevices = append(liveDevices, ds...)
+	}
+	fetchForPlatform("ios", h.ios)
+	fetchForPlatform("android", h.android)
+
+	// Index inventory entries by UUID for quick join.
+	entries := h.inventory.Entries()
+	entryByUUID := make(map[string]inventory.Entry, len(entries))
+	for _, e := range entries {
+		if e.IOSUUID != "" {
+			entryByUUID[e.IOSUUID] = e
+		}
+		if e.IOSCoreDevice != "" {
+			entryByUUID[e.IOSCoreDevice] = e
+		}
+		if e.AndroidSerial != "" {
+			entryByUUID[e.AndroidSerial] = e
+		}
+	}
+
+	var candidates []selector.Candidate
+	for _, info := range liveDevices {
+		e := entryByUUID[info.UUID]
+		// Annotate alias from inventory.
+		if info.Alias == "" && e.Alias != "" {
+			info.Alias = e.Alias
+		}
+		isSimOrEmu := isSimulatorOrEmulator(info)
+		isReserved := false
+		if h.reservations != nil {
+			ref := info.UUID
+			if info.Alias != "" {
+				ref = info.Alias
+			}
+			_, isReserved = h.reservations.Get(ref)
+		}
+		candidates = append(candidates, selector.Candidate{
+			Info:       info,
+			Entry:      e,
+			IsSimOrEmu: isSimOrEmu,
+			IsReserved: isReserved,
+		})
+	}
+	return candidates
+}
+
+// isSimulatorOrEmulator returns true when the device's UUID or model
+// suggests it is a simulator or emulator (not a physical device).
+//
+// Heuristics:
+//   - iOS: simctl UDIDs are standard UUIDs (8-4-4-4-12 hex). Physical iOS
+//     hardware UDIDs have the form XXXXXXXX-XXXXXXXXXXXXXXXX (8 then 16 hex).
+//   - Android: emulator serials start with "emulator-".
+func isSimulatorOrEmulator(info device.Info) bool {
+	switch strings.ToLower(info.Platform) {
+	case "ios":
+		// Standard UUID → simulator. iOS hardware UDID has 8+16 hex groups.
+		return looksLikeStandardUUID(info.UUID)
+	case "android":
+		return strings.HasPrefix(strings.ToLower(info.UUID), "emulator-")
+	}
+	return false
+}
+
+// looksLikeStandardUUID returns true when s matches the 8-4-4-4-12 hex UUID form.
+func looksLikeStandardUUID(s string) bool {
+	// Quick length check: 8+1+4+1+4+1+4+1+12 = 36.
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return false
+			}
+		} else if !isHexRune(c) {
+			return false
+		}
+	}
+	return true
+}
+
+func isHexRune(r rune) bool {
+	return (r >= '0' && r <= '9') ||
+		(r >= 'a' && r <= 'f') ||
+		(r >= 'A' && r <= 'F')
+}
+
 func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, error) {
 	if h.reservations == nil {
 		return toolErr("reservations not configured on this server")
-	}
-	dev, err := requireString(args, "device")
-	if err != nil {
-		return nil, err
 	}
 	owner, err := requireString(args, "owner")
 	if err != nil {
@@ -405,6 +551,13 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 	}
 	ttl := time.Duration(optNumber(args, "ttl_seconds")) * time.Second
 	note := optString(args, "note")
+
+	h.mu.Lock()
+	dev, errRes := h.resolveReserveDevice(args)
+	h.mu.Unlock()
+	if errRes != nil {
+		return errRes, nil
+	}
 
 	r, err := h.reservations.Acquire(dev, owner, ttl, note)
 	if err != nil {
@@ -1246,3 +1399,47 @@ func androidBundleIDFromAPK(apkPath string) (string, error) {
 
 // Compile-time assertion that errors package is imported (for build).
 var _ = errors.New
+
+// --------------------------------------------------------------------------
+// Pool tools (🎯T24)
+// --------------------------------------------------------------------------
+
+func (h *Handler) handlePoolList(_ map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.poolMgr == nil {
+		return toolErr("pool not configured — create ~/.spyder/pool.yaml and restart the daemon")
+	}
+	return toolJSON(h.poolMgr.PoolStatus())
+}
+
+func (h *Handler) handlePoolWarm(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.poolMgr == nil {
+		return toolErr("pool not configured — create ~/.spyder/pool.yaml and restart the daemon")
+	}
+	tmpl, err := requireString(args, "template")
+	if err != nil {
+		return nil, err
+	}
+	countRaw, _ := args["count"].(float64)
+	count := int(countRaw)
+	if count <= 0 {
+		return toolErr("count must be a positive integer")
+	}
+	if err := h.poolMgr.PoolWarm(tmpl, count); err != nil {
+		return toolErr("pool warm %q: %v", tmpl, err)
+	}
+	return toolText(fmt.Sprintf("warming %d instance(s) for template %q", count, tmpl))
+}
+
+func (h *Handler) handlePoolDrain(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.poolMgr == nil {
+		return toolErr("pool not configured — create ~/.spyder/pool.yaml and restart the daemon")
+	}
+	tmpl, err := requireString(args, "template")
+	if err != nil {
+		return nil, err
+	}
+	if err := h.poolMgr.PoolDrain(tmpl); err != nil {
+		return toolErr("pool drain %q: %v", tmpl, err)
+	}
+	return toolText(fmt.Sprintf("drained all idle instances for template %q", tmpl))
+}

@@ -38,7 +38,7 @@ Snapshot as of `v0.5.0`.
 | `install_app` | `{device: string, path: string, owner?: string}` (device and path required). Path must not contain `..` and must exist. | Text confirmation. | Stable |
 | `uninstall_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required). | Text confirmation. | Stable |
 | `deploy_app` | `{device: string, path: string, bundle_id?: string, owner?: string}` (device and path required). `bundle_id` derived from Info.plist (iOS) or `aapt dump badging` (Android) if omitted. | JSON `{bundle_id: string, pid: number}`. | Stable |
-| `reserve` | `{device: string, owner: string, ttl_seconds?: number, note?: string}` (device and owner required). | JSON-encoded `reservations.Reservation` (device, owner, expires_at, note, created_at). | Stable |
+| `reserve` | `{device?: string, selector?: string, owner: string, ttl_seconds?: number, note?: string}`. Exactly one of device (literal pin) or selector (JSON predicate: platform, model_family?, os_min?, os_max?, orientation_capable?, tags?, attrs?) required. owner is always required. | JSON-encoded `reservations.Reservation` (device, owner, expires_at, note, created_at). | Needs review — selector grammar may evolve |
 | `release` | `{device: string, owner: string}`. | Text confirmation. Applied network profiles cleared automatically. | Stable |
 | `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
 | `reservations` | (no args). | JSON array of active `Reservation` records. | Stable |
@@ -89,7 +89,7 @@ can match on these phrases.
 | `spyder install <device> <path> [--as OWNER]` | REST proxy to `install_app`. | Stable |
 | `spyder uninstall <device> <bundle-id> [--as OWNER]` | REST proxy to `uninstall_app`. | Stable |
 | `spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]` | REST proxy to `deploy_app`. Derives bundle id from Info.plist (iOS) or `aapt` (Android) when `--bundle-id` is omitted. | Stable |
-| `spyder reserve <device> [--as OWNER] [--ttl SECONDS] [--note TEXT]` | REST proxy to `reserve`. | Stable |
+| `spyder reserve (<device>\|--selector JSON\|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]` | REST proxy to `reserve`. Positional device = literal pin. `--selector` = JSON predicate. Shorthand `--platform`/`--model`/`--tag` flags build the selector inline. | Needs review — selector grammar may evolve |
 | `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
 | `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |
 | `spyder reservations [--json]` | REST proxy to `reservations`. | Stable |
@@ -181,12 +181,16 @@ records:
   "ios_uuid": "string (optional)",
   "ios_coredevice": "string (optional)",
   "android_serial": "string (optional)",
-  "notes": "string (optional)"
+  "notes": "string (optional)",
+  "tags": ["string", ...],           // optional; labels for selector matching
+  "attrs": {"key": "value", ...}     // optional; exact-match key/value predicates
 }
 ```
 
 Missing file is treated as empty, not an error. Alias lookup is
-case-insensitive. **Stable.**
+case-insensitive. `tags` and `attrs` are backwards-compatible: absent
+fields load as nil/empty and old clients ignore the new fields. **Stable
+(core fields); Needs review (tags/attrs — grammar may evolve with selector).**
 
 ### Run-artefact store
 

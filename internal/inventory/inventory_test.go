@@ -4,6 +4,7 @@
 package inventory
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -103,6 +104,74 @@ func TestMissingInventory_IsEmpty(t *testing.T) {
 	}
 	if got := s.AliasFor("00008103-000D39301A6A201E"); got != "" {
 		t.Errorf("AliasFor on missing inventory = %q; want empty", got)
+	}
+}
+
+// TestEntryTagsAttrs_JSONRoundTrip verifies that Tags and Attrs
+// survive a JSON encode/decode cycle and that inventory entries without
+// these fields (i.e. old-format files) load cleanly with nil/empty values.
+func TestEntryTagsAttrs_JSONRoundTrip(t *testing.T) {
+	const withTagsAttrs = `[
+	  {
+	    "alias": "Pippa",
+	    "platform": "ios",
+	    "ios_uuid": "00008103-000D39301A6A201E",
+	    "tags": ["ipad", "arm64"],
+	    "attrs": {"env": "ci", "zone": "lab-a"}
+	  }
+	]`
+	var entries []Entry
+	if err := json.Unmarshal([]byte(withTagsAttrs), &entries); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	e := entries[0]
+	if len(e.Tags) != 2 {
+		t.Errorf("Tags: got %v; want [ipad arm64]", e.Tags)
+	}
+	if e.Attrs["env"] != "ci" || e.Attrs["zone"] != "lab-a" {
+		t.Errorf("Attrs: got %v", e.Attrs)
+	}
+
+	// Round-trip: marshal back and compare key fields.
+	data, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var entries2 []Entry
+	if err := json.Unmarshal(data, &entries2); err != nil {
+		t.Fatalf("unmarshal round-trip: %v", err)
+	}
+	e2 := entries2[0]
+	if e2.Tags[0] != "ipad" || e2.Attrs["env"] != "ci" {
+		t.Errorf("round-trip mismatch: %+v", e2)
+	}
+}
+
+// TestEntryTagsAttrs_BackwardsCompat verifies that old inventory entries
+// (without tags/attrs) load without errors and have nil/empty values.
+func TestEntryTagsAttrs_BackwardsCompat(t *testing.T) {
+	s := withInventory(t, sampleInventory)
+	entry, ok := s.Lookup("Pippa")
+	if !ok {
+		t.Fatal("Pippa not found")
+	}
+	if entry.Tags != nil {
+		t.Errorf("old entry should have nil Tags; got %v", entry.Tags)
+	}
+	if entry.Attrs != nil {
+		t.Errorf("old entry should have nil Attrs; got %v", entry.Attrs)
+	}
+}
+
+// TestStore_Entries returns all entries from the store.
+func TestStore_Entries(t *testing.T) {
+	s := withInventory(t, sampleInventory)
+	entries := s.Entries()
+	if len(entries) != 2 {
+		t.Errorf("Entries() returned %d entries; want 2", len(entries))
 	}
 }
 
