@@ -129,6 +129,106 @@ everything it can see.
 | `emu_boot` | Start an Android emulator (headless). Appears in `devices` once fully booted (~30–90 s). | `{name}`. Returns the serial once the process is launched. |
 | `emu_shutdown` | Shut down an Android emulator by serial (e.g. `emulator-5554`). | `{serial}`. Sends `adb emu kill`. |
 | `emu_delete` | Delete an AVD by name. | `{name}`. Irreversible. |
+| `pool_list` | Current pool state for all templates (available/running/reserved counts per template). | Read-only. Pool must be configured via `~/.spyder/pool.yaml`. |
+| `pool_warm` | Force pre-boot N additional instances for a template. | `{template, count}`. Moves instances from available to running tier. |
+| `pool_drain` | Shut down and delete all idle instances for a template. | `{template}`. Reserved instances are terminated first. |
+
+## Sim/emu pool
+
+The pool manages a collection of pre-created and optionally pre-booted
+sim/emu instances so that test runs get a clean device in milliseconds
+rather than seconds.
+
+**Client API is minimal by design.** Agents only call `reserve`/`release`.
+The pool handles all lifecycle decisions: linger timing, warm-pool sizing,
+mint vs. reuse, and shutdown scheduling. No per-reservation knobs.
+
+### Configuring the pool
+
+Create `~/.spyder/pool.yaml`:
+
+```yaml
+templates:
+  - name: iphone16
+    platform: ios
+    device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+    runtime_or_system_image: com.apple.CoreSimulator.SimRuntime.iOS-18-3
+    tags: [ci, ios, iphone]
+    available_min: 2      # always keep ≥ 2 created on disk
+    available_max: 4      # never keep > 4 shutdown instances
+    running_warm: 1       # keep 1 pre-booted and idle
+    linger_seconds: 120   # keep running for 2 min after release
+
+  - name: pixel9
+    platform: android
+    # device_type is the AVD template name for Android (used as clone source)
+    device_type: Pixel9_API35_template
+    runtime_or_system_image: "system-images;android-35;google_apis;arm64-v8a"
+    tags: [ci, android, phone]
+    available_min: 1
+    available_max: 3
+    running_warm: 0
+    linger_seconds: 60
+```
+
+Restart the daemon after creating or modifying `pool.yaml`. The daemon
+reconciles on startup (background goroutine; startup is non-blocking).
+
+**Global linger override**: set `SPYDER_POOL_LINGER_SECONDS` in the
+environment to override the default (120 s) for all templates that don't
+have a per-template `linger_seconds` value.
+
+### Readiness tiers
+
+| Tier | State | Acquisition latency |
+|---|---|---|
+| `running` | Booted, idle | ~milliseconds (OS already warm) |
+| `available` | Created on disk, not booted | ~5–30 s (simctl/emulator boot) |
+| `reserved` | Handed off to a caller | — |
+
+On `Acquire`, the pool prefers `running` → boots an `available` → mints a
+new one. On `Release`, the instance stays in `running` for the linger period
+so the next `Acquire` in the window gets near-instant handoff. After linger
+expires, the instance transitions to `available` (shutdown, disk kept) unless
+the `available` tier is at cap — in which case it is deleted.
+
+### Pool tools
+
+```bash
+# Inspect the current pool state.
+spyder pool list
+
+# Pre-boot 2 extra instances for a template.
+spyder pool warm iphone16 --count 2
+
+# Drain all idle instances for a template (reclaim disk/memory).
+spyder pool drain iphone16
+```
+
+Via MCP:
+
+```json
+{"name": "pool_list", "arguments": {}}
+{"name": "pool_warm", "arguments": {"template": "iphone16", "count": 2}}
+{"name": "pool_drain", "arguments": {"template": "pixel9"}}
+```
+
+### Android AVD cloning
+
+Each Android pool instance is cloned from the `device_type` AVD template:
+
+1. `~/.android/avd/<template>.avd/` → `~/.android/avd/<clone>.avd/`
+2. `~/.android/avd/<template>.ini` → `~/.android/avd/<clone>.ini` (path= rewritten)
+3. `config.ini` AvdId / displayname rewritten to the clone name.
+
+The template AVD must be created manually with `avdmanager create avd`. The
+pool never modifies the template; it only reads from it.
+
+### iOS simulator cloning
+
+Each iOS pool instance is a fresh `xcrun simctl create` from the same
+`device_type` + `runtime_or_system_image`. This gives a clean, independent
+UDID each time. There is no template AVD to pre-create for iOS.
 
 ## Simulator and emulator lifecycle
 
