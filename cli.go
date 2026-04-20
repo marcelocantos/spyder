@@ -68,6 +68,7 @@ func init() {
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
 		{"log", "spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow]", runLog},
+		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 	}
 }
 
@@ -1116,6 +1117,65 @@ func streamSSELog(body map[string]any, jsonMode bool) {
 		fmt.Fprintf(os.Stderr, "spyder log: read: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// --- pool subcommands -----------------------------------------------
+
+// runPool dispatches `spyder pool <subcommand>` for sim/emu pool management.
+func runPool(args []string) {
+	if len(args) == 0 {
+		fatalUsage("pool", fmt.Errorf("missing subcommand — expected list|warm|drain"))
+	}
+	switch args[0] {
+	case "list":
+		runPoolList(args[1:])
+	case "warm":
+		runPoolWarm(args[1:])
+	case "drain":
+		runPoolDrain(args[1:])
+	default:
+		fatalUsage("pool", fmt.Errorf("unknown subcommand %q — expected list|warm|drain", args[0]))
+	}
+}
+
+func runPoolList(args []string) {
+	pf, err := parseFlags(args, nil, []string{"--json"})
+	if err != nil {
+		fatalUsage("pool", err)
+	}
+	dispatchAndExit("pool_list", map[string]any{}, pf.bools["--json"])
+}
+
+func runPoolWarm(args []string) {
+	pf, err := parseFlags(args, []string{"--count"}, nil)
+	if err != nil {
+		fatalUsage("pool", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("pool", fmt.Errorf("warm: expected <template>"))
+	}
+	a := map[string]any{"template": pf.positional[0]}
+	countStr := pf.flags["--count"]
+	if countStr == "" {
+		countStr = "1"
+	}
+	n, perr := parsePositiveInt(countStr)
+	if perr != nil {
+		fatalUsage("pool", fmt.Errorf("--count: %v", perr))
+	}
+	a["count"] = n
+	dispatchAndExit("pool_warm", a, false)
+}
+
+func runPoolDrain(args []string) {
+	pf, err := parseFlags(args, nil, nil)
+	if err != nil {
+		fatalUsage("pool", err)
+	}
+	if len(pf.positional) != 1 {
+		fatalUsage("pool", fmt.Errorf("drain: expected <template>"))
+	}
+	dispatchAndExit("pool_drain", map[string]any{"template": pf.positional[0]}, false)
 }
 
 // --- helpers --------------------------------------------------------

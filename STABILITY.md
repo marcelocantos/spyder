@@ -58,6 +58,9 @@ Snapshot as of `v0.5.0`.
 | `emu_boot` | `{name: string}`. | Text (serial visible in `adb devices` once booted). | Needs review |
 | `emu_shutdown` | `{serial: string}`. | Text confirmation. | Needs review |
 | `emu_delete` | `{name: string}`. | Text confirmation. | Needs review |
+| `pool_list` | (no args). | JSON array of `pool.TemplateStatus` (`template`, `platform`, `available`, `running`, `reserved`, `instances[]`). Returns "pool not configured" error when `~/.spyder/pool.yaml` is absent. | Needs review |
+| `pool_warm` | `{template: string, count: number}`. | Text confirmation. | Needs review |
+| `pool_drain` | `{template: string}`. | Text confirmation. | Needs review |
 | `record_start` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with subprocess PID and output path. | Needs review — iOS simulator UDID must be passed directly; iOS physical devices return an immediate error. |
 | `record_stop` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with the local mp4 path. | Needs review |
 | `network` | `{device: string, owner: string, profile?: string}` or `{device: string, owner: string, clear: true}`. Exactly one of profile or clear required. | Text confirmation. | Beta — Android emulator only; iOS and physical Android return clear errors. |
@@ -112,6 +115,9 @@ can match on these phrases.
 | `spyder record <device> --start \| --stop [--as OWNER]` | REST proxy to `record_start` / `record_stop`. Starts or stops a screen recording on an iOS simulator or Android device. | Needs review |
 | `spyder net <device> [--profile NAME\|--clear] [--as OWNER]` | REST proxy to `network`. Requires exactly one of `--profile` or `--clear`. | Beta — Android emulator only. |
 | `spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow] [--json]` | Without `--follow`: REST proxy to `logs` MCP tool (bounded JSON array). With `--follow`: SSE live stream via `POST /api/v1/log_stream`. | Needs review — iOS range quirks; live streaming is REST-only |
+| `spyder pool list [--json]` | REST proxy to `pool_list`. | Needs review |
+| `spyder pool warm <template> [--count N]` | REST proxy to `pool_warm`. `--count` defaults to 1. | Needs review |
+| `spyder pool drain <template>` | REST proxy to `pool_drain`. | Needs review |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
