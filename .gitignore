@@ -5,3 +5,11 @@ bin/
 
 # xcodegen-generated (regenerated from project.yml)
 ios/**/*.xcodeproj
+
+# Python bridge
+bridge/.venv/
+bridge/dist/
+bridge/build/
+bridge/__pycache__/
+bridge/**/__pycache__/
+bridge/.pytest_cache/
