@@ -26,3 +26,8 @@ packages = ["src/pmd3_bridge"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.19.0",
+]

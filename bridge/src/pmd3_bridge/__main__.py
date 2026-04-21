@@ -56,7 +56,10 @@ def main() -> None:
         os.unlink(socket_path)
 
     import uvicorn
-    from .app import app
+    # Import via the fully-qualified name so the PyInstaller entrypoint
+    # (which invokes this module as `__main__` with no parent package)
+    # resolves the same as `python -m pmd3_bridge` does in development.
+    from pmd3_bridge.app import app
 
     config = uvicorn.Config(
         app,
