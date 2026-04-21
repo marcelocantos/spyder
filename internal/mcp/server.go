@@ -17,6 +17,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
@@ -55,6 +56,7 @@ type Handler struct {
 	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
 	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
 	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
+	bridge       *pmd3bridge.Client    // optional hook for 🎯T25 pmd3-bridge
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -119,6 +121,12 @@ func WithPoolResolver(p selector.PoolResolver) HandlerOption {
 // configured" error.
 func WithPoolManager(pm PoolManager) HandlerOption {
 	return func(h *Handler) { h.poolMgr = pm }
+}
+
+// WithPMD3Bridge injects the pmd3-bridge client (🎯T25). When nil, tools that
+// depend on the bridge fall back to the existing shell-out paths.
+func WithPMD3Bridge(client *pmd3bridge.Client) HandlerOption {
+	return func(h *Handler) { h.bridge = client }
 }
 
 // NewHandler creates a new spyder tool handler. tun may be nil for

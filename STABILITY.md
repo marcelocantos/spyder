@@ -297,9 +297,12 @@ builds. **Stable.**
   loop is still ~20-30% covered. Before 1.0 these should gain
   env-gated live tests (e.g. `SPYDER_LIVE_TESTS=1`) against real
   devices so regressions in the real-world path get caught.
-- **`pymobiledevice3` library embedding.** All iOS operations shell out,
-  paying ~1 s of Python startup per call. Long-lived helper subprocess (JSON
-  protocol over stdin/stdout) would eliminate this.
+- **`pmd3-bridge` internal dependency.** The `internal/pmd3bridge` package
+  wraps the FastAPI bridge subprocess (Unix socket, JSON/HTTP) as an internal
+  dependency; the Go daemon supervises it via `pmd3bridge.Supervisor`. The
+  bridge binary ships at `libexec/pmd3-bridge/pmd3-bridge` in the Homebrew
+  formula. Until 🎯T25.3 lands, the existing iOS adapter still shells out for
+  DVT operations and the bridge surface has no user-facing MCP tools yet.
 - **macOS-only host enforcement.** Spyder runs on Linux but iOS operations
   will fail noisily there. Either restrict the binary to Darwin or
   gracefully degrade iOS-related tools with a clear "host does not support

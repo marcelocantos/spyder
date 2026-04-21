@@ -751,8 +751,10 @@ step is Apple-imposed and cannot be automated.
 - **macOS host.** Tested on macOS 15+ / Apple Silicon. Linux builds exist for
   spyder's non-iOS-specific surface (devices list, Android, the MCP server
   itself) but iOS operations will fail there.
-- **`pymobiledevice3` ≥ 8.2** — iOS operations. Shelling-out is the default;
-  long-lived library embedding is a future refinement.
+- **`pymobiledevice3` ≥ 8.2** — iOS operations. The `pmd3-bridge` FastAPI
+  subprocess (bundled at `libexec/pmd3-bridge/pmd3-bridge`) provides a
+  persistent Unix-socket API over pmd3; spyder's Go daemon supervises it
+  automatically and falls back to shell-out paths when the binary is absent.
 - **`pymobiledevice3 remote tunneld`** — required for DVT operations on iOS 17+.
   Run as root (TUN/TAP interface). Spyder detects and uses an externally-managed
   instance by default; integrated supervision via `--supervise-tunneld` is
