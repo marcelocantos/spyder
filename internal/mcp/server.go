@@ -179,8 +179,6 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleDevices(args)
 	case "resolve":
 		return h.handleResolve(args)
-	case "keepawake":
-		return h.handleKeepAwake(args)
 	case "device_state":
 		return h.handleDeviceState(args)
 	case "screenshot":
@@ -283,17 +281,6 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Symbolic name or raw UUID from the device inventory"),
-			),
-		),
-
-		mcpgo.NewTool("keepawake",
-			mcpgo.WithDescription("Foreground the KeepAwake companion app on a device so it holds the screen awake while plugged in. Typically called by test-run wrappers after tests finish. Strictly enforced: rejects if the device is reserved by a different owner."),
-			mcpgo.WithString("device",
-				mcpgo.Required(),
-				mcpgo.Description("Device alias or UUID"),
-			),
-			mcpgo.WithString("owner",
-				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
 			),
 		),
 
@@ -403,7 +390,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("reserve",
-			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (keepawake, screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked."),
+			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked."),
 			mcpgo.WithString("device",
 				mcpgo.Description("Device alias or UUID (literal pin; mutually exclusive with selector)"),
 			),

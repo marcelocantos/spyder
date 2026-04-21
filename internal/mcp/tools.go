@@ -175,34 +175,6 @@ func (h *Handler) handleResolve(args map[string]any) (*mcpgo.CallToolResult, err
 	return toolJSON(entry)
 }
 
-func (h *Handler) handleKeepAwake(args map[string]any) (*mcpgo.CallToolResult, error) {
-	dev, err := requireString(args, "device")
-	if err != nil {
-		return nil, err
-	}
-	owner := optString(args, "owner")
-
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if res := h.authorize(dev, owner); res != nil {
-		return res, nil
-	}
-	adapter, platform, id, err := h.resolveAdapter(dev)
-	if err != nil {
-		return toolErr("%v", err)
-	}
-	if err := adapter.LaunchKeepAwake(id); err != nil {
-		return toolErr("launching KeepAwake on %s: %v", dev, err)
-	}
-	switch platform {
-	case "android":
-		return toolText(fmt.Sprintf("KeepAwake is a no-op on %s: Android handles stay-awake natively — enable Settings → Developer options → Stay awake while plugged in", dev))
-	default:
-		return toolText(fmt.Sprintf("KeepAwake launched on %s", dev))
-	}
-}
-
 func (h *Handler) handleDeviceState(args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {

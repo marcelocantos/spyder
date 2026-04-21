@@ -140,37 +140,6 @@ func TestHandleReservations_NoStore_EmptyList(t *testing.T) {
 
 // --- strict enforcement on mutating tools -----------------------------
 
-func TestHandleKeepAwake_RejectsWhenHeldByOther(t *testing.T) {
-	ios := &stubAdapter{launchKeepAwake: func(id string) error {
-		t.Fatal("LaunchKeepAwake should NOT be called when device is reserved by someone else")
-		return nil
-	}}
-	h, s := newHandlerWithReservations(t, ios, nil)
-	_, _ = s.Acquire("Pippa", "someone-else", 0, "testing")
-
-	r := dispatchJSON(t, h, "keepawake", map[string]any{"device": "Pippa"})
-	if !r.IsError {
-		t.Fatal("keepawake on reserved device should fail")
-	}
-	if !strings.Contains(resultText(t, &r), "someone-else") {
-		t.Errorf("error should name the holder; got %s", resultText(t, &r))
-	}
-}
-
-func TestHandleKeepAwake_AcceptsWhenSameOwner(t *testing.T) {
-	ios := &stubAdapter{launchKeepAwake: func(id string) error { return nil }}
-	h, s := newHandlerWithReservations(t, ios, nil)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "testing")
-
-	r := dispatchJSON(t, h, "keepawake", map[string]any{
-		"device": "Pippa",
-		"owner":  "tiltbuggy",
-	})
-	if r.IsError {
-		t.Fatalf("owner call should succeed; body=%s", resultText(t, &r))
-	}
-}
-
 func TestHandleLaunchApp_RejectsWhenHeld(t *testing.T) {
 	ios := &stubAdapter{launchApp: func(id, bundle string) error {
 		t.Fatal("LaunchApp should NOT be called")
@@ -248,12 +217,12 @@ func TestReadTools_IgnoreReservations(t *testing.T) {
 // --- anonymous calls on held device -----------------------------------
 
 func TestMutatingTool_AnonymousCaller_Rejected(t *testing.T) {
-	ios := &stubAdapter{launchKeepAwake: func(id string) error { return nil }}
+	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return nil, nil }}
 	h, s := newHandlerWithReservations(t, ios, nil)
 	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
 
 	// No owner arg → treated as anonymous → rejected because device is held.
-	r := dispatchJSON(t, h, "keepawake", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
 	if !r.IsError {
 		t.Fatal("anonymous mutating call on held device should reject")
 	}
@@ -261,14 +230,14 @@ func TestMutatingTool_AnonymousCaller_Rejected(t *testing.T) {
 
 func TestMutatingTool_AnonymousCaller_FreeDevice_Proceeds(t *testing.T) {
 	called := false
-	ios := &stubAdapter{launchKeepAwake: func(id string) error {
+	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) {
 		called = true
-		return nil
+		return []byte("PNG"), nil
 	}}
 	h, _ := newHandlerWithReservations(t, ios, nil)
 
 	// No reservation → anonymous caller proceeds.
-	r := dispatchJSON(t, h, "keepawake", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
 	if r.IsError {
 		t.Fatalf("free-device anonymous call should succeed; body=%s", resultText(t, &r))
 	}

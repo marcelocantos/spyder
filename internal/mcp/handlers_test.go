@@ -21,24 +21,23 @@ import (
 // Each method defers to a function field so tests can shape behaviour
 // (success, error, platform-specific return values) without exec.
 type stubAdapter struct {
-	list            func() ([]device.Info, error)
-	state           func(id string) (device.State, error)
-	launchKeepAwake func(id string) error
-	screenshot      func(id string) ([]byte, error)
-	listApps        func(id string) ([]device.AppInfo, error)
-	launchApp       func(id, bundle string) error
-	terminateApp    func(id, bundle string) error
-	rotate          func(id, orientation string) error
-	crashes         func(id string, since time.Time, process string) ([]device.CrashReport, error)
-	startRecording  func(id, dest string) (func() error, int, error)
-	stopRecording   func(id string, pid int) error
-	installApp      func(id, path string) error
-	uninstallApp    func(id, bundle string) error
-	appPID          func(id, bundle string) (int, error)
-	applyNetwork    func(id string, p network.NetworkProfile) error
-	clearNetwork    func(id string) error
-	logRange        func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
-	logStream       func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
+	list           func() ([]device.Info, error)
+	state          func(id string) (device.State, error)
+	screenshot     func(id string) ([]byte, error)
+	listApps       func(id string) ([]device.AppInfo, error)
+	launchApp      func(id, bundle string) error
+	terminateApp   func(id, bundle string) error
+	rotate         func(id, orientation string) error
+	crashes        func(id string, since time.Time, process string) ([]device.CrashReport, error)
+	startRecording func(id, dest string) (func() error, int, error)
+	stopRecording  func(id string, pid int) error
+	installApp     func(id, path string) error
+	uninstallApp   func(id, bundle string) error
+	appPID         func(id, bundle string) (int, error)
+	applyNetwork   func(id string, p network.NetworkProfile) error
+	clearNetwork   func(id string) error
+	logRange       func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
+	logStream      func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -52,12 +51,6 @@ func (s *stubAdapter) State(id string) (device.State, error) {
 		return device.State{}, nil
 	}
 	return s.state(id)
-}
-func (s *stubAdapter) LaunchKeepAwake(id string) error {
-	if s.launchKeepAwake == nil {
-		return nil
-	}
-	return s.launchKeepAwake(id)
 }
 func (s *stubAdapter) Screenshot(id string) ([]byte, error) {
 	if s.screenshot == nil {
@@ -293,33 +286,6 @@ func TestHandleResolve_Passthrough(t *testing.T) {
 	text := resultText(t, &r)
 	if !strings.Contains(text, "ABCDEF12-1234567890ABCDEF") {
 		t.Errorf("passthrough did not echo input; body=%s", text)
-	}
-}
-
-// --- handleKeepAwake ---------------------------------------------------
-
-func TestHandleKeepAwake_IOS(t *testing.T) {
-	ios := &stubAdapter{launchKeepAwake: func(id string) error { return nil }}
-	h := newHandlerWithStubs(t, ios, nil)
-	r := dispatchJSON(t, h, "keepawake", map[string]any{"device": "Pippa"})
-	if r.IsError {
-		t.Fatalf("keepawake iOS should succeed; body=%s", resultText(t, &r))
-	}
-	if !strings.Contains(resultText(t, &r), "KeepAwake launched on Pippa") {
-		t.Errorf("iOS keepawake message wrong; body=%s", resultText(t, &r))
-	}
-}
-
-func TestHandleKeepAwake_Android_NoOpMessage(t *testing.T) {
-	android := &stubAdapter{launchKeepAwake: func(id string) error { return nil }}
-	h := newHandlerWithStubs(t, nil, android)
-	r := dispatchJSON(t, h, "keepawake", map[string]any{"device": "Raspberry"})
-	if r.IsError {
-		t.Fatalf("keepawake Android should succeed (no-op); body=%s", resultText(t, &r))
-	}
-	text := resultText(t, &r)
-	if !strings.Contains(text, "no-op on Raspberry") || !strings.Contains(text, "Stay awake while plugged in") {
-		t.Errorf("Android keepawake should point at OS setting; body=%s", text)
 	}
 }
 

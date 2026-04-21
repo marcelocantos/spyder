@@ -121,7 +121,7 @@ func TestBuild_ToolsListHasAllTools(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"devices", "resolve", "keepawake", "device_state",
+		"devices", "resolve", "device_state",
 		"screenshot", "list_apps", "launch_app", "terminate_app",
 	} {
 		if !names[want] {

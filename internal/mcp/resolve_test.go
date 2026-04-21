@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/marcelocantos/spyder/internal/device"
 )
 
 const testInventory = `[
@@ -127,7 +125,3 @@ func TestDispatch_ResolveMissingName(t *testing.T) {
 		t.Error("Dispatch(resolve, {}) returned nil err; want error for missing name")
 	}
 }
-
-// Compile-time: device.KeepAwakeBundleID must exist (resolveAdapter uses
-// the device package).
-var _ = device.KeepAwakeBundleID

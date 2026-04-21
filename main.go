@@ -8,7 +8,7 @@
 // Usage:
 //
 //	spyder serve [--addr :3030]  Start the HTTP MCP server
-//	spyder run -- <cmd>          Run a command, then restore KeepAwake
+//	spyder run -- <cmd>          Run a command under a device reservation
 //	spyder version               Print version and exit
 package main
 
@@ -26,7 +26,6 @@ import (
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/daemon"
-	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/reservations"
@@ -55,7 +54,7 @@ const usage = `Usage: spyder [command]
 
 Commands:
   serve         Start the HTTP MCP server (default :3030, endpoints /mcp and /api/v1/)
-  run           Run a command, then foreground KeepAwake on the device
+  run           Run a command under an auto-acquired device reservation
   version       Print version and exit
   help-agent    Print the usage above followed by the agent guide
 
@@ -64,7 +63,6 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   resolve       Resolve a device alias to platform identifiers
   device-state  Report battery, thermal, foreground app
   screenshot    Capture a PNG to a file (--output FILE, --as OWNER)
-  keepawake     Foreground KeepAwake on an iOS device (--as OWNER)
   list-apps     List installed third-party apps
   launch-app    Launch an app by bundle id (--as OWNER)
   terminate-app Terminate an app by bundle id (--as OWNER)
@@ -95,10 +93,9 @@ Serve:
 Run:
   spyder run [--device <alias>] -- <command> [args...]
 
-  Executes <command> with its args, waits for it to exit, and then
-  foregrounds KeepAwake on the device (default: Pippa). Exits with the
-  command's exit code. Useful for wrapping xcodebuild test to restore
-  the keep-awake state after the test runner finishes.
+  Executes <command> with its args, waits for it to exit, then releases
+  the device reservation. Exits with the command's exit code. Useful for
+  wrapping xcodebuild test commands under an auto-acquired reservation.
 `
 
 func main() {
@@ -209,10 +206,9 @@ func deriveOwner(supplied string) string {
 }
 
 // runCmd implements the `spyder run [--device X] -- <cmd> [args]`
-// subcommand: exec the command, wait for exit, then foreground
-// KeepAwake on the device regardless of success/failure. Exits with
-// the command's exit code (KeepAwake restore failure is logged but
-// does not override the exit code — the test result is authoritative).
+// subcommand: exec the command, wait for exit, then release the device
+// reservation regardless of success/failure. Exits with the command's
+// exit code.
 func runCmd(args []string) {
 	parsed, err := parseRunArgs(args)
 	if err != nil {
@@ -264,9 +260,9 @@ func runCmd(args []string) {
 		}
 	}
 
-	// Guarantee release + restore on any exit path (success, error,
-	// SIGINT). The child inherits our stdio, so a SIGINT on our
-	// process group also terminates it before we reach this block.
+	// Guarantee release on any exit path (success, error, SIGINT).
+	// The child inherits our stdio, so a SIGINT on our process group
+	// also terminates it before we reach this block.
 	release := func() {
 		if runsStore != nil && runID != "" {
 			if err := runsStore.Close(runID); err != nil {
@@ -275,11 +271,6 @@ func runCmd(args []string) {
 		}
 		if err := resvStore.Release(parsed.Device, owner); err != nil {
 			fmt.Fprintf(os.Stderr, "spyder run: release %s: %v\n", parsed.Device, err)
-		}
-		if err := restoreKeepAwake(parsed.Device); err != nil {
-			fmt.Fprintf(os.Stderr, "spyder run: restore KeepAwake on %s: %v\n", parsed.Device, err)
-		} else {
-			fmt.Fprintf(os.Stderr, "spyder run: KeepAwake restored on %s\n", parsed.Device)
 		}
 	}
 
@@ -316,25 +307,4 @@ func runCmd(args []string) {
 	}
 	release()
 	os.Exit(exitCode)
-}
-
-// restoreKeepAwake foregrounds the KeepAwake app on the device named
-// by the inventory alias (falling back to raw passthrough for
-// unknown names).
-func restoreKeepAwake(dev string) error {
-	store := inventory.New()
-	id := dev
-	if entry, ok := store.Lookup(dev); ok {
-		switch entry.Platform {
-		case "ios":
-			id = entry.IOSUUID
-			if id == "" {
-				id = entry.IOSCoreDevice
-			}
-		case "android":
-			return fmt.Errorf("KeepAwake on Android is a no-op (OS-native — enable Settings → Developer options → Stay awake)")
-		}
-	}
-	adapter := device.NewIOSAdapter(nil) // LaunchKeepAwake uses xcrun devicectl, not the bridge
-	return adapter.LaunchKeepAwake(id)
 }

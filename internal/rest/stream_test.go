@@ -28,7 +28,6 @@ type stubStreamAdapter struct {
 
 func (s *stubStreamAdapter) List() ([]device.Info, error)                 { return nil, nil }
 func (s *stubStreamAdapter) State(id string) (device.State, error)        { return device.State{}, nil }
-func (s *stubStreamAdapter) LaunchKeepAwake(id string) error              { return nil }
 func (s *stubStreamAdapter) Screenshot(id string) ([]byte, error)         { return nil, nil }
 func (s *stubStreamAdapter) ListApps(id string) ([]device.AppInfo, error) { return nil, nil }
 func (s *stubStreamAdapter) LaunchApp(id, b string) error                 { return nil }

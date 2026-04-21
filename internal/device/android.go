@@ -22,10 +22,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/network"
 )
 
-// AndroidAdapter talks to Android devices via adb. Unlike iOS it does not
-// need a KeepAwake companion app — Android offers a native "stay on while
-// plugged in" developer setting. keepawake is therefore a gentle no-op
-// that points the user at the OS setting.
+// AndroidAdapter talks to Android devices via adb.
 type AndroidAdapter struct {
 	mu    sync.Mutex
 	cache map[string]cachedState
@@ -207,14 +204,6 @@ func isAndroidDeviceNotConnected(s string) bool {
 		strings.Contains(l, "device unauthorized") ||
 		strings.Contains(l, "no devices/emulators found") ||
 		(strings.Contains(l, "device") && strings.Contains(l, "not found"))
-}
-
-// LaunchKeepAwake is a no-op on Android: the OS provides a native
-// "Stay awake while plugged in" developer setting. Returns nil to signal
-// success; the tool handler surfaces a helpful message pointing the user
-// at the setting.
-func (a *AndroidAdapter) LaunchKeepAwake(id string) error {
-	return nil
 }
 
 // ListApps returns third-party packages via `adb shell pm list packages -3`.

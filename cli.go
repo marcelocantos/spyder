@@ -49,7 +49,6 @@ func init() {
 		{"resolve", "spyder resolve <name> [--json]", runResolve},
 		{"device-state", "spyder device-state <device> [--json]", runDeviceState},
 		{"screenshot", "spyder screenshot <device> [--output FILE] [--as OWNER]", runScreenshot},
-		{"keepawake", "spyder keepawake <device> [--as OWNER]", runKeepAwake},
 		{"list-apps", "spyder list-apps <device> [--json]", runListApps},
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
 		{"terminate-app", "spyder terminate-app <device> <bundle-id> [--as OWNER]", runTerminateApp},
@@ -389,21 +388,6 @@ func runScreenshot(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("wrote %s (%d bytes, %s)\n", output, len(png), mime)
-}
-
-func runKeepAwake(args []string) {
-	pf, err := parseFlags(args, []string{"--as"}, nil)
-	if err != nil {
-		fatalUsage("keepawake", err)
-	}
-	requirePositional("keepawake", pf, 1)
-	a := map[string]any{"device": pf.positional[0]}
-	if o := pf.flags["--as"]; o != "" {
-		a["owner"] = o
-	} else {
-		a["owner"] = deriveOwner("")
-	}
-	dispatchAndExit("keepawake", a, false)
 }
 
 func runListApps(args []string) {

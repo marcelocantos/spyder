@@ -83,10 +83,6 @@ type Adapter interface {
 	// platform-specific UUID (iOS) or serial (Android).
 	State(id string) (State, error)
 
-	// LaunchKeepAwake foregrounds the KeepAwake companion app on the
-	// specified device so it holds the screen awake while plugged in.
-	LaunchKeepAwake(id string) error
-
 	// Screenshot captures the current screen as PNG bytes. iOS uses
 	// pymobiledevice3 developer dvt (requires tunneld); Android uses
 	// adb shell screencap.

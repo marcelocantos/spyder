@@ -2,8 +2,8 @@
 
 Spyder is an HTTP-based MCP server that owns session state for real-device mobile
 development: symbolic device aliases, live device facts (battery, charging,
-foreground app), screenshots, app lifecycle, and a plug-in-driven auto-launcher
-for the KeepAwake companion app on iOS.
+foreground app), screenshots, app lifecycle, and power-assertion management via
+the bundled pmd3 bridge to prevent device auto-lock.
 
 Spyder sits *above* [mobile-mcp](https://github.com/mobile-next/mobile-mcp) and
 [XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP): those tools drive
@@ -101,7 +101,6 @@ everything it can see.
 | `resolve` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
 | `device_state` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
 | `screenshot` | PNG of the current screen, returned inline as an image content block. | iOS uses `pymobiledevice3 developer dvt screenshot` (needs tunneld); Android uses `adb shell screencap`. |
-| `keepawake` | Foreground the KeepAwake companion app on iOS. No-op on Android (OS handles stay-awake natively). | |
 | `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
 | `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses DVT launch (needs tunneld); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
@@ -420,7 +419,7 @@ spyder log Pippa --regex "crash|panic"             # regex on message
 
 For parallel dev sessions (e.g. one agent working on TiltBuggy while another
 works on another game), acquire an exclusive hold on a device with `reserve`
-before mutating operations. Mutating tools (`keepawake`, `screenshot`,
+before mutating operations. Mutating tools (`screenshot`,
 `launch_app`, `terminate_app`) reject with a structured conflict error
 naming the holder if someone else is holding the device. Read tools
 (`devices`, `resolve`, `device_state`, `reservations`) are unaffected.
@@ -584,8 +583,8 @@ optional, configured via environment:
   the cap.
 
 Set either to `0` to disable that bound. When spyder is run as a
-Homebrew service, use `launchctl setenv` as described for
-`SPYDER_KEEPAWAKE_PROJECT` above.
+Homebrew service, use `launchctl setenv` to inject env vars into the
+service (see **1. PATH** above for the pattern).
 
 ## Network condition shaping
 
@@ -710,8 +709,9 @@ lock via MCP blocks a shell script hitting REST and vice versa.
 
 ## The `spyder run` test wrapper
 
-Beyond the MCP surface, spyder exposes a CLI wrapper that runs a command and
-then foregrounds KeepAwake on exit (success or failure):
+Beyond the MCP surface, spyder exposes a CLI wrapper that runs a command
+under an auto-acquired device reservation and releases it on exit (success
+or failure):
 
 ```bash
 spyder run -- xcodebuild -project MyApp.xcodeproj \
@@ -720,31 +720,17 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
 
 - Default device is `Pippa`. Override with `--device <alias-or-uuid>`.
 - The wrapper forwards stdin/stdout/stderr and the command's exit code.
-- KeepAwake restore failures are logged but do not mask the test's exit code.
+- Release failures are logged but do not mask the test's exit code.
 
 ## Auto-awake supervisor
 
-`spyder serve` runs an always-on supervisor that polls
-`pymobiledevice3 remote tunneld` (default `127.0.0.1:49151`). Whenever a new
-paired iOS device appears:
-
-1. Checks whether KeepAwake is installed (`pymobiledevice3 apps list`).
-2. If not installed, auto-deploys: runs `xcodegen` + `xcodebuild` targeting the
-   UDID, then `xcrun devicectl device install app`.
-3. Checks whether KeepAwake is already running (DVT `process-id-for-bundle-id`).
-4. If not, launches it via DVT.
-
-If the launch fails because the device is locked, spyder fires a **persistent
-macOS notification** via `alerter` (or `terminal-notifier` / `osascript` as
-fallbacks) asking the user to unlock. The alert stays up until:
-
-- The user clicks **Dismiss**, or
-- Spyder's retry loop succeeds (within 5 minutes), at which point the alert is
-  dismissed programmatically via `alerter --remove`.
-
-Auto-deploy requires Xcode Accounts signed in with an Apple ID and a one-time
-device-trust tap (Settings → General → VPN & Device Management → Trust). That
-step is Apple-imposed and cannot be automated.
+`spyder serve` runs an always-on supervisor via the bundled pmd3 bridge.
+Whenever a new paired iOS device appears, spyder acquires a
+`PreventUserIdleSystemSleep` IOKit power assertion on the host. The assertion
+is refreshed before it would expire and released when the device disconnects or
+the daemon shuts down. No companion app to install, no on-device trust prompt,
+no lock-state detection — the power assertion prevents auto-lock in the first
+place.
 
 ## Environment and dependencies
 
@@ -760,7 +746,6 @@ step is Apple-imposed and cannot be automated.
   instance by default; integrated supervision via `--supervise-tunneld` is
   planned but not yet wired.
 - **`adb`** — Android operations.
-- **`xcodebuild`, `xcodegen`, `xcrun devicectl`** — iOS auto-deploy of KeepAwake.
 - **`alerter`** — persistent macOS notifications for the locked-device prompt
   (fallbacks: `terminal-notifier`, `osascript`).
 
@@ -778,19 +763,11 @@ terminate apps, and hold reservations on your devices. The default
 loopback bind is deliberate — external exposure is opt-in via
 `--addr` and should only be used on trusted networks.
 
-Environment variables:
-
-- `SPYDER_KEEPAWAKE_PROJECT` — directory containing KeepAwake's `project.yml`.
-  Defaults to searching upward from the working directory. If not found,
-  auto-deploy is disabled but auto-launch still works for pre-installed
-  KeepAwake. **(Planned for removal once the project is `go:embed`ded
-  into the binary.)**
-
 ### Brew-services environment (launchd)
 
 When spyder runs as a Homebrew service, launchd doesn't inherit your
 shell env. The v0.3+ formula sets a default `PATH` that covers
-`/opt/homebrew/bin` and the usual system paths. Two things may still
+`/opt/homebrew/bin` and the usual system paths. One thing may still
 need manual setup:
 
 **1. Non-Homebrew `pymobiledevice3`.** If your install lives outside
@@ -807,20 +784,6 @@ brew services restart spyder
 is editing `~/Library/LaunchAgents/homebrew.mxcl.spyder.plist` directly
 with an `EnvironmentVariables` block (but Homebrew rewrites that plist
 on reinstall, so it's transient).
-
-**2. KeepAwake project location.** `SPYDER_KEEPAWAKE_PROJECT` must
-point at your local spyder clone's `ios/KeepAwake/` so auto-deploy can
-run `xcodegen` + `xcodebuild`. Set it for the service the same way:
-
-```bash
-launchctl setenv SPYDER_KEEPAWAKE_PROJECT /path/to/spyder/ios/KeepAwake
-brew services restart spyder
-```
-
-Without it, auto-launch still works for devices that already have
-KeepAwake installed; auto-deploy is silently skipped for first-install
-devices. Logs show `autoawake: ready project_dir=…` (good) or
-`autoawake: KeepAwake project not found — auto-deploy disabled`.
 
 ## Screen recording
 
@@ -873,10 +836,7 @@ owner's reservation is released.
   that developer is uninstalled — reinstalling will require another
   Trust tap.
 - **`launch_app` returns `'Locked'` DvtException on iOS** → unlock the device.
-  The `keepawake` auto-launcher fires a persistent macOS alert in this case.
-- **Stale screenshot after auto-awake's launch** → DVT launches to foreground
-  but screen content can lag a beat. If you need a settled screenshot, wait
-  500 ms - 1 s before capturing.
+  Auto-awake fires a persistent macOS alert in this case.
 - **`deploy_app` bundle_id auto-derivation (iOS)** → requires `plutil` (ships
   with macOS). Fails if the .app bundle has no `Info.plist` or
   `CFBundleIdentifier` is empty. Pass `bundle_id` explicitly to skip.
@@ -898,5 +858,4 @@ owner's reservation is released.
 
 - `README.md` — human-facing install and feature overview.
 - `STABILITY.md` — pre-1.0 interaction-surface catalogue and gaps.
-- `ios/README.md` — KeepAwake companion app build notes.
 - `docs/audit-log.md` — release audit trail.

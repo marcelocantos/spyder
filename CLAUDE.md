@@ -11,9 +11,9 @@ mobile-mcp struggles); Android is supported via `adb`.
 
 - Device inventory (symbolic names → platform UUIDs)
 - Device state snapshots (battery, charging, thermal, foreground app)
-- KeepAwake companion app lifecycle for iOS (Android has OS-native support)
+- Power-assertion management via the bundled pmd3 bridge (prevents auto-lock)
 - Session-aware test-run orchestration (`spyder run --` wraps the
-  test command and restores KeepAwake on exit)
+  test command under an auto-acquired device reservation)
 
 ## What it does NOT own
 
@@ -28,7 +28,7 @@ mobile-mcp struggles); Android is supported via `adb`.
 make build
 bin/spyder serve                      # HTTP MCP server on :3030, endpoint /mcp
 bin/spyder serve --addr :3131         # custom addr
-bin/spyder run -- xcodebuild test ... # wrapper: runs cmd, restores KeepAwake
+bin/spyder run -- xcodebuild test ... # wrapper: runs cmd under device reservation
 
 # Register with Claude Code:
 claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
@@ -46,8 +46,6 @@ claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
   Android shells out to `adb`.
 - **internal/inventory** — symbolic name resolution, JSON-backed.
 - **internal/paths** — `~/.spyder/` path conventions.
-- **ios/KeepAwake** — minimal SwiftUI app that sets
-  `UIApplication.isIdleTimerDisabled = true`. Installed on Pippa.
 
 ## Device Inventory Format
 

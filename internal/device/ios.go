@@ -23,10 +23,6 @@ import (
 	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
 
-// KeepAwakeBundleID is the bundle identifier of the ios/KeepAwake companion
-// app. Preserved for reference by other packages (e.g. autoawake, main.go).
-const KeepAwakeBundleID = "com.marcelocantos.spyder.KeepAwake"
-
 // ErrLocked is returned when an operation fails specifically because the
 // target device is locked. Callers can errors.Is check this to fire a
 // targeted notification and retry until the device is unlocked.
@@ -798,24 +794,6 @@ func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter,
 		}
 	}
 	_ = cmd.Wait()
-	return nil
-}
-
-// LaunchKeepAwake brings the KeepAwake app to foreground via devicectl.
-// The id may be the hardware UDID, CoreDevice UUID, device name, or any
-// other identifier `devicectl --device` accepts.
-func (a *IOSAdapter) LaunchKeepAwake(id string) error {
-	if id == "" {
-		return errors.New("device identifier is empty")
-	}
-	cmd := exec.Command("xcrun", "devicectl", "device", "process", "launch",
-		"--device", id,
-		KeepAwakeBundleID,
-	)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("devicectl launch: %w\n%s", err, strings.TrimSpace(string(out)))
-	}
 	return nil
 }
 
