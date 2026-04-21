@@ -25,7 +25,7 @@ func newRecordingHandler(t *testing.T) *Handler {
 			return func() error { return nil }, 99, nil
 		},
 	}
-	return newHandlerWithStubs(t, ios, nil, nil)
+	return newHandlerWithStubs(t, ios, nil)
 }
 
 func TestHandleRecordStart_HappyPath(t *testing.T) {
@@ -93,7 +93,7 @@ func TestHandleRecordStart_IOSPhysicalDeviceError(t *testing.T) {
 			return nil, 0, errRecordingNotSupported
 		},
 	}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "record_start", map[string]any{"device": "Pippa"})
 	if !r.IsError {
 		t.Fatalf("expected isError=true for iOS physical device; body=%s", resultText(t, &r))

@@ -236,14 +236,9 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 	if res := h.authorize(dev, owner); res != nil {
 		return res, nil
 	}
-	adapter, platform, id, err := h.resolveAdapter(dev)
+	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
-	}
-	if platform == "ios" && h.tunneld != nil {
-		if err := h.tunneld.Require(); err != nil {
-			return toolErr("screenshot on %s: %v", dev, err)
-		}
 	}
 	png, err := adapter.Screenshot(id)
 	if err != nil {
@@ -330,14 +325,9 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 	if res := h.authorize(dev, owner); res != nil {
 		return res, nil
 	}
-	adapter, platform, id, err := h.resolveAdapter(dev)
+	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
-	}
-	if platform == "ios" && h.tunneld != nil {
-		if err := h.tunneld.Require(); err != nil {
-			return toolErr("launch_app on %s: %v", dev, err)
-		}
 	}
 	if err := adapter.LaunchApp(id, bundleID); err != nil {
 		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
@@ -360,14 +350,9 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 	if res := h.authorize(dev, owner); res != nil {
 		return res, nil
 	}
-	adapter, platform, id, err := h.resolveAdapter(dev)
+	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
-	}
-	if platform == "ios" && h.tunneld != nil {
-		if err := h.tunneld.Require(); err != nil {
-			return toolErr("terminate_app on %s: %v", dev, err)
-		}
 	}
 	if err := adapter.TerminateApp(id, bundleID); err != nil {
 		return toolErr("terminate_app %s on %s: %v", bundleID, dev, err)
@@ -1280,13 +1265,6 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 		bundleID, deriveErr = deriveBundleID(platform, path)
 		if deriveErr != nil {
 			return toolErr("cannot derive bundle_id from %q: %v — pass --bundle-id explicitly", path, deriveErr)
-		}
-	}
-
-	// Tunneld gate for iOS DVT operations (launch + app-pid).
-	if platform == "ios" && h.tunneld != nil {
-		if err := h.tunneld.Require(); err != nil {
-			return toolErr("deploy_app on %s: %v", dev, err)
 		}
 	}
 

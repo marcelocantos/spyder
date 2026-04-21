@@ -4,6 +4,7 @@
 package autoawake
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sort"
@@ -69,116 +70,6 @@ func TestNewDevices_MixedAddAndRemove(t *testing.T) {
 	}
 }
 
-// --- findKeepAwakeProject ---------------------------------------------
-
-func TestFindKeepAwakeProject_FromEnvVar(t *testing.T) {
-	tmp := t.TempDir()
-	// Create a project.yml in the temp dir.
-	if err := os.WriteFile(filepath.Join(tmp, "project.yml"), []byte("name: KeepAwake\n"), 0o600); err != nil {
-		t.Fatalf("write project.yml: %v", err)
-	}
-	t.Setenv("SPYDER_KEEPAWAKE_PROJECT", tmp)
-	got := findKeepAwakeProject()
-	if got != tmp {
-		t.Errorf("findKeepAwakeProject via env = %q; want %q", got, tmp)
-	}
-}
-
-func TestFindKeepAwakeProject_EnvVarMissingFile(t *testing.T) {
-	tmp := t.TempDir() // empty
-	t.Setenv("SPYDER_KEEPAWAKE_PROJECT", tmp)
-	// The env-var points at a dir without project.yml — skip and try
-	// cwd-walk. We'll set cwd to a dir that also doesn't have one, so
-	// the walk returns "".
-	cwdDir := t.TempDir()
-	chdir(t, cwdDir)
-	got := findKeepAwakeProject()
-	if got != "" {
-		t.Errorf("findKeepAwakeProject should return empty; got %q", got)
-	}
-}
-
-func TestFindKeepAwakeProject_WalkUp(t *testing.T) {
-	t.Setenv("SPYDER_KEEPAWAKE_PROJECT", "")
-	// Simulate a repo layout: <tmp>/ios/KeepAwake/project.yml. cwd
-	// deeper so the walk-up has to traverse multiple levels.
-	tmp := t.TempDir()
-	projectDir := filepath.Join(tmp, "ios", "KeepAwake")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, "project.yml"), []byte{}, 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	deep := filepath.Join(tmp, "internal", "pkg", "sub")
-	if err := os.MkdirAll(deep, 0o755); err != nil {
-		t.Fatalf("mkdir deep: %v", err)
-	}
-	chdir(t, deep)
-	got := findKeepAwakeProject()
-	wantResolved, _ := filepath.EvalSymlinks(projectDir)
-	gotResolved, _ := filepath.EvalSymlinks(got)
-	if gotResolved != wantResolved {
-		t.Errorf("findKeepAwakeProject walkup = %q; want %q", got, projectDir)
-	}
-}
-
-// --- isTrustError -----------------------------------------------------
-
-func TestIsTrustError(t *testing.T) {
-	yes := []string{
-		"DvtException: {'BSErrorCodeDescription': 'Security', 'NSLocalizedFailureReason': '...'}",
-		"Unable to launch com.foo because it has an invalid code signature",
-		"... or its profile has not been explicitly trusted by the user",
-	}
-	for _, s := range yes {
-		if !isTrustError(errFromString(s)) {
-			t.Errorf("isTrustError(%q) = false; want true", s[:min(60, len(s))])
-		}
-	}
-	no := []string{
-		"DvtException: {'BSErrorCodeDescription': 'Locked', ...}",
-		"device not connected: 00008103-…",
-		"",
-	}
-	for _, s := range no {
-		if isTrustError(errFromString(s)) {
-			t.Errorf("isTrustError(%q) = true; want false", s)
-		}
-	}
-}
-
-// --- summariseErr ------------------------------------------------------
-
-func TestSummariseErr_PrefersDvtException(t *testing.T) {
-	input := `dvt launch: exit status 1
-2026-04-18 21:52:56 colossus.lan pymobiledevice3.__main__[...] WARNING blah
-╭───── Traceback ─────╮
-│ some decorative box │
-╰─────────────────────╯
-DvtException: {'BSErrorCodeDescription': 'Locked', 'NSLocalizedFailureReason': 'foo'}`
-	err := errFromString(input)
-	got := summariseErr(err)
-	if got == "" || got == "dvt launch: exit status 1" {
-		t.Errorf("summariseErr should pick the DvtException line; got %q", got)
-	}
-	if !containsStr(got, "DvtException") {
-		t.Errorf("summariseErr output missing DvtException marker: %q", got)
-	}
-}
-
-func TestSummariseErr_FallsBackToFirstNonDecorative(t *testing.T) {
-	input := `dvt launch: exit status 1
-╭────╮
-│ ok │
-╰────╯`
-	got := summariseErr(errFromString(input))
-	// Shouldn't return empty; first non-decorative line is the first.
-	if got != "dvt launch: exit status 1" {
-		t.Errorf("summariseErr = %q; want first non-decorative line", got)
-	}
-}
-
 // --- aliasOf -----------------------------------------------------------
 
 func TestAliasOf_FromInventory(t *testing.T) {
@@ -193,7 +84,7 @@ func TestAliasOf_FromInventory(t *testing.T) {
 		[]byte(`[{"alias":"Pippa","platform":"ios","ios_uuid":"00008103-000D39301A6A201E"}]`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := New(nil) // tunneld nil; aliasOf doesn't use it
+	s := New(nil) // bridge nil; aliasOf doesn't use it
 	if got := s.aliasOf("00008103-000D39301A6A201E"); got != "Pippa" {
 		t.Errorf("aliasOf(Pippa UDID) = %q; want Pippa", got)
 	}
@@ -213,85 +104,50 @@ func TestAliasOf_UnknownShortens(t *testing.T) {
 	}
 }
 
-// --- findBuiltApp -----------------------------------------------------
-//
-// findBuiltApp globs DerivedData under $HOME. We can't easily feign a
-// full DerivedData layout, but we can override HOME and create the
-// expected subtree so the glob matches.
+// --- summariseErr -------------------------------------------
 
-func TestFindBuiltApp_PicksNewestMatch(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	// Create two candidate app dirs with different mtimes.
-	base := filepath.Join(tmp, "Library/Developer/Xcode/DerivedData")
-	old := filepath.Join(base, "KeepAwake-aaaa/Build/Products/Debug-iphoneos/KeepAwake.app")
-	fresh := filepath.Join(base, "KeepAwake-bbbb/Build/Products/Debug-iphoneos/KeepAwake.app")
-	if err := os.MkdirAll(old, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(fresh, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	oldTime := time.Now().Add(-1 * time.Hour)
-	if err := os.Chtimes(old, oldTime, oldTime); err != nil {
-		t.Fatal(err)
-	}
-
-	got, err := findBuiltApp()
-	if err != nil {
-		t.Fatalf("findBuiltApp err = %v", err)
-	}
-	// Resolve symlinks because macOS /var is symlinked.
-	gotReal, _ := filepath.EvalSymlinks(got)
-	freshReal, _ := filepath.EvalSymlinks(fresh)
-	if gotReal != freshReal {
-		t.Errorf("findBuiltApp = %q; want newest %q", got, fresh)
+func TestSummariseErr_FirstLine(t *testing.T) {
+	input := "first line\nsecond line\nthird"
+	got := summariseErr(errFromString(input))
+	if got != "first line" {
+		t.Errorf("summariseErr = %q; want first line", got)
 	}
 }
 
-func TestFindBuiltApp_NoMatches(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp) // empty DerivedData
+func TestSummariseErr_SingleLine(t *testing.T) {
+	got := summariseErr(errFromString("just one line"))
+	if got != "just one line" {
+		t.Errorf("summariseErr = %q; want 'just one line'", got)
+	}
+}
 
-	_, err := findBuiltApp()
-	if err == nil {
-		t.Error("findBuiltApp with no matches returned nil err; want error")
+// --- nil bridge guard ------------------------------------------------
+
+func TestSupervisorNilBridge_RunExitsImmediately(t *testing.T) {
+	// Supervisor with nil bridge should log and return without panicking.
+	// We can't block on Run() in a unit test, so test the guard via the
+	// exported Run signature (it returns when ctx is done or bridge is nil).
+	s := New(nil)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Run(cancelledContext(t))
+	}()
+	select {
+	case <-done:
+	case <-timeoutCh(2000):
+		t.Error("Run with nil bridge did not return within 2s")
 	}
 }
 
 // --- helpers -----------------------------------------------------------
 
-// errFromString returns an error whose Error() returns s. Used to
-// feed summariseErr the exact multi-line input we want to test.
+// errFromString returns an error whose Error() returns s.
 type stringError string
 
 func (s stringError) Error() string { return string(s) }
 
 func errFromString(s string) error { return stringError(s) }
-
-// containsStr is a tiny local helper (avoids another import).
-func containsStr(s, sub string) bool {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
-}
-
-// chdir changes into dir for the duration of the test.
-func chdir(t *testing.T, dir string) {
-	t.Helper()
-	prev, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("chdir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(prev) })
-}
 
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
@@ -303,4 +159,22 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// cancelledContext returns a context that is already cancelled.
+func cancelledContext(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
+// timeoutCh returns a channel that receives after ms milliseconds.
+func timeoutCh(ms int) <-chan struct{} {
+	ch := make(chan struct{})
+	go func() {
+		time.Sleep(time.Duration(ms) * time.Millisecond)
+		close(ch)
+	}()
+	return ch
 }

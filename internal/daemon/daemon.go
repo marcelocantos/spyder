@@ -31,7 +31,6 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
-	"github.com/marcelocantos/spyder/internal/tunneld"
 )
 
 // Run-artefact retention defaults. Overridable via env so the Homebrew
@@ -45,13 +44,13 @@ const (
 type Config struct {
 	Addr             string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
 	Version          string // emitted in serverInfo
-	TunneldAddr      string // tunneld probe target (host:port; empty → DefaultAddr)
-	DisableAutoAwake bool   // tests set this to avoid the supervisor poking live tunneld
+	TunneldAddr      string // Deprecated: tunneld is no longer used; field retained for backward compat.
+	DisableAutoAwake bool   // tests set this to avoid the supervisor starting
 }
 
 // Start creates the MCP server, registers all spyder tools, wraps it in
-// a streamable-HTTP transport, probes tunneld for observability, and
-// blocks serving on cfg.Addr until a SIGINT/SIGTERM arrives.
+// a streamable-HTTP transport, and blocks serving on cfg.Addr until a
+// SIGINT/SIGTERM arrives.
 func Start(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -62,7 +61,7 @@ func Start(cfg Config) error {
 // (or the underlying HTTP server errors). Exposed for tests and for
 // embedders that want to own signal handling.
 func Run(ctx context.Context, cfg Config) error {
-	handler, tunClient, resvStore, bridgeSup := Build(cfg)
+	handler, resvStore, bridgeSup := Build(cfg)
 
 	if bridgeSup != nil {
 		if err := bridgeSup.Start(ctx); err != nil {
@@ -76,7 +75,13 @@ func Run(ctx context.Context, cfg Config) error {
 		if resvStore != nil {
 			awakeOpts = append(awakeOpts, autoawake.WithReservations(resvStore))
 		}
-		go autoawake.New(tunClient, awakeOpts...).Run(ctx)
+		var awakeBridge *pmd3bridge.Client
+		if bridgeSup != nil {
+			// Construct a separate client for autoawake (supervisor's client
+			// is the same socket; both are safe for concurrent use).
+			awakeBridge = pmd3bridge.NewClient(paths.PMD3BridgeSocket())
+		}
+		go autoawake.New(awakeBridge, awakeOpts...).Run(ctx)
 	}
 
 	slog.Info("spyder listening",
@@ -116,19 +121,7 @@ func Run(ctx context.Context, cfg Config) error {
 // The returned Supervisor is non-nil when the bridge binary was found and
 // should be started by the caller; it is nil when the bridge is unavailable
 // (graceful degradation).
-func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store, *pmd3bridge.Supervisor) {
-	tunneldAddr := cfg.TunneldAddr
-	if tunneldAddr == "" {
-		tunneldAddr = tunneld.DefaultAddr
-	}
-	tunClient := tunneld.New(tunneldAddr)
-	if udids, err := tunClient.Probe(); err != nil {
-		slog.Warn("tunneld unavailable — iOS DVT tools will fail",
-			"addr", tunneldAddr, "error", err)
-	} else {
-		slog.Info("tunneld reachable", "addr", tunneldAddr, "paired_devices", len(udids))
-	}
-
+func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Supervisor) {
 	srv := server.NewMCPServer(
 		"spyder",
 		cfg.Version,
@@ -212,7 +205,7 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store, *pmd
 		slog.Info("pmd3-bridge configured", "binary", binPath, "socket", sockPath)
 	}
 
-	handler := spydermcp.NewHandler(tunClient, handlerOpts...)
+	handler := spydermcp.NewHandler(handlerOpts...)
 
 	// Kick off pool reconciliation in the background so startup latency
 	// stays low even when creating/booting sims takes tens of seconds.
@@ -233,7 +226,7 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store, *pmd
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
-	return mux, tunClient, resvStore, bridgeSup
+	return mux, resvStore, bridgeSup
 }
 
 // resolveBridgeBinary returns the path to the pmd3-bridge binary.

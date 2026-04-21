@@ -65,7 +65,7 @@ func (s *stubStreamAdapter) LogStream(ctx context.Context, id string, _ device.L
 func newStreamTestServer(t *testing.T, lines []device.LogLine) (string, func()) {
 	t.Helper()
 	stub := &stubStreamAdapter{lines: lines}
-	h := spydermcp.NewHandlerWithAdapters(nil, stub, nil)
+	h := spydermcp.NewHandlerWithAdapters(stub, nil)
 	ts := httptest.NewServer(rest.NewHandler(h))
 	return ts.URL, ts.Close
 }

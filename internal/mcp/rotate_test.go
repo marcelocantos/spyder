@@ -21,7 +21,7 @@ func TestHandleRotate_IOSSimulator(t *testing.T) {
 		calledOrientation = orientation
 		return nil
 	}}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "rotate", map[string]any{
 		"device":      "Pippa",
@@ -72,7 +72,7 @@ func TestHandleRotate_AdapterError(t *testing.T) {
 	ios := &stubAdapter{rotate: func(id, orientation string) error {
 		return errors.New("rotation on real iOS devices is not supported")
 	}}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "rotate", map[string]any{
 		"device":      "Pippa",
@@ -123,7 +123,7 @@ func TestHandleRotate_AndroidEmulator(t *testing.T) {
 		called = true
 		return nil
 	}}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 
 	r := dispatchJSON(t, h, "rotate", map[string]any{
 		"device":      "Raspberry",

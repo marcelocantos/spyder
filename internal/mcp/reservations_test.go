@@ -212,7 +212,6 @@ func TestHandleScreenshot_RejectsWhenHeld(t *testing.T) {
 	}}
 	h, s := newHandlerWithReservations(t, ios, nil)
 	_, _ = s.Acquire("Pippa", "someone-else", 0, "")
-	h.tunneld = &stubTunneld{}
 
 	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
 	if !r.IsError {

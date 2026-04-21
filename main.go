@@ -131,8 +131,7 @@ func main() {
 	}
 }
 
-// runServe parses optional --addr / --tunneld-addr and starts the HTTP
-// MCP server.
+// runServe parses optional --addr and starts the HTTP MCP server.
 func runServe(args []string) {
 	cfg := daemon.Config{Addr: defaultAddr, Version: version}
 	for len(args) > 0 {
@@ -143,13 +142,6 @@ func runServe(args []string) {
 				os.Exit(2)
 			}
 			cfg.Addr = args[1]
-			args = args[2:]
-		case "--tunneld-addr":
-			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "serve: --tunneld-addr requires a value")
-				os.Exit(2)
-			}
-			cfg.TunneldAddr = args[1]
 			args = args[2:]
 		default:
 			fmt.Fprintf(os.Stderr, "serve: unknown flag %q\n", args[0])
@@ -343,6 +335,6 @@ func restoreKeepAwake(dev string) error {
 			return fmt.Errorf("KeepAwake on Android is a no-op (OS-native — enable Settings → Developer options → Stay awake)")
 		}
 	}
-	adapter := device.NewIOSAdapter()
+	adapter := device.NewIOSAdapter(nil) // LaunchKeepAwake uses xcrun devicectl, not the bridge
 	return adapter.LaunchKeepAwake(id)
 }

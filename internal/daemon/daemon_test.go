@@ -22,9 +22,8 @@ import (
 func mcpTestServer(t *testing.T) (base string, teardown func()) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	handler, _, _, _ := Build(Config{
-		Version:     "test",
-		TunneldAddr: "127.0.0.1:1", // guaranteed-unreachable so probe fails quietly
+	handler, _, _ := Build(Config{
+		Version: "test",
 	})
 	ts := httptest.NewServer(handler)
 	return ts.URL, ts.Close
@@ -143,7 +142,6 @@ func TestRun_ShutsDownOnContextCancel(t *testing.T) {
 		done <- Run(ctx, Config{
 			Addr:             ":0",
 			Version:          "test",
-			TunneldAddr:      "127.0.0.1:1",
 			DisableAutoAwake: true,
 		})
 	}()

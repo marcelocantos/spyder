@@ -152,17 +152,9 @@ func (s *stubAdapter) LogStream(ctx context.Context, id string, filter device.Lo
 	return s.logStream(ctx, id, filter, out)
 }
 
-// stubTunneld is a TunneldGate with controllable Require behaviour.
-type stubTunneld struct {
-	requireErr error
-}
-
-func (s *stubTunneld) Require() error { return s.requireErr }
-func (s *stubTunneld) Addr() string   { return "stub:0" }
-
 // newHandlerWithStubs returns a Handler wired up with the given stubs.
 // The inventory is the one newTestHandler would populate (via HOME).
-func newHandlerWithStubs(t *testing.T, ios, android device.Adapter, tun TunneldGate) *Handler {
+func newHandlerWithStubs(t *testing.T, ios, android device.Adapter) *Handler {
 	t.Helper()
 	h := newTestHandler(t) // sets HOME, loads testInventory
 	if ios != nil {
@@ -171,7 +163,6 @@ func newHandlerWithStubs(t *testing.T, ios, android device.Adapter, tun TunneldG
 	if android != nil {
 		h.android = android
 	}
-	h.tunneld = tun
 	return h
 }
 
@@ -224,7 +215,7 @@ func TestHandleDevices_All_BothOK(t *testing.T) {
 	android := &stubAdapter{list: func() ([]device.Info, error) {
 		return []device.Info{{UUID: "R5CR112X76K", Platform: "android"}}, nil
 	}}
-	h := newHandlerWithStubs(t, ios, android, nil)
+	h := newHandlerWithStubs(t, ios, android)
 
 	r := dispatchJSON(t, h, "devices", map[string]any{"platform": "all"})
 	if r.IsError {
@@ -248,7 +239,7 @@ func TestHandleDevices_All_IOSErrors_SurfacedInWrapper(t *testing.T) {
 	android := &stubAdapter{list: func() ([]device.Info, error) {
 		return []device.Info{{UUID: "R5CR112X76K", Platform: "android"}}, nil
 	}}
-	h := newHandlerWithStubs(t, ios, android, nil)
+	h := newHandlerWithStubs(t, ios, android)
 
 	r := dispatchJSON(t, h, "devices", map[string]any{"platform": "all"})
 	if r.IsError {
@@ -267,7 +258,7 @@ func TestHandleDevices_IOSOnly_HardFailOnError(t *testing.T) {
 	ios := &stubAdapter{list: func() ([]device.Info, error) {
 		return nil, errors.New("boom")
 	}}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "devices", map[string]any{"platform": "ios"})
 	if !r.IsError {
@@ -309,7 +300,7 @@ func TestHandleResolve_Passthrough(t *testing.T) {
 
 func TestHandleKeepAwake_IOS(t *testing.T) {
 	ios := &stubAdapter{launchKeepAwake: func(id string) error { return nil }}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "keepawake", map[string]any{"device": "Pippa"})
 	if r.IsError {
 		t.Fatalf("keepawake iOS should succeed; body=%s", resultText(t, &r))
@@ -321,7 +312,7 @@ func TestHandleKeepAwake_IOS(t *testing.T) {
 
 func TestHandleKeepAwake_Android_NoOpMessage(t *testing.T) {
 	android := &stubAdapter{launchKeepAwake: func(id string) error { return nil }}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "keepawake", map[string]any{"device": "Raspberry"})
 	if r.IsError {
 		t.Fatalf("keepawake Android should succeed (no-op); body=%s", resultText(t, &r))
@@ -340,7 +331,7 @@ func TestHandleDeviceState(t *testing.T) {
 	ios := &stubAdapter{state: func(id string) (device.State, error) {
 		return device.State{BatteryLevel: &battery, Charging: &charging}, nil
 	}}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "device_state", map[string]any{"device": "Pippa"})
 	if r.IsError {
 		t.Fatalf("device_state should succeed; body=%s", resultText(t, &r))
@@ -359,7 +350,7 @@ func TestHandleDeviceState(t *testing.T) {
 func TestHandleScreenshot_ReturnsImage(t *testing.T) {
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03}
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
-	h := newHandlerWithStubs(t, ios, nil, &stubTunneld{}) // tunneld.Require() returns nil
+	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
 	if r.IsError {
@@ -384,21 +375,6 @@ func TestHandleScreenshot_ReturnsImage(t *testing.T) {
 	}
 }
 
-func TestHandleScreenshot_TunneldGate(t *testing.T) {
-	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) {
-		t.Fatal("Screenshot should NOT be called when tunneld.Require fails")
-		return nil, nil
-	}}
-	h := newHandlerWithStubs(t, ios, nil, &stubTunneld{requireErr: errors.New("tunneld down")})
-	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
-	if !r.IsError {
-		t.Fatalf("expected isError=true when tunneld gate fails; got %+v", r)
-	}
-	if !strings.Contains(resultText(t, &r), "tunneld down") {
-		t.Errorf("expected tunneld error in body; got %s", resultText(t, &r))
-	}
-}
-
 // --- handleListApps, handleLaunchApp, handleTerminateApp ---------------
 
 func TestHandleListApps(t *testing.T) {
@@ -408,7 +384,7 @@ func TestHandleListApps(t *testing.T) {
 			{BundleID: "com.baz.qux"},
 		}, nil
 	}}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "list_apps", map[string]any{"device": "Pippa"})
 	if r.IsError {
 		t.Fatalf("list_apps should succeed; body=%s", resultText(t, &r))
@@ -419,29 +395,32 @@ func TestHandleListApps(t *testing.T) {
 	}
 }
 
-func TestHandleLaunchApp_TunneldGateOnIOS(t *testing.T) {
+func TestHandleLaunchApp_IOS(t *testing.T) {
+	calls := 0
 	ios := &stubAdapter{launchApp: func(id, bundle string) error {
-		t.Fatal("LaunchApp should NOT be called when tunneld gate fails")
+		calls++
 		return nil
 	}}
-	h := newHandlerWithStubs(t, ios, nil, &stubTunneld{requireErr: errors.New("tunneld down")})
+	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "launch_app", map[string]any{"device": "Pippa", "bundle_id": "com.foo"})
-	if !r.IsError {
-		t.Fatalf("expected isError=true when tunneld gate fails; got %+v", r)
+	if r.IsError {
+		t.Fatalf("launch_app iOS should succeed; body=%s", resultText(t, &r))
+	}
+	if calls != 1 {
+		t.Errorf("LaunchApp calls = %d; want 1", calls)
 	}
 }
 
-func TestHandleLaunchApp_AndroidNoTunneldGate(t *testing.T) {
+func TestHandleLaunchApp_Android(t *testing.T) {
 	calls := 0
 	android := &stubAdapter{launchApp: func(id, bundle string) error {
 		calls++
 		return nil
 	}}
-	// Note: tunneld.Require would fail, but it's not called for Android.
-	h := newHandlerWithStubs(t, nil, android, &stubTunneld{requireErr: errors.New("tunneld down")})
+	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "launch_app", map[string]any{"device": "Raspberry", "bundle_id": "com.foo"})
 	if r.IsError {
-		t.Fatalf("Android launch_app shouldn't be gated by tunneld; body=%s", resultText(t, &r))
+		t.Fatalf("Android launch_app should succeed; body=%s", resultText(t, &r))
 	}
 	if calls != 1 {
 		t.Errorf("LaunchApp calls = %d; want 1", calls)
@@ -457,7 +436,7 @@ func TestHandleTerminateApp(t *testing.T) {
 		}
 		return nil
 	}}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "terminate_app", map[string]any{
 		"device":    "Raspberry",
 		"bundle_id": "com.squz.tiltbuggy",
@@ -491,7 +470,7 @@ func TestHandleInstallApp_Success(t *testing.T) {
 		}
 		return nil
 	}}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "install_app", map[string]any{
 		"device": "Pippa",
 		"path":   appPath,
@@ -548,7 +527,7 @@ func TestHandleUninstallApp_Success(t *testing.T) {
 		}
 		return nil
 	}}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "uninstall_app", map[string]any{
 		"device":    "Raspberry",
 		"bundle_id": "com.squz.tiltbuggy",
@@ -600,7 +579,7 @@ func TestHandleDeployApp_Success(t *testing.T) {
 			return 9999, nil
 		},
 	}
-	h := newHandlerWithStubs(t, ios, nil, &stubTunneld{})
+	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "deploy_app", map[string]any{
 		"device":    "Pippa",
 		"path":      appPath,
@@ -639,7 +618,7 @@ func TestHandleDeployApp_InstallFailFast(t *testing.T) {
 		},
 		appPID: func(id, bundle string) (int, error) { return 1, nil },
 	}
-	h := newHandlerWithStubs(t, ios, nil, &stubTunneld{})
+	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "deploy_app", map[string]any{
 		"device":    "Pippa",
 		"path":      appPath,
@@ -772,7 +751,7 @@ func TestHandleNetwork_ApplyProfile(t *testing.T) {
 			return nil
 		},
 	}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 	// Raspberry is in the test inventory as an Android device.
 	r := dispatchJSON(t, h, "network", map[string]any{
 		"device":  "Raspberry",
@@ -798,7 +777,7 @@ func TestHandleNetwork_Clear(t *testing.T) {
 			return nil
 		},
 	}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "network", map[string]any{
 		"device": "Raspberry",
 		"owner":  "test",
@@ -817,7 +796,7 @@ func TestHandleNetwork_Clear(t *testing.T) {
 
 func TestHandleNetwork_MissingProfileAndClear(t *testing.T) {
 	android := &stubAdapter{}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "network", map[string]any{
 		"device": "Raspberry",
 		"owner":  "test",
@@ -830,7 +809,7 @@ func TestHandleNetwork_MissingProfileAndClear(t *testing.T) {
 
 func TestHandleNetwork_BothProfileAndClear(t *testing.T) {
 	android := &stubAdapter{}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "network", map[string]any{
 		"device":  "Raspberry",
 		"owner":   "test",
@@ -844,7 +823,7 @@ func TestHandleNetwork_BothProfileAndClear(t *testing.T) {
 
 func TestHandleNetwork_UnknownProfile(t *testing.T) {
 	android := &stubAdapter{}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "network", map[string]any{
 		"device":  "Raspberry",
 		"owner":   "test",
@@ -871,7 +850,7 @@ func TestHandleNetwork_ClearedOnRelease(t *testing.T) {
 			return nil
 		},
 	}
-	h := newHandlerWithStubs(t, nil, android, nil)
+	h := newHandlerWithStubs(t, nil, android)
 
 	// Wire up a reservation store so reserve/release work.
 	inv := h.inventory

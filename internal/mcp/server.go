@@ -48,7 +48,6 @@ type Handler struct {
 	inventory    *inventory.Store
 	ios          device.Adapter
 	android      device.Adapter
-	tunneld      TunneldGate
 	reservations *reservations.Store
 	runs         *runs.Store
 	bls          *baselines.Store
@@ -62,13 +61,6 @@ type Handler struct {
 	// recently applied network profile for that device. Cleared when
 	// the owning reservation is released.
 	networkByDevice map[string]appliedNetwork
-}
-
-// TunneldGate is satisfied by *tunneld.Client. The small interface lets
-// tests inject a fake without a circular package dependency.
-type TunneldGate interface {
-	Require() error
-	Addr() string
 }
 
 // HandlerOption configures a Handler at construction.
@@ -123,21 +115,25 @@ func WithPoolManager(pm PoolManager) HandlerOption {
 	return func(h *Handler) { h.poolMgr = pm }
 }
 
-// WithPMD3Bridge injects the pmd3-bridge client (🎯T25). When nil, tools that
-// depend on the bridge fall back to the existing shell-out paths.
+// WithPMD3Bridge injects the pmd3-bridge client (🎯T25). The iOS adapter is
+// reconstructed with the bridge so all iOS operations route through it.
+// When nil, the iOS adapter has no bridge and returns a clear error for
+// operations that require it.
 func WithPMD3Bridge(client *pmd3bridge.Client) HandlerOption {
-	return func(h *Handler) { h.bridge = client }
+	return func(h *Handler) {
+		h.bridge = client
+		// Reconstruct the iOS adapter with the bridge so it is available
+		// for all iOS tool handlers.
+		h.ios = device.NewIOSAdapter(client)
+	}
 }
 
-// NewHandler creates a new spyder tool handler. tun may be nil for
-// handler instances that never call DVT-dependent tools; tools that
-// need it will return a clear error when tun is missing.
-func NewHandler(tun TunneldGate, opts ...HandlerOption) *Handler {
+// NewHandler creates a new spyder tool handler.
+func NewHandler(opts ...HandlerOption) *Handler {
 	h := &Handler{
 		inventory:       inventory.New(),
-		ios:             device.NewIOSAdapter(),
+		ios:             device.NewIOSAdapter(nil), // bridge injected via WithPMD3Bridge
 		android:         device.NewAndroidAdapter(),
-		tunneld:         tun,
 		recordings:      recording.NewRegistry(),
 		networkByDevice: map[string]appliedNetwork{},
 	}
@@ -150,12 +146,11 @@ func NewHandler(tun TunneldGate, opts ...HandlerOption) *Handler {
 // NewHandlerWithAdapters creates a handler with explicit adapter overrides.
 // Useful for tests that inject stub adapters without going through HandlerOption
 // indirection. Either ios or android may be nil to use the real adapter.
-func NewHandlerWithAdapters(tun TunneldGate, ios, android device.Adapter) *Handler {
+func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 	h := &Handler{
 		inventory: inventory.New(),
-		ios:       device.NewIOSAdapter(),
+		ios:       device.NewIOSAdapter(nil),
 		android:   device.NewAndroidAdapter(),
-		tunneld:   tun,
 	}
 	if ios != nil {
 		h.ios = ios

@@ -26,7 +26,7 @@ const testInventory = `[
 ]`
 
 // newTestHandler sets HOME to a temp dir containing testInventory
-// and returns a Handler backed by it. tunneld is nil.
+// and returns a Handler backed by it.
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	tmp := t.TempDir()
@@ -38,7 +38,7 @@ func newTestHandler(t *testing.T) *Handler {
 	if err := os.WriteFile(filepath.Join(dir, "inventory.json"), []byte(testInventory), 0o600); err != nil {
 		t.Fatalf("write inventory: %v", err)
 	}
-	return NewHandler(nil)
+	return NewHandler()
 }
 
 func TestResolveAdapter_InventoryIOS(t *testing.T) {
