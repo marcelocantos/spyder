@@ -475,10 +475,11 @@ targets:
     achieved: 2026-04-19
   T23:
     name: Reservation API supports fuzzy device requests by class and capability predicates
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - reserve accepts a `selector` argument as an alternative to a literal `device` — a structured predicate over (platform, model-family, OS-min, OS-max, orientation-capable, tags, and free-form attribute matchers)
     - 'Selector grammar is documented in agents-guide.md with worked examples (e.g. `{platform: ios, model_family: ipad}`, `{platform: android, api_min: 33, tags: [arm64]}`)'
@@ -502,12 +503,14 @@ targets:
     - ergonomics
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-21
   T24:
     name: Sim/emu pool with two readiness tiers and configurable linger-on-release
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - 'Pool catalogue at ~/.spyder/pool.yaml (or similar) declares stock sim/emu templates: device-type + runtime/system-image + tags + min/max desired-ready counts + per-template linger duration + per-template warm-pool size'
     - |-
@@ -548,6 +551,33 @@ targets:
     - linger
     origin: manual
     discovered: 2026-04-19
+    achieved: 2026-04-21
+  T25:
+    name: Keep-awake is held by a pmd3 PowerAssertionService handle from a bundled bridge, not by launching an on-device companion app
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - 'The iOS KeepAwake companion app and all its supporting machinery are deleted from spyder: the ios/KeepAwake/ project directory, the xcodegen/xcodebuild/devicectl install code path in internal/autoawake/autoawake.go (deployKeepAwake, findBuiltApp, findKeepAwakeProject), device.KeepAwakeBundleID and all references, and the SPYDER_KEEPAWAKE_PROJECT env var. The companion-app concept no longer exists in the codebase.'
+    - 'A Python package in this repo (under bridge/, python/, or similar) imports pymobiledevice3 as a library — not via its CLI — and exposes a clean named-method API covering every pmd3 operation spyder needs: list_devices, list_apps, launch_app, kill_app, pid_for_bundle, battery, screenshot, crash_reports_list, crash_reports_pull, and critically: acquire_power_assertion, refresh_power_assertion, release_power_assertion.'
+    - The bridge speaks HTTP over a Unix domain socket (not TCP, not stdio). FastAPI + uvicorn with --uds is the expected stack. Socket path is passed as a CLI argument at bridge startup. The bridge writes 'ready\n' to stdout once bound and listening, then serves for its lifetime.
+    - The bridge is bundled as a standalone executable via PyInstaller --onedir. Build artefact lives under build/ or dist/ during development; Homebrew formula installs it under $(prefix)/libexec/pmd3-bridge/.
+    - Spyder's Go daemon spawns exactly one bridge process at startup, watches it, restarts it on unexpected exit. Bridge lifetime matches the daemon's — SIGTERM triggers graceful shutdown with in-flight request drain + release of all held assertions. The tunneld supervision currently running as a separate 'pymobiledevice3 remote tunneld' subprocess is absorbed into the bridge process so pmd3 state (tunnel handles, lockdown sessions) is shared across the bridge's call surface.
+    - 'autoawake.handleNewDevice is rewritten around assertions: on new-device event, acquire a PreventUserIdleSystemSleep assertion via the bridge, register a refresh task before the timeout expires (e.g. a goroutine ticking at interval = timeout/2), and release on device-disconnect or daemon-shutdown. The install-check / deploy / launch / retry-on-lock ladder is gone. Device-locked state is irrelevant because holding the assertion prevents auto-lock in the first place.'
+    - internal/device/ios.go no longer calls exec.Command("pymobiledevice3", ...) anywhere. Every pmd3 operation goes through an IOSBridgeClient that wraps http.Client with a Unix-socket DialContext and typed request/response structs. exec.LookPath("pymobiledevice3") checks and the 'pymobiledevice3 not found in PATH' error paths are deleted.
+    - 'The Homebrew formula installs the bridge bundle as part of the spyder package; the launchd plist no longer needs ~/.py/bin on PATH for pmd3 to be found. Spyder resolves the bridge binary via os.Executable() relative path (or a SPYDER_PMD3_BRIDGE env var override for development). Autoawake''s ''install check failed: pymobiledevice3 not found in PATH'' log line can no longer occur — because there is no install check.'
+    - 'End-to-end test: plug in a fresh iOS device with no prior spyder interaction, observe spyder''s log shows ''autoawake: assertion acquired'' within ~5 seconds of plug-in, leave the device idle for longer than its normal auto-lock interval (e.g. 2 minutes if set to 1), and confirm the device is still unlocked. No app is installed on the device by spyder during this test.'
+    context: 'Surfaced 2026-04-21 while investigating why two freshly-plugged-in iOS devices had no keep-awake running.\n\nThe proximate bug: the Homebrew launchd plist for spyder sets PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \u2014 which does NOT include the user''s ~/.py/bin where pymobiledevice3 actually lives. Consequence: every autoawake install-check fails at the first pmd3 call (''pymobiledevice3 apps list: exec: \"pymobiledevice3\": executable file not found in $PATH''), handleNewDevice bails at autoawake.go:184 before reaching the deploy branch, and the whole ''plug in \u2192 auto-install-and-launch KeepAwake'' design never actually executes. Demonstrated with two iPads (Jevons, Pippa) on 2026-04-21 \u2014 neither had KeepAwake running despite being physically connected and spyder being healthy.\n\nThe deeper realisation: the entire on-device app approach was the wrong design. pymobiledevice3 already exposes PowerAssertionService (pymobiledevice3/services/power_assertion.py) which wraps Apple''s IOPMAssertionCreateWithName \u2014 the same API Xcode uses during debugging to prevent device sleep. Assertion types include PreventUserIdleSystemSleep (exactly what KeepAwake was emulating) and PreventSystemSleep. It''s a lockdown/RSD service, not a DVT service \u2014 so it doesn''t even need developer-mode / DDI mounting. Works on any paired device.\n\nArchitectural decisions made during the investigation:\n- HTTP-over-Unix-socket chosen over stdio JSON-RPC: standard http.Client handles concurrent requests from goroutines without a demuxer, framing is solved, curl --unix-socket gives a free debug path. Stdio JSON-RPC would require a ~200-line Go-side demuxer and custom framing that''s fragile under buffer flush errors.\n- Pre-built .ipa deploy rejected: signing + provisioning profile constraints mean you can only pre-sign for known UDIDs, which defeats the auto-deploy-on-plug-in use case. This is now moot because there is no app to deploy.\n- Embedding CPython via cgo rejected: same Go-Python interop hairball that made the earlier attempt hard, plus GIL and Python-version coupling at build time. Also moot because the bridge is a separate process.\n- Full rewrite to go-ios (https://github.com/danielpaulus/go-ios) deferred: cleanest long-term outcome \u2014 eliminates Python entirely \u2014 but 1\u20132 weeks of porting effort and loses pmd3''s fast cadence on new iOS versions. Worth keeping on the horizon but not in T25''s scope.\n\nThe bridge design is still the right architecture because spyder uses pmd3 for many things beyond power assertions (list_apps, screenshot, crash reports, battery, launch/kill for non-KeepAwake apps, etc.). Moving all those off the PATH-dependent CLI shell-out path to a clean HTTP API is the infrastructural win. The power assertion migration is the immediate functional payoff that lets us delete a significant chunk of code (the whole KeepAwake app project + deploy pipeline) rather than just rewire it.\n\nOne empirical question to verify during implementation: confirm the assertion survives a brief lockdown disconnect+reconnect, or if the connection drops, how long the window is before auto-lock could kick in. If there''s a risky window, pair with PreventSystemSleep while actively running tests, not just during idle supervision.\n\nEstimated effort revised downward from 4\u20136 days to 3\u20135 days because the deploy pipeline deletion is substantial and the assertion API is tiny.'
+    tags:
+    - pmd3
+    - bridge
+    - power-assertion
+    - architecture
+    - reliability
+    - dependency-hygiene
+    origin: manual
+    discovered: 2026-04-21
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: achieved
