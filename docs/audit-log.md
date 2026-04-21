@@ -48,6 +48,23 @@ maintenance activities. Append-only — newest entries at the bottom.
   removal once the KeepAwake Xcode project is go:embedded into the
   binary. Published for darwin-arm64, linux-amd64, linux-arm64.
 
+## 2026-04-22 — /release v0.6.0
+
+- **PR**: #21 (T23/T24), #22 (T25)
+- **Outcome**: Architectural release. Shipped 🎯T23 (fuzzy reservation via
+  selector predicates), 🎯T24 (sim/emu pool with two readiness tiers and
+  server-owned linger-on-release), and 🎯T25 (bundled pmd3 bridge —
+  Python FastAPI over Unix socket + Go supervisor + typed client;
+  replaces every `exec.Command("pymobiledevice3", ...)` in the daemon;
+  keep-awake is held via pmd3's `PowerAssertionService`, retiring the
+  on-device KeepAwake companion app + its xcodegen/xcodebuild/devicectl
+  deploy pipeline). Deleted `internal/tunneld/` (supervision absorbed
+  into the bridge); `--tunneld-addr` flag removed from `spyder serve`.
+  Release tarballs now ship `bin/spyder` + `libexec/pmd3-bridge/` so
+  `brew services start spyder` works on a fresh machine without any
+  `launchctl setenv PATH` surgery. Published for darwin-arm64,
+  linux-amd64, linux-arm64.
+
 ## 2026-04-19 — /release v0.5.0
 
 - **PR**: #20 (parallel fan-out), plus direct retire/prep commits

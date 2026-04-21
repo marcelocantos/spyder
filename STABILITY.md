@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.5.0`.
+Snapshot as of `v0.6.0`.
 
 ## Interaction surface catalogue
 
@@ -66,16 +66,15 @@ Snapshot as of `v0.5.0`.
 | `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); field set and timestamp precision may evolve |
 
 Error classification is part of the contract: `device not connected`, `app
-not installed`, `app not running`, `'Locked'`, `'Security'` (trust), and
-`tunneld unavailable` are all surfaced as distinct tool-error text. Callers
-can match on these phrases.
+not installed`, `app not running`, `'Locked'`, and `'Security'` (trust) are
+all surfaced as distinct tool-error text. Callers can match on these phrases.
 
 ### CLI subcommands
 
 | Invocation | Behaviour | Stability |
 |---|---|---|
 | `spyder` (no args) | Prints usage to stdout. | Stable |
-| `spyder serve [--addr :PORT] [--tunneld-addr HOST:PORT]` | HTTP MCP server + auto-awake supervisor. Blocks until SIGINT/SIGTERM. | Stable |
+| `spyder serve [--addr :PORT]` | HTTP MCP server + auto-awake supervisor + bundled pmd3 bridge. Blocks until SIGINT/SIGTERM. | Stable |
 | `spyder run [--device ALIAS\|-d ALIAS] [--as OWNER] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. | Stable |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |
@@ -279,9 +278,6 @@ builds. **Stable.**
   Name/version parity via per-package `dumpsys` is feasible but deferred.
 - **Android thermal state.** Not yet wired — `dumpsys thermalservice` is
   available, just not parsed.
-- **Tunneld child-process supervision.** `--supervise-tunneld` was specified
-  in 🎯T7 but deferred. Currently spyder assumes an externally-managed
-  tunneld. Blocks turnkey installs where no external manager exists.
 - **Tests for shell-out paths.** 105 test functions cover all pure
   logic (inventory, parsers, classifiers, MCP dispatch, reservations,
   daemon HTTP roundtrip). Shell-out orchestration in `internal/device`
