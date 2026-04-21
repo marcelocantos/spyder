@@ -580,10 +580,11 @@ targets:
     discovered: 2026-04-21
   T25.1:
     name: Python bridge serves pmd3 operations over HTTP+Unix-socket
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - bridge/ Python package (uv-managed, pyproject.toml) with fastapi + uvicorn + pymobiledevice3 as direct deps
     - Entrypoint accepts --socket <path> and binds a uvicorn UDS listener there; exits non-zero if the path is already bound or the parent directory isn't writable
@@ -603,6 +604,7 @@ targets:
     - fastapi
     origin: manual
     discovered: 2026-04-21
+    achieved: 2026-04-21
   T25.2:
     name: Go daemon owns bridge lifecycle and exposes a typed client
     status: identified
