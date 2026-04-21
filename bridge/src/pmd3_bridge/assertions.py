@@ -137,7 +137,7 @@ class PowerAssertionManager:
             from pymobiledevice3.lockdown import create_using_usbmux
             from pymobiledevice3.services.power_assertion import PowerAssertionService
 
-            lc = create_using_usbmux(serial=udid)
+            lc = await create_using_usbmux(serial=udid)
             svc = PowerAssertionService(lockdown=lc)
             kwargs: dict = {"type_": type_, "name": name, "timeout": timeout_sec}
             if details is not None:

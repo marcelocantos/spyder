@@ -82,7 +82,7 @@ def _set_services(svc: Any) -> None:  # noqa: ANN401  (intentional escape hatch)
 @app.post("/v1/list_devices", response_model=ListDevicesResponse)
 async def list_devices(_req: Request) -> Any:
     try:
-        devices = _services.list_devices()
+        devices = await _services.list_devices()
         return ListDevicesResponse(devices=devices)
     except BridgeError as exc:
         return _classify(exc)
@@ -91,7 +91,7 @@ async def list_devices(_req: Request) -> Any:
 @app.post("/v1/list_apps", response_model=ListAppsResponse)
 async def list_apps(body: ListAppsRequest) -> Any:
     try:
-        apps = _services.list_apps(body.udid)
+        apps = await _services.list_apps(body.udid)
         return ListAppsResponse(apps=apps)
     except BridgeError as exc:
         return _classify(exc)
@@ -100,7 +100,7 @@ async def list_apps(body: ListAppsRequest) -> Any:
 @app.post("/v1/launch_app", response_model=LaunchAppResponse)
 async def launch_app(body: LaunchAppRequest) -> Any:
     try:
-        pid = _services.launch_app(body.udid, body.bundle_id)
+        pid = await _services.launch_app(body.udid, body.bundle_id)
         return LaunchAppResponse(pid=pid)
     except BridgeError as exc:
         return _classify(exc)
@@ -109,7 +109,7 @@ async def launch_app(body: LaunchAppRequest) -> Any:
 @app.post("/v1/kill_app", response_model=KillAppResponse)
 async def kill_app(body: KillAppRequest) -> Any:
     try:
-        _services.kill_app(body.udid, body.bundle_id)
+        await _services.kill_app(body.udid, body.bundle_id)
         return KillAppResponse()
     except BridgeError as exc:
         return _classify(exc)
@@ -118,7 +118,7 @@ async def kill_app(body: KillAppRequest) -> Any:
 @app.post("/v1/pid_for_bundle", response_model=PidForBundleResponse)
 async def pid_for_bundle(body: PidForBundleRequest) -> Any:
     try:
-        pid = _services.pid_for_bundle(body.udid, body.bundle_id)
+        pid = await _services.pid_for_bundle(body.udid, body.bundle_id)
         return PidForBundleResponse(pid=pid)
     except BridgeError as exc:
         return _classify(exc)
@@ -127,7 +127,7 @@ async def pid_for_bundle(body: PidForBundleRequest) -> Any:
 @app.post("/v1/battery", response_model=BatteryResponse)
 async def battery(body: BatteryRequest) -> Any:
     try:
-        return _services.battery(body.udid)
+        return await _services.battery(body.udid)
     except BridgeError as exc:
         return _classify(exc)
 
@@ -135,7 +135,7 @@ async def battery(body: BatteryRequest) -> Any:
 @app.post("/v1/screenshot", response_model=ScreenshotResponse)
 async def screenshot(body: ScreenshotRequest) -> Any:
     try:
-        png_b64 = _services.screenshot(body.udid)
+        png_b64 = await _services.screenshot(body.udid)
         return ScreenshotResponse(png_b64=png_b64)
     except BridgeError as exc:
         return _classify(exc)
@@ -144,7 +144,7 @@ async def screenshot(body: ScreenshotRequest) -> Any:
 @app.post("/v1/crash_reports_list", response_model=CrashReportsListResponse)
 async def crash_reports_list(body: CrashReportsListRequest) -> Any:
     try:
-        reports = _services.crash_reports_list(body.udid, body.since_iso8601, body.process)
+        reports = await _services.crash_reports_list(body.udid, body.since_iso8601, body.process)
         return CrashReportsListResponse(reports=reports)
     except BridgeError as exc:
         return _classify(exc)
@@ -153,7 +153,7 @@ async def crash_reports_list(body: CrashReportsListRequest) -> Any:
 @app.post("/v1/crash_reports_pull", response_model=CrashReportsPullResponse)
 async def crash_reports_pull(body: CrashReportsPullRequest) -> Any:
     try:
-        content = _services.crash_reports_pull(body.udid, body.name)
+        content = await _services.crash_reports_pull(body.udid, body.name)
         return CrashReportsPullResponse(content=content)
     except BridgeError as exc:
         return _classify(exc)

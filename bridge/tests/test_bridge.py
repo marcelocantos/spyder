@@ -44,7 +44,7 @@ def _make_fake_services(
 ) -> types.ModuleType:
     svc = types.SimpleNamespace()
 
-    def list_devices() -> list[DeviceInfo]:
+    async def list_devices() -> list[DeviceInfo]:
         if not paired:
             raise BridgeError("device_not_paired", "Not paired")
         return [
@@ -56,32 +56,32 @@ def _make_fake_services(
             )
         ]
 
-    def list_apps(udid: str) -> list[AppInfo]:
+    async def list_apps(udid: str) -> list[AppInfo]:
         if not paired:
             raise BridgeError("device_not_paired", "Not paired")
         return [AppInfo(bundle_id=FAKE_BUNDLE, name="Test App", version="1.0")]
 
-    def launch_app(udid: str, bundle_id: str) -> int:
+    async def launch_app(udid: str, bundle_id: str) -> int:
         if not installed:
             raise BridgeError("bundle_not_installed", "Not installed")
         return FAKE_PID
 
-    def kill_app(udid: str, bundle_id: str) -> None:
+    async def kill_app(udid: str, bundle_id: str) -> None:
         if not installed:
             raise BridgeError("bundle_not_installed", "Not installed")
 
-    def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
+    async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
         if not installed:
             return None
         return FAKE_PID
 
-    def battery(udid: str) -> BatteryResponse:
+    async def battery(udid: str) -> BatteryResponse:
         return BatteryResponse(level=battery_level, charging=battery_charging)
 
-    def screenshot(udid: str) -> str:
+    async def screenshot(udid: str) -> str:
         return base64.b64encode(b"\x89PNG fake").decode()
 
-    def crash_reports_list(
+    async def crash_reports_list(
         udid: str,
         since_iso8601: Optional[str] = None,
         process: Optional[str] = None,
@@ -94,7 +94,7 @@ def _make_fake_services(
             )
         ]
 
-    def crash_reports_pull(udid: str, name: str) -> str:
+    async def crash_reports_pull(udid: str, name: str) -> str:
         return "crash report content"
 
     for fn in [
