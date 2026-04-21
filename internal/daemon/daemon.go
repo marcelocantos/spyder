@@ -270,7 +270,7 @@ func resolveBridgeBinary() string {
 	// `bin/spyder` from the repo root.
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
-		for i := 0; i < 5; i++ {
+		for range 5 {
 			candidate := filepath.Join(dir, "bridge", "dist", "pmd3-bridge", "pmd3-bridge")
 			if _, err := os.Stat(candidate); err == nil {
 				slog.Info("pmd3-bridge: using development build", "path", candidate)
@@ -303,11 +303,6 @@ func runsPolicyFromEnv() runs.Policy {
 		p.MaxSize = int64(gb) * 1024 * 1024 * 1024
 	}
 	return p
-}
-
-// isNotExist returns true when err wraps os.ErrNotExist (file not found).
-func isNotExist(err error) bool {
-	return errors.Is(err, os.ErrNotExist)
 }
 
 func envInt(key string, fallback int) int {

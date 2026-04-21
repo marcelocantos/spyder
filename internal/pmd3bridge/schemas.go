@@ -75,9 +75,9 @@ type screenshotResponse struct {
 }
 
 type crashReportsListRequest struct {
-	UDID        string  `json:"udid"`
-	SinceISO    *string `json:"since_iso8601,omitempty"`
-	Process     *string `json:"process,omitempty"`
+	UDID     string  `json:"udid"`
+	SinceISO *string `json:"since_iso8601,omitempty"`
+	Process  *string `json:"process,omitempty"`
 }
 
 type crashReportsListResponse struct {
