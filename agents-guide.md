@@ -584,7 +584,7 @@ optional, configured via environment:
 
 Set either to `0` to disable that bound. When spyder is run as a
 Homebrew service, use `launchctl setenv` to inject env vars into the
-service (see **1. PATH** above for the pattern).
+service (e.g. `launchctl setenv SPYDER_RUNS_MAX_AGE_DAYS 60`).
 
 ## Network condition shaping
 
@@ -766,24 +766,12 @@ loopback bind is deliberate — external exposure is opt-in via
 ### Brew-services environment (launchd)
 
 When spyder runs as a Homebrew service, launchd doesn't inherit your
-shell env. The v0.3+ formula sets a default `PATH` that covers
-`/opt/homebrew/bin` and the usual system paths. One thing may still
-need manual setup:
-
-**1. Non-Homebrew `pymobiledevice3`.** If your install lives outside
-`/opt/homebrew/bin` (e.g. `pipx` in `~/.local/bin`, or a `uv`-managed
-venv in `~/.py/bin`), either add a Homebrew-blessed install (preferred)
-or override `PATH` for the spyder service:
-
-```bash
-launchctl setenv PATH "/opt/homebrew/bin:/Users/you/.py/bin:/usr/bin:/bin"
-brew services restart spyder
-```
-
-`launchctl setenv` affects every user-level launchd job; an alternative
-is editing `~/Library/LaunchAgents/homebrew.mxcl.spyder.plist` directly
-with an `EnvironmentVariables` block (but Homebrew rewrites that plist
-on reinstall, so it's transient).
+shell env. The formula sets a default `PATH` that covers
+`/opt/homebrew/bin` and the usual system paths. No additional
+configuration is needed for the pmd3 bridge — the bridge binary is
+bundled at `$(brew --prefix)/libexec/pmd3-bridge/pmd3-bridge` and
+resolved relative to the spyder executable automatically. No `launchctl
+setenv PATH` surgery required on a fresh machine.
 
 ## Screen recording
 
