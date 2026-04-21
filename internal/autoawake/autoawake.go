@@ -1,33 +1,26 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package autoawake supervises iOS devices: whenever a paired iOS
-// device appears via tunneld, ensure the KeepAwake companion app is
-// installed, running, and — if newly launched — fire a macOS
-// notification so the user knows to unlock the device if needed.
+// Package autoawake supervises iOS devices: whenever a paired iOS device
+// appears (via the pmd3 bridge device list), it acquires a power assertion on
+// the device to prevent auto-lock, refreshes it periodically, and releases it
+// when the device disconnects or the daemon shuts down.
 //
-// The supervisor is started by daemon.Start. It runs for the lifetime
-// of the server and exits on context cancel.
+// The supervisor is started by daemon.Start. It runs for the lifetime of the
+// server and exits on context cancel.
 package autoawake
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
-	"github.com/marcelocantos/spyder/internal/notify"
+	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 	"github.com/marcelocantos/spyder/internal/reservations"
-	"github.com/marcelocantos/spyder/internal/tunneld"
 )
 
 // OwnerID is the reservation owner identity used by auto-awake.
@@ -35,26 +28,21 @@ import (
 const OwnerID = "autoawake"
 
 const (
-	pollInterval             = 2 * time.Second
-	settleDelay              = 3 * time.Second
-	retryWhileLockedInterval = 10 * time.Second
-	retryWhileLockedBudget   = 30 // ~5 minutes of retries
+	pollInterval     = 2 * time.Second
+	assertionTimeout = 300 // seconds (5 minutes); refresh at half this interval
+	refreshInterval  = assertionTimeout / 2 * time.Second
 )
 
-// Supervisor polls tunneld and ensures KeepAwake is running on every
-// iOS device that appears.
+// Supervisor polls the pmd3 bridge device list and ensures a power assertion
+// is held on every iOS device that appears.
 type Supervisor struct {
-	tunneld      *tunneld.Client
+	bridge       *pmd3bridge.Client
 	inventory    *inventory.Store
-	ios          *device.IOSAdapter
 	reservations *reservations.Store // optional: if set, honour other holders' reservations
 
-	// projectDir is the path containing ios/KeepAwake's project.yml.
-	// Discovered on first auto-deploy; empty means deploy is disabled.
-	projectDir string
-
-	mu       sync.Mutex
-	inFlight map[string]bool // UDIDs currently being handled
+	mu         sync.Mutex
+	assertions map[string]string // udid → handleID
+	cancels    map[string]context.CancelFunc
 }
 
 // Option configures a Supervisor at construction.
@@ -67,15 +55,14 @@ func WithReservations(s *reservations.Store) Option {
 	return func(sv *Supervisor) { sv.reservations = s }
 }
 
-// New constructs a Supervisor. Pass the already-initialised tunneld
-// client from daemon.Start.
-func New(tun *tunneld.Client, opts ...Option) *Supervisor {
+// New constructs a Supervisor. bridge is the pmd3 bridge client; it may be
+// nil, in which case the supervisor logs a warning and does nothing.
+func New(bridge *pmd3bridge.Client, opts ...Option) *Supervisor {
 	sv := &Supervisor{
-		tunneld:    tun,
+		bridge:     bridge,
 		inventory:  inventory.New(),
-		ios:        device.NewIOSAdapter(),
-		projectDir: findKeepAwakeProject(),
-		inFlight:   map[string]bool{},
+		assertions: map[string]string{},
+		cancels:    map[string]context.CancelFunc{},
 	}
 	for _, opt := range opts {
 		opt(sv)
@@ -83,23 +70,24 @@ func New(tun *tunneld.Client, opts ...Option) *Supervisor {
 	return sv
 }
 
-// Run blocks polling tunneld until ctx is cancelled.
+// Run blocks polling the device list until ctx is cancelled.
 func (s *Supervisor) Run(ctx context.Context) {
-	if s.projectDir == "" {
-		slog.Warn("autoawake: KeepAwake project not found — auto-deploy disabled. Set SPYDER_KEEPAWAKE_PROJECT to a directory containing project.yml, or run spyder from a working tree with ios/KeepAwake")
-	} else {
-		slog.Info("autoawake: ready", "project_dir", s.projectDir)
+	if s.bridge == nil {
+		slog.Warn("autoawake: no bridge client — power assertions disabled")
+		return
 	}
+	slog.Info("autoawake: supervisor started (power assertions via pmd3 bridge)")
 
 	seen := map[string]bool{}
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	// First tick immediately so existing paired devices are handled on startup.
+	// First tick immediately so existing connected devices are handled on startup.
 	s.tick(ctx, seen)
 	for {
 		select {
 		case <-ctx.Done():
+			s.releaseAll()
 			return
 		case <-ticker.C:
 			s.tick(ctx, seen)
@@ -108,10 +96,31 @@ func (s *Supervisor) Run(ctx context.Context) {
 }
 
 func (s *Supervisor) tick(ctx context.Context, seen map[string]bool) {
-	udids, err := s.tunneld.Probe()
+	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	bridgeDevices, err := s.bridge.ListDevices(listCtx)
 	if err != nil {
-		return // tunneld unavailable — quiet retry next tick
+		return // bridge unavailable — quiet retry next tick
 	}
+	udids := make([]string, 0, len(bridgeDevices))
+	for _, d := range bridgeDevices {
+		udids = append(udids, d.UDID)
+	}
+
+	current := make(map[string]bool, len(udids))
+	for _, udid := range udids {
+		current[udid] = true
+	}
+
+	// Detect disappeared devices.
+	for udid := range seen {
+		if !current[udid] {
+			delete(seen, udid)
+			go s.handleDeviceDisconnect(ctx, udid)
+		}
+	}
+
+	// Detect new devices.
 	for _, udid := range newDevices(udids, seen) {
 		go s.handleNewDevice(ctx, udid)
 	}
@@ -139,169 +148,144 @@ func newDevices(current []string, seen map[string]bool) []string {
 	return fresh
 }
 
-// handleNewDevice runs the install/launch/notify sequence for one
-// newly-seen UDID. Designed to be safe to run concurrently (per-UDID
-// lock guards against overlapping handlers, though in practice the
-// seen-set gates this too).
+// handleNewDevice acquires a power assertion on the device and starts a
+// refresh goroutine.
 func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
+	// Check whether a goroutine is already handling this UDID.
 	s.mu.Lock()
-	if s.inFlight[udid] {
+	if _, exists := s.assertions[udid]; exists {
 		s.mu.Unlock()
 		return
 	}
-	s.inFlight[udid] = true
+	// Placeholder so concurrent ticks don't double-handle.
+	s.assertions[udid] = ""
 	s.mu.Unlock()
-	defer func() {
-		s.mu.Lock()
-		delete(s.inFlight, udid)
-		s.mu.Unlock()
-	}()
 
 	alias := s.aliasOf(udid)
 	slog.Info("autoawake: new device", "udid", udid, "alias", alias)
 
-	// Respect reservations owned by anyone else — we don't want to
-	// yank focus into KeepAwake while the user's mid-test.
+	// Respect reservations owned by anyone else.
 	if s.reservations != nil {
 		if err := s.reservations.Authorize(udid, OwnerID); err != nil {
 			slog.Info("autoawake: skipping device held by another owner",
 				"udid", udid, "alias", alias, "error", err)
+			s.mu.Lock()
+			delete(s.assertions, udid)
+			s.mu.Unlock()
 			return
 		}
 	}
 
-	// Wait briefly for tunneld/DDI to settle before DVT calls.
-	select {
-	case <-ctx.Done():
-		return
-	case <-time.After(settleDelay):
-	}
-
-	// Check installed state. If not installed, try to auto-deploy.
-	installed, err := s.isKeepAwakeInstalled(udid)
+	acquireCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	handleID, err := s.bridge.AcquirePowerAssertion(acquireCtx, udid,
+		"PreventUserIdleSystemSleep", "spyder autoawake",
+		assertionTimeout, "")
 	if err != nil {
-		slog.Warn("autoawake: install check failed", "udid", udid, "alias", alias, "error", err)
+		slog.Warn("autoawake: acquire assertion failed",
+			"udid", udid, "alias", alias, "error", summariseErr(err))
+		s.mu.Lock()
+		delete(s.assertions, udid)
+		s.mu.Unlock()
 		return
 	}
-	if !installed {
-		if s.projectDir == "" {
-			slog.Warn("autoawake: KeepAwake not installed and auto-deploy disabled",
-				"udid", udid, "alias", alias)
-			return
-		}
-		slog.Info("autoawake: deploying KeepAwake", "udid", udid, "alias", alias)
-		if err := s.deployKeepAwake(ctx, udid); err != nil {
-			slog.Warn("autoawake: deploy failed", "udid", udid, "alias", alias, "error", err)
-			return
-		}
-	}
 
-	// Launch + retry-on-lock loop. dvt launch fails fast on a locked
-	// device with a distinctive error; fire a persistent alert once
-	// (via alerter), retry silently, and dismiss the alert as soon as
-	// the launch succeeds OR we give up. The alert is also dismissed
-	// if the user clicks its Dismiss button — the alerter goroutine
-	// will just exit on its own in that case.
-	alertGroup := "spyder-lock-" + udid
-	lockAlertFired := false
-	dismiss := func() {
-		if lockAlertFired {
-			_ = notify.MacOSAlertRemove(alertGroup)
-		}
-	}
+	refreshCtx, refreshCancel := context.WithCancel(ctx)
+	s.mu.Lock()
+	s.assertions[udid] = handleID
+	s.cancels[udid] = refreshCancel
+	s.mu.Unlock()
 
-	for range retryWhileLockedBudget {
-		// Re-check running each iteration — user might have launched
-		// it manually between attempts.
-		if running, _ := s.isKeepAwakeRunning(udid); running {
-			slog.Info("autoawake: KeepAwake already running, skip", "udid", udid, "alias", alias)
-			dismiss()
-			return
-		}
+	slog.Info("autoawake: power assertion acquired",
+		"udid", udid, "alias", alias, "handle", handleID)
 
-		err := s.ios.LaunchApp(udid, device.KeepAwakeBundleID)
-		if err == nil {
-			slog.Info("autoawake: KeepAwake launched", "udid", udid, "alias", alias)
-			dismiss()
-			return
-		}
-		if errors.Is(err, device.ErrLocked) {
-			if !lockAlertFired {
-				slog.Info("autoawake: device locked — alerting user", "udid", udid, "alias", alias)
-				go func() {
-					if nerr := notify.MacOSAlert("spyder",
-						fmt.Sprintf("Unlock %s to enable keep-awake", alias),
-						alertGroup); nerr != nil {
-						slog.Warn("autoawake: alert failed", "error", nerr)
-					}
-				}()
-				lockAlertFired = true
-			}
+	// Refresh goroutine: ticks at half the assertion timeout.
+	go func() {
+		ticker := time.NewTicker(refreshInterval)
+		defer ticker.Stop()
+		for {
 			select {
-			case <-ctx.Done():
-				dismiss()
+			case <-refreshCtx.Done():
 				return
-			case <-time.After(retryWhileLockedInterval):
-			}
-			continue
-		}
-		if isTrustError(err) {
-			// Developer profile not trusted on this device (typically
-			// a fresh-install / post-delete case). Like the lock
-			// prompt, this needs a user action on the device — fire
-			// a persistent macOS alert so the user isn't hunting
-			// through logs to figure out why nothing happened.
-			slog.Info("autoawake: device requires developer trust — alerting user",
-				"udid", udid, "alias", alias)
-			trustGroup := "spyder-trust-" + udid
-			go func() {
-				if nerr := notify.MacOSAlert("spyder",
-					fmt.Sprintf("Trust the developer profile on %s to enable keep-awake (Settings → General → VPN & Device Management → tap your developer name → Trust)", alias),
-					trustGroup); nerr != nil {
-					slog.Warn("autoawake: alert failed", "error", nerr)
+			case <-ticker.C:
+				rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
+				if rerr := s.bridge.RefreshPowerAssertion(rctx, handleID, assertionTimeout); rerr != nil {
+					slog.Warn("autoawake: refresh assertion failed",
+						"udid", udid, "alias", alias, "error", rerr)
 				}
-			}()
-			dismiss()
-			return
+				rcancel()
+			}
 		}
-		// Some other failure — not worth retrying.
-		slog.Warn("autoawake: launch failed", "udid", udid, "alias", alias, "error", summariseErr(err))
-		dismiss()
+	}()
+}
+
+// handleDeviceDisconnect releases the power assertion for a device that
+// disappeared from the bridge device list.
+func (s *Supervisor) handleDeviceDisconnect(ctx context.Context, udid string) {
+	s.mu.Lock()
+	handleID, ok := s.assertions[udid]
+	cancel := s.cancels[udid]
+	delete(s.assertions, udid)
+	delete(s.cancels, udid)
+	s.mu.Unlock()
+
+	if !ok || handleID == "" {
 		return
 	}
-	slog.Info("autoawake: giving up on locked device", "udid", udid, "alias", alias)
-	dismiss()
-}
 
-// isTrustError recognises pymobiledevice3's DvtException when a
-// developer profile hasn't been explicitly trusted on the device.
-// Typical after a fresh install on a never-before-paired device or
-// after the only previously-installed app from the same developer is
-// deleted (iOS tears down the trust entry along with it).
-func isTrustError(err error) bool {
-	s := err.Error()
-	return strings.Contains(s, "'Security'") ||
-		strings.Contains(s, "invalid code signature") ||
-		strings.Contains(s, "not been explicitly trusted")
-}
-
-// summariseErr strips pymobiledevice3's rich-console traceback
-// decorations so log lines stay readable.
-func summariseErr(err error) string {
-	s := err.Error()
-	if i := strings.Index(s, "DvtException:"); i >= 0 {
-		return strings.TrimSpace(s[i:])
+	alias := s.aliasOf(udid)
+	if cancel != nil {
+		cancel()
 	}
-	// Pull the first non-decorative line.
-	for line := range strings.SplitSeq(s, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "│") || strings.HasPrefix(line, "╰") ||
-			strings.HasPrefix(line, "╭") || strings.HasPrefix(line, "→") {
+
+	rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
+	defer rcancel()
+	if err := s.bridge.ReleasePowerAssertion(rctx, handleID); err != nil {
+		slog.Warn("autoawake: release assertion failed on disconnect",
+			"udid", udid, "alias", alias, "error", err)
+	} else {
+		slog.Info("autoawake: power assertion released (device disconnected)",
+			"udid", udid, "alias", alias, "handle", handleID)
+	}
+}
+
+// releaseAll releases all outstanding power assertions. Called on daemon shutdown.
+func (s *Supervisor) releaseAll() {
+	s.mu.Lock()
+	handles := make(map[string]string, len(s.assertions))
+	cancels := make(map[string]context.CancelFunc, len(s.cancels))
+	for udid, h := range s.assertions {
+		handles[udid] = h
+	}
+	for udid, c := range s.cancels {
+		cancels[udid] = c
+	}
+	s.assertions = map[string]string{}
+	s.cancels = map[string]context.CancelFunc{}
+	s.mu.Unlock()
+
+	for udid, cancel := range cancels {
+		if cancel != nil {
+			cancel()
+		}
+		_ = udid
+	}
+
+	for udid, handleID := range handles {
+		if handleID == "" {
 			continue
 		}
-		return line
+		alias := s.aliasOf(udid)
+		rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := s.bridge.ReleasePowerAssertion(rctx, handleID); err != nil {
+			slog.Warn("autoawake: release assertion failed on shutdown",
+				"udid", udid, "alias", alias, "error", err)
+		} else {
+			slog.Info("autoawake: power assertion released (shutdown)",
+				"udid", udid, "alias", alias, "handle", handleID)
+		}
+		rcancel()
 	}
-	return truncate(s, 200)
 }
 
 // aliasOf resolves a UDID to an inventory alias, falling back to a
@@ -316,171 +300,14 @@ func (s *Supervisor) aliasOf(udid string) string {
 	return udid
 }
 
-// isKeepAwakeInstalled checks whether the KeepAwake bundle id is
-// present in the device's User apps.
-func (s *Supervisor) isKeepAwakeInstalled(udid string) (bool, error) {
-	apps, err := s.ios.ListApps(udid)
-	if err != nil {
-		return false, err
-	}
-	for _, a := range apps {
-		if a.BundleID == device.KeepAwakeBundleID {
-			return true, nil
+// summariseErr returns a brief error string, stripping pmd3 tracebacks.
+func summariseErr(err error) string {
+	s := err.Error()
+	for line := range strings.SplitSeq(s, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			return fmt.Sprintf("%.200s", line)
 		}
 	}
-	return false, nil
-}
-
-// isKeepAwakeRunning resolves the PID of KeepAwake via DVT. A valid
-// PID means running; "app not running" is treated as false without
-// bubbling the error. Uses substring matches for the "->" / ":"
-// separators so bundle ids containing '-' (e.g. "com.foo-bar.baz")
-// aren't mis-parsed.
-func (s *Supervisor) isKeepAwakeRunning(udid string) (bool, error) {
-	cmd := exec.Command("pymobiledevice3", "developer", "dvt", "process-id-for-bundle-id",
-		device.KeepAwakeBundleID, "--udid", udid)
-	out, _ := cmd.CombinedOutput()
-	text := strings.TrimSpace(string(out))
-	if i := strings.LastIndex(text, "->"); i >= 0 {
-		text = strings.TrimSpace(text[i+2:])
-	} else if i := strings.LastIndex(text, ":"); i >= 0 {
-		text = strings.TrimSpace(text[i+1:])
-	}
-	if pid, err := strconv.Atoi(text); err == nil && pid > 0 {
-		return true, nil
-	}
-	return false, nil
-}
-
-// deployKeepAwake regenerates the xcodeproj (idempotent via
-// xcodegen), builds against the target UDID so the device is
-// registered with the provisioning profile, and installs via
-// devicectl.
-func (s *Supervisor) deployKeepAwake(ctx context.Context, udid string) error {
-	if s.projectDir == "" {
-		return errors.New("no project dir")
-	}
-
-	// 1. xcodegen generate (idempotent)
-	if err := run(ctx, s.projectDir, "xcodegen", "generate"); err != nil {
-		return fmt.Errorf("xcodegen: %w", err)
-	}
-
-	// 2. xcodebuild targeting this UDID
-	xcodeproj := filepath.Join(s.projectDir, "KeepAwake.xcodeproj")
-	if err := run(ctx, "", "xcodebuild",
-		"-project", xcodeproj,
-		"-scheme", "KeepAwake",
-		"-destination", "platform=iOS,id="+udid,
-		"-allowProvisioningUpdates",
-		"build",
-	); err != nil {
-		return fmt.Errorf("xcodebuild: %w", err)
-	}
-
-	// 3. Locate the .app in DerivedData.
-	app, err := findBuiltApp()
-	if err != nil {
-		return err
-	}
-
-	// 4. devicectl install
-	if err := run(ctx, "", "xcrun", "devicectl", "device", "install", "app",
-		"--device", udid, app,
-	); err != nil {
-		return fmt.Errorf("devicectl install: %w", err)
-	}
-
-	return nil
-}
-
-// findKeepAwakeProject locates the Xcode project containing
-// ios/KeepAwake's project.yml. Search order:
-//  1. $SPYDER_KEEPAWAKE_PROJECT
-//  2. walk up from the current working directory looking for ios/KeepAwake/project.yml
-func findKeepAwakeProject() string {
-	if p := os.Getenv("SPYDER_KEEPAWAKE_PROJECT"); p != "" {
-		if _, err := os.Stat(filepath.Join(p, "project.yml")); err == nil {
-			return p
-		}
-	}
-	wd, err := os.Getwd()
-	if err == nil {
-		dir := wd
-		for {
-			candidate := filepath.Join(dir, "ios", "KeepAwake", "project.yml")
-			if _, err := os.Stat(candidate); err == nil {
-				return filepath.Dir(candidate)
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-	}
-	return ""
-}
-
-// findBuiltApp globs for KeepAwake.app under Xcode's DerivedData.
-// Returns the path of the most recently modified match.
-func findBuiltApp() (string, error) {
-	pattern := filepath.Join(
-		os.Getenv("HOME"),
-		"Library/Developer/Xcode/DerivedData/KeepAwake-*/Build/Products/Debug-iphoneos/KeepAwake.app",
-	)
-	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) == 0 {
-		return "", fmt.Errorf("no built KeepAwake.app under DerivedData")
-	}
-	// Pick the newest by mtime.
-	best := matches[0]
-	bestMtime := mustStat(best).ModTime()
-	for _, m := range matches[1:] {
-		if mt := mustStat(m).ModTime(); mt.After(bestMtime) {
-			best = m
-			bestMtime = mt
-		}
-	}
-	return best, nil
-}
-
-func mustStat(p string) os.FileInfo {
-	st, err := os.Stat(p)
-	if err != nil {
-		// Shouldn't happen for Glob hits; return a zero-value sentinel.
-		return stubFileInfo{}
-	}
-	return st
-}
-
-type stubFileInfo struct{}
-
-func (stubFileInfo) Name() string       { return "" }
-func (stubFileInfo) Size() int64        { return 0 }
-func (stubFileInfo) Mode() os.FileMode  { return 0 }
-func (stubFileInfo) ModTime() time.Time { return time.Time{} }
-func (stubFileInfo) IsDir() bool        { return false }
-func (stubFileInfo) Sys() any           { return nil }
-
-// run executes cmd with args in dir (empty = cwd) and streams
-// output to spyder's own stderr via slog at debug level.
-func run(ctx context.Context, dir, name string, args ...string) error {
-	cmd := exec.CommandContext(ctx, name, args...)
-	if dir != "" {
-		cmd.Dir = dir
-	}
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("%s: %v\n%s", name, err, truncate(string(out), 400))
-	}
-	return nil
-}
-
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "…"
+	return fmt.Sprintf("%.200s", s)
 }

@@ -35,6 +35,13 @@ jobs:
           go-version: '1.26'
           check-latest: true
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+
       - name: Test
         run: go test ./...
 
@@ -49,12 +56,24 @@ jobs:
           go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
             -o "dist/spyder" .
 
+      - name: Build pmd3-bridge
+        run: |
+          source "$HOME/.local/bin/env" 2>/dev/null || source "$HOME/.cargo/env" 2>/dev/null || true
+          cd bridge
+          uv sync --dev
+          uv run pyinstaller pmd3-bridge.spec \
+            --distpath dist --workpath build --noconfirm
+
       - name: Package
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          cd dist
-          tar czf "spyder-${VERSION}-${{ matrix.target }}.tar.gz" spyder
-          ls -la
+          TARBALL_DIR="spyder-${VERSION}-${{ matrix.target }}"
+          mkdir -p "${TARBALL_DIR}/bin" "${TARBALL_DIR}/libexec"
+          cp dist/spyder "${TARBALL_DIR}/bin/"
+          cp -R bridge/dist/pmd3-bridge "${TARBALL_DIR}/libexec/"
+          mkdir -p dist
+          tar czf "dist/${TARBALL_DIR}.tar.gz" "${TARBALL_DIR}"
+          ls -la "dist/${TARBALL_DIR}.tar.gz"
 
       - name: Upload to release
         env:
@@ -79,7 +98,7 @@ jobs:
           github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           formula_folder: Formula
           version: ${{ github.event.release.tag_name }}
-          install: 'bin.install "spyder" => "spyder"'
+          install: 'bin.install "bin/spyder" => "spyder"; libexec.install Dir["libexec/pmd3-bridge"]'
           target_darwin_arm64: true
           target_linux_amd64: true
           target_linux_arm64: true

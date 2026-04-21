@@ -23,7 +23,7 @@ func TestHandleLogs_HappyPath(t *testing.T) {
 			return lines, nil
 		},
 	}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "logs", map[string]any{"device": "Pippa"})
 	if r.IsError {
@@ -44,7 +44,7 @@ func TestHandleLogs_EmptyResult(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "logs", map[string]any{"device": "Pippa"})
 	if r.IsError {
@@ -95,7 +95,7 @@ func TestHandleLogs_FilterPassthrough(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "logs", map[string]any{
 		"device":    "Pippa",
@@ -126,7 +126,7 @@ func TestHandleLogs_TimestampPassthrough(t *testing.T) {
 			return nil, nil
 		},
 	}
-	h := newHandlerWithStubs(t, ios, nil, nil)
+	h := newHandlerWithStubs(t, ios, nil)
 
 	sinceStr := "2026-04-19T00:00:00Z"
 	untilStr := "2026-04-19T01:00:00Z"

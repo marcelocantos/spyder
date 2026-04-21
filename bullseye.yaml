@@ -554,10 +554,11 @@ targets:
     achieved: 2026-04-21
   T25:
     name: Keep-awake is held by a pmd3 PowerAssertionService handle from a bundled bridge, not by launching an on-device companion app
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 13.0
     acceptance:
     - 'The iOS KeepAwake companion app and all its supporting machinery are deleted from spyder: the ios/KeepAwake/ project directory, the xcodegen/xcodebuild/devicectl install code path in internal/autoawake/autoawake.go (deployKeepAwake, findBuiltApp, findKeepAwakeProject), device.KeepAwakeBundleID and all references, and the SPYDER_KEEPAWAKE_PROJECT env var. The companion-app concept no longer exists in the codebase.'
     - 'A Python package in this repo (under bridge/, python/, or similar) imports pymobiledevice3 as a library — not via its CLI — and exposes a clean named-method API covering every pmd3 operation spyder needs: list_devices, list_apps, launch_app, kill_app, pid_for_bundle, battery, screenshot, crash_reports_list, crash_reports_pull, and critically: acquire_power_assertion, refresh_power_assertion, release_power_assertion.'
@@ -578,6 +579,138 @@ targets:
     - dependency-hygiene
     origin: manual
     discovered: 2026-04-21
+    achieved: 2026-04-21
+  T25.1:
+    name: Python bridge serves pmd3 operations over HTTP+Unix-socket
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    actual_cost: 3.0
+    acceptance:
+    - bridge/ Python package (uv-managed, pyproject.toml) with fastapi + uvicorn + pymobiledevice3 as direct deps
+    - Entrypoint accepts --socket <path> and binds a uvicorn UDS listener there; exits non-zero if the path is already bound or the parent directory isn't writable
+    - Writes 'ready\n' to stdout once the listener is accepting connections, flushes, then blocks until shutdown
+    - 'Endpoints (all return real pmd3 data, not stubs): list_devices, list_apps, launch_app, kill_app, pid_for_bundle, battery, screenshot, crash_reports_list, crash_reports_pull, acquire_power_assertion, refresh_power_assertion, release_power_assertion'
+    - Power-assertion endpoints use pymobiledevice3's PowerAssertionService directly (not a shell-out). Acquire returns a handle id; refresh and release take that id
+    - 'SIGTERM triggers graceful shutdown: stop accepting new connections, drain in-flight requests, release all active power assertions, exit 0'
+    - Pytest suite covers the HTTP contract with mocked pmd3 services for the happy path + error paths (device not paired, bundle not installed, tunneld unavailable)
+    - PyInstaller spec produces a --onedir bundle under bridge/dist/; the bundled binary starts and serves the API identically to the source-run form
+    context: |-
+      First leaf of T25. Delivers a standalone, testable Python artifact before any Go code changes. The UDS transport + ready-line handshake is the contract the Go daemon will rely on (T25.2). Happy-path pmd3 operations go in first so the Go side can be developed against a real bridge rather than mocks. Keeps PyInstaller in scope for this target so the packaging risk surfaces early (onedir bundles pmd3 and its deps are non-trivial — pyimod04_importers, hidden C extensions, pyobjc on macOS); discovering a PyInstaller blocker after the Go wiring is done would be painful.</context>
+      <parameter name="depends_on">["T25"]
+    tags:
+    - pmd3
+    - bridge
+    - python
+    - fastapi
+    origin: manual
+    discovered: 2026-04-21
+    achieved: 2026-04-21
+  T25.2:
+    name: Go daemon owns bridge lifecycle and exposes a typed client
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    actual_cost: 3.0
+    acceptance:
+    - internal/pmd3bridge/ package with a Client that wraps http.Client using a Unix-socket DialContext; one typed method per bridge endpoint (ListDevices, ListApps, LaunchApp, KillApp, PIDForBundle, Battery, Screenshot, CrashReportsList, CrashReportsPull, AcquirePowerAssertion, RefreshPowerAssertion, ReleasePowerAssertion)
+    - internal/pmd3bridge/ also contains a Supervisor that spawns the bridge binary with --socket <path>, waits for 'ready\n' on stdout (with a bounded timeout), and exposes the socket path + a Client bound to it
+    - Supervisor restarts the bridge on unexpected exit with bounded backoff; logs restart reasons via slog
+    - 'Graceful shutdown: on context cancel, Supervisor sends SIGTERM, waits for a bounded drain window, then SIGKILL on timeout'
+    - daemon.Build wires up the Supervisor + Client alongside the existing reservations/runs/baselines wiring; handler gets WithPMD3Bridge(client)
+    - Socket path lives at ~/.spyder/pmd3-bridge.sock (via paths.PMD3BridgeSocket()); bridge binary resolved via os.Executable() relative path (libexec/pmd3-bridge/pmd3-bridge) with a SPYDER_PMD3_BRIDGE env override for development
+    - 'Tests: Client round-trips against a httptest-served fake bridge; Supervisor spawns a trivial fake bridge script and verifies startup handshake, restart on exit, and graceful shutdown'
+    - 'Tunneld supervision is absorbed: the separate ''pymobiledevice3 remote tunneld'' subprocess is gone; the bridge itself holds any tunnel/lockdown state it needs for DVT-adjacent operations'
+    context: |-
+      Second leaf. Gives every iOS operation in spyder a typed Go path to the bridge without touching any existing adapter code yet. Supervisor + Client are independently useful and unit-testable. Absorbs tunneld supervision here because pmd3's own code already owns tunnel handles as part of its lockdown/RSD stack — splitting them across two supervised processes was always an accident of history.</context>
+      <parameter name="depends_on">["T25.1"]
+    tags:
+    - pmd3
+    - bridge
+    - go
+    - supervisor
+    origin: manual
+    discovered: 2026-04-21
+    achieved: 2026-04-21
+  T25.3:
+    name: iOS adapter + autoawake route every pmd3 operation through the bridge
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    actual_cost: 5.0
+    acceptance:
+    - internal/device/ios.go contains zero exec.Command("pymobiledevice3", ...) calls. Every iOS operation (State, Screenshot, ListApps, LaunchApp, TerminateApp, AppPID, Crashes, logs-related) goes through a pmd3bridge.Client injected into IOSAdapter
+    - The 'pymobiledevice3 not found in PATH' error paths and associated exec.LookPath checks are deleted
+    - 'autoawake.handleNewDevice is rewritten: on new-device event, call Client.AcquirePowerAssertion(PreventUserIdleSystemSleep) and remember the returned handle keyed by UDID; start a refresh goroutine ticking at assertion_timeout/2; release on device-disconnect or daemon shutdown'
+    - 'The deploy / install-check / launch / retry-on-lock ladder in autoawake is gone: no more deployKeepAwake, findBuiltApp, findKeepAwakeProject, xcodegen, xcodebuild, or devicectl install calls. Device-locked state is irrelevant because the assertion prevents auto-lock'
+    - All iOS-adapter and autoawake tests that previously shelled out to pymobiledevice3 are rewritten against a fake pmd3bridge.Client implementing the same interface
+    - 'End-to-end: plug in a fresh iOS device with spyder running; within ~5 seconds, logs show ''autoawake: assertion acquired udid=<...>''; leave the device idle for > its configured auto-lock interval; device stays unlocked; no companion app is installed on the device during this test'
+    context: |-
+      Third leaf. The payoff target — this is where the PATH-dependence bug that motivated T25 gets fixed. Happens in one sweep because iOS-adapter tests and autoawake tests share the same pmd3 mocking pattern; splitting across two sub-targets would mean the mid-state has half the adapter on the old CLI path and half on the bridge, which is harder to reason about than the full flip. The KeepAwake companion app still exists on disk at the end of this target — it's just no longer used. Deletion is T25.4.</context>
+      <parameter name="depends_on">["T25.2"]
+    tags:
+    - pmd3
+    - bridge
+    - ios
+    - autoawake
+    - power-assertion
+    origin: manual
+    discovered: 2026-04-21
+    achieved: 2026-04-21
+  T25.4:
+    name: Delete the KeepAwake companion app and its support machinery
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    actual_cost: 2.0
+    acceptance:
+    - ios/KeepAwake/ directory removed entirely (xcodegen project, Swift sources, provisioning, notes, README)
+    - device.KeepAwakeBundleID and every reference to it in Go source removed
+    - 'SPYDER_KEEPAWAKE_PROJECT env var: parsing, documentation, and all uses removed. README, agents-guide.md, and STABILITY.md entries mentioning it are deleted or rewritten'
+    - autoawake-related tests that depended on KeepAwake specifics (bundle id, launch command) are removed; replacement tests against the assertion flow already exist from 🎯T25.3
+    - spyder's Makefile / build scripts no longer reference the KeepAwake project in any way
+    - agents-guide.md gotchas section no longer mentions 'Trust-on-device for KeepAwake developer profile' or related DDI/trust ladders caused by the companion-app approach
+    - grep -ri 'keepawake' across the repo returns only historical references (audit-log entries, STABILITY.md 'removed in v0.x.y' notes); no live code mentions it
+    context: |-
+      Straight deletion + docs cleanup. Kept separate from 🎯T25.3 so the assertion migration can be verified end-to-end before removing the fallback. Once the reviewer is confident that assertions work on live hardware, this target is a mechanical sweep.</context>
+      <parameter name="depends_on">["T25.3"]
+    tags:
+    - pmd3
+    - bridge
+    - cleanup
+    origin: manual
+    discovered: 2026-04-21
+    achieved: 2026-04-21
+  T25.5:
+    name: Homebrew formula bundles the pmd3 bridge; launchd plist no longer depends on user PATH
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    actual_cost: 2.0
+    acceptance:
+    - release.yml CI workflow builds the pmd3-bridge PyInstaller --onedir bundle alongside the spyder binary for each release platform (darwin-arm64, linux-amd64, linux-arm64)
+    - 'Bridge bundle is uploaded to the GitHub release as part of the spyder tarball (e.g. tarball layout: bin/spyder + libexec/pmd3-bridge/...)'
+    - Homebrew formula installs the tarball so that spyder binary lives at $(bin)/spyder and the bridge bundle at $(libexec)/pmd3-bridge/ (via homebrew-releaser's install directive or a formula override)
+    - launchd plist no longer needs PATH to include the user's Python venv. `brew services start spyder` on a fresh machine works without any `launchctl setenv PATH` setup
+    - agents-guide.md's brew-services PATH workaround section is rewritten to reflect the new reality (deleted or reframed as historical)
+    - 'Post-release smoke test: on the release machine, stop the brew service, uninstall spyder, reinstall via brew, start the service, plug in an iOS device, confirm assertion acquired within 5 seconds (no PATH surgery, no additional config)'
+    context: |-
+      Final leaf. Packaging is deliberately deferred until the bridge runs end-to-end so PyInstaller issues don't block functional progress in 🎯T25.1-T25.3. The bridge onedir bundle pulls in pmd3's full dep tree (cryptography, construct, cffi, pyobjc on darwin) which is non-trivial to package; expect a few rounds of 'hidden import' and 'missing binary' fixes in the PyInstaller spec. Once this target lands, the Homebrew install story stops being PATH-dependent on the user's Python environment entirely — fixing the original bug that motivated T25.</context>
+      <parameter name="depends_on">["T25.3"]
+    tags:
+    - pmd3
+    - bridge
+    - homebrew
+    - packaging
+    - release
+    origin: manual
+    discovered: 2026-04-21
+    achieved: 2026-04-21
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: achieved

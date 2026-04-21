@@ -18,10 +18,10 @@ import (
 
 func newTestServer(t *testing.T) (string, func()) {
 	t.Helper()
-	// tun=nil is safe for the tools this suite exercises (reservations,
-	// unknown-tool dispatch). The REST handler is transport-only; the
-	// underlying mcp.Handler does the real work.
-	h := spydermcp.NewHandler(nil)
+	// NewHandler with no options is safe for the tools this suite exercises
+	// (reservations, unknown-tool dispatch). The REST handler is transport-only;
+	// the underlying mcp.Handler does the real work.
+	h := spydermcp.NewHandler()
 	ts := httptest.NewServer(rest.NewHandler(h))
 	return ts.URL, ts.Close
 }

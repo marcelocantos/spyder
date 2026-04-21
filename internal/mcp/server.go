@@ -17,6 +17,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
@@ -47,7 +48,6 @@ type Handler struct {
 	inventory    *inventory.Store
 	ios          device.Adapter
 	android      device.Adapter
-	tunneld      TunneldGate
 	reservations *reservations.Store
 	runs         *runs.Store
 	bls          *baselines.Store
@@ -55,18 +55,12 @@ type Handler struct {
 	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
 	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
 	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
+	bridge       *pmd3bridge.Client    // optional hook for 🎯T25 pmd3-bridge
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
 	// the owning reservation is released.
 	networkByDevice map[string]appliedNetwork
-}
-
-// TunneldGate is satisfied by *tunneld.Client. The small interface lets
-// tests inject a fake without a circular package dependency.
-type TunneldGate interface {
-	Require() error
-	Addr() string
 }
 
 // HandlerOption configures a Handler at construction.
@@ -121,15 +115,25 @@ func WithPoolManager(pm PoolManager) HandlerOption {
 	return func(h *Handler) { h.poolMgr = pm }
 }
 
-// NewHandler creates a new spyder tool handler. tun may be nil for
-// handler instances that never call DVT-dependent tools; tools that
-// need it will return a clear error when tun is missing.
-func NewHandler(tun TunneldGate, opts ...HandlerOption) *Handler {
+// WithPMD3Bridge injects the pmd3-bridge client (🎯T25). The iOS adapter is
+// reconstructed with the bridge so all iOS operations route through it.
+// When nil, the iOS adapter has no bridge and returns a clear error for
+// operations that require it.
+func WithPMD3Bridge(client *pmd3bridge.Client) HandlerOption {
+	return func(h *Handler) {
+		h.bridge = client
+		// Reconstruct the iOS adapter with the bridge so it is available
+		// for all iOS tool handlers.
+		h.ios = device.NewIOSAdapter(client)
+	}
+}
+
+// NewHandler creates a new spyder tool handler.
+func NewHandler(opts ...HandlerOption) *Handler {
 	h := &Handler{
 		inventory:       inventory.New(),
-		ios:             device.NewIOSAdapter(),
+		ios:             device.NewIOSAdapter(nil), // bridge injected via WithPMD3Bridge
 		android:         device.NewAndroidAdapter(),
-		tunneld:         tun,
 		recordings:      recording.NewRegistry(),
 		networkByDevice: map[string]appliedNetwork{},
 	}
@@ -142,12 +146,11 @@ func NewHandler(tun TunneldGate, opts ...HandlerOption) *Handler {
 // NewHandlerWithAdapters creates a handler with explicit adapter overrides.
 // Useful for tests that inject stub adapters without going through HandlerOption
 // indirection. Either ios or android may be nil to use the real adapter.
-func NewHandlerWithAdapters(tun TunneldGate, ios, android device.Adapter) *Handler {
+func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 	h := &Handler{
 		inventory: inventory.New(),
-		ios:       device.NewIOSAdapter(),
+		ios:       device.NewIOSAdapter(nil),
 		android:   device.NewAndroidAdapter(),
-		tunneld:   tun,
 	}
 	if ios != nil {
 		h.ios = ios
@@ -176,8 +179,6 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleDevices(args)
 	case "resolve":
 		return h.handleResolve(args)
-	case "keepawake":
-		return h.handleKeepAwake(args)
 	case "device_state":
 		return h.handleDeviceState(args)
 	case "screenshot":
@@ -280,17 +281,6 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Symbolic name or raw UUID from the device inventory"),
-			),
-		),
-
-		mcpgo.NewTool("keepawake",
-			mcpgo.WithDescription("Foreground the KeepAwake companion app on a device so it holds the screen awake while plugged in. Typically called by test-run wrappers after tests finish. Strictly enforced: rejects if the device is reserved by a different owner."),
-			mcpgo.WithString("device",
-				mcpgo.Required(),
-				mcpgo.Description("Device alias or UUID"),
-			),
-			mcpgo.WithString("owner",
-				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
 			),
 		),
 
@@ -400,7 +390,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("reserve",
-			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (keepawake, screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked."),
+			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked."),
 			mcpgo.WithString("device",
 				mcpgo.Description("Device alias or UUID (literal pin; mutually exclusive with selector)"),
 			),

@@ -26,11 +26,11 @@ import (
 	"github.com/marcelocantos/spyder/internal/inventory"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
+	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 	"github.com/marcelocantos/spyder/internal/pool"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
-	"github.com/marcelocantos/spyder/internal/tunneld"
 )
 
 // Run-artefact retention defaults. Overridable via env so the Homebrew
@@ -44,13 +44,13 @@ const (
 type Config struct {
 	Addr             string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
 	Version          string // emitted in serverInfo
-	TunneldAddr      string // tunneld probe target (host:port; empty → DefaultAddr)
-	DisableAutoAwake bool   // tests set this to avoid the supervisor poking live tunneld
+	TunneldAddr      string // Deprecated: tunneld is no longer used; field retained for backward compat.
+	DisableAutoAwake bool   // tests set this to avoid the supervisor starting
 }
 
 // Start creates the MCP server, registers all spyder tools, wraps it in
-// a streamable-HTTP transport, probes tunneld for observability, and
-// blocks serving on cfg.Addr until a SIGINT/SIGTERM arrives.
+// a streamable-HTTP transport, and blocks serving on cfg.Addr until a
+// SIGINT/SIGTERM arrives.
 func Start(cfg Config) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -61,14 +61,27 @@ func Start(cfg Config) error {
 // (or the underlying HTTP server errors). Exposed for tests and for
 // embedders that want to own signal handling.
 func Run(ctx context.Context, cfg Config) error {
-	handler, tunClient, resvStore := Build(cfg)
+	handler, resvStore, bridgeSup := Build(cfg)
+
+	if bridgeSup != nil {
+		if err := bridgeSup.Start(ctx); err != nil {
+			slog.Warn("pmd3-bridge startup failed — bridge tools disabled", "error", err)
+			// Non-fatal: the bridge is optional.
+		}
+	}
 
 	if !cfg.DisableAutoAwake {
 		awakeOpts := []autoawake.Option{}
 		if resvStore != nil {
 			awakeOpts = append(awakeOpts, autoawake.WithReservations(resvStore))
 		}
-		go autoawake.New(tunClient, awakeOpts...).Run(ctx)
+		var awakeBridge *pmd3bridge.Client
+		if bridgeSup != nil {
+			// Construct a separate client for autoawake (supervisor's client
+			// is the same socket; both are safe for concurrent use).
+			awakeBridge = pmd3bridge.NewClient(paths.PMD3BridgeSocket())
+		}
+		go autoawake.New(awakeBridge, awakeOpts...).Run(ctx)
 	}
 
 	slog.Info("spyder listening",
@@ -81,8 +94,13 @@ func Run(ctx context.Context, cfg Config) error {
 	select {
 	case <-ctx.Done():
 		slog.Info("shutting down")
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
+		if bridgeSup != nil {
+			if err := bridgeSup.Stop(shutdownCtx); err != nil {
+				slog.Warn("pmd3-bridge stop error", "error", err)
+			}
+		}
 		_ = srv.Shutdown(shutdownCtx)
 		return nil
 	case err := <-errCh:
@@ -100,19 +118,10 @@ func Run(ctx context.Context, cfg Config) error {
 // and `/api/v1/<tool>` (JSON over POST — see package rest). The
 // reservation store may be nil if `~/.spyder/reservations.json` is
 // unreadable; callers that need strict enforcement should check.
-func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
-	tunneldAddr := cfg.TunneldAddr
-	if tunneldAddr == "" {
-		tunneldAddr = tunneld.DefaultAddr
-	}
-	tunClient := tunneld.New(tunneldAddr)
-	if udids, err := tunClient.Probe(); err != nil {
-		slog.Warn("tunneld unavailable — iOS DVT tools will fail",
-			"addr", tunneldAddr, "error", err)
-	} else {
-		slog.Info("tunneld reachable", "addr", tunneldAddr, "paired_devices", len(udids))
-	}
-
+// The returned Supervisor is non-nil when the bridge binary was found and
+// should be started by the caller; it is nil when the bridge is unavailable
+// (graceful degradation).
+func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Supervisor) {
 	srv := server.NewMCPServer(
 		"spyder",
 		cfg.Version,
@@ -183,7 +192,20 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 	if poolInst != nil {
 		handlerOpts = append(handlerOpts, spydermcp.WithPoolManager(poolInst))
 	}
-	handler := spydermcp.NewHandler(tunClient, handlerOpts...)
+
+	// Resolve the pmd3-bridge binary and construct a Supervisor + Client if
+	// the binary is available. Missing binary is not fatal — bridge tools fall
+	// back to the existing shell-out paths.
+	var bridgeSup *pmd3bridge.Supervisor
+	if binPath := resolveBridgeBinary(); binPath != "" {
+		sockPath := paths.PMD3BridgeSocket()
+		bridgeSup = pmd3bridge.NewSupervisor(binPath, sockPath)
+		bridgeClient := pmd3bridge.NewClient(sockPath)
+		handlerOpts = append(handlerOpts, spydermcp.WithPMD3Bridge(bridgeClient))
+		slog.Info("pmd3-bridge configured", "binary", binPath, "socket", sockPath)
+	}
+
+	handler := spydermcp.NewHandler(handlerOpts...)
 
 	// Kick off pool reconciliation in the background so startup latency
 	// stays low even when creating/booting sims takes tens of seconds.
@@ -204,7 +226,60 @@ func Build(cfg Config) (http.Handler, *tunneld.Client, *reservations.Store) {
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
-	return mux, tunClient, resvStore
+	return mux, resvStore, bridgeSup
+}
+
+// resolveBridgeBinary returns the path to the pmd3-bridge binary.
+// Resolution order:
+//  1. SPYDER_PMD3_BRIDGE environment variable.
+//  2. Relative to the running executable: ../libexec/pmd3-bridge/pmd3-bridge
+//     (production install layout via Homebrew).
+//  3. bridge/dist/pmd3-bridge/pmd3-bridge relative to the repo root
+//     (development fallback — best-effort).
+//
+// Returns "" when no candidate exists; the caller should log a warning and
+// skip the bridge rather than fail hard.
+func resolveBridgeBinary() string {
+	// 1. Explicit override.
+	if env := os.Getenv("SPYDER_PMD3_BRIDGE"); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+		slog.Warn("SPYDER_PMD3_BRIDGE set but binary not found",
+			"path", env, "bridge", "disabled")
+		return ""
+	}
+
+	// 2. Production layout: <exe-dir>/../libexec/pmd3-bridge/pmd3-bridge
+	if exe, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "..", "libexec", "pmd3-bridge", "pmd3-bridge")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	// 3. Development fallback: walk up from the executable looking for
+	// bridge/dist/pmd3-bridge/pmd3-bridge. This handles `go run .` and
+	// `bin/spyder` from the repo root.
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		for range 5 {
+			candidate := filepath.Join(dir, "bridge", "dist", "pmd3-bridge", "pmd3-bridge")
+			if _, err := os.Stat(candidate); err == nil {
+				slog.Info("pmd3-bridge: using development build", "path", candidate)
+				return candidate
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+
+	slog.Warn("pmd3-bridge binary not found — bridge tools disabled; " +
+		"set SPYDER_PMD3_BRIDGE or install via Homebrew")
+	return ""
 }
 
 // runsPolicyFromEnv reads the retention overrides from environment
@@ -221,11 +296,6 @@ func runsPolicyFromEnv() runs.Policy {
 		p.MaxSize = int64(gb) * 1024 * 1024 * 1024
 	}
 	return p
-}
-
-// isNotExist returns true when err wraps os.ErrNotExist (file not found).
-func isNotExist(err error) bool {
-	return errors.Is(err, os.ErrNotExist)
 }
 
 func envInt(key string, fallback int) int {

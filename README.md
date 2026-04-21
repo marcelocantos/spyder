@@ -2,8 +2,8 @@
 
 HTTP-based MCP server for cross-platform mobile development workflow
 orchestration. Spyder owns device inventory, live device facts (battery,
-charging, foreground app), screenshots, app lifecycle, and a plug-in-driven
-auto-launcher for the KeepAwake companion app on iOS.
+charging, foreground app), screenshots, app lifecycle, and power-assertion
+management via the bundled pmd3 bridge to prevent device auto-lock.
 
 Not a replacement for
 [mobile-mcp](https://github.com/mobile-next/mobile-mcp) (UI automation via
@@ -55,7 +55,6 @@ everything below plus gotchas, device-inventory format, and the full
 | `resolve` | Symbolic name → structured entry with all known UUIDs. |
 | `device_state` | Battery, charging, thermal, foreground app. 2 s TTL cache. |
 | `screenshot` | PNG of the current screen. iOS via DVT; Android via `adb screencap`. |
-| `keepawake` | Foreground the KeepAwake companion app (iOS). No-op on Android. |
 | `list_apps` | Installed third-party apps. |
 | `launch_app` | Foreground an arbitrary app by bundle id. |
 | `terminate_app` | Stop an app by bundle id. |
@@ -134,8 +133,8 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
   -scheme MyApp -destination 'id=00008103-000D39301A6A201E' test
 ```
 
-Runs the command, waits for it to exit, then foregrounds KeepAwake on the
-device regardless of success/failure. Forwards the command's exit code.
+Runs the command, waits for it to exit, then releases the device reservation
+regardless of success/failure. Forwards the command's exit code.
 
 Spyder auto-acquires an exclusive reservation on the device for the
 command's lifetime (owner defaults to `filepath.Base(cwd)` — pass
@@ -146,15 +145,10 @@ alive; release on exit is guaranteed.
 
 ## Auto-awake supervisor
 
-`spyder serve` polls `pymobiledevice3 remote tunneld` for paired iOS
-devices. For each newly-seen device:
-
-1. Checks whether KeepAwake is installed.
-2. If not, auto-deploys via `xcodegen` + `xcodebuild` + `devicectl install`.
-3. Launches KeepAwake via DVT.
-4. If the device is locked, fires a **persistent macOS alert** via
-   [`alerter`](https://github.com/vjeantet/alerter) asking the user to
-   unlock. The alert auto-dismisses on successful launch.
+`spyder serve` monitors paired iOS devices via the bundled pmd3 bridge.
+For each newly-seen device it acquires a `PreventUserIdleSystemSleep`
+power assertion, refreshing it before timeout and releasing it on disconnect
+or daemon shutdown. No companion app to install; no on-device trust prompt.
 
 ## Device inventory
 
@@ -176,7 +170,6 @@ Dependencies:
 - Go 1.26+
 - `pymobiledevice3` ≥ 8.2 in PATH (iOS operations)
 - `adb` (Android operations)
-- `xcodegen` + Xcode (auto-deploy of KeepAwake on iOS)
 - `alerter` (persistent macOS notifications for the locked-device prompt;
   falls back to `terminal-notifier` → `osascript`)
 

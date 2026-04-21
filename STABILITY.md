@@ -31,7 +31,6 @@ Snapshot as of `v0.5.0`.
 | `resolve` | `{name: string}` (required). | JSON-encoded `inventory.Entry` (`alias`, `platform`, `ios_uuid`, `ios_coredevice`, `android_serial`, `notes`). | Needs review — passthrough shape for unknown IDs may evolve |
 | `device_state` | `{device: string}` (required; alias or raw UUID/serial). | JSON-encoded `device.State` (`battery_level?`, `charging?`, `thermal_state?`, `foreground_app?`, `storage_free_mb?`, `notes?`). | Needs review — pointer-typed optionals, field additions expected |
 | `screenshot` | `{device: string, owner?: string}` (device required; owner for reservation auth). | MCP image content block (base64 PNG, `image/png`). | Stable |
-| `keepawake` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text result; platform-specific wording for Android no-op. | Stable |
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
 | `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
@@ -77,7 +76,7 @@ can match on these phrases.
 |---|---|---|
 | `spyder` (no args) | Prints usage to stdout. | Stable |
 | `spyder serve [--addr :PORT] [--tunneld-addr HOST:PORT]` | HTTP MCP server + auto-awake supervisor. Blocks until SIGINT/SIGTERM. | Stable |
-| `spyder run [--device ALIAS\|-d ALIAS] [--as OWNER] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); foregrounds KeepAwake and releases reservation on exit; opportunistically renews during long runs. Forwards exit code. | Stable |
+| `spyder run [--device ALIAS\|-d ALIAS] [--as OWNER] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. | Stable |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |
 | `spyder help-agent` / `--help-agent` / `-help-agent` | Usage + embedded agents-guide.md. | Stable |
@@ -85,7 +84,6 @@ can match on these phrases.
 | `spyder resolve <name> [--json]` | REST proxy to `resolve` tool. | Stable |
 | `spyder device-state <device> [--json]` | REST proxy to `device_state` tool. | Stable |
 | `spyder screenshot <device> [--output FILE] [--as OWNER]` | REST proxy to `screenshot`; writes PNG to `--output` (default `<device>-<ts>.png`). | Stable |
-| `spyder keepawake <device> [--as OWNER]` | REST proxy to `keepawake`. | Stable |
 | `spyder list-apps <device> [--json]` | REST proxy to `list_apps`. | Stable |
 | `spyder launch-app <device> <bundle-id> [--as OWNER]` | REST proxy to `launch_app`. | Stable |
 | `spyder terminate-app <device> <bundle-id> [--as OWNER]` | REST proxy to `terminate_app`. | Stable |
@@ -284,22 +282,20 @@ builds. **Stable.**
 - **Tunneld child-process supervision.** `--supervise-tunneld` was specified
   in 🎯T7 but deferred. Currently spyder assumes an externally-managed
   tunneld. Blocks turnkey installs where no external manager exists.
-- **KeepAwake auto-deploy portability.** Project discovery currently walks
-  up from CWD. For a Homebrew-installed binary with no source tree nearby,
-  auto-deploy silently disables. Long-term fix is `go:embed` of the Xcode
-  project + extraction on first use.
 - **Tests for shell-out paths.** 105 test functions cover all pure
   logic (inventory, parsers, classifiers, MCP dispatch, reservations,
   daemon HTTP roundtrip). Shell-out orchestration in `internal/device`
   (adapter methods wrapping `pymobiledevice3`/`adb`/`devicectl`),
-  `internal/notify` (osascript/terminal-notifier/alerter),
-  `main.restoreKeepAwake`, and the `internal/autoawake` supervisor
-  loop is still ~20-30% covered. Before 1.0 these should gain
-  env-gated live tests (e.g. `SPYDER_LIVE_TESTS=1`) against real
-  devices so regressions in the real-world path get caught.
-- **`pymobiledevice3` library embedding.** All iOS operations shell out,
-  paying ~1 s of Python startup per call. Long-lived helper subprocess (JSON
-  protocol over stdin/stdout) would eliminate this.
+  `internal/notify` (osascript/terminal-notifier/alerter), and the
+  `internal/autoawake` supervisor loop is still ~20-30% covered. Before
+  1.0 these should gain env-gated live tests (e.g. `SPYDER_LIVE_TESTS=1`)
+  against real devices so regressions in the real-world path get caught.
+- **`pmd3-bridge` internal dependency.** The `internal/pmd3bridge` package
+  wraps the FastAPI bridge subprocess (Unix socket, JSON/HTTP) as an internal
+  dependency; the Go daemon supervises it via `pmd3bridge.Supervisor`. The
+  bridge binary ships at `libexec/pmd3-bridge/pmd3-bridge` in the Homebrew
+  formula. Until 🎯T25.3 lands, the existing iOS adapter still shells out for
+  DVT operations and the bridge surface has no user-facing MCP tools yet.
 - **macOS-only host enforcement.** Spyder runs on Linux but iOS operations
   will fail noisily there. Either restrict the binary to Darwin or
   gracefully degrade iOS-related tools with a clear "host does not support
@@ -338,5 +334,5 @@ builds. **Stable.**
   simulator UDID instead.
 - Wireless-ADB pairing / discovery — assumed set up externally (spyder
   inherits `adb devices`).
-- Auto-install of an Android KeepAwake app — Android handles stay-awake
-  natively via Developer Settings; the MCP tool is a no-op by design.
+- Auto-install of a companion app on Android — Android handles stay-awake
+  natively via Developer Settings; no companion app is needed.

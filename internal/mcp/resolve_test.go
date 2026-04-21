@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/marcelocantos/spyder/internal/device"
 )
 
 const testInventory = `[
@@ -26,7 +24,7 @@ const testInventory = `[
 ]`
 
 // newTestHandler sets HOME to a temp dir containing testInventory
-// and returns a Handler backed by it. tunneld is nil.
+// and returns a Handler backed by it.
 func newTestHandler(t *testing.T) *Handler {
 	t.Helper()
 	tmp := t.TempDir()
@@ -38,7 +36,7 @@ func newTestHandler(t *testing.T) *Handler {
 	if err := os.WriteFile(filepath.Join(dir, "inventory.json"), []byte(testInventory), 0o600); err != nil {
 		t.Fatalf("write inventory: %v", err)
 	}
-	return NewHandler(nil)
+	return NewHandler()
 }
 
 func TestResolveAdapter_InventoryIOS(t *testing.T) {
@@ -127,7 +125,3 @@ func TestDispatch_ResolveMissingName(t *testing.T) {
 		t.Error("Dispatch(resolve, {}) returned nil err; want error for missing name")
 	}
 }
-
-// Compile-time: device.KeepAwakeBundleID must exist (resolveAdapter uses
-// the device package).
-var _ = device.KeepAwakeBundleID

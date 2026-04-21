@@ -13,8 +13,8 @@ import (
 )
 
 // SimulatorAdapter talks to iOS simulators via xcrun simctl. It satisfies
-// the Adapter interface. Operations not applicable to simulators (State,
-// KeepAwake, etc.) are stubs that return clear errors.
+// the Adapter interface. Operations not applicable to simulators (State, etc.)
+// are stubs that return clear errors.
 type SimulatorAdapter struct{}
 
 // NewSimulatorAdapter returns a new iOS simulator adapter.
@@ -26,10 +26,6 @@ func (a *SimulatorAdapter) List() ([]Info, error) {
 
 func (a *SimulatorAdapter) State(id string) (State, error) {
 	return State{}, errors.New("simctl: State() not implemented for simulators")
-}
-
-func (a *SimulatorAdapter) LaunchKeepAwake(id string) error {
-	return errors.New("simctl: KeepAwake is not applicable to simulators")
 }
 
 func (a *SimulatorAdapter) Screenshot(id string) ([]byte, error) {

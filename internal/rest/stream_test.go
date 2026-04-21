@@ -28,7 +28,6 @@ type stubStreamAdapter struct {
 
 func (s *stubStreamAdapter) List() ([]device.Info, error)                 { return nil, nil }
 func (s *stubStreamAdapter) State(id string) (device.State, error)        { return device.State{}, nil }
-func (s *stubStreamAdapter) LaunchKeepAwake(id string) error              { return nil }
 func (s *stubStreamAdapter) Screenshot(id string) ([]byte, error)         { return nil, nil }
 func (s *stubStreamAdapter) ListApps(id string) ([]device.AppInfo, error) { return nil, nil }
 func (s *stubStreamAdapter) LaunchApp(id, b string) error                 { return nil }
@@ -65,7 +64,7 @@ func (s *stubStreamAdapter) LogStream(ctx context.Context, id string, _ device.L
 func newStreamTestServer(t *testing.T, lines []device.LogLine) (string, func()) {
 	t.Helper()
 	stub := &stubStreamAdapter{lines: lines}
-	h := spydermcp.NewHandlerWithAdapters(nil, stub, nil)
+	h := spydermcp.NewHandlerWithAdapters(stub, nil)
 	ts := httptest.NewServer(rest.NewHandler(h))
 	return ts.URL, ts.Close
 }

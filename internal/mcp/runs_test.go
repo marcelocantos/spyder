@@ -101,8 +101,6 @@ func TestScreenshot_ArchivedInActiveRun(t *testing.T) {
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x42, 0x42, 0x42, 0x42}
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
 	h, _, r := newHandlerWithRuns(t, ios, nil)
-	h.tunneld = &stubTunneld{}
-
 	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "Pippa", "owner": "tiltbuggy"})
 
 	res := dispatchJSON(t, h, "screenshot", map[string]any{
@@ -155,7 +153,7 @@ func TestScreenshot_NoRunStore_StillReturnsImage(t *testing.T) {
 	// archive. This protects the "runs is optional" contract.
 	png := []byte{0x89, 0x50, 0x4e, 0x47}
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
-	h := newHandlerWithStubs(t, ios, nil, &stubTunneld{})
+	h := newHandlerWithStubs(t, ios, nil)
 
 	res := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
 	if res.IsError {
@@ -167,8 +165,6 @@ func TestScreenshot_NoActiveRun_NotArchived(t *testing.T) {
 	png := []byte{0x89, 0x50, 0x4e, 0x47}
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
 	h, _, r := newHandlerWithRuns(t, ios, nil)
-	h.tunneld = &stubTunneld{}
-
 	res := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
 	if res.IsError {
 		t.Fatalf("screenshot should succeed without reservation; body=%s", resultText(t, &res))
