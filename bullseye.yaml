@@ -554,10 +554,11 @@ targets:
     achieved: 2026-04-21
   T25:
     name: Keep-awake is held by a pmd3 PowerAssertionService handle from a bundled bridge, not by launching an on-device companion app
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 13.0
     acceptance:
     - 'The iOS KeepAwake companion app and all its supporting machinery are deleted from spyder: the ios/KeepAwake/ project directory, the xcodegen/xcodebuild/devicectl install code path in internal/autoawake/autoawake.go (deployKeepAwake, findBuiltApp, findKeepAwakeProject), device.KeepAwakeBundleID and all references, and the SPYDER_KEEPAWAKE_PROJECT env var. The companion-app concept no longer exists in the codebase.'
     - 'A Python package in this repo (under bridge/, python/, or similar) imports pymobiledevice3 as a library — not via its CLI — and exposes a clean named-method API covering every pmd3 operation spyder needs: list_devices, list_apps, launch_app, kill_app, pid_for_bundle, battery, screenshot, crash_reports_list, crash_reports_pull, and critically: acquire_power_assertion, refresh_power_assertion, release_power_assertion.'
@@ -578,6 +579,7 @@ targets:
     - dependency-hygiene
     origin: manual
     discovered: 2026-04-21
+    achieved: 2026-04-21
   T25.1:
     name: Python bridge serves pmd3 operations over HTTP+Unix-socket
     status: achieved
@@ -685,10 +687,11 @@ targets:
     achieved: 2026-04-21
   T25.5:
     name: Homebrew formula bundles the pmd3 bridge; launchd plist no longer depends on user PATH
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 2.0
     acceptance:
     - release.yml CI workflow builds the pmd3-bridge PyInstaller --onedir bundle alongside the spyder binary for each release platform (darwin-arm64, linux-amd64, linux-arm64)
     - 'Bridge bundle is uploaded to the GitHub release as part of the spyder tarball (e.g. tarball layout: bin/spyder + libexec/pmd3-bridge/...)'
@@ -707,6 +710,7 @@ targets:
     - release
     origin: manual
     discovered: 2026-04-21
+    achieved: 2026-04-21
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: achieved
