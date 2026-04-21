@@ -607,10 +607,11 @@ targets:
     achieved: 2026-04-21
   T25.2:
     name: Go daemon owns bridge lifecycle and exposes a typed client
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 3.0
     acceptance:
     - internal/pmd3bridge/ package with a Client that wraps http.Client using a Unix-socket DialContext; one typed method per bridge endpoint (ListDevices, ListApps, LaunchApp, KillApp, PIDForBundle, Battery, Screenshot, CrashReportsList, CrashReportsPull, AcquirePowerAssertion, RefreshPowerAssertion, ReleasePowerAssertion)
     - internal/pmd3bridge/ also contains a Supervisor that spawns the bridge binary with --socket <path>, waits for 'ready\n' on stdout (with a bounded timeout), and exposes the socket path + a Client bound to it
@@ -630,6 +631,7 @@ targets:
     - supervisor
     origin: manual
     discovered: 2026-04-21
+    achieved: 2026-04-21
   T25.3:
     name: iOS adapter + autoawake route every pmd3 operation through the bridge
     status: identified
