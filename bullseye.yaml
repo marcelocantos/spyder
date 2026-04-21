@@ -634,10 +634,11 @@ targets:
     achieved: 2026-04-21
   T25.3:
     name: iOS adapter + autoawake route every pmd3 operation through the bridge
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 5.0
     acceptance:
     - internal/device/ios.go contains zero exec.Command("pymobiledevice3", ...) calls. Every iOS operation (State, Screenshot, ListApps, LaunchApp, TerminateApp, AppPID, Crashes, logs-related) goes through a pmd3bridge.Client injected into IOSAdapter
     - The 'pymobiledevice3 not found in PATH' error paths and associated exec.LookPath checks are deleted
@@ -656,12 +657,14 @@ targets:
     - power-assertion
     origin: manual
     discovered: 2026-04-21
+    achieved: 2026-04-21
   T25.4:
     name: Delete the KeepAwake companion app and its support machinery
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
+    actual_cost: 2.0
     acceptance:
     - ios/KeepAwake/ directory removed entirely (xcodegen project, Swift sources, provisioning, notes, README)
     - device.KeepAwakeBundleID and every reference to it in Go source removed
@@ -679,6 +682,7 @@ targets:
     - cleanup
     origin: manual
     discovered: 2026-04-21
+    achieved: 2026-04-21
   T25.5:
     name: Homebrew formula bundles the pmd3 bridge; launchd plist no longer depends on user PATH
     status: identified
