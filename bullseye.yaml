@@ -713,7 +713,7 @@ targets:
     achieved: 2026-04-21
   T26:
     name: Daemon↔pmd3-bridge interface is privately scoped, fail-fast, and testable without install
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -736,6 +736,7 @@ targets:
     - testing
     origin: 'discovered 2026-04-22: Jevons fell asleep; root-cause analysis revealed wedged bridge + silent-swallow + no integration test coverage'
     discovered: 2026-04-22
+    achieved: 2026-04-22
   T26.1:
     name: 'Bridge transport is daemon-private: ephemeral loopback port + auth token handed over stdio'
     status: achieved
