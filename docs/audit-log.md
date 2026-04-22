@@ -118,3 +118,29 @@ maintenance activities. Append-only — newest entries at the bottom.
   paired, not hostile); detection logic tested at primitive layers
   (parseReadyLine pure, stallReader on io.Pipe, watchdog on plain
   subprocess). Published for darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-22 — /release v0.8.0
+
+- **PR**: #27 (fd-leak hotfix + 🎯T27)
+- **Outcome**: Stability hotfix after v0.7.0 stranded attached devices
+  ~4 min into a session. Root cause: services._lockdown callers
+  never closed the pymobiledevice3 lockdown client, leaking a
+  usbmux socket per call. autoawake polls list_devices every 2 s,
+  so with 2 devices attached the bridge hit EMFILE within minutes;
+  list_devices then returned pmd3_error (correctly classified as a
+  structured BridgeError by the T26.2 fail-fast model, which
+  logged+skipped rather than panicked), refreshes stopped, and
+  device-side assertions timed out. Fixed by introducing
+  _lockdown_ctx async context manager and routing every service
+  caller through it; assertions.py similarly closes its lockdown
+  client when the assertion task exits. Added T27 regression
+  guard: fd-count delta assertions around real bridge subprocess
+  against real attached device (validated: delta=+100 on unfixed
+  code, delta=0 on fixed code, over 50 ListDevices calls).
+  Discovered two follow-ups during release prep: 🎯T29 (automated
+  awake/asleep signal — IOPMrootDomain queries count as user
+  activity and don't distinguish states) and 🎯T30 (iOS 17+
+  screenshot needs tunneld+RSD; regression from T25's "tunneld
+  supervision absorbed into the bridge" where it was silently not
+  re-implemented). Published for darwin-arm64, linux-amd64,
+  linux-arm64.
