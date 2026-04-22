@@ -12,6 +12,7 @@ app.py translates BridgeError into the corresponding HTTP status.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
@@ -19,7 +20,7 @@ import re
 import tempfile
 import time
 from datetime import datetime, timezone
-from typing import Optional
+from typing import AsyncIterator, Optional
 
 from .schemas import (
     AppInfo,
@@ -299,9 +300,18 @@ async def crash_reports_list(
     udid: str,
     since_iso8601: Optional[str] = None,
     process: Optional[str] = None,
-) -> list[CrashReportEntry]:
-    """List crash reports, optionally filtered by time and process."""
-    lc = await _lockdown(udid)
+) -> AsyncIterator[CrashReportEntry]:
+    """List crash reports, optionally filtered by time and process.
+
+    Returns an async iterator (🎯T26.3) so the bridge can hand entries to
+    the HTTP response as they become available. Synchronous setup failures
+    (invalid since_iso8601, unpaired device, pmd3 error fetching the index)
+    raise BridgeError immediately — before any iterator is returned — so
+    the HTTP layer can render them as 4xx without committing to a 200
+    stream. Today pmd3's ``CrashReportsManager.ls()`` returns the directory
+    listing atomically; a later refactor can drop to AFC directly for true
+    per-entry device-level streaming.
+    """
     since_dt: Optional[datetime] = None
     if since_iso8601:
         try:
@@ -314,6 +324,7 @@ async def crash_reports_list(
                 f"Invalid since_iso8601: {since_iso8601!r}: {exc}",
             ) from exc
 
+    lc = await _lockdown(udid)
     started = time.monotonic()
     try:
         from pymobiledevice3.services.crash_reports import CrashReportsManager
@@ -329,12 +340,18 @@ async def crash_reports_list(
     log.info("crash_reports listed udid=%s names=%d elapsed_ms=%d",
              udid, len(names), int((time.monotonic() - started) * 1000))
 
-    result: list[CrashReportEntry] = []
+    return _crash_reports_list_stream(names, since_dt, process)
+
+
+async def _crash_reports_list_stream(
+    names: list[str],
+    since_dt: Optional[datetime],
+    process: Optional[str],
+) -> AsyncIterator[CrashReportEntry]:
+    emitted = 0
     for name in names:
         match = _CRASH_NAME_RE.match(name)
         if not match:
-            # Skip directories and anything that isn't a recognisable report
-            # file — no metadata to surface for these.
             continue
         proc_name = match.group("process")
         if process and proc_name != process:
@@ -343,18 +360,30 @@ async def crash_reports_list(
         ts_dt = _parse_crash_timestamp(ts_raw)
         if since_dt is not None and ts_dt is not None and ts_dt < since_dt:
             continue
-        result.append(
-            CrashReportEntry(
-                name=name,
-                process=proc_name,
-                timestamp=ts_dt.isoformat() if ts_dt else ts_raw,
-            )
+        yield CrashReportEntry(
+            name=name,
+            process=proc_name,
+            timestamp=ts_dt.isoformat() if ts_dt else ts_raw,
         )
-    return result
+        emitted += 1
+        # Yield to the event loop so the StreamingResponse can flush each
+        # entry to the wire before we compute the next one.
+        await asyncio.sleep(0)
+    log.debug("crash_reports list emitted=%d filtered_from=%d", emitted, len(names))
 
 
-async def crash_reports_pull(udid: str, name: str) -> str:
-    """Pull a single crash report's content by filename."""
+# Chunk size for crash-report pulls. Matches AFC's native ~64KB block size.
+_CRASH_PULL_CHUNK_BYTES = 64 * 1024
+
+
+async def crash_reports_pull(udid: str, name: str) -> AsyncIterator[bytes]:
+    """Pull a single crash report's content, streamed as octet-stream chunks.
+
+    Synchronous setup (lockdown, pmd3 fetch-to-tempfile) happens before
+    returning the iterator so failures surface as BridgeError → 4xx rather
+    than as a 200 stream that ends mid-body. The returned iterator yields
+    raw bytes in ``_CRASH_PULL_CHUNK_BYTES`` chunks.
+    """
     if "/" in name or name.startswith("."):
         raise BridgeError(
             "pmd3_error",
@@ -362,34 +391,61 @@ async def crash_reports_pull(udid: str, name: str) -> str:
         )
     lc = await _lockdown(udid)
     started = time.monotonic()
+
+    # Pull the file to a tempdir synchronously so any device-side failure
+    # raises BridgeError before we return an iterator. The tempdir lives
+    # inside the iterator's closure so it is cleaned up when the iterator
+    # completes (or is garbage-collected).
+    tmp = tempfile.mkdtemp(prefix="pmd3-crash-")
     try:
         from pymobiledevice3.services.crash_reports import CrashReportsManager
         mgr = CrashReportsManager(lockdown=lc)
-        with tempfile.TemporaryDirectory(prefix="pmd3-crash-") as tmp:
-            await mgr.pull(out=tmp, entry=name, progress_bar=False)
-            path = os.path.join(tmp, name)
-            if not os.path.exists(path):
-                # pmd3 sometimes strips the filename down; fall back to the
-                # first file in the tempdir.
-                files = os.listdir(tmp)
-                if not files:
-                    raise BridgeError(
-                        "pmd3_error",
-                        f"Crash report {name} not found on {udid}",
-                    )
-                path = os.path.join(tmp, files[0])
-            with open(path, "rb") as fh:
-                raw = fh.read()
-        log.info("crash_reports pulled udid=%s name=%s bytes=%d elapsed_ms=%d",
-                 udid, name, len(raw), int((time.monotonic() - started) * 1000))
+        await mgr.pull(out=tmp, entry=name, progress_bar=False)
+        path = os.path.join(tmp, name)
+        if not os.path.exists(path):
+            files = os.listdir(tmp)
+            if not files:
+                raise BridgeError(
+                    "pmd3_error",
+                    f"Crash report {name} not found on {udid}",
+                )
+            path = os.path.join(tmp, files[0])
     except BridgeError:
+        _rmtree_quiet(tmp)
         raise
     except Exception as exc:
+        _rmtree_quiet(tmp)
         raise BridgeError(
             "pmd3_error",
             f"Failed to pull crash report {name} from {udid}: {exc}",
         ) from exc
+
+    return _crash_reports_pull_stream(udid, name, tmp, path, started)
+
+
+async def _crash_reports_pull_stream(
+    udid: str, name: str, tmp: str, path: str, started: float,
+) -> AsyncIterator[bytes]:
+    total = 0
     try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        return raw.decode("utf-8", errors="replace")
+        with open(path, "rb") as fh:
+            while True:
+                chunk = fh.read(_CRASH_PULL_CHUNK_BYTES)
+                if not chunk:
+                    break
+                total += len(chunk)
+                yield chunk
+                await asyncio.sleep(0)
+        log.info("crash_reports pulled udid=%s name=%s bytes=%d elapsed_ms=%d",
+                 udid, name, total, int((time.monotonic() - started) * 1000))
+    finally:
+        _rmtree_quiet(tmp)
+
+
+def _rmtree_quiet(path: str) -> None:
+    """Best-effort removal of a directory tree; swallow errors."""
+    import shutil
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:  # pragma: no cover
+        pass

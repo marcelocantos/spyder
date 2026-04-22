@@ -17,15 +17,30 @@ import "time"
 // Do not tune these down to "tight enough to be useful as a SLO" — they are
 // assertion thresholds, not SLOs.
 const (
-	timeoutListDevices      = 10 * time.Second
-	timeoutPowerAssertion   = 10 * time.Second
-	timeoutListApps         = 30 * time.Second
-	timeoutLaunchKillApp    = 30 * time.Second
-	timeoutPidForBundle     = 30 * time.Second
-	timeoutBattery          = 30 * time.Second
-	timeoutScreenshot       = 30 * time.Second
-	timeoutCrashReportsList = 120 * time.Second
-	timeoutCrashReportsPull = 120 * time.Second
-	timeoutReadyHandshake   = 10 * time.Second
-	intervalLivenessProbe   = 30 * time.Second
+	timeoutListDevices    = 10 * time.Second
+	timeoutPowerAssertion = 10 * time.Second
+	timeoutListApps       = 30 * time.Second
+	timeoutLaunchKillApp  = 30 * time.Second
+	timeoutPidForBundle   = 30 * time.Second
+	timeoutBattery        = 30 * time.Second
+	timeoutScreenshot     = 30 * time.Second
+	timeoutReadyHandshake = 10 * time.Second
+	intervalLivenessProbe = 30 * time.Second
+
+	// Streaming endpoints (🎯T26.3) use a two-tier timeout: a very generous
+	// outer end-to-end deadline acts as a safety net; the real bug detector
+	// is the inter-packet deadline applied to every chunk read.
+	timeoutStreamEndToEnd = 30 * time.Minute
 )
+
+// interPacketDeadline is a var, not a const, so tests can reduce it to
+// keep test runtimes short. Production code treats it as a constant.
+var interPacketDeadline = 10 * time.Second
+
+// swapInterPacketDeadline replaces interPacketDeadline and returns the
+// previous value so tests can restore it in a defer.
+func swapInterPacketDeadline(d time.Duration) time.Duration {
+	prev := interPacketDeadline
+	interPacketDeadline = d
+	return prev
+}

@@ -294,6 +294,11 @@ func (c *Client) Screenshot(ctx context.Context, udid string) ([]byte, error) {
 
 // CrashReportsList lists crash reports on the device. since is optional
 // (zero time = no lower bound). process is optional (empty = all processes).
+//
+// Transport (🎯T26.3): the bridge streams the index as NDJSON over chunked
+// HTTP. The client accumulates entries into a slice for backward-compatible
+// return shape. The inter-packet deadline protects against device-side
+// stalls; any stall during read panics via the fatal hook.
 func (c *Client) CrashReportsList(ctx context.Context, udid string, since time.Time, process string) ([]CrashReport, error) {
 	req := crashReportsListRequest{UDID: udid}
 	if !since.IsZero() {
@@ -303,22 +308,45 @@ func (c *Client) CrashReportsList(ctx context.Context, udid string, since time.T
 	if process != "" {
 		req.Process = &process
 	}
-	var resp crashReportsListResponse
-	if err := c.post(ctx, "/v1/crash_reports_list", timeoutCrashReportsList,
-		req, &resp); err != nil {
+
+	const endpoint = "/v1/crash_reports_list"
+	_, body, err := c.postStream(ctx, endpoint, req)
+	if err != nil {
 		return nil, err
 	}
-	return resp.Reports, nil
+	defer body.Close()
+
+	var reports []CrashReport
+	scanErr := scanNDJSON[CrashReport](body, func(r CrashReport) bool {
+		reports = append(reports, r)
+		return true
+	})
+	if err := c.drainErr(endpoint, scanErr); err != nil {
+		return nil, err
+	}
+	return reports, nil
 }
 
 // CrashReportsPull returns the raw text content of the named crash report.
+//
+// Transport (🎯T26.3): the bridge streams the report as application/
+// octet-stream over chunked HTTP. The client drains the body into a string
+// for backward-compatible return shape. Inter-chunk stalls panic via the
+// fatal hook.
 func (c *Client) CrashReportsPull(ctx context.Context, udid, name string) (string, error) {
-	var resp crashReportsPullResponse
-	if err := c.post(ctx, "/v1/crash_reports_pull", timeoutCrashReportsPull,
-		crashReportsPullRequest{UDID: udid, Name: name}, &resp); err != nil {
+	const endpoint = "/v1/crash_reports_pull"
+	_, body, err := c.postStream(ctx, endpoint,
+		crashReportsPullRequest{UDID: udid, Name: name})
+	if err != nil {
 		return "", err
 	}
-	return resp.Content, nil
+	defer body.Close()
+
+	buf, readErr := io.ReadAll(body)
+	if err := c.drainErr(endpoint, readErr); err != nil {
+		return "", err
+	}
+	return string(buf), nil
 }
 
 // AcquirePowerAssertion acquires a power assertion on the device and returns

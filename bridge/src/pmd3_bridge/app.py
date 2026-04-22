@@ -15,8 +15,10 @@ import time
 from contextlib import asynccontextmanager
 from typing import Any
 
+import json as _json
+
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from . import services
 from .assertions import PowerAssertionManager
@@ -231,33 +233,76 @@ async def screenshot(body: ScreenshotRequest) -> Any:
         return _classify(exc)
 
 
-@app.post("/v1/crash_reports_list", response_model=CrashReportsListResponse)
+@app.post("/v1/crash_reports_list")
 async def crash_reports_list(body: CrashReportsListRequest) -> Any:
+    """Stream the crash-report index as NDJSON (🎯T26.3).
+
+    One JSON object per line. The Go client reads line-by-line with an
+    inter-packet deadline; a gap > 10 s between lines panics the daemon.
+    """
     log.info("crash_reports_list udid=%s since=%s process=%s",
              body.udid, body.since_iso8601, body.process)
+    # Probe the generator for synchronous errors (notably _lockdown failing
+    # with device_not_paired); those should surface as HTTP 4xx, not as a
+    # stream that opens 200 and then errors mid-body.
     try:
-        reports = await _services.crash_reports_list(body.udid, body.since_iso8601, body.process)
-        log.info("crash_reports_list udid=%s returned %d report(s)",
-                 body.udid, len(reports))
-        return CrashReportsListResponse(reports=reports)
+        gen = await _services.crash_reports_list(body.udid, body.since_iso8601, body.process)
     except BridgeError as exc:
         log.warning("crash_reports_list udid=%s failed code=%s message=%s",
                     body.udid, exc.code, exc.message)
         return _classify(exc)
 
+    async def _iter() -> Any:
+        count = 0
+        try:
+            async for entry in gen:
+                count += 1
+                yield (_json.dumps(entry.model_dump()) + "\n").encode("utf-8")
+        except BridgeError as exc:
+            # Late error: we've already committed to 200. Emit a terminating
+            # NDJSON line carrying the error. The Go client treats the
+            # trailing `{"error":...}` shape as a structured BridgeError.
+            log.warning("crash_reports_list udid=%s mid-stream error code=%s message=%s",
+                        body.udid, exc.code, exc.message)
+            yield (_json.dumps({"error": exc.code, "message": exc.message}) + "\n").encode("utf-8")
+        log.info("crash_reports_list udid=%s streamed %d entries", body.udid, count)
 
-@app.post("/v1/crash_reports_pull", response_model=CrashReportsPullResponse)
+    return StreamingResponse(_iter(), media_type="application/x-ndjson")
+
+
+@app.post("/v1/crash_reports_pull")
 async def crash_reports_pull(body: CrashReportsPullRequest) -> Any:
+    """Stream a crash report as raw octet-stream bytes (🎯T26.3).
+
+    Transfer-Encoding: chunked; Content-Type: application/octet-stream.
+    The Go client drives io.Copy with an inter-packet read deadline.
+    """
     log.info("crash_reports_pull udid=%s name=%s", body.udid, body.name)
     try:
-        content = await _services.crash_reports_pull(body.udid, body.name)
-        log.info("crash_reports_pull udid=%s name=%s bytes=%d",
-                 body.udid, body.name, len(content))
-        return CrashReportsPullResponse(content=content)
+        gen = await _services.crash_reports_pull(body.udid, body.name)
     except BridgeError as exc:
         log.warning("crash_reports_pull udid=%s name=%s failed code=%s message=%s",
                     body.udid, body.name, exc.code, exc.message)
         return _classify(exc)
+
+    async def _iter() -> Any:
+        total = 0
+        try:
+            async for chunk in gen:
+                total += len(chunk)
+                yield chunk
+        except BridgeError as exc:
+            # Mid-stream failure on an octet-stream response: we cannot
+            # surface a structured error at this point, so just close the
+            # stream. The Go client's inter-packet deadline will catch
+            # prolonged stalls; a clean close with no prior bytes reads
+            # as a pmd3_error at that layer.
+            log.warning("crash_reports_pull udid=%s name=%s mid-stream error code=%s message=%s",
+                        body.udid, body.name, exc.code, exc.message)
+        log.info("crash_reports_pull udid=%s name=%s streamed %d bytes",
+                 body.udid, body.name, total)
+
+    return StreamingResponse(_iter(), media_type="application/octet-stream")
 
 
 @app.post("/v1/acquire_power_assertion", response_model=AcquirePowerAssertionResponse)

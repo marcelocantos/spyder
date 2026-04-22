@@ -787,7 +787,7 @@ targets:
     achieved: 2026-04-22
   T26.3:
     name: 'Streaming bridge calls: NDJSON for list endpoints, octet-stream for file pulls, inter-packet deadline panics on stall'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -811,6 +811,7 @@ targets:
     - crash-reports
     origin: forked-from T26 (decomposition 2026-04-22)
     discovered: 2026-04-22
+    achieved: 2026-04-22
   T26.4:
     name: Integration test harness exercises the full daemon↔bridge stack end-to-end, including induced-bug scenarios
     status: identified

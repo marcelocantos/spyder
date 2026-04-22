@@ -190,15 +190,32 @@ func TestClient_Screenshot(t *testing.T) {
 	}
 }
 
-// --- CrashReportsList ---
+// --- CrashReportsList (NDJSON streaming) ---
 
-func TestClient_CrashReportsList(t *testing.T) {
+// writeNDJSONLine writes one NDJSON line and flushes so the client sees it
+// before the next write. Flushing is essential for the inter-packet
+// deadline tests — without it httptest.Server batches the response.
+func writeNDJSONLine(w http.ResponseWriter, v any) {
+	b, _ := json.Marshal(v)
+	_, _ = w.Write(b)
+	_, _ = w.Write([]byte{'\n'})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func TestClient_CrashReportsList_StreamsNDJSON(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/crash_reports_list", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, http.StatusOK, crashReportsListResponse{
-			Reports: []CrashReport{
-				{Name: "MyApp_2026-01-01.ips", Process: "MyApp", Timestamp: "2026-01-01T00:00:00Z"},
-			},
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		writeNDJSONLine(w, CrashReport{
+			Name: "MyApp_2026-01-01.ips", Process: "MyApp",
+			Timestamp: "2026-01-01T00:00:00Z",
+		})
+		writeNDJSONLine(w, CrashReport{
+			Name: "MyApp_2026-01-02.ips", Process: "MyApp",
+			Timestamp: "2026-01-02T00:00:00Z",
 		})
 	})
 
@@ -207,26 +224,97 @@ func TestClient_CrashReportsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CrashReportsList: %v", err)
 	}
-	if len(reports) != 1 || reports[0].Process != "MyApp" {
-		t.Errorf("got %+v", reports)
+	if len(reports) != 2 {
+		t.Fatalf("got %d reports; want 2", len(reports))
+	}
+	if reports[0].Name != "MyApp_2026-01-01.ips" || reports[1].Name != "MyApp_2026-01-02.ips" {
+		t.Errorf("unexpected reports: %+v", reports)
 	}
 }
 
-// --- CrashReportsPull ---
+// TestClient_CrashReportsList_InterPacketStallFires asserts that a mid-
+// stream stall (server writes one line, then goes quiet) trips the fatal
+// hook. This is the core 🎯T26.3 bug detector.
+func TestClient_CrashReportsList_InterPacketStallFires(t *testing.T) {
+	// Save the global threshold so we can shorten it for this test.
+	origDeadline := swapInterPacketDeadline(200 * time.Millisecond)
+	defer swapInterPacketDeadline(origDeadline)
 
-func TestClient_CrashReportsPull(t *testing.T) {
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/crash_reports_list", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		writeNDJSONLine(w, CrashReport{Name: "first.ips", Process: "App",
+			Timestamp: "2026-01-01T00:00:00Z"})
+		<-release // hold the stream open indefinitely
+	})
+	_, c := unixTestServer(t, mux)
+	defer close(release)
+
+	var captured error
+	c.fatal = func(err error) { captured = err }
+
+	_, _ = c.CrashReportsList(context.Background(), "abc", time.Time{}, "")
+	if captured == nil {
+		t.Fatal("expected fatal on inter-packet stall; got none")
+	}
+	if !strings.Contains(captured.Error(), "inter-packet deadline") {
+		t.Errorf("unexpected fatal message: %v", captured)
+	}
+}
+
+// --- CrashReportsPull (octet-stream streaming) ---
+
+func TestClient_CrashReportsPull_StreamsBytes(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/crash_reports_pull", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, http.StatusOK, crashReportsPullResponse{Content: "crash text here"})
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("chunk-a"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte("chunk-b"))
 	})
-
 	_, c := unixTestServer(t, mux)
-	text, err := c.CrashReportsPull(context.Background(), "abc", "MyApp_2026-01-01.ips")
+
+	text, err := c.CrashReportsPull(context.Background(), "abc", "name.ips")
 	if err != nil {
 		t.Fatalf("CrashReportsPull: %v", err)
 	}
-	if text != "crash text here" {
-		t.Errorf("content = %q; want 'crash text here'", text)
+	if text != "chunk-achunk-b" {
+		t.Errorf("content = %q; want 'chunk-achunk-b'", text)
+	}
+}
+
+func TestClient_CrashReportsPull_InterPacketStallFires(t *testing.T) {
+	origDeadline := swapInterPacketDeadline(200 * time.Millisecond)
+	defer swapInterPacketDeadline(origDeadline)
+
+	release := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/crash_reports_pull", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("prefix"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-release
+	})
+	_, c := unixTestServer(t, mux)
+	defer close(release)
+
+	var captured error
+	c.fatal = func(err error) { captured = err }
+
+	_, _ = c.CrashReportsPull(context.Background(), "abc", "name.ips")
+	if captured == nil {
+		t.Fatal("expected fatal on inter-packet stall; got none")
+	}
+	if !strings.Contains(captured.Error(), "inter-packet deadline") {
+		t.Errorf("unexpected fatal message: %v", captured)
 	}
 }
 
