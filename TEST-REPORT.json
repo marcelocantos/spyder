@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "commit": "2215304b6f925234d85927a12781191c55e1de8e",
-  "generated_at": "2026-04-22T10:53:54Z",
+  "commit": "e123d1eb5ad1a0af363920c7c70a63dec39ac28f",
+  "generated_at": "2026-04-22T10:55:45Z",
   "host": "colossus",
   "suites": [
     {
@@ -19,7 +19,7 @@
     {
       "name": "integration",
       "cmd": "go test -tags=integration ./internal/pmd3bridge/...",
-      "duration_s": 5,
+      "duration_s": 0,
       "status": "pass"
     },
     {

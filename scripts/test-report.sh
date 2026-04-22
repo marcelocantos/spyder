@@ -83,7 +83,7 @@ fi
 # ── Tier 3: device tier ──────────────────────────────────────────────────────
 # Gated on SPYDER_DEVICES=1 and at least one attached device.
 if [[ "${SPYDER_DEVICES:-0}" == "1" ]]; then
-  run_suite device "go test -tags=device ./internal/device/..."
+  run_suite device "go test -tags=device ./internal/pmd3bridge/..."
 else
   run_suite_skipped device "set SPYDER_DEVICES=1 to run; requires a paired device"
 fi
