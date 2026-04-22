@@ -33,14 +33,9 @@ const (
 	timeoutStreamEndToEnd = 30 * time.Minute
 )
 
-// interPacketDeadline is a var, not a const, so tests can reduce it to
-// keep test runtimes short. Production code treats it as a constant.
-var interPacketDeadline = 10 * time.Second
-
-// swapInterPacketDeadline replaces interPacketDeadline and returns the
-// previous value so tests can restore it in a defer.
-func swapInterPacketDeadline(d time.Duration) time.Duration {
-	prev := interPacketDeadline
-	interPacketDeadline = d
-	return prev
-}
+// interPacketDeadline applies to streaming endpoints. A gap larger than
+// this between successive chunks panics the daemon — the bridge has
+// stopped making progress and something is wrong. The primitive-level
+// stallReader tests (stream_test.go) pass an explicit deadline rather
+// than mutating this value.
+const interPacketDeadline = 10 * time.Second
