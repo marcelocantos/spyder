@@ -6,33 +6,17 @@ package pmd3bridge
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 )
-
-const (
-	defaultReadyTimeout      = 10 * time.Second
-	defaultShutdownTimeout   = 5 * time.Second
-	defaultBackoffInitial    = 1 * time.Second
-	defaultBackoffCap        = 30 * time.Second
-	defaultBackoffResetAfter = 5 * time.Minute // reset backoff after this long without a crash
-)
-
-// clock abstracts time so tests can inject a deterministic implementation.
-type clock interface {
-	Now() time.Time
-	Sleep(d time.Duration)
-}
-
-type realClock struct{}
-
-func (realClock) Now() time.Time        { return time.Now() }
-func (realClock) Sleep(d time.Duration) { time.Sleep(d) }
 
 // Option configures a Supervisor.
 type Option func(*Supervisor)
@@ -40,11 +24,6 @@ type Option func(*Supervisor)
 // WithLogger injects a custom slog.Logger. Defaults to slog.Default().
 func WithLogger(l *slog.Logger) Option {
 	return func(s *Supervisor) { s.log = l }
-}
-
-// WithBackoffCap sets the maximum restart backoff duration. Default: 30 s.
-func WithBackoffCap(d time.Duration) Option {
-	return func(s *Supervisor) { s.backoffCap = d }
 }
 
 // WithShutdownTimeout sets how long Stop waits for the watchdog to finish
@@ -59,34 +38,37 @@ func WithReadyTimeout(d time.Duration) Option {
 	return func(s *Supervisor) { s.readyTimeout = d }
 }
 
-// withClock injects a test clock. Not exported; only for unit tests in this
-// package.
-func withClock(c clock) Option {
-	return func(s *Supervisor) { s.clock = c }
-}
-
-// withBackoffInitial sets the initial backoff duration. Not exported; tests
-// only.
-func withBackoffInitial(d time.Duration) Option {
-	return func(s *Supervisor) { s.backoffInitial = d }
+// withFatal injects a test-only fatal hook. Not exported.
+func withFatal(f func(error)) Option {
+	return func(s *Supervisor) { s.fatal = f }
 }
 
 // Supervisor manages a pmd3-bridge subprocess. A single Supervisor must be
 // started exactly once; it may be stopped and is not restartable.
+//
+// Transport (🎯T26.1): the bridge binds an ephemeral port on 127.0.0.1 and
+// emits a `ready port=NNNN token=XXXX` line on stdout. The supervisor reads
+// that line, stores the port + token, and exposes them via BaseURL() and
+// Token() so the daemon can construct an authenticated Client.
+//
+// Error model (🎯T26.2): the bridge is a same-host subprocess whose
+// availability is a hard invariant once Start succeeds. If the subprocess
+// exits before Stop is called, that is a bug — the supervisor panics via
+// its fatal hook and lets the external process supervisor restart the
+// whole daemon.
 type Supervisor struct {
 	binaryPath string
-	socketPath string
 
 	log             *slog.Logger
-	backoffCap      time.Duration
-	backoffInitial  time.Duration
 	shutdownTimeout time.Duration
 	readyTimeout    time.Duration
-	clock           clock
+	fatal           func(error)
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
-	stopped bool // true once Stop has been called
+	port    int    // bridge's listening port, set during launch
+	token   string // bridge's bearer token, set during launch
+	stopped bool   // true once Stop has been called
 
 	// stopCh is closed by Stop to signal the watchdog goroutine to exit.
 	stopCh chan struct{}
@@ -98,16 +80,13 @@ type Supervisor struct {
 }
 
 // NewSupervisor creates a new Supervisor. Call Start to launch the bridge.
-func NewSupervisor(binaryPath, socketPath string, opts ...Option) *Supervisor {
+func NewSupervisor(binaryPath string, opts ...Option) *Supervisor {
 	s := &Supervisor{
 		binaryPath:      binaryPath,
-		socketPath:      socketPath,
 		log:             slog.Default(),
-		backoffCap:      defaultBackoffCap,
-		backoffInitial:  defaultBackoffInitial,
-		shutdownTimeout: defaultShutdownTimeout,
-		readyTimeout:    defaultReadyTimeout,
-		clock:           realClock{},
+		shutdownTimeout: 5 * time.Second,
+		readyTimeout:    timeoutReadyHandshake,
+		fatal:           func(err error) { panic(err) },
 		stopCh:          make(chan struct{}),
 		killCh:          make(chan struct{}),
 		doneCh:          make(chan struct{}),
@@ -118,14 +97,52 @@ func NewSupervisor(binaryPath, socketPath string, opts ...Option) *Supervisor {
 	return s
 }
 
-// Start launches the bridge subprocess, waits for the "ready\n" signal, and
-// then starts the background watchdog goroutine. It returns once the bridge is
-// ready or if startup fails.
+// BaseURL returns the http://127.0.0.1:NNNN base URL of the running bridge.
+// Valid after Start has returned nil; empty otherwise.
+func (s *Supervisor) BaseURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.port == 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", s.port)
+}
+
+// Token returns the bearer token the bridge accepts. Valid after Start has
+// returned nil; empty otherwise.
+func (s *Supervisor) Token() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.token
+}
+
+// Client constructs a new Client that reads the bridge's base URL and bearer
+// token from this Supervisor on every request. It is safe to call before
+// Start — requests issued before Start will fail their auth check (empty
+// token) or fail to connect (zero port), both of which are bugs.
+func (s *Supervisor) Client() *Client {
+	return &Client{
+		http:  &http.Client{},
+		sup:   s,
+		fatal: func(err error) { panic(err) },
+	}
+}
+
+// Start launches the bridge subprocess, waits for the `ready port=... token=...`
+// signal on stdout, and then starts the background watchdog goroutine. It
+// returns once the bridge is ready or if startup fails.
 func (s *Supervisor) Start(ctx context.Context) error {
+	s.log.Info("bridge supervisor: launching",
+		"binary", s.binaryPath,
+		"ready_timeout", s.readyTimeout)
 	if err := s.launch(ctx); err != nil {
 		close(s.doneCh)
+		s.log.Error("bridge supervisor: launch failed", "error", err)
 		return err
 	}
+	s.log.Info("bridge supervisor: ready",
+		"binary", s.binaryPath,
+		"port", s.port, "pid", s.cmd.Process.Pid)
 	go s.watchdog()
 	return nil
 }
@@ -137,12 +154,13 @@ func (s *Supervisor) Stop(shutdownCtx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		// doneCh may already be closed; just drain it.
 		<-s.doneCh
 		return nil
 	}
 	s.stopped = true
 	s.mu.Unlock()
+
+	s.log.Info("bridge supervisor: stopping", "shutdown_timeout", s.shutdownTimeout)
 
 	// Signal the watchdog to stop. The watchdog will SIGTERM the process
 	// and close doneCh when it exits.
@@ -174,22 +192,21 @@ func (s *Supervisor) Stop(shutdownCtx context.Context) error {
 		}
 		<-s.doneCh
 	}
-
-	_ = os.Remove(s.socketPath)
 	return nil
 }
 
-// launch starts the bridge process and waits for "ready\n" on stdout.
-// It does NOT start the watchdog goroutine.
+// launch starts the bridge process and waits for the structured
+// `ready port=NNNN token=XXXX` line on stdout. It does NOT start the
+// watchdog goroutine.
 func (s *Supervisor) launch(ctx context.Context) error {
-	// Clean up any leftover socket from a previous run.
-	_ = os.Remove(s.socketPath)
-
 	// Use a plain exec.Cmd so the watchdog — not Go's exec framework — owns
-	// the process lifetime. exec.CommandContext would kill the process when
-	// ctx is cancelled, which conflicts with the watchdog's restart logic.
-	cmd := exec.Command(s.binaryPath, "--socket", s.socketPath) //nolint:forbidigo
+	// the process lifetime. Setpgid = true puts the bridge in its own
+	// process group so signalling the group tears down any child uv/python
+	// processes the bridge spawned (e.g. when launched via the dev
+	// wrapper script through uv run).
+	cmd := exec.Command(s.binaryPath) //nolint:forbidigo
 	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -200,32 +217,39 @@ func (s *Supervisor) launch(ctx context.Context) error {
 		return fmt.Errorf("pmd3bridge supervisor: start %q: %w", s.binaryPath, err)
 	}
 
-	readyCh := make(chan error, 1)
+	type readyResult struct {
+		port  int
+		token string
+		err   error
+	}
+	readyCh := make(chan readyResult, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if line == "ready" {
-				readyCh <- nil
+			if strings.HasPrefix(line, "ready") {
+				port, token, perr := parseReadyLine(line)
+				readyCh <- readyResult{port: port, token: token, err: perr}
 				return
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			readyCh <- fmt.Errorf("reading bridge stdout: %w", err)
+			readyCh <- readyResult{err: fmt.Errorf("reading bridge stdout: %w", err)}
 			return
 		}
-		readyCh <- fmt.Errorf("bridge stdout closed before 'ready' signal")
+		readyCh <- readyResult{err: fmt.Errorf("bridge stdout closed before 'ready' signal")}
 	}()
 
 	timer := time.NewTimer(s.readyTimeout)
 	defer timer.Stop()
 
+	var result readyResult
 	select {
-	case err := <-readyCh:
-		if err != nil {
+	case result = <-readyCh:
+		if result.err != nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
-			return fmt.Errorf("pmd3bridge supervisor: %w", err)
+			return fmt.Errorf("pmd3bridge supervisor: %w", result.err)
 		}
 	case <-timer.C:
 		_ = cmd.Process.Kill()
@@ -239,103 +263,174 @@ func (s *Supervisor) launch(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.cmd = cmd
+	s.port = result.port
+	s.token = result.token
 	s.mu.Unlock()
 	return nil
 }
 
-// watchdog waits for the current process to exit and restarts it on unexpected
-// failure. It exits when stopCh is closed.
+// parseReadyLine parses a `ready port=NNNN token=XXXX` line from the bridge's
+// stdout. Returns (0, "", err) on malformed input.
+func parseReadyLine(line string) (int, string, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 || fields[0] != "ready" {
+		return 0, "", fmt.Errorf("malformed ready line: %q", line)
+	}
+	var port int
+	var token string
+	for _, kv := range fields[1:] {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return 0, "", fmt.Errorf("malformed ready line entry: %q", kv)
+		}
+		switch k {
+		case "port":
+			p, err := parseUint(v)
+			if err != nil {
+				return 0, "", fmt.Errorf("ready line: invalid port %q: %w", v, err)
+			}
+			port = p
+		case "token":
+			token = v
+		}
+	}
+	if port == 0 {
+		return 0, "", fmt.Errorf("ready line missing port: %q", line)
+	}
+	if token == "" {
+		return 0, "", fmt.Errorf("ready line missing token: %q", line)
+	}
+	return port, token, nil
+}
+
+func parseUint(s string) (int, error) {
+	n := 0
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("non-digit %q", r)
+		}
+		n = n*10 + int(r-'0')
+		if n > 65535 {
+			return 0, fmt.Errorf("out of range")
+		}
+	}
+	return n, nil
+}
+
+// watchdog waits for the subprocess to exit. If Stop has not been called,
+// subprocess exit is a bug: the supervisor invokes fatal to crash the
+// daemon, which the external process supervisor restarts.
+//
+// Unlike the older restart-on-crash design, we do NOT attempt to recover
+// in-process. A crashed bridge indicates a bug somewhere — in the bridge
+// itself, in the transport, or in our use of it — and the only sound
+// recovery is to surface the crash (stack trace + bridge stderr, already
+// inherited on os.Stderr) and restart the whole daemon cleanly.
 func (s *Supervisor) watchdog() {
-	defer func() {
-		close(s.doneCh)
-		_ = os.Remove(s.socketPath)
-	}()
+	defer close(s.doneCh)
 
-	backoff := s.backoffInitial
-	restartCount := 0
+	s.mu.Lock()
+	cmd := s.cmd
+	s.mu.Unlock()
 
-	for {
-		// Snapshot the current cmd under lock.
-		s.mu.Lock()
-		cmd := s.cmd
-		s.mu.Unlock()
+	exitCh := make(chan error, 1)
+	go func() { exitCh <- cmd.Wait() }()
 
-		// Wait for the process to exit in a goroutine so we can also select
-		// on stopCh.
-		exitCh := make(chan error, 1)
-		if cmd != nil {
-			go func() { exitCh <- cmd.Wait() }()
-		} else {
-			close(exitCh)
+	select {
+	case <-s.stopCh:
+		// Graceful shutdown requested. Signal the whole process group
+		// (negative PID) so child uv/python processes from the dev
+		// wrapper are included in the SIGTERM.
+		if cmd.Process != nil {
+			s.log.Info("bridge supervisor: sending SIGTERM", "pid", cmd.Process.Pid)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		}
+		select {
+		case err := <-exitCh:
+			s.log.Info("bridge supervisor: subprocess exited cleanly", "error", err)
+		case <-s.killCh:
+			if cmd.Process != nil {
+				s.log.Warn("bridge supervisor: shutdown timeout fired, sending SIGKILL",
+					"pid", cmd.Process.Pid)
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+			<-exitCh
 		}
 
+	case err := <-exitCh:
+		// Subprocess exited without Stop being called.
+		// Check once more (race with Stop) — if Stop closed stopCh
+		// between cmd.Wait() returning and us selecting, honour that.
 		select {
 		case <-s.stopCh:
-			// Graceful shutdown requested: SIGTERM the process.
-			if cmd != nil && cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-			// Wait for the process to exit, but respect SIGKILL if the
-			// shutdown timeout fires.
-			select {
-			case <-exitCh:
-			case <-s.killCh:
-				if cmd != nil && cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-				<-exitCh
-			}
 			return
+		default:
+		}
+		s.log.Error("bridge supervisor: subprocess exited unexpectedly",
+			"wait_error", err, "pid", cmd.Process.Pid)
+		s.fatal(fmt.Errorf("pmd3bridge: subprocess exited unexpectedly (this is a bug): %w", err))
+	}
+}
 
-		case err := <-exitCh:
-			// Process exited. Check whether Stop was called concurrently.
-			select {
-			case <-s.stopCh:
-				return
-			default:
-			}
+// LivenessProbe runs in a background goroutine and panics the daemon if the
+// bridge becomes unresponsive. It calls client.ListDevices every
+// intervalLivenessProbe (30 s); on any non-BridgeError failure, the client
+// itself panics via its fatal hook. Returns when ctx is cancelled.
+//
+// This complements watchdog()'s exit-detection: watchdog catches "process
+// died", LivenessProbe catches "process alive but not answering" (the Uvicorn
+// wedge observed on 2026-04-22).
+//
+// Logging (🎯T26.5): emits an INFO `bridge liveness: started` on entry, a
+// periodic INFO heartbeat every livenessHeartbeatEvery ticks (≈1 h at the
+// 30 s cadence) including consecutive-ok count and last-call duration, and
+// a WARN per structured BridgeError (rare in practice — list_devices does
+// not return device-scoped errors).
+func LivenessProbe(ctx context.Context, client *Client) {
+	slog.Info("bridge liveness: started",
+		"interval", intervalLivenessProbe,
+		"heartbeat_every", livenessHeartbeatEvery)
+	ticker := time.NewTicker(intervalLivenessProbe)
+	defer ticker.Stop()
 
-			restartCount++
-			s.log.Warn("pmd3bridge: subprocess exited unexpectedly; will restart",
-				"restart_count", restartCount,
-				"exit_error", err,
-				"backoff", backoff,
-			)
+	var consecutiveOk int
+	var lastDuration time.Duration
 
-			_ = os.Remove(s.socketPath)
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("bridge liveness: stopped",
+				"consecutive_ok", consecutiveOk)
+			return
+		case <-ticker.C:
+			started := time.Now()
+			_, err := client.ListDevices(ctx)
+			lastDuration = time.Since(started)
 
-			// Sleep with interruptibility: honour a stop request during backoff.
-			backoffDone := make(chan struct{})
-			go func() {
-				s.clock.Sleep(backoff)
-				close(backoffDone)
-			}()
-			select {
-			case <-s.stopCh:
-				return
-			case <-backoffDone:
-			}
-
-			// Record when this restart attempt starts for backoff-reset logic.
-			startTime := s.clock.Now()
-
-			if err := s.launch(context.Background()); err != nil {
-				s.log.Error("pmd3bridge: restart failed",
-					"restart_count", restartCount, "error", err)
-			} else {
-				s.log.Info("pmd3bridge: restarted successfully",
-					"restart_count", restartCount)
-				elapsed := s.clock.Now().Sub(startTime)
-				if elapsed >= defaultBackoffResetAfter {
-					backoff = s.backoffInitial
+			if err != nil {
+				// BridgeError or context.Canceled only; transport
+				// errors already panicked inside client.post.
+				if !errors.Is(err, context.Canceled) {
+					slog.Warn("bridge liveness: structured error",
+						"error", err,
+						"consecutive_ok_before", consecutiveOk)
 				}
+				consecutiveOk = 0
+				continue
 			}
-
-			// Grow backoff for the next potential crash.
-			backoff *= 2
-			if backoff > s.backoffCap {
-				backoff = s.backoffCap
+			consecutiveOk++
+			if consecutiveOk%livenessHeartbeatEvery == 0 {
+				slog.Info("bridge liveness: healthy",
+					"consecutive_ok", consecutiveOk,
+					"last_duration_ms", lastDuration.Milliseconds())
 			}
 		}
 	}
 }
+
+// livenessHeartbeatEvery is the number of consecutive successful probes
+// between INFO heartbeat logs. With intervalLivenessProbe=30s, 120 ≈ 1 h.
+const livenessHeartbeatEvery = 120

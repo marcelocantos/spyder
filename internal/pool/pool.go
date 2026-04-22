@@ -209,6 +209,8 @@ func (p *Pool) Acquire(templateName string) (*Instance, error) {
 	if inst := p.pickRunning(templateName); inst != nil {
 		p.cancelLinger(inst.ID)
 		inst.Tier = TierReserved
+		slog.Info("pool: acquired from running tier",
+			"id", inst.ID, "template", templateName)
 		return inst, nil
 	}
 
@@ -218,6 +220,8 @@ func (p *Pool) Acquire(templateName string) (*Instance, error) {
 			return nil, fmt.Errorf("pool: boot for acquire: %w", err)
 		}
 		inst.Tier = TierReserved
+		slog.Info("pool: acquired from available tier (booted)",
+			"id", inst.ID, "template", templateName)
 		return inst, nil
 	}
 
@@ -230,6 +234,8 @@ func (p *Pool) Acquire(templateName string) (*Instance, error) {
 		return nil, fmt.Errorf("pool: boot for acquire: %w", err)
 	}
 	inst.Tier = TierReserved
+	slog.Info("pool: acquired freshly-minted instance",
+		"id", inst.ID, "template", templateName)
 	return inst, nil
 }
 
@@ -260,6 +266,8 @@ func (p *Pool) Release(instanceID string) error {
 		p.onLingerExpired(instanceID)
 	})
 	p.lingerTimers[instanceID] = timer
+	slog.Info("pool: released to running tier (linger armed)",
+		"id", instanceID, "template", inst.Template, "linger", linger)
 	return nil
 }
 
@@ -557,39 +565,57 @@ func (p *Pool) mintInstance(tmpl *TemplateConfig) (*Instance, error) {
 // bootInstance boots a TierAvailable instance and transitions it to TierRunning.
 // Must be called with p.mu held.
 func (p *Pool) bootInstance(inst *Instance) error {
+	started := time.Now()
 	switch inst.Platform {
 	case "ios":
 		if err := p.exec.SimBoot(inst.DeviceID); err != nil {
+			slog.Warn("pool: boot failed",
+				"id", inst.ID, "device", inst.DeviceID, "platform", "ios",
+				"duration_ms", time.Since(started).Milliseconds(), "error", err)
 			return fmt.Errorf("sim boot %s: %w", inst.DeviceID, err)
 		}
 	case "android":
 		serial, err := p.exec.AVDBoot(inst.DeviceID)
 		if err != nil {
+			slog.Warn("pool: boot failed",
+				"id", inst.ID, "device", inst.DeviceID, "platform", "android",
+				"duration_ms", time.Since(started).Milliseconds(), "error", err)
 			return fmt.Errorf("avd boot %s: %w", inst.DeviceID, err)
 		}
 		inst.Serial = serial
 	}
 	inst.Tier = TierRunning
+	slog.Info("pool: booted",
+		"id", inst.ID, "device", inst.DeviceID, "platform", inst.Platform,
+		"duration_ms", time.Since(started).Milliseconds())
 	return nil
 }
 
 // shutdownInstance shuts down a running instance and transitions it to
 // TierAvailable. Must be called with p.mu held.
 func (p *Pool) shutdownInstance(inst *Instance) error {
+	started := time.Now()
 	switch inst.Platform {
 	case "ios":
 		if err := p.exec.SimShutdown(inst.DeviceID); err != nil {
+			slog.Warn("pool: shutdown failed",
+				"id", inst.ID, "device", inst.DeviceID, "error", err)
 			return fmt.Errorf("sim shutdown %s: %w", inst.DeviceID, err)
 		}
 	case "android":
 		if inst.Serial != "" {
 			if err := p.exec.AVDShutdown(inst.Serial); err != nil {
+				slog.Warn("pool: shutdown failed",
+					"id", inst.ID, "serial", inst.Serial, "error", err)
 				return fmt.Errorf("avd shutdown %s: %w", inst.Serial, err)
 			}
 			inst.Serial = ""
 		}
 	}
 	inst.Tier = TierAvailable
+	slog.Info("pool: shut down",
+		"id", inst.ID, "device", inst.DeviceID, "platform", inst.Platform,
+		"duration_ms", time.Since(started).Milliseconds())
 	return nil
 }
 
@@ -609,6 +635,13 @@ func (p *Pool) destroyInstance(inst *Instance) error {
 		err = p.exec.AVDDelete(inst.DeviceID)
 	}
 	delete(p.instances, inst.ID)
+	if err != nil {
+		slog.Warn("pool: destroyed with deletion error",
+			"id", inst.ID, "device", inst.DeviceID, "error", err)
+	} else {
+		slog.Info("pool: destroyed",
+			"id", inst.ID, "device", inst.DeviceID, "platform", inst.Platform)
+	}
 	return err
 }
 

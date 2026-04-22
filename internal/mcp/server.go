@@ -9,7 +9,9 @@ package mcp
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
+	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
@@ -172,8 +174,35 @@ func (h *Handler) ResolveAdapterForStream(dev string) (device.Adapter, string, e
 	return adapter, id, err
 }
 
-// Dispatch routes a tool call by name to its handler.
+// Dispatch routes a tool call by name to its handler. Every call is logged
+// at DEBUG on entry and exit (with duration + outcome) so the spyder log
+// carries a complete timeline of user-initiated actions for post-mortem.
 func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
+	started := time.Now()
+	slog.Debug("mcp dispatch", "tool", name, "device", deviceArg(args))
+	result, err := h.dispatch(name, args)
+	elapsedMs := time.Since(started).Milliseconds()
+	if err != nil {
+		slog.Warn("mcp dispatch failed",
+			"tool", name, "duration_ms", elapsedMs, "error", err.Error())
+	} else {
+		slog.Debug("mcp dispatch ok",
+			"tool", name, "duration_ms", elapsedMs)
+	}
+	return result, err
+}
+
+// deviceArg pulls the "device" argument for logging context if present.
+// The mcp tools convention is that device-scoped tools take a "device"
+// key — logging it lets the trail be correlated per-device.
+func deviceArg(args map[string]any) string {
+	if v, ok := args["device"].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
 	switch name {
 	case "devices":
 		return h.handleDevices(args)

@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "commit": "e1d16758937f68a9c8f5c3be034f9f8e8994a65a",
+  "generated_at": "2026-04-22T10:56:05Z",
+  "host": "colossus",
+  "suites": [
+    {
+      "name": "go-unit",
+      "cmd": "go test ./...",
+      "duration_s": 1,
+      "status": "pass"
+    },
+    {
+      "name": "bridge-python-unit",
+      "cmd": "cd bridge && uv run --project . pytest tests/",
+      "duration_s": 0,
+      "status": "pass"
+    },
+    {
+      "name": "integration",
+      "cmd": "go test -tags=integration ./internal/pmd3bridge/...",
+      "duration_s": 0,
+      "status": "pass"
+    },
+    {
+      "name": "device",
+      "status": "skipped",
+      "reason": "set SPYDER_DEVICES=1 to run; requires a paired device"
+    }
+  ],
+  "overall": "partial"
+}

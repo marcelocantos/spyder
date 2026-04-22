@@ -13,6 +13,7 @@ package recording
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"time"
@@ -91,6 +92,8 @@ func (r *Registry) Start(device, owner, outputPath string, stopFn func() error, 
 		doneCh:     doneCh,
 	}
 	r.sessions[device] = s
+	slog.Info("recording started",
+		"device", device, "owner", owner, "output", outputPath)
 	return s, nil
 }
 
@@ -120,10 +123,17 @@ func (r *Registry) Stop(device string) (*Session, error) {
 	delete(r.sessions, device)
 	r.mu.Unlock()
 
+	duration := time.Since(s.StartTime)
 	if err := s.stopFn(); err != nil {
 		// Best-effort: the subprocess may have already exited.
+		slog.Info("recording stop signal failed (subprocess may have exited)",
+			"device", device, "owner", s.Owner,
+			"duration_ms", duration.Milliseconds(), "error", err)
 		return s, nil
 	}
+	slog.Info("recording stopped",
+		"device", device, "owner", s.Owner, "output", s.OutputPath,
+		"duration_ms", duration.Milliseconds())
 	return s, nil
 }
 
@@ -153,6 +163,11 @@ func (r *Registry) ForDevice(device string) *Session {
 func (r *Registry) Remove(device string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if s, ok := r.sessions[device]; ok {
+		slog.Info("recording removed (subprocess exited on its own)",
+			"device", device, "owner", s.Owner,
+			"duration_ms", time.Since(s.StartTime).Milliseconds())
+	}
 	delete(r.sessions, device)
 }
 

@@ -7,46 +7,23 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"net"
+	"errors"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
 
-// unixTestServer spins up an httptest.Server bound to a Unix socket in a temp
-// directory and returns the server, Client, and a cleanup function.
-// On macOS, Unix socket paths are limited to 104 bytes; we create the socket
-// file in os.TempDir() with a short name to stay safely under that limit.
+// unixTestServer is the legacy name retained for call-site compatibility;
+// it now stands up an httptest.Server on loopback TCP (🎯T26.1 flipped the
+// transport away from Unix sockets) and returns a Client pointing at it
+// with a fixed test token.
 func unixTestServer(t *testing.T, mux http.Handler) (*httptest.Server, *Client) {
 	t.Helper()
-
-	// Use a file in os.TempDir() with a short, unique name. We can't use
-	// t.TempDir() directly because macOS has a 104-byte socket path limit and
-	// the test-scoped temp directories have long path names.
-	f, err := os.CreateTemp("", "spyder-test-*.sock")
-	if err != nil {
-		t.Fatalf("create temp socket: %v", err)
-	}
-	sock := f.Name()
-	f.Close()
-	_ = os.Remove(sock) // remove so net.Listen can bind it fresh
-
-	t.Cleanup(func() { _ = os.Remove(sock) })
-
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("listen unix %s: %v", sock, err)
-	}
-
-	srv := httptest.NewUnstartedServer(mux)
-	srv.Listener = ln
-	srv.Start()
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-
-	return srv, NewClient(sock)
+	return srv, NewClient(srv.URL, "test-token")
 }
 
 // respond writes a JSON-encoded body with the given HTTP status code.
@@ -213,15 +190,32 @@ func TestClient_Screenshot(t *testing.T) {
 	}
 }
 
-// --- CrashReportsList ---
+// --- CrashReportsList (NDJSON streaming) ---
 
-func TestClient_CrashReportsList(t *testing.T) {
+// writeNDJSONLine writes one NDJSON line and flushes so the client sees it
+// before the next write. Flushing is essential for the inter-packet
+// deadline tests — without it httptest.Server batches the response.
+func writeNDJSONLine(w http.ResponseWriter, v any) {
+	b, _ := json.Marshal(v)
+	_, _ = w.Write(b)
+	_, _ = w.Write([]byte{'\n'})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func TestClient_CrashReportsList_StreamsNDJSON(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/crash_reports_list", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, http.StatusOK, crashReportsListResponse{
-			Reports: []CrashReport{
-				{Name: "MyApp_2026-01-01.ips", Process: "MyApp", Timestamp: "2026-01-01T00:00:00Z"},
-			},
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		writeNDJSONLine(w, CrashReport{
+			Name: "MyApp_2026-01-01.ips", Process: "MyApp",
+			Timestamp: "2026-01-01T00:00:00Z",
+		})
+		writeNDJSONLine(w, CrashReport{
+			Name: "MyApp_2026-01-02.ips", Process: "MyApp",
+			Timestamp: "2026-01-02T00:00:00Z",
 		})
 	})
 
@@ -230,26 +224,35 @@ func TestClient_CrashReportsList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CrashReportsList: %v", err)
 	}
-	if len(reports) != 1 || reports[0].Process != "MyApp" {
-		t.Errorf("got %+v", reports)
+	if len(reports) != 2 {
+		t.Fatalf("got %d reports; want 2", len(reports))
+	}
+	if reports[0].Name != "MyApp_2026-01-01.ips" || reports[1].Name != "MyApp_2026-01-02.ips" {
+		t.Errorf("unexpected reports: %+v", reports)
 	}
 }
 
-// --- CrashReportsPull ---
+// --- CrashReportsPull (octet-stream streaming) ---
 
-func TestClient_CrashReportsPull(t *testing.T) {
+func TestClient_CrashReportsPull_StreamsBytes(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/crash_reports_pull", func(w http.ResponseWriter, r *http.Request) {
-		respond(w, http.StatusOK, crashReportsPullResponse{Content: "crash text here"})
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("chunk-a"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte("chunk-b"))
 	})
-
 	_, c := unixTestServer(t, mux)
-	text, err := c.CrashReportsPull(context.Background(), "abc", "MyApp_2026-01-01.ips")
+
+	text, err := c.CrashReportsPull(context.Background(), "abc", "name.ips")
 	if err != nil {
 		t.Fatalf("CrashReportsPull: %v", err)
 	}
-	if text != "crash text here" {
-		t.Errorf("content = %q; want 'crash text here'", text)
+	if text != "chunk-achunk-b" {
+		t.Errorf("content = %q; want 'chunk-achunk-b'", text)
 	}
 }
 
@@ -344,19 +347,97 @@ func TestClient_ErrorClassification_None(t *testing.T) {
 
 // --- Context cancellation ---
 
+// TestClient_ContextCancellation verifies that caller-initiated ctx cancel
+// returns context.Canceled instead of panicking. Cancellation is the sole
+// legitimate escape from the fail-fast error model — it represents daemon
+// shutdown, not a bug in the bridge.
 func TestClient_ContextCancellation(t *testing.T) {
-	dir := t.TempDir()
-	sock := filepath.Join(dir, "no.sock") // intentionally non-existent socket
+	mux := http.NewServeMux()
+	// Handler exists only so a Listener is available; it should never run.
+	mux.HandleFunc("/v1/list_devices", func(w http.ResponseWriter, r *http.Request) {})
+	_, c := unixTestServer(t, mux)
 
-	// Remove so it cannot be dialed; the dial error should surface via context.
-	_ = os.Remove(sock)
-
-	c := NewClient(sock)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	// Pre-cancel the context so the dial fails with context.Canceled rather
+	// than making a real round-trip.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
 	_, err := c.ListDevices(ctx)
 	if err == nil {
-		t.Error("expected error from non-existent socket; got nil")
+		t.Fatal("expected error from cancelled context; got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled; got %v", err)
+	}
+}
+
+// TestClient_SendsAuthHeader verifies the Authorization: Bearer <token>
+// header is set on every outgoing request (🎯T26.1).
+func TestClient_SendsAuthHeader(t *testing.T) {
+	var seenAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/list_devices", func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		respond(w, http.StatusOK, listDevicesResponse{})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	c := NewClient(srv.URL, "abc123")
+	if _, err := c.ListDevices(context.Background()); err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if seenAuth != "Bearer abc123" {
+		t.Errorf("Authorization = %q; want Bearer abc123", seenAuth)
+	}
+}
+
+// TestClient_TransportErrorCallsFatal verifies that a dial failure
+// (bridge not listening on the advertised port) invokes the fatal hook
+// rather than returning an error. Under the 🎯T26.2 model, transport
+// failures are bugs.
+func TestClient_TransportErrorCallsFatal(t *testing.T) {
+	// A bound-then-closed TCP port gives us a guaranteed dial-refused URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := srv.URL
+	srv.Close()
+
+	c := NewClient(deadURL, "test-token")
+	var captured error
+	c.fatal = func(err error) { captured = err }
+
+	_, _ = c.ListDevices(context.Background())
+	if captured == nil {
+		t.Fatal("fatal hook was not called on dial failure")
+	}
+	if !strings.Contains(captured.Error(), "transport error") {
+		t.Errorf("unexpected fatal message: %v", captured)
+	}
+}
+
+// TestClient_DeadlineExceededCallsFatal verifies that the per-endpoint
+// deadline expiring treats the call as a bug (unresponsive bridge).
+func TestClient_DeadlineExceededCallsFatal(t *testing.T) {
+	// Handler that blocks past the client's endpoint timeout. We use a
+	// short custom client to avoid waiting 10s for the real timeout.
+	mux := http.NewServeMux()
+	release := make(chan struct{})
+	mux.HandleFunc("/v1/ping", func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	})
+	_, c := unixTestServer(t, mux)
+	defer close(release)
+
+	var captured error
+	c.fatal = func(err error) { captured = err }
+
+	// Use post() directly with a 100ms timeout to exercise deadline path.
+	_ = c.post(context.Background(), "/v1/ping", 100*time.Millisecond,
+		map[string]any{}, nil)
+	if captured == nil {
+		t.Fatal("fatal hook was not called on deadline expiry")
+	}
+	if !strings.Contains(captured.Error(), "transport error") {
+		t.Errorf("unexpected fatal message: %v", captured)
 	}
 }

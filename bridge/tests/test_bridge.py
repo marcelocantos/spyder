@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import types
 from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -85,17 +86,21 @@ def _make_fake_services(
         udid: str,
         since_iso8601: Optional[str] = None,
         process: Optional[str] = None,
-    ) -> list[CrashReportEntry]:
-        return [
-            CrashReportEntry(
+    ):
+        # 🎯T26.3: streaming endpoints return an async iterator; setup errors
+        # raise synchronously before the iterator is returned.
+        async def _stream():
+            yield CrashReportEntry(
                 name="crash.ips",
                 process="TestApp",
                 timestamp="2026-01-01T00:00:00Z",
             )
-        ]
+        return _stream()
 
-    async def crash_reports_pull(udid: str, name: str) -> str:
-        return "crash report content"
+    async def crash_reports_pull(udid: str, name: str):
+        async def _stream():
+            yield b"crash report content"
+        return _stream()
 
     for fn in [
         list_devices, list_apps, launch_app, kill_app, pid_for_bundle,
@@ -222,9 +227,11 @@ async def test_screenshot_happy(client: AsyncClient) -> None:
 async def test_crash_reports_list_happy(client: AsyncClient) -> None:
     r = await client.post("/v1/crash_reports_list", json={"udid": FAKE_UDID})
     assert r.status_code == 200
-    reports = r.json()["reports"]
-    assert len(reports) == 1
-    assert reports[0]["name"] == "crash.ips"
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    # NDJSON: one JSON object per line.
+    lines = [json.loads(line) for line in r.text.strip().split("\n") if line]
+    assert len(lines) == 1
+    assert lines[0]["name"] == "crash.ips"
 
 
 async def test_crash_reports_list_with_filter(client: AsyncClient) -> None:
@@ -240,9 +247,8 @@ async def test_crash_reports_list_with_filter(client: AsyncClient) -> None:
 async def test_crash_reports_pull_happy(client: AsyncClient) -> None:
     r = await client.post("/v1/crash_reports_pull", json={"udid": FAKE_UDID, "name": "crash.ips"})
     assert r.status_code == 200
-    body = r.json()
-    assert body["content"] == "crash report content"
-    assert body["mime"] == "application/x-apple-crashreport"
+    assert r.headers["content-type"].startswith("application/octet-stream")
+    assert r.content == b"crash report content"
 
 
 # ── Power assertion helpers ────────────────────────────────────────────────────

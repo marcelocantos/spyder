@@ -711,6 +711,168 @@ targets:
     origin: manual
     discovered: 2026-04-21
     achieved: 2026-04-21
+  T26:
+    name: Daemon↔pmd3-bridge interface is privately scoped, fail-fast, and testable without install
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Bridge transport is daemon-private (no discoverable filesystem socket or fixed port)
+    - Any bridge unresponsiveness — wedge, exit, protocol error, inter-packet stall — crashes the daemon with a descriptive panic, with no retry/restart/circuit-breaker machinery
+    - List-returning and file-returning bridge endpoints stream incrementally with per-chunk deadlines, not whole-result timeouts
+    - A developer can run `go test ./...` and exercise the real bridge subprocess end-to-end, including induced-bug scenarios (wedge, crash, protocol stall), without installing the Homebrew formula or plugging in a device
+    context: 'Umbrella target covering three design issues surfaced on 2026-04-22 after Jevons fell asleep. Root cause was a wedged pmd3-bridge Uvicorn process: the subprocess watchdog only watches for process *exit* (supervisor.go:290), autoawake silently swallows bridge errors (autoawake.go:102-104), and no test in the current suite exercises the real bridge process over its real transport. Three structural gaps emerged: (1) the bridge uses a world-discoverable `~/.spyder/pmd3-bridge.sock` path — architectural leakage for what is a private subprocess; (2) resilience code is framed wrongly as "recover from transient failures" when this is a same-host local-only pipe where any failure is a bug and should crash the daemon; (3) the test pyramid is four isolated layers with every layer below mocked — no end-to-end coverage. Decomposes into 🎯T26.1–🎯T26.4.'
+    depends_on:
+    - T26.1
+    - T26.2
+    - T26.3
+    - T26.4
+    - T26.5
+    tags:
+    - pmd3
+    - bridge
+    - reliability
+    - architecture
+    - testing
+    origin: 'discovered 2026-04-22: Jevons fell asleep; root-cause analysis revealed wedged bridge + silent-swallow + no integration test coverage'
+    discovered: 2026-04-22
+    achieved: 2026-04-22
+  T26.1:
+    name: 'Bridge transport is daemon-private: ephemeral loopback port + auth token handed over stdio'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - Bridge binds 127.0.0.1:0 (kernel-assigned ephemeral port) instead of a filesystem socket
+    - Bridge writes a single structured ready line on stdout carrying the port and a randomly-generated auth token, e.g. `ready port=NNNNN token=<32-byte-base64>\n`
+    - 'Daemon reads the ready line during supervisor `Start()` and constructs an HTTP client pointing at 127.0.0.1:NNNNN with the token set as an `Authorization: Bearer <token>` header on every request'
+    - Bridge rejects any request missing or with a wrong token with HTTP 401 and a short text body; no other authentication is required for matching tokens
+    - No Unix socket is created; `~/.spyder/pmd3-bridge.sock` no longer exists under any operating condition
+    - External processes on the host cannot discover the port (ephemeral) or guess the token (cryptographically-random); verified by an integration test that tries to hit the bridge from outside the daemon and gets 401 or connection-refused depending on port knowledge
+    - Homebrew formula and launchd plist paths that previously referenced the socket path are updated; release notes call out the user-visible change (nothing — there was no contract on the path)
+    context: 'The existing 🎯T25.1 shipped an HTTP-over-Unix-socket bridge at a world-known path. That path is an architectural leak: the bridge is an implementation detail of the spyder daemon, not a shared service. Moving to an ephemeral loopback port + random auth token makes the bridge un-discoverable, un-guessable, and un-addressable from outside the daemon, and sidesteps macOS''s 104-byte Unix socket path limit as a bonus. The ready-line protocol extends the existing `ready\\n` signal (supervisor.go:207-211) so the daemon doesn''t need a second handshake round-trip.'
+    tags:
+    - pmd3
+    - bridge
+    - security
+    - architecture
+    - transport
+    origin: forked-from T26 (decomposition 2026-04-22)
+    discovered: 2026-04-22
+    achieved: 2026-04-22
+  T26.2:
+    name: 'Atomic bridge calls fail-fast: generous per-endpoint timeouts; any breach panics the daemon'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - 'Per-endpoint bug-detection thresholds are set and named as constants in `internal/pmd3bridge`: list_devices 10 s; acquire/refresh/release_power_assertion 10 s; list_apps/battery/launch_app/kill_app/pid_for_bundle 30 s; screenshot 30 s; ready-handshake 10 s (existing)'
+    - Every bridge client call carries a `context.WithTimeout` at its per-endpoint threshold; no call relies on the bare 30 s http.Client ceiling
+    - On timeout, dial-refused, EOF, EPIPE, or HTTP 5xx with `code=unknown`, the daemon panics with a descriptive message including the call name, elapsed time, and a short tail of the bridge's stderr
+    - Structured `BridgeError` responses (device_not_paired, bundle_not_installed, tunneld_unavailable, pmd3_error) are NOT treated as bugs and propagate as typed errors to callers unchanged
+    - The `autoawake` silent-swallow path (`autoawake.go:102-104 return // quiet retry`) is replaced with a panic on any non-BridgeError failure
+    - The `Supervisor.watchdog` restart-on-exit machinery (`supervisor.go:248-341`) is deleted; bridge subprocess exit during normal operation panics the daemon
+    - A liveness probe goroutine in `Supervisor` calls `ListDevices` every 30 s with the 10 s threshold; a failure panics the daemon, catching the wedge case
+    - launchd / `brew services` restarts the whole daemon on panic; user-visible behaviour is "bridge bug → daemon restarts cleanly with a stack trace in the log" rather than silent non-functionality
+    context: The conversation on 2026-04-22 established that the bridge is a same-host, same-trust-domain subprocess. Network-resilience patterns (retry, backoff, circuit breaker) don't apply — any failure is a bug, and the correct reliability mechanism is bug detection + crash, letting the external supervisor restart. Timeouts are generous (2–5× observed worst-case legitimate durations) so that a breach is a strong "bug" signal rather than a "slow device" signal. Structured errors from pmd3 itself (device_not_paired, etc.) are legitimate and stay as errors. Everything else panics. The wedge case that triggered this discussion — child process alive, Uvicorn not accepting connections — is specifically caught by the liveness probe.
+    tags:
+    - pmd3
+    - bridge
+    - reliability
+    - fail-fast
+    - timeouts
+    origin: forked-from T26 (decomposition 2026-04-22)
+    discovered: 2026-04-22
+    achieved: 2026-04-22
+  T26.3:
+    name: 'Streaming bridge calls: NDJSON for list endpoints, octet-stream for file pulls, inter-packet deadline panics on stall'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - '`crash_reports_list` and the Android crash-equivalent return `Content-Type: application/x-ndjson` with one JSON object per line over chunked transfer encoding'
+    - '`crash_reports_pull` returns `Content-Type: application/octet-stream` with chunked transfer encoding; the Go client exposes the response body as an `io.Reader` rather than buffering'
+    - FastAPI side uses `StreamingResponse` over an async generator that drops into the AFC layer directly (if pmd3's `CrashReportsManager.list()` doesn't expose iteration, the bridge walks AFC itself)
+    - Go client sets a 10 s read deadline on the underlying `net.Conn` and *resets it on each chunk successfully received*; a gap > 10 s panics the daemon
+    - Outer end-to-end deadline for streaming calls is 30 min, acting as a safety net only — the inter-packet deadline is the real bug detector
+    - No new Go dependency is added; client uses `bufio.Scanner` for NDJSON and `io.Copy` (with a per-read deadline) for binary streams
+    - No change to atomic endpoints; the streaming mechanism is strictly additive to 🎯T26.2
+    - An integration test in 🎯T26.4 exercises both streaming shapes end-to-end, including induced inter-packet stall (bridge sends one chunk then SIGSTOPs itself), and asserts the daemon panics within the threshold
+    context: 'Some bridge endpoints are legitimately slow — a device with thousands of crash reports can take minutes to enumerate, and a large crash-log file can take tens of seconds to pull. The upper bound on legitimate duration is unknowable, so a whole-result timeout is either too tight (false crash) or too loose (fails to detect hang). Streaming inverts the question: "how long between signs of progress is legitimate?" The answer is a few seconds at most, because pmd3''s AFC (Apple File Conduit) protocol is file-by-file and adb streams lines. NDJSON + chunked transfer was chosen over SSE (binary-unfriendly, reconnect semantics actively wrong for us), WebSockets (bidirectional, overkill, no request/response shape), and gRPC (replaces the entire protocol, new codegen toolchain in both languages). A 1-hour spike may be needed first to confirm pmd3''s `CrashReportsManager` surface exposes iteration; if not, the bridge drops to the AFC layer directly.'
+    depends_on:
+    - T26.2
+    tags:
+    - pmd3
+    - bridge
+    - streaming
+    - ndjson
+    - crash-reports
+    origin: forked-from T26 (decomposition 2026-04-22)
+    discovered: 2026-04-22
+    achieved: 2026-04-22
+  T26.4:
+    name: Developer-run tiered test suite + committed TEST-REPORT.json; retire mocks that simulate bridge misbehaviour
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - '`make test-report` runs the full developer-machine test suite (Go unit, Python unit, integration against real bridge subprocess, optional device tier when devices are attached), refuses to run on a non-empty `git status --porcelain`, records `HEAD` SHA + per-suite outcomes into `TEST-REPORT.json` at the repo root'
+    - 'The developer workflow is: commit code → `make test-report` → `git commit --amend --no-edit TEST-REPORT.json` to fold the report into the commit it vouches for'
+    - '`scripts/hooks/pre-push` refuses pushes when `TEST-REPORT.json` is missing, has `overall != pass`, references an unknown SHA, or when `git diff --quiet $REPORT_SHA..HEAD` shows changes in source paths (internal/, bridge/src/, bridge/tests/, main.go, Makefile, go.mod, go.sum, bridge/pyproject.toml, bridge/uv.lock); bypassable with `--no-verify`'
+    - '`make bullseye` gains a `test-report-fresh` invariant that runs the same staleness check as the hook; CI fails on a stale or missing report'
+    - Integration tier spawns the real `pmd3-bridge` via `uv run python -m pmd3_bridge` (dev machines; no PyInstaller build required) or the bundled binary if present. Happy-path coverage exercises bridge startup, ready-line parse, bearer-auth round-trip, atomic endpoints (list_devices, battery, screenshot, power-assertion lifecycle), and streaming endpoints (crash_reports_list NDJSON, crash_reports_pull octet-stream)
+    - 'Device tier runs when at least one iOS or Android device is attached; tier reports `skipped` and overall is `partial` otherwise. The `overall` field accepts values: `pass`, `fail`, `partial`'
+    - 'Fault-injection stubs that pretend the bridge misbehaves are retired: no `BRIDGE_MODE=crash|malformed-ready|crash-before-ready` helper binary; no stall-on-demand httptest handlers dressed as bridge responses; no `bridge-returns-garbage-5xx` cases. The bridge is paired with the daemon and not treated as a hostile external service'
+    - 'Detection primitives are tested at their own layer with plumbing-level inputs: `parseReadyLine` as a pure-function unit test; `stallReader` against `io.Pipe`; `Supervisor.watchdog`''s fatal-on-exit path against a plain subprocess (`/bin/true` or equivalent); ready-timeout against a subprocess that never prints (`/bin/sleep`)'
+    - The only surviving Python fake is a runtime-loadable pmd3 shim activated by `SPYDER_BRIDGE_FAKE_SERVICES=1` inside the real bridge process; this exists because pmd3 requires a paired device, not because we are simulating a broken bridge
+    - At least one end-to-end scenario in the integration tier runs the real bridge subprocess, kills it mid-request (SIGKILL), and asserts the daemon panics within the supervisor's detection window. This validates the fail-fast chain via a real subprocess exit, not a mocked one
+    context: |-
+      Rescoped on 2026-04-22 after two related decisions: (1) the test-report workflow (developer-run tests attested by a HEAD-tagged report; CI trusts the report artefact rather than running tests), and (2) the principle that the bridge is paired with the daemon and should not be mocked as a misbehaving external service. Fault-injection stubs become "testing the daemon's handling of impossible bridge behaviour" — equivalent to mocking a called function to pretend it is broken. Detection primitives still need coverage, but at their own layer with plumbing-level inputs (io.Pipe, plain subprocess) rather than fake-bridge costumes. With this shift roughly 80% of today's mock/fake surface retires; detection logic is tested more honestly at a lower level; and real-bridge + real-pmd3 + real-device coverage becomes the primary integration signal. See conversation log 2026-04-22 for the full reasoning.</context>
+      <parameter name="tags">["testing", "integration", "observability", "mocks", "test-report", "pre-push"]
+    depends_on:
+    - T26.2
+    - T26.3
+    tags:
+    - pmd3
+    - bridge
+    - testing
+    - integration
+    - observability
+    origin: forked-from T26 (decomposition 2026-04-22)
+    discovered: 2026-04-22
+    achieved: 2026-04-22
+  T26.5:
+    name: 'Observability: per-call tracing, slow-call warnings, liveness heartbeat, and bridge-side access/pmd3 logs'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - Every `client.post()` call emits a DEBUG log with endpoint, duration_ms, outcome (ok / bridge_error:$code / fatal), and the relevant UDID when present
+    - Any call whose duration exceeds 0.5 × its endpoint threshold emits a WARN `bridge call slow` regardless of level, naming endpoint, duration_ms, and threshold_ms
+    - The pre-panic path in `client.post()` emits an ERROR log with the full panic message and the fatal reason immediately before invoking the fatal hook, so the log has the message even when the stack trace is truncated by the log pipeline
+    - 'Supervisor logs bridge subprocess lifecycle transitions: Start (with binary path + socket), Stop (with reason), unexpected exit (with wait error)'
+    - LivenessProbe emits an INFO `bridge liveness healthy` heartbeat every 120 probes (≈1 h at the 30 s interval), including count-since-start and the duration of the most recent ListDevices
+    - Bridge Python side (`bridge/src/pmd3_bridge/__main__.py`) enables Uvicorn's access logger by default so every HTTP request is logged with path + status + duration
+    - Bridge Python side configures the `pymobiledevice3` logger at INFO so USB enumeration, lockdown connect/disconnect, pairing, and service-connection events leave a trail, correlating with wedge onset in retrospect
+    - Each FastAPI handler in `app.py` logs entry + exit with endpoint, udid (if present), and duration, so the per-request Uvicorn line is paired with a pmd3-level outcome line
+    - Routine logs route to stderr (inherited by the daemon's launchd log) so all breadcrumbs end up in `/opt/homebrew/var/log/spyder.log`
+    - The log level is tunable via `SPYDER_LOG_LEVEL` env (DEBUG/INFO/WARN/ERROR), defaulting to INFO for production
+    - 'A reconstruction test (in 🎯T26.4''s integration harness, once that target lands) replays a wedged-bridge scenario and asserts the log trail contains enough breadcrumbs to determine: last-successful-call timestamp, slow-call warnings before the wedge, and the exact endpoint that panicked'
+    context: 'During the 2026-04-22 post-mortem we realised the routine logging would not have supported diagnosis even with the fail-fast panic changes: the log between "autoawake: supervisor started" and the eventual panic would be empty for hours, and we could not distinguish "wedged immediately at startup" from "wedged after N successful calls". Observability is a separate concern from fail-fast — fail-fast detects the failure, observability lets us understand it. Without both, the panic just narrows the moment of death without describing the slope. Orthogonal to 🎯T26.1 (transport), 🎯T26.3 (streaming), and 🎯T26.4 (integration tests); likely the smallest of the 🎯T26.x siblings to implement.'
+    tags:
+    - pmd3
+    - bridge
+    - observability
+    - logging
+    - postmortem
+    origin: forked-from T26 (raised 2026-04-22 after post-mortem gap analysis)
+    discovered: 2026-04-22
+    achieved: 2026-04-22
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: achieved

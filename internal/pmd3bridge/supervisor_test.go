@@ -12,20 +12,24 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// helperBinary compiles and returns the path to the test helper binary that
-// simulates the pmd3-bridge process. The binary is compiled once per test
-// process into a package-level temporary directory that outlives individual
-// t.TempDir() directories.
+// The supervisor tests here cover lifecycle primitives — Start / Stop /
+// watchdog's fatal-on-exit path / ready-handshake timeout. They do NOT
+// simulate a misbehaving bridge (🎯T26.4): the bridge is paired with the
+// daemon and not treated as a hostile external service. Scenarios that
+// require a subprocess use either the minimal protocol-conformant helper
+// below (prints a valid ready line, blocks on SIGTERM) or plumbing-level
+// commands (`sh -c '…'`, `/bin/sleep`) that aren't pretending to be a
+// bridge — they're just processes with specific exit / output behaviours.
+
 var (
 	helperBinOnce sync.Once
 	helperBinPath string
 	helperBinErr  error
-	helperBinDir  string // package-level dir; removed in TestMain
+	helperBinDir  string
 )
 
 func TestMain(m *testing.M) {
@@ -40,14 +44,21 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
+// getHelperBin returns the path to a minimal protocol-conformant helper.
+// The helper prints a valid `ready port=1 token=test-token` line and
+// blocks on SIGTERM. It exists so lifecycle tests (Start / Stop /
+// idempotency / graceful shutdown) can exercise the supervisor without
+// spawning the real Python bridge — the supervisor only needs a process
+// that conforms to the handshake and responds to SIGTERM. The helper is
+// NOT a simulated bridge; it has no per-test behaviour switches and
+// never fakes failure.
 func getHelperBin(t *testing.T) string {
 	t.Helper()
 	helperBinOnce.Do(func() {
-		helperBinPath = filepath.Join(helperBinDir, "fake-bridge")
+		helperBinPath = filepath.Join(helperBinDir, "ready-and-block")
 		if runtime.GOOS == "windows" {
 			helperBinPath += ".exe"
 		}
-		// Write the helper source then compile it.
 		src := filepath.Join(helperBinDir, "main.go")
 		if err := os.WriteFile(src, []byte(helperSrc), 0o644); err != nil {
 			helperBinErr = fmt.Errorf("write helper src: %w", err)
@@ -65,12 +76,6 @@ func getHelperBin(t *testing.T) string {
 	return helperBinPath
 }
 
-// helperSrc is the source for the test helper binary. It reads the BRIDGE_MODE
-// environment variable to decide its behaviour:
-//
-//   - "ready" — writes "ready\n", then blocks until SIGTERM.
-//   - "crash" — writes "ready\n", then exits immediately (simulates a crash).
-//   - "crash-before-ready" — exits without writing "ready\n".
 const helperSrc = `package main
 
 import (
@@ -81,74 +86,19 @@ import (
 )
 
 func main() {
-	mode := os.Getenv("BRIDGE_MODE")
-	switch mode {
-	case "crash":
-		fmt.Println("ready")
-		os.Exit(1)
-	case "crash-before-ready":
-		os.Exit(1)
-	default: // "ready" or anything else
-		fmt.Println("ready")
-		ch := make(chan os.Signal, 1)
-		signal.Notify(ch, syscall.SIGTERM)
-		<-ch
-		os.Exit(0)
-	}
+	fmt.Println("ready port=1 token=test-token")
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, syscall.SIGTERM)
+	<-ch
+	os.Exit(0)
 }
 `
 
-// fakeClock is a deterministic clock that never actually sleeps, making backoff
-// tests fast.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-
-	// sleptTotal accumulates all durations passed to Sleep.
-	sleptTotal atomic.Int64
-}
-
-func newFakeClock() *fakeClock {
-	return &fakeClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) Sleep(d time.Duration) {
-	c.sleptTotal.Add(int64(d))
-	// Do not actually sleep — just advance the fake clock.
-	c.mu.Lock()
-	c.now = c.now.Add(d)
-	c.mu.Unlock()
-}
-
-// --- Tests ---
-
-// tempSock creates a temporary socket path under os.TempDir() with a short
-// name to stay within macOS's 104-byte Unix socket path limit.
-func tempSock(t *testing.T, prefix string) string {
-	t.Helper()
-	f, err := os.CreateTemp("", "spyder-sup-"+prefix+"-*.sock")
-	if err != nil {
-		t.Fatalf("create temp sock: %v", err)
-	}
-	p := f.Name()
-	_ = f.Close()
-	_ = os.Remove(p)
-	t.Cleanup(func() { _ = os.Remove(p) })
-	return p
-}
+// --- Lifecycle happy-path ---------------------------------------------------
 
 func TestSupervisor_StartAndStop(t *testing.T) {
 	bin := getHelperBin(t)
-	sock := tempSock(t, "ok")
-
-	t.Setenv("BRIDGE_MODE", "ready")
-	sup := NewSupervisor(bin, sock,
+	sup := NewSupervisor(bin,
 		WithReadyTimeout(5*time.Second),
 		WithShutdownTimeout(2*time.Second),
 	)
@@ -157,100 +107,27 @@ func TestSupervisor_StartAndStop(t *testing.T) {
 	if err := sup.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
+	if sup.Token() != "test-token" {
+		t.Errorf("Token = %q; want test-token", sup.Token())
+	}
+	if sup.BaseURL() != "http://127.0.0.1:1" {
+		t.Errorf("BaseURL = %q; want http://127.0.0.1:1", sup.BaseURL())
+	}
 
-	// Socket should not be removed while running (bridge didn't bind one in the
-	// test helper, but we can verify Stop removes it cleanly).
 	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := sup.Stop(stopCtx); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-
 	// Idempotent second Stop must not panic or block.
 	if err := sup.Stop(stopCtx); err != nil {
 		t.Fatalf("second Stop: %v", err)
 	}
 }
 
-func TestSupervisor_StartTimeout(t *testing.T) {
-	bin := getHelperBin(t)
-	sock := tempSock(t, "timeout")
-
-	t.Setenv("BRIDGE_MODE", "crash-before-ready")
-	sup := NewSupervisor(bin, sock,
-		WithReadyTimeout(2*time.Second),
-	)
-
-	ctx := context.Background()
-	err := sup.Start(ctx)
-	if err == nil {
-		t.Fatal("Start: expected error when bridge never prints ready; got nil")
-	}
-	if !strings.Contains(err.Error(), "bridge stdout closed") &&
-		!strings.Contains(err.Error(), "timed out") {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestSupervisor_MissingBinary(t *testing.T) {
-	sock := tempSock(t, "missing")
-	sup := NewSupervisor("/nonexistent/pmd3-bridge", sock,
-		WithReadyTimeout(2*time.Second),
-	)
-
-	err := sup.Start(context.Background())
-	if err == nil {
-		t.Fatal("expected error for missing binary; got nil")
-	}
-}
-
-func TestSupervisor_RestartOnCrash(t *testing.T) {
-	// Build a helper that crashes immediately after printing "ready".
-	bin := getHelperBin(t)
-	sock := tempSock(t, "crash")
-
-	t.Setenv("BRIDGE_MODE", "crash")
-
-	fc := newFakeClock()
-	sup := NewSupervisor(bin, sock,
-		WithReadyTimeout(5*time.Second),
-		withClock(fc),
-		withBackoffInitial(1*time.Millisecond),
-		WithBackoffCap(10*time.Millisecond),
-	)
-
-	ctx := context.Background()
-	if err := sup.Start(ctx); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-
-	// Give the watchdog a moment to attempt at least one restart.
-	// Because the helper exits right after printing "ready", the watchdog
-	// should detect the exit and try to restart.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-		if fc.sleptTotal.Load() > 0 {
-			break
-		}
-	}
-	if fc.sleptTotal.Load() == 0 {
-		t.Log("watchdog may not have restarted yet (timing); not failing")
-	}
-
-	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := sup.Stop(stopCtx); err != nil {
-		t.Fatalf("Stop: %v", err)
-	}
-}
-
 func TestSupervisor_GracefulStopOnContextCancel(t *testing.T) {
 	bin := getHelperBin(t)
-	sock := tempSock(t, "ctxcancel")
-
-	t.Setenv("BRIDGE_MODE", "ready")
-	sup := NewSupervisor(bin, sock,
+	sup := NewSupervisor(bin,
 		WithReadyTimeout(5*time.Second),
 		WithShutdownTimeout(2*time.Second),
 	)
@@ -259,8 +136,6 @@ func TestSupervisor_GracefulStopOnContextCancel(t *testing.T) {
 	if err := sup.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-
-	// Cancel the parent context and then stop — Stop should still work cleanly.
 	cancel()
 
 	stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -268,4 +143,123 @@ func TestSupervisor_GracefulStopOnContextCancel(t *testing.T) {
 	if err := sup.Stop(stopCtx); err != nil {
 		t.Fatalf("Stop after ctx cancel: %v", err)
 	}
+}
+
+// --- Detection primitives ---------------------------------------------------
+
+// TestSupervisor_ReadyTimeout asserts that a subprocess that never prints
+// a `ready` line is detected by the ready-handshake timeout. We use
+// `/bin/sleep` — a real process that happens to be silent — rather than a
+// fake bridge configured to withhold the ready line.
+func TestSupervisor_ReadyTimeout(t *testing.T) {
+	sleep, err := exec.LookPath("sleep")
+	if err != nil {
+		t.Skip("sleep not on PATH")
+	}
+	sup := newSupervisorForCmd(t, sleep, []string{"30"},
+		WithReadyTimeout(200*time.Millisecond))
+
+	if err := sup.Start(context.Background()); err == nil {
+		t.Fatal("Start: expected timeout; got nil")
+	} else if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestSupervisor_StdoutClosedBeforeReady asserts that a subprocess whose
+// stdout closes before emitting `ready` is detected. `/bin/true` exits
+// immediately with closed stdout.
+func TestSupervisor_StdoutClosedBeforeReady(t *testing.T) {
+	trueBin, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("true not on PATH")
+	}
+	sup := newSupervisorForCmd(t, trueBin, nil,
+		WithReadyTimeout(2*time.Second))
+
+	if err := sup.Start(context.Background()); err == nil {
+		t.Fatal("Start: expected stdout-closed error; got nil")
+	} else if !strings.Contains(err.Error(), "bridge stdout closed") &&
+		!strings.Contains(err.Error(), "timed out") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestSupervisor_PanicsOnUnexpectedExit asserts that when a successfully-
+// handshaked subprocess exits before Stop is called, the supervisor
+// invokes its fatal hook. The subprocess is a one-liner shell script:
+// echo the ready line, then exit 1. It is not pretending to be a broken
+// bridge — it is a minimal process that exercises "watched subprocess
+// exits; watchdog fires fatal".
+func TestSupervisor_PanicsOnUnexpectedExit(t *testing.T) {
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not on PATH")
+	}
+	script := `echo "ready port=1 token=test-token"; exit 1`
+	sup := newSupervisorForCmd(t, sh, []string{"-c", script},
+		WithReadyTimeout(5*time.Second))
+
+	fatalCh := make(chan error, 1)
+	withFatal(func(err error) { fatalCh <- err })(sup)
+
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	select {
+	case err := <-fatalCh:
+		if !strings.Contains(err.Error(), "subprocess exited unexpectedly") {
+			t.Errorf("unexpected fatal message: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("fatal hook not called after subprocess exit")
+	}
+}
+
+func TestSupervisor_MissingBinary(t *testing.T) {
+	sup := NewSupervisor("/nonexistent/pmd3-bridge",
+		WithReadyTimeout(2*time.Second),
+	)
+	if err := sup.Start(context.Background()); err == nil {
+		t.Fatal("expected error for missing binary; got nil")
+	}
+}
+
+// newSupervisorForCmd builds a Supervisor around an arbitrary command +
+// args (for cases where the minimal helper binary is the wrong shape).
+// Only for tests.
+func newSupervisorForCmd(t *testing.T, bin string, args []string, opts ...Option) *Supervisor {
+	t.Helper()
+	// The production Supervisor spawns binaryPath with no args and reads
+	// the structured ready line. For tests that need a specific argv, we
+	// shell out via sh -c. This function packages that pattern as a helper
+	// so the Go `NewSupervisor(binaryPath)` API stays zero-arg.
+	if len(args) == 0 {
+		return NewSupervisor(bin, opts...)
+	}
+	// When we need args, pipe through sh -c joined.
+	joined := bin
+	for _, a := range args {
+		joined += " " + shellQuote(a)
+	}
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Skip("sh not on PATH")
+	}
+	// Create a wrapper script on disk: argv is ["sh", "-c", script].
+	wrapperDir := t.TempDir()
+	script := filepath.Join(wrapperDir, "wrapper.sh")
+	content := "#!/bin/sh\nexec " + joined + "\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write wrapper: %v", err)
+	}
+	_ = sh // ensure sh is reachable; we invoke script directly via shebang
+	return NewSupervisor(script, opts...)
+}
+
+func shellQuote(s string) string {
+	if strings.ContainsAny(s, " \t\n\"'\\$`") {
+		return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+	}
+	return s
 }
