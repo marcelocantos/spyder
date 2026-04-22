@@ -2,29 +2,30 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package autoawake supervises iOS devices: whenever a paired iOS device
-// appears (via the pmd3 bridge device list), it acquires a power assertion on
-// the device to prevent auto-lock, refreshes it periodically, and releases it
-// when the device disconnects or the daemon shuts down.
+// appears, it foregrounds the KeepAwake companion app on that device via
+// xcrun devicectl. The app holds UIApplication.isIdleTimerDisabled=true
+// while foregrounded — the sole iOS mechanism that reliably prevents
+// display auto-lock.
 //
-// The supervisor is started by daemon.Start. It runs for the lifetime of the
-// server and exits on context cancel.
+// 🎯T31 restored this approach after T25 (v0.6.0) attempted to replace it
+// with pmd3's PowerAssertionService. That turned out to be a no-op for
+// display sleep on iOS: v0.6.0 through v0.8.0 all shipped with autoawake
+// claiming to keep devices awake while not actually doing so.
 //
-// Error model (🎯T26.2): the bridge client itself panics the daemon on
-// transport-level failures. Autoawake only handles structured BridgeError
-// responses (device_not_paired, etc.), which it treats as "skip this device"
-// rather than "crash". On shutdown release-all, failures are logged and
-// swallowed — the process is exiting anyway.
+// The supervisor is started by daemon.Start. It runs for the lifetime of
+// the server and exits on context cancel. Device enumeration still comes
+// from the pmd3 bridge (faster than shelling out to usbmux per tick and
+// already paid for as a startup cost).
 package autoawake
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"time"
 
+	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 	"github.com/marcelocantos/spyder/internal/reservations"
@@ -35,41 +36,48 @@ import (
 const OwnerID = "autoawake"
 
 const (
-	pollInterval     = 2 * time.Second
-	assertionTimeout = 300 // seconds (5 minutes); refresh at half this interval
-	refreshInterval  = assertionTimeout / 2 * time.Second
+	// pollInterval is how often we enumerate devices to detect
+	// newly-attached ones.
+	pollInterval = 2 * time.Second
+	// relaunchInterval is how often we re-foreground the KeepAwake app
+	// on every known device. This catches the case where the user
+	// backgrounded or switched away from the app — without a periodic
+	// re-launch the device would auto-lock next time its idle timer
+	// expires. Set shorter than typical auto-lock times so a
+	// backgrounding event gets corrected before the device sleeps.
+	relaunchInterval = 15 * time.Second
 )
 
-// Supervisor polls the pmd3 bridge device list and ensures a power assertion
-// is held on every iOS device that appears.
+// Supervisor polls the pmd3 bridge device list and keeps the KeepAwake
+// companion app foregrounded on every iOS device that appears.
 type Supervisor struct {
 	bridge       *pmd3bridge.Client
+	ios          *device.IOSAdapter
 	inventory    *inventory.Store
-	reservations *reservations.Store // optional: if set, honour other holders' reservations
+	reservations *reservations.Store // optional: honour other holders' reservations
 
-	mu         sync.Mutex
-	assertions map[string]string // udid → handleID
-	cancels    map[string]context.CancelFunc
+	mu   sync.Mutex
+	seen map[string]time.Time // udid → last-successful-launch time
 }
 
 // Option configures a Supervisor at construction.
 type Option func(*Supervisor)
 
 // WithReservations injects a reservation store so the supervisor
-// skips devices held by non-self owners. If omitted, the supervisor
-// acts unconditionally.
+// skips devices held by non-self owners.
 func WithReservations(s *reservations.Store) Option {
 	return func(sv *Supervisor) { sv.reservations = s }
 }
 
-// New constructs a Supervisor. bridge is the pmd3 bridge client; it may be
-// nil, in which case the supervisor logs a warning and does nothing.
+// New constructs a Supervisor. bridge is used for device enumeration; it
+// may be nil, in which case the supervisor logs a warning and does
+// nothing (device enumeration requires the bridge).
 func New(bridge *pmd3bridge.Client, opts ...Option) *Supervisor {
 	sv := &Supervisor{
-		bridge:     bridge,
-		inventory:  inventory.New(),
-		assertions: map[string]string{},
-		cancels:    map[string]context.CancelFunc{},
+		bridge:    bridge,
+		ios:       device.NewIOSAdapter(bridge),
+		inventory: inventory.New(),
+		seen:      map[string]time.Time{},
 	}
 	for _, opt := range opts {
 		opt(sv)
@@ -77,263 +85,113 @@ func New(bridge *pmd3bridge.Client, opts ...Option) *Supervisor {
 	return sv
 }
 
-// Status returns a snapshot of currently-held power assertions as
-// udid → handleID. A "" handleID means an acquisition is in flight;
-// a non-empty string means the assertion is live. Used by tests to
-// assert the supervisor's state without touching internal fields.
-func (s *Supervisor) Status() map[string]string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string]string, len(s.assertions))
-	for udid, h := range s.assertions {
-		out[udid] = h
-	}
-	return out
-}
-
 // Run blocks polling the device list until ctx is cancelled.
 func (s *Supervisor) Run(ctx context.Context) {
 	if s.bridge == nil {
-		slog.Warn("autoawake: no bridge client — power assertions disabled")
+		slog.Warn("autoawake: no bridge client — keep-awake disabled")
 		return
 	}
-	slog.Info("autoawake: supervisor started (power assertions via pmd3 bridge)")
+	slog.Info("autoawake: supervisor started (KeepAwake companion app via devicectl)")
 
-	seen := map[string]bool{}
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
+	pollTicker := time.NewTicker(pollInterval)
+	defer pollTicker.Stop()
+	relaunchTicker := time.NewTicker(relaunchInterval)
+	defer relaunchTicker.Stop()
 
-	// First tick immediately so existing connected devices are handled on startup.
-	s.tick(ctx, seen)
+	// Prime seen set and launch on startup.
+	s.tick(ctx)
+
 	for {
 		select {
 		case <-ctx.Done():
-			s.releaseAll()
 			return
-		case <-ticker.C:
-			s.tick(ctx, seen)
+		case <-pollTicker.C:
+			s.tick(ctx)
+		case <-relaunchTicker.C:
+			s.relaunchAll(ctx)
 		}
 	}
 }
 
-func (s *Supervisor) tick(ctx context.Context, seen map[string]bool) {
-	bridgeDevices, err := s.bridge.ListDevices(ctx)
+// tick polls the bridge for currently-attached devices, launches
+// KeepAwake on new arrivals, and prunes departed devices from the seen
+// set.
+func (s *Supervisor) tick(ctx context.Context) {
+	devices, err := s.bridge.ListDevices(ctx)
 	if err != nil {
-		// Only caller-initiated cancellation reaches here; bridge bugs
-		// panic inside the client. BridgeError from list_devices would
-		// be surprising (no device-scoped state to be wrong about) but
-		// we don't want to crash on it — log and skip this tick.
 		if errors.Is(err, context.Canceled) {
 			return
 		}
 		slog.Warn("autoawake: list_devices returned structured error", "error", err)
 		return
 	}
-	udids := make([]string, 0, len(bridgeDevices))
-	for _, d := range bridgeDevices {
-		udids = append(udids, d.UDID)
+
+	current := make(map[string]struct{}, len(devices))
+	for _, d := range devices {
+		current[d.UDID] = struct{}{}
 	}
 
-	current := make(map[string]bool, len(udids))
-	for _, udid := range udids {
-		current[udid] = true
-	}
-
-	// Detect disappeared devices.
-	for udid := range seen {
-		if !current[udid] {
-			delete(seen, udid)
-			go s.handleDeviceDisconnect(ctx, udid)
-		}
-	}
-
-	// Detect new devices.
-	for _, udid := range newDevices(udids, seen) {
-		go s.handleNewDevice(ctx, udid)
-	}
-}
-
-// newDevices returns the UDIDs in `current` that weren't in `seen`,
-// marks them seen, and prunes `seen` entries that are no longer in
-// `current` (so unplug+replug retriggers). Pure — no I/O, testable
-// without mocks.
-func newDevices(current []string, seen map[string]bool) []string {
-	present := make(map[string]bool, len(current))
-	var fresh []string
-	for _, udid := range current {
-		present[udid] = true
-		if !seen[udid] {
-			fresh = append(fresh, udid)
-			seen[udid] = true
-		}
-	}
-	for udid := range seen {
-		if !present[udid] {
-			delete(seen, udid)
-		}
-	}
-	return fresh
-}
-
-// handleNewDevice acquires a power assertion on the device and starts a
-// refresh goroutine.
-func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
-	// Check whether a goroutine is already handling this UDID.
 	s.mu.Lock()
-	if _, exists := s.assertions[udid]; exists {
-		s.mu.Unlock()
-		return
+	// Drop departed devices.
+	for udid := range s.seen {
+		if _, still := current[udid]; !still {
+			delete(s.seen, udid)
+		}
 	}
-	// Placeholder so concurrent ticks don't double-handle.
-	s.assertions[udid] = ""
+	// Identify new arrivals.
+	var fresh []string
+	for udid := range current {
+		if _, known := s.seen[udid]; !known {
+			fresh = append(fresh, udid)
+		}
+	}
 	s.mu.Unlock()
 
-	alias := s.aliasOf(udid)
-	slog.Info("autoawake: new device", "udid", udid, "alias", alias)
+	for _, udid := range fresh {
+		go s.launch(ctx, udid, "new device")
+	}
+}
 
-	// Respect reservations owned by anyone else.
+// relaunchAll re-foregrounds KeepAwake on every known device.
+// Idempotent-ish: launching an already-foregrounded app is a no-op.
+// Catches the case where the user backgrounded the app or switched to
+// another app, which would otherwise let the device auto-lock.
+func (s *Supervisor) relaunchAll(ctx context.Context) {
+	s.mu.Lock()
+	udids := make([]string, 0, len(s.seen))
+	for udid := range s.seen {
+		udids = append(udids, udid)
+	}
+	s.mu.Unlock()
+
+	for _, udid := range udids {
+		go s.launch(ctx, udid, "periodic relaunch")
+	}
+}
+
+// launch foregrounds KeepAwake on the given device and records
+// success/failure in the seen map. Failures are logged but non-fatal;
+// the next tick will retry.
+func (s *Supervisor) launch(ctx context.Context, udid, reason string) {
 	if s.reservations != nil {
 		if err := s.reservations.Authorize(udid, OwnerID); err != nil {
-			slog.Info("autoawake: skipping device held by another owner",
-				"udid", udid, "alias", alias, "error", err)
-			s.mu.Lock()
-			delete(s.assertions, udid)
-			s.mu.Unlock()
+			slog.Debug("autoawake: skipping device held by another owner",
+				"udid", udid, "reason", reason, "error", err)
 			return
 		}
 	}
-
-	handleID, err := s.bridge.AcquirePowerAssertion(ctx, udid,
-		"PreventUserIdleSystemSleep", "spyder autoawake",
-		assertionTimeout, "")
-	if err != nil {
-		// Only reachable for structured BridgeError or caller-cancel;
-		// transport bugs panic inside the client. Typical cases:
-		// device_not_paired (just-plugged, trust not yet granted).
-		var be *pmd3bridge.BridgeError
-		if errors.As(err, &be) {
-			slog.Info("autoawake: skipping device with structured error",
-				"udid", udid, "alias", alias, "code", be.Code)
-		} else if !errors.Is(err, context.Canceled) {
-			slog.Warn("autoawake: acquire assertion returned unexpected error",
-				"udid", udid, "alias", alias, "error", summariseErr(err))
-		}
-		s.mu.Lock()
-		delete(s.assertions, udid)
-		s.mu.Unlock()
-		return
-	}
-
-	refreshCtx, refreshCancel := context.WithCancel(ctx)
-	s.mu.Lock()
-	s.assertions[udid] = handleID
-	s.cancels[udid] = refreshCancel
-	s.mu.Unlock()
-
-	slog.Info("autoawake: power assertion acquired",
-		"udid", udid, "alias", alias, "handle", handleID)
-
-	// Refresh goroutine: ticks at half the assertion timeout.
-	go func() {
-		ticker := time.NewTicker(refreshInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-refreshCtx.Done():
-				return
-			case <-ticker.C:
-				// Non-BridgeError failures panic inside the client.
-				// Structured errors (e.g. not_found for a handle
-				// the bridge forgot) are logged and leave the
-				// assertion state as-is; we don't try to re-acquire.
-				if rerr := s.bridge.RefreshPowerAssertion(refreshCtx, handleID, assertionTimeout); rerr != nil {
-					if errors.Is(rerr, context.Canceled) {
-						return
-					}
-					slog.Warn("autoawake: refresh returned structured error",
-						"udid", udid, "alias", alias, "error", summariseErr(rerr))
-				}
-			}
-		}
-	}()
-}
-
-// handleDeviceDisconnect releases the power assertion for a device that
-// disappeared from the bridge device list.
-func (s *Supervisor) handleDeviceDisconnect(ctx context.Context, udid string) {
-	s.mu.Lock()
-	handleID, ok := s.assertions[udid]
-	cancel := s.cancels[udid]
-	delete(s.assertions, udid)
-	delete(s.cancels, udid)
-	s.mu.Unlock()
-
-	if !ok || handleID == "" {
-		return
-	}
-
 	alias := s.aliasOf(udid)
-	if cancel != nil {
-		cancel()
+	if err := s.ios.LaunchKeepAwake(udid); err != nil {
+		slog.Warn("autoawake: LaunchKeepAwake failed",
+			"udid", udid, "alias", alias, "reason", reason,
+			"error", err.Error())
+		return
 	}
-
-	if err := s.bridge.ReleasePowerAssertion(ctx, handleID); err != nil {
-		if !errors.Is(err, context.Canceled) {
-			slog.Warn("autoawake: release returned structured error on disconnect",
-				"udid", udid, "alias", alias, "error", summariseErr(err))
-		}
-	} else {
-		slog.Info("autoawake: power assertion released (device disconnected)",
-			"udid", udid, "alias", alias, "handle", handleID)
-	}
-}
-
-// releaseAll releases all outstanding power assertions. Called on daemon
-// shutdown. Releases run in parallel under a shared deadline so shutdown
-// doesn't balloon linearly with device count.
-func (s *Supervisor) releaseAll() {
 	s.mu.Lock()
-	handles := make(map[string]string, len(s.assertions))
-	cancels := make(map[string]context.CancelFunc, len(s.cancels))
-	for udid, h := range s.assertions {
-		handles[udid] = h
-	}
-	for udid, c := range s.cancels {
-		cancels[udid] = c
-	}
-	s.assertions = map[string]string{}
-	s.cancels = map[string]context.CancelFunc{}
+	s.seen[udid] = time.Now()
 	s.mu.Unlock()
-
-	for _, cancel := range cancels {
-		if cancel != nil {
-			cancel()
-		}
-	}
-
-	drainCtx, drainCancel := context.WithTimeout(context.Background(),
-		10*time.Second)
-	defer drainCancel()
-
-	var wg sync.WaitGroup
-	for udid, handleID := range handles {
-		if handleID == "" {
-			continue
-		}
-		wg.Add(1)
-		go func(udid, handleID string) {
-			defer wg.Done()
-			alias := s.aliasOf(udid)
-			if err := s.bridge.ReleasePowerAssertion(drainCtx, handleID); err != nil {
-				slog.Warn("autoawake: release failed on shutdown",
-					"udid", udid, "alias", alias, "error", summariseErr(err))
-			} else {
-				slog.Info("autoawake: power assertion released (shutdown)",
-					"udid", udid, "alias", alias, "handle", handleID)
-			}
-		}(udid, handleID)
-	}
-	wg.Wait()
+	slog.Info("autoawake: KeepAwake foregrounded",
+		"udid", udid, "alias", alias, "reason", reason)
 }
 
 // aliasOf resolves a UDID to an inventory alias, falling back to a
@@ -348,14 +206,14 @@ func (s *Supervisor) aliasOf(udid string) string {
 	return udid
 }
 
-// summariseErr returns a brief error string, stripping pmd3 tracebacks.
-func summariseErr(err error) string {
-	s := err.Error()
-	for line := range strings.SplitSeq(s, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			return fmt.Sprintf("%.200s", line)
-		}
+// Status returns a snapshot of devices the supervisor has launched
+// KeepAwake on, with the timestamp of the most recent launch.
+func (s *Supervisor) Status() map[string]time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]time.Time, len(s.seen))
+	for udid, t := range s.seen {
+		out[udid] = t
 	}
-	return fmt.Sprintf("%.200s", s)
+	return out
 }

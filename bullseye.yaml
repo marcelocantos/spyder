@@ -967,10 +967,12 @@ targets:
     value: 0.0
     cost: 0.0
     acceptance:
-    - Calling `screenshot` MCP tool against an iOS 17+ physical device returns a PNG, not an InvalidServiceError
-    - Bridge uses the CoreDevice / DVT screenshot path on iOS 17+ (via pymobiledevice3's developer-mode instruments or devicectl), falling back to legacy screenshotr for older devices if needed
-    - Device-tier Go test TestDevice_Screenshot_WorksOniOS17Plus passes against an attached iOS 17+ device
-    - STABILITY.md `screenshot` entry reflects the actual iOS version support
+    - Calling `screenshot` MCP tool against an iOS 17+ physical device returns a valid PNG, not an InvalidServiceError
+    - Bridge uses the DVT-based Screenshot instrument over a tunneld-mediated RSD connection (the new iOS 17+ path). Legacy com.apple.mobile.screenshotr stays as a fallback for older devices if they are supported
+    - Tunneld lifecycle is managed by the bridge again (regression from T25's "supervision absorbed into the bridge" that was silently not re-implemented). Bridge starts tunneld on-demand or as a supervised subprocess, keeps it alive, exposes RSD handles to screenshot / future DVT callers
+    - Device Developer Mode enablement is surfaced as a structured BridgeError (e.g. code=`developer_mode_disabled`) rather than a generic pmd3_error so the MCP client can give a specific actionable message
+    - 'Device-tier Go test `TestDevice_Screenshot_WorksOniOS17Plus` in `internal/pmd3bridge/`: spawns the real bridge, calls the real screenshot endpoint against a real attached iOS 17+ device, asserts the response is a decodable PNG of reasonable size (> 4 KB) and has the PNG magic header. No fakes, no stubs, no golden-image comparison. Runs under SPYDER_DEVICES=1'
+    - STABILITY.md `screenshot` entry reflects the actual iOS version support matrix and the new tunneld dependency
     context: 'Discovered 2026-04-22 while spiking stay-awake detection. Attempted ScreenshotService.take_screenshot() against both Minicades iPhone (iOS 26.2) and Jevons iPad (iOS 26.4.1); both returned pymobiledevice3.exceptions.InvalidServiceError: InvalidService regardless of awake/asleep state. The legacy com.apple.mobile.screenshotr service was deprecated in iOS 17; the current path is CoreDevice / DVT instruments. Our bridge''s services.screenshot uses ScreenshotService which routes to the legacy service, so MCP `screenshot` tool is likely non-functional on any iOS 17+ test device. This is a separate bug from the fd leak, not a release blocker for v0.8.0 (no regressions — it was probably broken all along) but should be addressed.'
     tags:
     - bug
@@ -978,6 +980,27 @@ targets:
     - screenshot
     - pmd3
     origin: discovered 2026-04-22 during T29 spike — InvalidServiceError on both test devices
+    discovered: 2026-04-22
+  T31:
+    name: Restore KeepAwake companion app — spyder actually keeps iOS devices awake
+    status: converging
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'ios/KeepAwake/ restored: Swift sources (App + ContentView), project.yml, README with per-developer signing instructions'
+    - ios/KeepAwake deploys on attached iOS devices via xcrun devicectl (install + launch); autoawake orchestrates deployment when a new device appears
+    - autoawake's pmd3 PowerAssertionService call path is removed — the companion app is the sole keep-awake mechanism. Bridge-side assertion endpoints stay for potential future use but are not wired to autoawake
+    - A paired iOS device with an unlocked screen stays awake past its configured auto-lock when spyder is running. Verified by HIL observation (operator plugs device in, waits past auto-lock, reports)
+    - 'STABILITY.md updated: iOS keep-awake section reflects the companion-app mechanism, lists the per-developer build + signing requirement as a user-facing operational cost'
+    - Audit log entry for the release explicitly notes T25's deletion of KeepAwake was a silent functional regression that v0.6.0 through v0.8.0 shipped non-functional keep-awake; T31 reverses that mistake
+    context: Raised 2026-04-22 after v0.8.0 HIL verification revealed devices still auto-lock at normal timeouts despite spyder holding PreventUserIdleSystemSleep / PreventSystemSleep / PreventUserIdleDisplaySleep assertions via pmd3. Exhaustive spiking confirmed no assertion type accessible via pmd3's com.apple.mobile.assertion_agent actually prevents display auto-lock on iOS. T25 (v0.6.0) deleted the KeepAwake companion app on the assumption that pmd3's PowerAssertionService was a drop-in replacement; it wasn't. v0.6.0, v0.7.0, and v0.8.0 all shipped with the keep-awake feature non-functional while claiming to provide it. The companion app (pre-T25) used UIApplication.shared.isIdleTimerDisabled = true which is the canonical iOS mechanism. T31 restores that. Per-developer signing identity required (free-tier Apple ID or paid Developer Program) — accepted operational cost.
+    tags:
+    - ios
+    - keep-awake
+    - architecture
+    - revert
+    - hil
+    origin: discovered 2026-04-22 during v0.8.0 HIL validation — every pmd3 assertion type fails to prevent display auto-lock
     discovered: 2026-04-22
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes

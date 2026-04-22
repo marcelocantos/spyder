@@ -7,68 +7,9 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sort"
 	"testing"
 	"time"
 )
-
-// --- newDevices seen-set logic ----------------------------------------
-
-func TestNewDevices_FirstSeenAllFresh(t *testing.T) {
-	seen := map[string]bool{}
-	fresh := newDevices([]string{"a", "b", "c"}, seen)
-	sort.Strings(fresh)
-	want := []string{"a", "b", "c"}
-	if !equalStrings(fresh, want) {
-		t.Errorf("fresh = %v; want %v", fresh, want)
-	}
-	for _, u := range want {
-		if !seen[u] {
-			t.Errorf("%q not marked seen", u)
-		}
-	}
-}
-
-func TestNewDevices_SameSetNoneFresh(t *testing.T) {
-	seen := map[string]bool{"a": true, "b": true}
-	fresh := newDevices([]string{"a", "b"}, seen)
-	if len(fresh) != 0 {
-		t.Errorf("expected no fresh; got %v", fresh)
-	}
-}
-
-func TestNewDevices_DisappearedDevicesPruned(t *testing.T) {
-	seen := map[string]bool{"a": true, "b": true}
-	_ = newDevices([]string{"a"}, seen) // b disappeared
-	if seen["b"] {
-		t.Errorf("expected b pruned from seen; got %v", seen)
-	}
-	if !seen["a"] {
-		t.Errorf("expected a kept; got %v", seen)
-	}
-}
-
-func TestNewDevices_ReplugRetriggers(t *testing.T) {
-	seen := map[string]bool{}
-	_ = newDevices([]string{"a"}, seen)      // first seen
-	_ = newDevices([]string{}, seen)         // unplugged, pruned
-	fresh := newDevices([]string{"a"}, seen) // replugged
-	if len(fresh) != 1 || fresh[0] != "a" {
-		t.Errorf("expected a refreshed; got %v", fresh)
-	}
-}
-
-func TestNewDevices_MixedAddAndRemove(t *testing.T) {
-	seen := map[string]bool{"a": true}
-	fresh := newDevices([]string{"b", "c"}, seen) // a gone; b, c new
-	sort.Strings(fresh)
-	if !equalStrings(fresh, []string{"b", "c"}) {
-		t.Errorf("fresh = %v; want [b c]", fresh)
-	}
-	if seen["a"] {
-		t.Errorf("a should be pruned")
-	}
-}
 
 // --- aliasOf -----------------------------------------------------------
 
@@ -104,29 +45,9 @@ func TestAliasOf_UnknownShortens(t *testing.T) {
 	}
 }
 
-// --- summariseErr -------------------------------------------
-
-func TestSummariseErr_FirstLine(t *testing.T) {
-	input := "first line\nsecond line\nthird"
-	got := summariseErr(errFromString(input))
-	if got != "first line" {
-		t.Errorf("summariseErr = %q; want first line", got)
-	}
-}
-
-func TestSummariseErr_SingleLine(t *testing.T) {
-	got := summariseErr(errFromString("just one line"))
-	if got != "just one line" {
-		t.Errorf("summariseErr = %q; want 'just one line'", got)
-	}
-}
-
 // --- nil bridge guard ------------------------------------------------
 
 func TestSupervisorNilBridge_RunExitsImmediately(t *testing.T) {
-	// Supervisor with nil bridge should log and return without panicking.
-	// We can't block on Run() in a unit test, so test the guard via the
-	// exported Run signature (it returns when ctx is done or bridge is nil).
 	s := New(nil)
 	done := make(chan struct{})
 	go func() {
@@ -142,26 +63,6 @@ func TestSupervisorNilBridge_RunExitsImmediately(t *testing.T) {
 
 // --- helpers -----------------------------------------------------------
 
-// errFromString returns an error whose Error() returns s.
-type stringError string
-
-func (s stringError) Error() string { return string(s) }
-
-func errFromString(s string) error { return stringError(s) }
-
-func equalStrings(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
-// cancelledContext returns a context that is already cancelled.
 func cancelledContext(t *testing.T) context.Context {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -169,7 +70,6 @@ func cancelledContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// timeoutCh returns a channel that receives after ms milliseconds.
 func timeoutCh(ms int) <-chan struct{} {
 	ch := make(chan struct{})
 	go func() {
