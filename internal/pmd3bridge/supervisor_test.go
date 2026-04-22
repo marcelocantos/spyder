@@ -64,11 +64,14 @@ func getHelperBin(t *testing.T) string {
 }
 
 // helperSrc is the source for the test helper binary. It reads the BRIDGE_MODE
-// environment variable to decide its behaviour:
+// environment variable to decide its behaviour. All "ready" variants emit the
+// same structured ready line as the real bridge: `ready port=NNNN token=XXXX`.
 //
-//   - "ready" — writes "ready\n", then blocks until SIGTERM.
-//   - "crash" — writes "ready\n", then exits immediately (simulates a bug-exit).
-//   - "crash-before-ready" — exits without writing "ready\n".
+//   - "ready" — writes structured ready line, then blocks until SIGTERM.
+//   - "crash" — writes the ready line, then exits immediately (simulates
+//     an unexpected exit after a successful handshake).
+//   - "crash-before-ready" — exits without writing anything.
+//   - "malformed-ready" — writes a ready line missing port/token.
 const helperSrc = `package main
 
 import (
@@ -82,12 +85,18 @@ func main() {
 	mode := os.Getenv("BRIDGE_MODE")
 	switch mode {
 	case "crash":
-		fmt.Println("ready")
+		fmt.Println("ready port=1 token=test-token")
 		os.Exit(1)
 	case "crash-before-ready":
 		os.Exit(1)
-	default: // "ready" or anything else
+	case "malformed-ready":
 		fmt.Println("ready")
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGTERM)
+		<-ch
+		os.Exit(0)
+	default: // "ready" or anything else
+		fmt.Println("ready port=1 token=test-token")
 		ch := make(chan os.Signal, 1)
 		signal.Notify(ch, syscall.SIGTERM)
 		<-ch
@@ -98,27 +107,11 @@ func main() {
 
 // --- Tests ---
 
-// tempSock creates a temporary socket path under os.TempDir() with a short
-// name to stay within macOS's 104-byte Unix socket path limit.
-func tempSock(t *testing.T, prefix string) string {
-	t.Helper()
-	f, err := os.CreateTemp("", "spyder-sup-"+prefix+"-*.sock")
-	if err != nil {
-		t.Fatalf("create temp sock: %v", err)
-	}
-	p := f.Name()
-	_ = f.Close()
-	_ = os.Remove(p)
-	t.Cleanup(func() { _ = os.Remove(p) })
-	return p
-}
-
 func TestSupervisor_StartAndStop(t *testing.T) {
 	bin := getHelperBin(t)
-	sock := tempSock(t, "ok")
 
 	t.Setenv("BRIDGE_MODE", "ready")
-	sup := NewSupervisor(bin, sock,
+	sup := NewSupervisor(bin,
 		WithReadyTimeout(5*time.Second),
 		WithShutdownTimeout(2*time.Second),
 	)
@@ -126,6 +119,12 @@ func TestSupervisor_StartAndStop(t *testing.T) {
 	ctx := context.Background()
 	if err := sup.Start(ctx); err != nil {
 		t.Fatalf("Start: %v", err)
+	}
+	if sup.Token() != "test-token" {
+		t.Errorf("Token = %q; want test-token", sup.Token())
+	}
+	if sup.BaseURL() != "http://127.0.0.1:1" {
+		t.Errorf("BaseURL = %q; want http://127.0.0.1:1", sup.BaseURL())
 	}
 
 	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -142,10 +141,9 @@ func TestSupervisor_StartAndStop(t *testing.T) {
 
 func TestSupervisor_StartTimeout(t *testing.T) {
 	bin := getHelperBin(t)
-	sock := tempSock(t, "timeout")
 
 	t.Setenv("BRIDGE_MODE", "crash-before-ready")
-	sup := NewSupervisor(bin, sock,
+	sup := NewSupervisor(bin,
 		WithReadyTimeout(2*time.Second),
 	)
 
@@ -160,9 +158,25 @@ func TestSupervisor_StartTimeout(t *testing.T) {
 	}
 }
 
+func TestSupervisor_MalformedReady(t *testing.T) {
+	bin := getHelperBin(t)
+	t.Setenv("BRIDGE_MODE", "malformed-ready")
+	sup := NewSupervisor(bin, WithReadyTimeout(2*time.Second))
+
+	err := sup.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start: expected malformed-ready error; got nil")
+	}
+	if !strings.Contains(err.Error(), "malformed ready line") &&
+		!strings.Contains(err.Error(), "missing") {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// Clean up the hanging subprocess the helper spawned.
+	_ = sup.Stop(context.Background())
+}
+
 func TestSupervisor_MissingBinary(t *testing.T) {
-	sock := tempSock(t, "missing")
-	sup := NewSupervisor("/nonexistent/pmd3-bridge", sock,
+	sup := NewSupervisor("/nonexistent/pmd3-bridge",
 		WithReadyTimeout(2*time.Second),
 	)
 
@@ -178,12 +192,11 @@ func TestSupervisor_MissingBinary(t *testing.T) {
 // death is a bug, not a recoverable condition.
 func TestSupervisor_PanicsOnUnexpectedExit(t *testing.T) {
 	bin := getHelperBin(t)
-	sock := tempSock(t, "unexpected-exit")
 
 	t.Setenv("BRIDGE_MODE", "crash")
 
 	fatalCh := make(chan error, 1)
-	sup := NewSupervisor(bin, sock,
+	sup := NewSupervisor(bin,
 		WithReadyTimeout(5*time.Second),
 		withFatal(func(err error) { fatalCh <- err }),
 	)
@@ -208,10 +221,9 @@ func TestSupervisor_PanicsOnUnexpectedExit(t *testing.T) {
 
 func TestSupervisor_GracefulStopOnContextCancel(t *testing.T) {
 	bin := getHelperBin(t)
-	sock := tempSock(t, "ctxcancel")
 
 	t.Setenv("BRIDGE_MODE", "ready")
-	sup := NewSupervisor(bin, sock,
+	sup := NewSupervisor(bin,
 		WithReadyTimeout(5*time.Second),
 		WithShutdownTimeout(2*time.Second),
 	)

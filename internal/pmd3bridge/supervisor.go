@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -44,14 +46,18 @@ func withFatal(f func(error)) Option {
 // Supervisor manages a pmd3-bridge subprocess. A single Supervisor must be
 // started exactly once; it may be stopped and is not restartable.
 //
-// Error model (see 🎯T26.2): the bridge is a same-host subprocess whose
+// Transport (🎯T26.1): the bridge binds an ephemeral port on 127.0.0.1 and
+// emits a `ready port=NNNN token=XXXX` line on stdout. The supervisor reads
+// that line, stores the port + token, and exposes them via BaseURL() and
+// Token() so the daemon can construct an authenticated Client.
+//
+// Error model (🎯T26.2): the bridge is a same-host subprocess whose
 // availability is a hard invariant once Start succeeds. If the subprocess
 // exits before Stop is called, that is a bug — the supervisor panics via
 // its fatal hook and lets the external process supervisor restart the
 // whole daemon.
 type Supervisor struct {
 	binaryPath string
-	socketPath string
 
 	log             *slog.Logger
 	shutdownTimeout time.Duration
@@ -60,7 +66,9 @@ type Supervisor struct {
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
-	stopped bool // true once Stop has been called
+	port    int    // bridge's listening port, set during launch
+	token   string // bridge's bearer token, set during launch
+	stopped bool   // true once Stop has been called
 
 	// stopCh is closed by Stop to signal the watchdog goroutine to exit.
 	stopCh chan struct{}
@@ -72,10 +80,9 @@ type Supervisor struct {
 }
 
 // NewSupervisor creates a new Supervisor. Call Start to launch the bridge.
-func NewSupervisor(binaryPath, socketPath string, opts ...Option) *Supervisor {
+func NewSupervisor(binaryPath string, opts ...Option) *Supervisor {
 	s := &Supervisor{
 		binaryPath:      binaryPath,
-		socketPath:      socketPath,
 		log:             slog.Default(),
 		shutdownTimeout: 5 * time.Second,
 		readyTimeout:    timeoutReadyHandshake,
@@ -90,12 +97,43 @@ func NewSupervisor(binaryPath, socketPath string, opts ...Option) *Supervisor {
 	return s
 }
 
-// Start launches the bridge subprocess, waits for the "ready\n" signal, and
-// then starts the background watchdog goroutine. It returns once the bridge is
-// ready or if startup fails.
+// BaseURL returns the http://127.0.0.1:NNNN base URL of the running bridge.
+// Valid after Start has returned nil; empty otherwise.
+func (s *Supervisor) BaseURL() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.port == 0 {
+		return ""
+	}
+	return fmt.Sprintf("http://127.0.0.1:%d", s.port)
+}
+
+// Token returns the bearer token the bridge accepts. Valid after Start has
+// returned nil; empty otherwise.
+func (s *Supervisor) Token() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.token
+}
+
+// Client constructs a new Client that reads the bridge's base URL and bearer
+// token from this Supervisor on every request. It is safe to call before
+// Start — requests issued before Start will fail their auth check (empty
+// token) or fail to connect (zero port), both of which are bugs.
+func (s *Supervisor) Client() *Client {
+	return &Client{
+		http:  &http.Client{},
+		sup:   s,
+		fatal: func(err error) { panic(err) },
+	}
+}
+
+// Start launches the bridge subprocess, waits for the `ready port=... token=...`
+// signal on stdout, and then starts the background watchdog goroutine. It
+// returns once the bridge is ready or if startup fails.
 func (s *Supervisor) Start(ctx context.Context) error {
 	s.log.Info("bridge supervisor: launching",
-		"binary", s.binaryPath, "socket", s.socketPath,
+		"binary", s.binaryPath,
 		"ready_timeout", s.readyTimeout)
 	if err := s.launch(ctx); err != nil {
 		close(s.doneCh)
@@ -103,8 +141,8 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		return err
 	}
 	s.log.Info("bridge supervisor: ready",
-		"binary", s.binaryPath, "socket", s.socketPath,
-		"pid", s.cmd.Process.Pid)
+		"binary", s.binaryPath,
+		"port", s.port, "pid", s.cmd.Process.Pid)
 	go s.watchdog()
 	return nil
 }
@@ -154,20 +192,16 @@ func (s *Supervisor) Stop(shutdownCtx context.Context) error {
 		}
 		<-s.doneCh
 	}
-
-	_ = os.Remove(s.socketPath)
 	return nil
 }
 
-// launch starts the bridge process and waits for "ready\n" on stdout.
-// It does NOT start the watchdog goroutine.
+// launch starts the bridge process and waits for the structured
+// `ready port=NNNN token=XXXX` line on stdout. It does NOT start the
+// watchdog goroutine.
 func (s *Supervisor) launch(ctx context.Context) error {
-	// Clean up any leftover socket from a previous run.
-	_ = os.Remove(s.socketPath)
-
 	// Use a plain exec.Cmd so the watchdog — not Go's exec framework — owns
 	// the process lifetime.
-	cmd := exec.Command(s.binaryPath, "--socket", s.socketPath) //nolint:forbidigo
+	cmd := exec.Command(s.binaryPath) //nolint:forbidigo
 	cmd.Stderr = os.Stderr
 
 	stdout, err := cmd.StdoutPipe()
@@ -179,32 +213,39 @@ func (s *Supervisor) launch(ctx context.Context) error {
 		return fmt.Errorf("pmd3bridge supervisor: start %q: %w", s.binaryPath, err)
 	}
 
-	readyCh := make(chan error, 1)
+	type readyResult struct {
+		port  int
+		token string
+		err   error
+	}
+	readyCh := make(chan readyResult, 1)
 	go func() {
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if line == "ready" {
-				readyCh <- nil
+			if strings.HasPrefix(line, "ready") {
+				port, token, perr := parseReadyLine(line)
+				readyCh <- readyResult{port: port, token: token, err: perr}
 				return
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			readyCh <- fmt.Errorf("reading bridge stdout: %w", err)
+			readyCh <- readyResult{err: fmt.Errorf("reading bridge stdout: %w", err)}
 			return
 		}
-		readyCh <- fmt.Errorf("bridge stdout closed before 'ready' signal")
+		readyCh <- readyResult{err: fmt.Errorf("bridge stdout closed before 'ready' signal")}
 	}()
 
 	timer := time.NewTimer(s.readyTimeout)
 	defer timer.Stop()
 
+	var result readyResult
 	select {
-	case err := <-readyCh:
-		if err != nil {
+	case result = <-readyCh:
+		if result.err != nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
-			return fmt.Errorf("pmd3bridge supervisor: %w", err)
+			return fmt.Errorf("pmd3bridge supervisor: %w", result.err)
 		}
 	case <-timer.C:
 		_ = cmd.Process.Kill()
@@ -218,8 +259,61 @@ func (s *Supervisor) launch(ctx context.Context) error {
 
 	s.mu.Lock()
 	s.cmd = cmd
+	s.port = result.port
+	s.token = result.token
 	s.mu.Unlock()
 	return nil
+}
+
+// parseReadyLine parses a `ready port=NNNN token=XXXX` line from the bridge's
+// stdout. Returns (0, "", err) on malformed input.
+func parseReadyLine(line string) (int, string, error) {
+	fields := strings.Fields(line)
+	if len(fields) < 3 || fields[0] != "ready" {
+		return 0, "", fmt.Errorf("malformed ready line: %q", line)
+	}
+	var port int
+	var token string
+	for _, kv := range fields[1:] {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return 0, "", fmt.Errorf("malformed ready line entry: %q", kv)
+		}
+		switch k {
+		case "port":
+			p, err := parseUint(v)
+			if err != nil {
+				return 0, "", fmt.Errorf("ready line: invalid port %q: %w", v, err)
+			}
+			port = p
+		case "token":
+			token = v
+		}
+	}
+	if port == 0 {
+		return 0, "", fmt.Errorf("ready line missing port: %q", line)
+	}
+	if token == "" {
+		return 0, "", fmt.Errorf("ready line missing token: %q", line)
+	}
+	return port, token, nil
+}
+
+func parseUint(s string) (int, error) {
+	n := 0
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return 0, fmt.Errorf("non-digit %q", r)
+		}
+		n = n*10 + int(r-'0')
+		if n > 65535 {
+			return 0, fmt.Errorf("out of range")
+		}
+	}
+	return n, nil
 }
 
 // watchdog waits for the subprocess to exit. If Stop has not been called,
@@ -232,10 +326,7 @@ func (s *Supervisor) launch(ctx context.Context) error {
 // recovery is to surface the crash (stack trace + bridge stderr, already
 // inherited on os.Stderr) and restart the whole daemon cleanly.
 func (s *Supervisor) watchdog() {
-	defer func() {
-		close(s.doneCh)
-		_ = os.Remove(s.socketPath)
-	}()
+	defer close(s.doneCh)
 
 	s.mu.Lock()
 	cmd := s.cmd

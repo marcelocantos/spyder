@@ -8,47 +8,22 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-// unixTestServer spins up an httptest.Server bound to a Unix socket in a temp
-// directory and returns the server, Client, and a cleanup function.
-// On macOS, Unix socket paths are limited to 104 bytes; we create the socket
-// file in os.TempDir() with a short name to stay safely under that limit.
+// unixTestServer is the legacy name retained for call-site compatibility;
+// it now stands up an httptest.Server on loopback TCP (🎯T26.1 flipped the
+// transport away from Unix sockets) and returns a Client pointing at it
+// with a fixed test token.
 func unixTestServer(t *testing.T, mux http.Handler) (*httptest.Server, *Client) {
 	t.Helper()
-
-	// Use a file in os.TempDir() with a short, unique name. We can't use
-	// t.TempDir() directly because macOS has a 104-byte socket path limit and
-	// the test-scoped temp directories have long path names.
-	f, err := os.CreateTemp("", "spyder-test-*.sock")
-	if err != nil {
-		t.Fatalf("create temp socket: %v", err)
-	}
-	sock := f.Name()
-	f.Close()
-	_ = os.Remove(sock) // remove so net.Listen can bind it fresh
-
-	t.Cleanup(func() { _ = os.Remove(sock) })
-
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("listen unix %s: %v", sock, err)
-	}
-
-	srv := httptest.NewUnstartedServer(mux)
-	srv.Listener = ln
-	srv.Start()
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-
-	return srv, NewClient(sock)
+	return srv, NewClient(srv.URL, "test-token")
 }
 
 // respond writes a JSON-encoded body with the given HTTP status code.
@@ -370,15 +345,38 @@ func TestClient_ContextCancellation(t *testing.T) {
 	}
 }
 
-// TestClient_TransportErrorCalledFatal verifies that a dial failure (bridge
-// socket missing) invokes the fatal hook rather than returning an error.
-// Under the 🎯T26.2 model, transport failures are bugs.
-func TestClient_TransportErrorCallsFatal(t *testing.T) {
-	dir := t.TempDir()
-	sock := filepath.Join(dir, "no.sock") // intentionally non-existent socket
-	_ = os.Remove(sock)
+// TestClient_SendsAuthHeader verifies the Authorization: Bearer <token>
+// header is set on every outgoing request (🎯T26.1).
+func TestClient_SendsAuthHeader(t *testing.T) {
+	var seenAuth string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/list_devices", func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = r.Header.Get("Authorization")
+		respond(w, http.StatusOK, listDevicesResponse{})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
 
-	c := NewClient(sock)
+	c := NewClient(srv.URL, "abc123")
+	if _, err := c.ListDevices(context.Background()); err != nil {
+		t.Fatalf("ListDevices: %v", err)
+	}
+	if seenAuth != "Bearer abc123" {
+		t.Errorf("Authorization = %q; want Bearer abc123", seenAuth)
+	}
+}
+
+// TestClient_TransportErrorCallsFatal verifies that a dial failure
+// (bridge not listening on the advertised port) invokes the fatal hook
+// rather than returning an error. Under the 🎯T26.2 model, transport
+// failures are bugs.
+func TestClient_TransportErrorCallsFatal(t *testing.T) {
+	// A bound-then-closed TCP port gives us a guaranteed dial-refused URL.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	deadURL := srv.URL
+	srv.Close()
+
+	c := NewClient(deadURL, "test-token")
 	var captured error
 	c.fatal = func(err error) { captured = err }
 

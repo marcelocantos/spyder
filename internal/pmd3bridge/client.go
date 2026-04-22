@@ -12,15 +12,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"time"
 )
 
-// Client calls the pmd3-bridge HTTP API over a Unix-domain socket. It is safe
-// for concurrent use after construction.
+// Client calls the pmd3-bridge HTTP API over a loopback TCP connection with
+// a bearer-token handshake (🎯T26.1). It is safe for concurrent use after
+// construction.
 //
-// Error model (see 🎯T26.2): client methods return nil on success or a
+// Error model (🎯T26.2): client methods return nil on success or a
 // *BridgeError for structured responses from the bridge (device_not_paired,
 // bundle_not_installed, tunneld_unavailable, pmd3_error, not_found). Any
 // other failure mode — transport error, deadline exceeded, decode failure —
@@ -31,8 +31,14 @@ import (
 // context.Canceled is the one exception: it indicates the caller (typically
 // daemon shutdown) has requested cancellation and is returned unchanged.
 type Client struct {
-	http       *http.Client
-	socketPath string
+	http *http.Client
+
+	// Exactly one of (sup) or (baseURL, token) is populated. When sup is
+	// non-nil, baseURL+token are read dynamically from it on every request
+	// so a Client constructed before Start still works once Start completes.
+	sup     *Supervisor
+	baseURL string
+	token   string
 
 	// fatal is called when a bridge call encounters a bug condition.
 	// Default: panic with the supplied error, crashing the daemon.
@@ -41,22 +47,28 @@ type Client struct {
 	fatal func(error)
 }
 
-// NewClient constructs a Client that dials the bridge over the given Unix
-// socket path. The socket need not exist at construction time; each request
-// dials fresh.
-func NewClient(socketPath string) *Client {
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
-		},
-	}
+// NewClient constructs a Client that sends requests to baseURL (e.g.
+// "http://127.0.0.1:12345") carrying `Authorization: Bearer <token>` on
+// every request. Used by tests and by callers that already know the
+// bridge's endpoint; production code prefers Supervisor.Client, which
+// reads the endpoint live from the supervisor.
+func NewClient(baseURL, token string) *Client {
 	return &Client{
-		socketPath: socketPath,
-		http: &http.Client{
-			Transport: transport,
-		},
-		fatal: func(err error) { panic(err) },
+		baseURL: baseURL,
+		token:   token,
+		http:    &http.Client{},
+		fatal:   func(err error) { panic(err) },
 	}
+}
+
+// endpoint returns the live baseURL+token for this client. For
+// supervisor-backed clients the values are read on every request; for
+// static clients (tests) they are fixed at construction.
+func (c *Client) endpoint() (string, string) {
+	if c.sup != nil {
+		return c.sup.BaseURL(), c.sup.Token()
+	}
+	return c.baseURL, c.token
 }
 
 // post encodes reqBody as JSON, POSTs to the given path with the supplied
@@ -100,13 +112,17 @@ func (c *Client) doPost(ctx context.Context, path string, timeout time.Duration,
 		body = bytes.NewReader(b)
 	}
 
+	baseURL, token := c.endpoint()
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost,
-		"http://localhost"+path, body)
+		baseURL+path, body)
 	if err != nil {
 		c.fire(fmt.Errorf("pmd3bridge: %s: build request: %w", path, err))
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

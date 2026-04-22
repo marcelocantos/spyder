@@ -44,9 +44,3 @@ func BaselinesBase() string {
 func PoolConfigPath() string {
 	return filepath.Join(Base(), "pool.yaml")
 }
-
-// PMD3BridgeSocket returns the Unix-domain socket path for the pmd3-bridge
-// subprocess (~/.spyder/pmd3-bridge.sock).
-func PMD3BridgeSocket() string {
-	return filepath.Join(Base(), "pmd3-bridge.sock")
-}

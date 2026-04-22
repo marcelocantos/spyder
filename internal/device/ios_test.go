@@ -6,10 +6,8 @@ package device
 import (
 	"encoding/json"
 	"errors"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -17,29 +15,13 @@ import (
 	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
 
-// newTestUnixSocket spins up an httptest.Server on a Unix socket and returns
-// the socket path. macOS limits Unix socket paths to 104 bytes, so the socket
-// file is created in os.TempDir() with a short name rather than t.TempDir().
-func newTestUnixSocket(t *testing.T, h http.Handler) string {
+// newTestServer stands up an httptest.Server on loopback TCP and returns
+// the base URL. Under 🎯T26.1 the bridge is TCP-only.
+func newTestServer(t *testing.T, h http.Handler) string {
 	t.Helper()
-	f, err := os.CreateTemp("", "spyder-iost-*.sock")
-	if err != nil {
-		t.Fatalf("create temp sock: %v", err)
-	}
-	sock := f.Name()
-	_ = f.Close()
-	_ = os.Remove(sock)
-	t.Cleanup(func() { _ = os.Remove(sock) })
-
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("listen unix %s: %v", sock, err)
-	}
-	srv := httptest.NewUnstartedServer(h)
-	srv.Listener = ln
-	srv.Start()
+	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return sock
+	return srv.URL
 }
 
 // --- parseDevicectlList ----------------------------------------------------
@@ -361,7 +343,7 @@ func TestIsSimulatorID(t *testing.T) {
 // cached state, so we use a non-nil bridge that points to a non-existent
 // socket and prime the cache manually).
 func TestStateCache_ReturnsWithinTTL(t *testing.T) {
-	a := NewIOSAdapter(pmd3bridge.NewClient("/nonexistent.sock"))
+	a := NewIOSAdapter(pmd3bridge.NewClient("http://127.0.0.1:1", "test-token"))
 	// Prime the cache directly.
 	chargingTrue := true
 	primed := State{Charging: &chargingTrue}
@@ -396,9 +378,9 @@ func TestStateCache_MissDialsBridge(t *testing.T) {
 			"message": "test: simulated bridge error",
 		})
 	})
-	sock := newTestUnixSocket(t, mux)
+	baseURL := newTestServer(t, mux)
 
-	a := NewIOSAdapter(pmd3bridge.NewClient(sock))
+	a := NewIOSAdapter(pmd3bridge.NewClient(baseURL, "test-token"))
 	// Prime with an expired entry.
 	a.mu.Lock()
 	a.cache["UDID"] = cachedState{state: State{}, at: time.Now().Add(-stateTTL - time.Second)}

@@ -1,7 +1,8 @@
 # pmd3-bridge
 
-HTTP bridge over a Unix domain socket that exposes pymobiledevice3
-operations to spyder's Go daemon.
+Daemon-private HTTP bridge that exposes pymobiledevice3 operations to
+spyder's Go daemon over an ephemeral loopback TCP port secured by a
+per-process bearer token (🎯T26.1).
 
 ## Requirements
 
@@ -19,11 +20,20 @@ uv sync --extra dev
 ## Running
 
 ```bash
-uv run python -m pmd3_bridge --socket /tmp/pmd3-bridge.sock
+uv run python -m pmd3_bridge
 ```
 
-The process writes `ready\n` to stdout once the socket is listening, then
-blocks.  Send SIGTERM to shut down gracefully.
+The process binds `127.0.0.1:<ephemeral>`, generates a random bearer
+token, and writes a single structured line to stdout:
+
+```
+ready port=NNNNN token=BASE64URL\n
+```
+
+The spyder daemon reads that line, constructs an HTTP client at
+`http://127.0.0.1:NNNNN` with `Authorization: Bearer <token>` on every
+request, and treats any unauthenticated request as a 401.  Send SIGTERM
+to shut down gracefully.
 
 ## Testing
 
@@ -32,7 +42,9 @@ cd bridge
 uv run pytest
 ```
 
-Tests use a fake services layer — no real device is required.
+Tests use a fake services layer — no real device is required.  The auth
+middleware is a no-op when no token is installed, so the ASGITransport
+test client works without a handshake.
 
 ## Building a self-contained bundle (PyInstaller)
 
@@ -42,12 +54,17 @@ uv run pyinstaller pmd3-bridge.spec
 # Output: dist/pmd3-bridge/pmd3-bridge  (onedir)
 ```
 
-Verify the bundle:
+Verify the bundle (bearer-token header is required):
 
 ```bash
-dist/pmd3-bridge/pmd3-bridge --socket /tmp/pmd3-bridge.sock &
-curl --unix-socket /tmp/pmd3-bridge.sock -X POST http://localhost/v1/list_devices -H 'Content-Type: application/json' -d '{}'
-kill %1
+# Start the bridge and capture the ready line.
+dist/pmd3-bridge/pmd3-bridge 2>/dev/null | read -r _ port_kv token_kv
+PORT="${port_kv#port=}"
+TOKEN="${token_kv#token=}"
+curl "http://127.0.0.1:$PORT/v1/list_devices" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 ```
 
 ## API
@@ -70,9 +87,12 @@ for the full request/response model.
 | `POST /v1/refresh_power_assertion` | Extend a power assertion |
 | `POST /v1/release_power_assertion` | Release a power assertion |
 
+Every request must carry `Authorization: Bearer <token>` matching the
+token printed in the ready line; otherwise the bridge returns HTTP 401.
+
 Error responses: `{"error": "<code>", "message": "<human>"}` with HTTP 4xx/5xx.
 
-Error codes: `device_not_paired`, `bundle_not_installed`, `tunneld_unavailable`, `pmd3_error`.
+Error codes: `device_not_paired`, `bundle_not_installed`, `tunneld_unavailable`, `pmd3_error`, `unauthorized`.
 
 ## Architecture notes
 

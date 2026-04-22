@@ -78,6 +78,42 @@ async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
 app = FastAPI(title="pmd3-bridge", lifespan=_lifespan)
 
 
+# Auth token installed by __main__.py at startup. None → no auth required
+# (for tests that use ASGITransport directly and bypass the loopback listener).
+_auth_token: str | None = None
+
+
+def set_auth_token(token: str) -> None:
+    """Install the bearer token the bridge accepts. Called from __main__.py
+    after generating a fresh random token per process lifetime."""
+    global _auth_token
+    _auth_token = token
+
+
+def get_auth_token() -> str | None:
+    """Exposed for tests that need to mint requests with the current token."""
+    return _auth_token
+
+
+# Auth middleware (🎯T26.1): the bridge is a daemon-private subprocess. Any
+# request that arrives without the matching bearer token is an outside-the-
+# daemon connection attempt and is rejected with 401.
+@app.middleware("http")
+async def _check_auth(request: Request, call_next: Any) -> Response:
+    token = _auth_token
+    if token is None:
+        # No token configured (test mode); allow.
+        return await call_next(request)
+    header = request.headers.get("authorization", "")
+    expected = f"Bearer {token}"
+    if header != expected:
+        log.warning("auth rejected path=%s remote=%s", request.url.path,
+                    request.client.host if request.client else "?")
+        return JSONResponse({"error": "unauthorized", "message": "bearer token missing or mismatched"},
+                            status_code=401)
+    return await call_next(request)
+
+
 # Middleware that logs every request at pmd3 level with duration + outcome,
 # complementing Uvicorn's access log with the per-handler view.
 @app.middleware("http")

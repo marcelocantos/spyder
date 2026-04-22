@@ -66,6 +66,11 @@ func Run(ctx context.Context, cfg Config) error {
 		"disable_autoawake", cfg.DisableAutoAwake)
 	handler, resvStore, bridgeSup := Build(cfg)
 
+	// bridgeBaseURL / bridgeToken are populated after a successful Start.
+	// autoawake and the liveness probe each construct their own client from
+	// these values — one-per-goroutine is simpler than sharing a Client.
+	var bridgeBaseURL, bridgeToken string
+
 	if bridgeSup != nil {
 		// Bridge binary was resolved, so startup failure is a bug
 		// (missing Python deps, broken install, etc.), not a config state.
@@ -75,10 +80,12 @@ func Run(ctx context.Context, cfg Config) error {
 		if err := bridgeSup.Start(ctx); err != nil {
 			return fmt.Errorf("pmd3-bridge startup: %w", err)
 		}
+		bridgeBaseURL = bridgeSup.BaseURL()
+		bridgeToken = bridgeSup.Token()
 		// Liveness probe: periodic ListDevices from the daemon, so a wedged
 		// Uvicorn (alive process, dead listener) panics via the client's
 		// fatal hook rather than producing silent non-functionality.
-		probeClient := pmd3bridge.NewClient(paths.PMD3BridgeSocket())
+		probeClient := pmd3bridge.NewClient(bridgeBaseURL, bridgeToken)
 		go pmd3bridge.LivenessProbe(ctx, probeClient)
 	}
 
@@ -89,9 +96,7 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 		var awakeBridge *pmd3bridge.Client
 		if bridgeSup != nil {
-			// Construct a separate client for autoawake (supervisor's client
-			// is the same socket; both are safe for concurrent use).
-			awakeBridge = pmd3bridge.NewClient(paths.PMD3BridgeSocket())
+			awakeBridge = pmd3bridge.NewClient(bridgeBaseURL, bridgeToken)
 		}
 		go autoawake.New(awakeBridge, awakeOpts...).Run(ctx)
 	}
@@ -213,11 +218,12 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 	// back to the existing shell-out paths.
 	var bridgeSup *pmd3bridge.Supervisor
 	if binPath := resolveBridgeBinary(); binPath != "" {
-		sockPath := paths.PMD3BridgeSocket()
-		bridgeSup = pmd3bridge.NewSupervisor(binPath, sockPath)
-		bridgeClient := pmd3bridge.NewClient(sockPath)
-		handlerOpts = append(handlerOpts, spydermcp.WithPMD3Bridge(bridgeClient))
-		slog.Info("pmd3-bridge configured", "binary", binPath, "socket", sockPath)
+		bridgeSup = pmd3bridge.NewSupervisor(binPath)
+		// The Client reads the bridge's base URL and token from the
+		// supervisor on every request, so it works whether Build or Run
+		// is who eventually calls Start.
+		handlerOpts = append(handlerOpts, spydermcp.WithPMD3Bridge(bridgeSup.Client()))
+		slog.Info("pmd3-bridge configured", "binary", binPath)
 	}
 
 	handler := spydermcp.NewHandler(handlerOpts...)

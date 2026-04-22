@@ -738,7 +738,7 @@ targets:
     discovered: 2026-04-22
   T26.1:
     name: 'Bridge transport is daemon-private: ephemeral loopback port + auth token handed over stdio'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -759,6 +759,7 @@ targets:
     - transport
     origin: forked-from T26 (decomposition 2026-04-22)
     discovered: 2026-04-22
+    achieved: 2026-04-22
   T26.2:
     name: 'Atomic bridge calls fail-fast: generous per-endpoint timeouts; any breach panics the daemon'
     status: achieved
