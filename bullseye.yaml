@@ -727,6 +727,7 @@ targets:
     - T26.2
     - T26.3
     - T26.4
+    - T26.5
     tags:
     - pmd3
     - bridge
@@ -835,6 +836,34 @@ targets:
     - observability
     origin: forked-from T26 (decomposition 2026-04-22)
     discovered: 2026-04-22
+  T26.5:
+    name: 'Observability: per-call tracing, slow-call warnings, liveness heartbeat, and bridge-side access/pmd3 logs'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - Every `client.post()` call emits a DEBUG log with endpoint, duration_ms, outcome (ok / bridge_error:$code / fatal), and the relevant UDID when present
+    - Any call whose duration exceeds 0.5 × its endpoint threshold emits a WARN `bridge call slow` regardless of level, naming endpoint, duration_ms, and threshold_ms
+    - The pre-panic path in `client.post()` emits an ERROR log with the full panic message and the fatal reason immediately before invoking the fatal hook, so the log has the message even when the stack trace is truncated by the log pipeline
+    - 'Supervisor logs bridge subprocess lifecycle transitions: Start (with binary path + socket), Stop (with reason), unexpected exit (with wait error)'
+    - LivenessProbe emits an INFO `bridge liveness healthy` heartbeat every 120 probes (≈1 h at the 30 s interval), including count-since-start and the duration of the most recent ListDevices
+    - Bridge Python side (`bridge/src/pmd3_bridge/__main__.py`) enables Uvicorn's access logger by default so every HTTP request is logged with path + status + duration
+    - Bridge Python side configures the `pymobiledevice3` logger at INFO so USB enumeration, lockdown connect/disconnect, pairing, and service-connection events leave a trail, correlating with wedge onset in retrospect
+    - Each FastAPI handler in `app.py` logs entry + exit with endpoint, udid (if present), and duration, so the per-request Uvicorn line is paired with a pmd3-level outcome line
+    - Routine logs route to stderr (inherited by the daemon's launchd log) so all breadcrumbs end up in `/opt/homebrew/var/log/spyder.log`
+    - The log level is tunable via `SPYDER_LOG_LEVEL` env (DEBUG/INFO/WARN/ERROR), defaulting to INFO for production
+    - 'A reconstruction test (in 🎯T26.4''s integration harness, once that target lands) replays a wedged-bridge scenario and asserts the log trail contains enough breadcrumbs to determine: last-successful-call timestamp, slow-call warnings before the wedge, and the exact endpoint that panicked'
+    context: 'During the 2026-04-22 post-mortem we realised the routine logging would not have supported diagnosis even with the fail-fast panic changes: the log between "autoawake: supervisor started" and the eventual panic would be empty for hours, and we could not distinguish "wedged immediately at startup" from "wedged after N successful calls". Observability is a separate concern from fail-fast — fail-fast detects the failure, observability lets us understand it. Without both, the panic just narrows the moment of death without describing the slope. Orthogonal to 🎯T26.1 (transport), 🎯T26.3 (streaming), and 🎯T26.4 (integration tests); likely the smallest of the 🎯T26.x siblings to implement.'
+    tags:
+    - pmd3
+    - bridge
+    - observability
+    - logging
+    - postmortem
+    origin: forked-from T26 (raised 2026-04-22 after post-mortem gap analysis)
+    discovered: 2026-04-22
+    achieved: 2026-04-22
   T3:
     name: iOS devices stay awake while plugged in via the KeepAwake companion app
     status: achieved

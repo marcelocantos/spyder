@@ -5,11 +5,19 @@
 Binds uvicorn to a Unix domain socket.  After the socket is listening,
 writes "ready\n" to stdout so the parent process (spyder's Go daemon)
 knows the bridge is up.  Blocks until SIGTERM, then shuts down gracefully.
+
+Logging (🎯T26.5): the bridge configures the root Python logger, the
+pymobiledevice3 logger, and Uvicorn's access/error loggers all to the
+same level (default INFO, override via SPYDER_LOG_LEVEL). Every log
+record routes to stderr, which the spyder daemon inherits so all
+breadcrumbs land in the same file. Uvicorn's access log is enabled,
+so every HTTP request from the daemon produces a line here.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -45,11 +53,40 @@ def _validate_socket_path(socket_path: str) -> None:
             sys.exit(1)
 
 
+def _configure_logging() -> str:
+    """Configure root + pymobiledevice3 + uvicorn loggers to emit to stderr
+    with timestamps. Returns the chosen log level string for downstream use.
+    """
+    level_name = os.environ.get("SPYDER_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    fmt = "%(asctime)s %(levelname)s %(name)s %(message)s"
+    logging.basicConfig(
+        level=level,
+        format=fmt,
+        stream=sys.stderr,
+        force=True,  # override any prior configuration inherited from PyInstaller bundle
+    )
+
+    # pymobiledevice3 installs its own loggers; ensure they propagate at the
+    # chosen level so USB/lockdown/AFC events appear in the trail.
+    for name in ("pymobiledevice3", "pmd3_bridge", "uvicorn", "uvicorn.error",
+                 "uvicorn.access", "fastapi"):
+        logging.getLogger(name).setLevel(level)
+
+    return level_name.lower()
+
+
 def main() -> None:
     args = _parse_args()
     socket_path: str = args.socket
 
     _validate_socket_path(socket_path)
+
+    log_level = _configure_logging()
+    log = logging.getLogger("pmd3_bridge")
+    log.info("pmd3-bridge starting socket=%s log_level=%s pid=%s",
+             socket_path, log_level, os.getpid())
 
     # Remove a stale socket file so uvicorn can bind cleanly.
     if os.path.exists(socket_path):
@@ -64,7 +101,8 @@ def main() -> None:
     config = uvicorn.Config(
         app,
         uds=socket_path,
-        log_level="info",
+        log_level=log_level,
+        access_log=True,
     )
     server = uvicorn.Server(config)
 
@@ -76,6 +114,7 @@ def main() -> None:
     shutdown_event = asyncio.Event()
 
     def _handle_sigterm(*_) -> None:  # type: ignore[override]
+        log.info("pmd3-bridge received SIGTERM, shutting down")
         shutdown_event.set()
 
     async def _run() -> None:
@@ -91,6 +130,8 @@ def main() -> None:
         while not server.started:
             await asyncio.sleep(0.05)
 
+        log.info("pmd3-bridge listening socket=%s", socket_path)
+
         # Signal to the parent that we are ready.
         sys.stdout.write("ready\n")
         sys.stdout.flush()
@@ -99,8 +140,10 @@ def main() -> None:
         await shutdown_event.wait()
 
         # Graceful shutdown.
+        log.info("pmd3-bridge draining")
         server.should_exit = True
         await serve_task
+        log.info("pmd3-bridge drained cleanly")
 
     try:
         loop.run_until_complete(_run())

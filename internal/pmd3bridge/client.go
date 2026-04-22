@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -62,7 +63,27 @@ func NewClient(socketPath string) *Client {
 // per-endpoint timeout applied as a context deadline, and decodes the response
 // into respBody. Returns nil or a *BridgeError; any other failure panics via
 // c.fatal.
+//
+// Logging (🎯T26.5): every call emits a DEBUG-level structured log on entry
+// and on completion; calls taking longer than half the endpoint threshold
+// also emit a WARN; fatal-path failures emit an ERROR before the panic so
+// the breadcrumb is persisted even if the stack-trace stream is truncated.
 func (c *Client) post(ctx context.Context, path string, timeout time.Duration,
+	reqBody, respBody any,
+) error {
+	started := time.Now()
+	slog.Debug("bridge call", "endpoint", path, "timeout_ms", timeout.Milliseconds())
+
+	err := c.doPost(ctx, path, timeout, reqBody, respBody)
+
+	elapsed := time.Since(started)
+	c.logOutcome(path, elapsed, timeout, err)
+	return err
+}
+
+// doPost implements the request/response pipeline proper. post() wraps it
+// to own the timing/logging envelope.
+func (c *Client) doPost(ctx context.Context, path string, timeout time.Duration,
 	reqBody, respBody any,
 ) error {
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -73,7 +94,7 @@ func (c *Client) post(ctx context.Context, path string, timeout time.Duration,
 		b, err := json.Marshal(reqBody)
 		if err != nil {
 			// Static request shape; marshal failure = programmer bug.
-			c.fatal(fmt.Errorf("pmd3bridge: %s: marshal request: %w", path, err))
+			c.fire(fmt.Errorf("pmd3bridge: %s: marshal request: %w", path, err))
 			return err
 		}
 		body = bytes.NewReader(b)
@@ -82,7 +103,7 @@ func (c *Client) post(ctx context.Context, path string, timeout time.Duration,
 	req, err := http.NewRequestWithContext(callCtx, http.MethodPost,
 		"http://localhost"+path, body)
 	if err != nil {
-		c.fatal(fmt.Errorf("pmd3bridge: %s: build request: %w", path, err))
+		c.fire(fmt.Errorf("pmd3bridge: %s: build request: %w", path, err))
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -94,7 +115,7 @@ func (c *Client) post(ctx context.Context, path string, timeout time.Duration,
 		if errors.Is(err, context.Canceled) && ctx.Err() == context.Canceled {
 			return err
 		}
-		c.fatal(fmt.Errorf("pmd3bridge: %s: transport error after %s: %w",
+		c.fire(fmt.Errorf("pmd3bridge: %s: transport error after %s: %w",
 			path, timeout, err))
 		return err
 	}
@@ -105,7 +126,7 @@ func (c *Client) post(ctx context.Context, path string, timeout time.Duration,
 		if errors.Is(err, context.Canceled) && ctx.Err() == context.Canceled {
 			return err
 		}
-		c.fatal(fmt.Errorf("pmd3bridge: %s: read response: %w", path, err))
+		c.fire(fmt.Errorf("pmd3bridge: %s: read response: %w", path, err))
 		return err
 	}
 
@@ -113,7 +134,7 @@ func (c *Client) post(ctx context.Context, path string, timeout time.Duration,
 		var errBody bridgeErrorBody
 		if jerr := json.Unmarshal(raw, &errBody); jerr != nil {
 			// 4xx/5xx with non-JSON body = bridge protocol bug.
-			c.fatal(fmt.Errorf("pmd3bridge: %s: unstructured error response (%d): %s",
+			c.fire(fmt.Errorf("pmd3bridge: %s: unstructured error response (%d): %s",
 				path, resp.StatusCode, raw))
 			return &BridgeError{Code: "unknown", Message: string(raw), Status: resp.StatusCode}
 		}
@@ -126,11 +147,59 @@ func (c *Client) post(ctx context.Context, path string, timeout time.Duration,
 
 	if respBody != nil {
 		if jerr := json.Unmarshal(raw, respBody); jerr != nil {
-			c.fatal(fmt.Errorf("pmd3bridge: %s: decode response: %w", path, jerr))
+			c.fire(fmt.Errorf("pmd3bridge: %s: decode response: %w", path, jerr))
 			return jerr
 		}
 	}
 	return nil
+}
+
+// logOutcome emits the per-call completion log, at the level appropriate to
+// the outcome: DEBUG for ok, DEBUG for structured BridgeError, WARN if the
+// call took more than half its threshold, and an additional WARN (at
+// whatever level) if outcome is slow.
+func (c *Client) logOutcome(path string, elapsed, timeout time.Duration, err error) {
+	durMs := elapsed.Milliseconds()
+	thresholdMs := timeout.Milliseconds()
+	slow := elapsed*2 > timeout
+
+	switch {
+	case err == nil:
+		slog.Debug("bridge call ok",
+			"endpoint", path,
+			"duration_ms", durMs,
+			"threshold_ms", thresholdMs)
+	default:
+		var be *BridgeError
+		if errors.As(err, &be) {
+			slog.Debug("bridge call bridge_error",
+				"endpoint", path,
+				"duration_ms", durMs,
+				"threshold_ms", thresholdMs,
+				"code", be.Code,
+				"status", be.Status)
+		} else if errors.Is(err, context.Canceled) {
+			slog.Debug("bridge call cancelled",
+				"endpoint", path,
+				"duration_ms", durMs)
+		}
+		// Fatal cases have already logged at ERROR inside fire().
+	}
+
+	if slow {
+		slog.Warn("bridge call slow",
+			"endpoint", path,
+			"duration_ms", durMs,
+			"threshold_ms", thresholdMs)
+	}
+}
+
+// fire emits an ERROR log with the failure context and then invokes the
+// fatal hook. The ERROR log ensures the breadcrumb survives even if the
+// stack-trace pipeline (stderr → launchd log) truncates the panic.
+func (c *Client) fire(err error) {
+	slog.Error("bridge call FATAL — about to panic", "error", err.Error())
+	c.fatal(err)
 }
 
 // ListDevices returns the connected iOS devices visible to the bridge.

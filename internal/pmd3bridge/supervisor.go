@@ -6,6 +6,7 @@ package pmd3bridge
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -93,10 +94,17 @@ func NewSupervisor(binaryPath, socketPath string, opts ...Option) *Supervisor {
 // then starts the background watchdog goroutine. It returns once the bridge is
 // ready or if startup fails.
 func (s *Supervisor) Start(ctx context.Context) error {
+	s.log.Info("bridge supervisor: launching",
+		"binary", s.binaryPath, "socket", s.socketPath,
+		"ready_timeout", s.readyTimeout)
 	if err := s.launch(ctx); err != nil {
 		close(s.doneCh)
+		s.log.Error("bridge supervisor: launch failed", "error", err)
 		return err
 	}
+	s.log.Info("bridge supervisor: ready",
+		"binary", s.binaryPath, "socket", s.socketPath,
+		"pid", s.cmd.Process.Pid)
 	go s.watchdog()
 	return nil
 }
@@ -113,6 +121,8 @@ func (s *Supervisor) Stop(shutdownCtx context.Context) error {
 	}
 	s.stopped = true
 	s.mu.Unlock()
+
+	s.log.Info("bridge supervisor: stopping", "shutdown_timeout", s.shutdownTimeout)
 
 	// Signal the watchdog to stop. The watchdog will SIGTERM the process
 	// and close doneCh when it exits.
@@ -238,12 +248,16 @@ func (s *Supervisor) watchdog() {
 	case <-s.stopCh:
 		// Graceful shutdown requested.
 		if cmd.Process != nil {
+			s.log.Info("bridge supervisor: sending SIGTERM", "pid", cmd.Process.Pid)
 			_ = cmd.Process.Signal(syscall.SIGTERM)
 		}
 		select {
-		case <-exitCh:
+		case err := <-exitCh:
+			s.log.Info("bridge supervisor: subprocess exited cleanly", "error", err)
 		case <-s.killCh:
 			if cmd.Process != nil {
+				s.log.Warn("bridge supervisor: shutdown timeout fired, sending SIGKILL",
+					"pid", cmd.Process.Pid)
 				_ = cmd.Process.Kill()
 			}
 			<-exitCh
@@ -258,6 +272,8 @@ func (s *Supervisor) watchdog() {
 			return
 		default:
 		}
+		s.log.Error("bridge supervisor: subprocess exited unexpectedly",
+			"wait_error", err, "pid", cmd.Process.Pid)
 		s.fatal(fmt.Errorf("pmd3bridge: subprocess exited unexpectedly (this is a bug): %w", err))
 	}
 }
@@ -270,18 +286,54 @@ func (s *Supervisor) watchdog() {
 // This complements watchdog()'s exit-detection: watchdog catches "process
 // died", LivenessProbe catches "process alive but not answering" (the Uvicorn
 // wedge observed on 2026-04-22).
+//
+// Logging (🎯T26.5): emits an INFO `bridge liveness: started` on entry, a
+// periodic INFO heartbeat every livenessHeartbeatEvery ticks (≈1 h at the
+// 30 s cadence) including consecutive-ok count and last-call duration, and
+// a WARN per structured BridgeError (rare in practice — list_devices does
+// not return device-scoped errors).
 func LivenessProbe(ctx context.Context, client *Client) {
+	slog.Info("bridge liveness: started",
+		"interval", intervalLivenessProbe,
+		"heartbeat_every", livenessHeartbeatEvery)
 	ticker := time.NewTicker(intervalLivenessProbe)
 	defer ticker.Stop()
+
+	var consecutiveOk int
+	var lastDuration time.Duration
+
 	for {
 		select {
 		case <-ctx.Done():
+			slog.Info("bridge liveness: stopped",
+				"consecutive_ok", consecutiveOk)
 			return
 		case <-ticker.C:
-			// Discard result: we only care that the call returns
-			// successfully (or with a structured BridgeError). A
-			// transport error panics inside client.post.
-			_, _ = client.ListDevices(ctx)
+			started := time.Now()
+			_, err := client.ListDevices(ctx)
+			lastDuration = time.Since(started)
+
+			if err != nil {
+				// BridgeError or context.Canceled only; transport
+				// errors already panicked inside client.post.
+				if !errors.Is(err, context.Canceled) {
+					slog.Warn("bridge liveness: structured error",
+						"error", err,
+						"consecutive_ok_before", consecutiveOk)
+				}
+				consecutiveOk = 0
+				continue
+			}
+			consecutiveOk++
+			if consecutiveOk%livenessHeartbeatEvery == 0 {
+				slog.Info("bridge liveness: healthy",
+					"consecutive_ok", consecutiveOk,
+					"last_duration_ms", lastDuration.Milliseconds())
+			}
 		}
 	}
 }
+
+// livenessHeartbeatEvery is the number of consecutive successful probes
+// between INFO heartbeat logs. With intervalLivenessProbe=30s, 120 ≈ 1 h.
+const livenessHeartbeatEvery = 120
