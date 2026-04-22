@@ -19,6 +19,7 @@ import os
 import re
 import tempfile
 import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
@@ -41,10 +42,32 @@ class BridgeError(Exception):
         self.message = message
 
 
+@asynccontextmanager
+async def _lockdown_ctx(udid: str):
+    """Open a lockdown client scoped to an ``async with`` block.
+
+    The underlying pymobiledevice3 lockdown client holds a usbmux socket
+    that must be explicitly closed, or it leaks. Without the close,
+    EMFILE (`Too many open files`) hits within minutes under autoawake's
+    2 s device-poll cadence. Use this helper in every service function
+    that needs a lockdown client.
+    """
+    lc = await _lockdown(udid)
+    try:
+        yield lc
+    finally:
+        try:
+            await lc.close()
+        except Exception:
+            log.warning("lockdown close failed udid=%s", udid)
+
+
 async def _lockdown(udid: str):  # type: ignore[return]
     """Open a lockdown client for the given UDID.
 
     Raises BridgeError if the device is not paired or not reachable.
+    Prefer ``_lockdown_ctx`` in callers so the socket is closed on the
+    error path too.
     """
     started = time.monotonic()
     try:
@@ -72,7 +95,13 @@ async def _lockdown(udid: str):  # type: ignore[return]
 
 
 async def list_devices() -> list[DeviceInfo]:
-    """Return every USB-connected device visible to usbmux."""
+    """Return every USB-connected device visible to usbmux.
+
+    Every call opens (and explicitly closes) a lockdown client per device to
+    read metadata. Without the close, pymobiledevice3 leaks the underlying
+    usbmux sockets — observed in v0.7.0 as EMFILE ("Too many open files")
+    after a few minutes of 2 s autoawake polling.
+    """
     try:
         from pymobiledevice3.usbmux import select_devices_by_connection_type
         muxes = await select_devices_by_connection_type(connection_type="USB")
@@ -85,15 +114,15 @@ async def list_devices() -> list[DeviceInfo]:
     result: list[DeviceInfo] = []
     for dev in muxes:
         try:
-            lc = await _lockdown(dev.serial)
-            result.append(
-                DeviceInfo(
-                    udid=dev.serial,
-                    name=lc.display_name,
-                    product_type=lc.product_type,
-                    os_version=lc.product_version,
+            async with _lockdown_ctx(dev.serial) as lc:
+                result.append(
+                    DeviceInfo(
+                        udid=dev.serial,
+                        name=lc.display_name,
+                        product_type=lc.product_type,
+                        os_version=lc.product_version,
+                    )
                 )
-            )
         except BridgeError:
             # Include unpaired devices with placeholder fields so callers
             # can still see them.
@@ -110,21 +139,21 @@ async def list_devices() -> list[DeviceInfo]:
 
 async def list_apps(udid: str) -> list[AppInfo]:
     """Return installed apps for the device."""
-    lc = await _lockdown(udid)
-    try:
-        from pymobiledevice3.services.installation_proxy import (
-            InstallationProxyService,
-        )
-        # "Any" covers User + System in pmd3's installation-proxy API.
-        svc = InstallationProxyService(lockdown=lc)
-        apps_raw = await svc.get_apps(application_type="Any")
-    except BridgeError:
-        raise
-    except Exception as exc:
-        raise BridgeError(
-            "pmd3_error",
-            f"Failed to list apps on {udid}: {exc}",
-        ) from exc
+    async with _lockdown_ctx(udid) as lc:
+        try:
+            from pymobiledevice3.services.installation_proxy import (
+                InstallationProxyService,
+            )
+            # "Any" covers User + System in pmd3's installation-proxy API.
+            svc = InstallationProxyService(lockdown=lc)
+            apps_raw = await svc.get_apps(application_type="Any")
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(
+                "pmd3_error",
+                f"Failed to list apps on {udid}: {exc}",
+            ) from exc
 
     result: list[AppInfo] = []
     for bundle_id, info in apps_raw.items():
@@ -140,105 +169,105 @@ async def list_apps(udid: str) -> list[AppInfo]:
 
 async def launch_app(udid: str, bundle_id: str) -> int:
     """Launch an app and return its PID."""
-    lc = await _lockdown(udid)
-    try:
-        from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
-            DvtSecureSocketProxyService,
-        )
-        from pymobiledevice3.services.dvt.instruments.process_control import (
-            ProcessControl,
-        )
-        async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
-            pc = ProcessControl(dvt)
-            pid = await pc.launch(bundle_id=bundle_id)
-            return pid
-    except BridgeError:
-        raise
-    except Exception as exc:
-        msg = str(exc).lower()
-        if "not installed" in msg or "could not find" in msg:
+    async with _lockdown_ctx(udid) as lc:
+        try:
+            from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
+                DvtSecureSocketProxyService,
+            )
+            from pymobiledevice3.services.dvt.instruments.process_control import (
+                ProcessControl,
+            )
+            async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
+                pc = ProcessControl(dvt)
+                pid = await pc.launch(bundle_id=bundle_id)
+                return pid
+        except BridgeError:
+            raise
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "not installed" in msg or "could not find" in msg:
+                raise BridgeError(
+                    "bundle_not_installed",
+                    f"Bundle {bundle_id} not installed on {udid}",
+                ) from exc
             raise BridgeError(
-                "bundle_not_installed",
-                f"Bundle {bundle_id} not installed on {udid}",
+                "pmd3_error",
+                f"Failed to launch {bundle_id} on {udid}: {exc}",
             ) from exc
-        raise BridgeError(
-            "pmd3_error",
-            f"Failed to launch {bundle_id} on {udid}: {exc}",
-        ) from exc
 
 
 async def kill_app(udid: str, bundle_id: str) -> None:
     """Kill any running instance of the app with the given bundle id."""
-    lc = await _lockdown(udid)
-    try:
-        from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
-            DvtSecureSocketProxyService,
-        )
-        from pymobiledevice3.services.dvt.instruments.device_info import (
-            DeviceInfo as DvtDeviceInfo,
-        )
-        from pymobiledevice3.services.dvt.instruments.process_control import (
-            ProcessControl,
-        )
-        async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
-            di = DvtDeviceInfo(dvt)
-            processes = await di.proclist()
-            target_pid: Optional[int] = None
-            for proc in processes:
-                if proc.get("bundleIdentifier") == bundle_id:
-                    target_pid = proc.get("pid")
-                    break
-            if target_pid is not None:
-                pc = ProcessControl(dvt)
-                await pc.kill(target_pid)
-    except BridgeError:
-        raise
-    except Exception as exc:
-        raise BridgeError(
-            "pmd3_error",
-            f"Failed to kill {bundle_id} on {udid}: {exc}",
-        ) from exc
+    async with _lockdown_ctx(udid) as lc:
+        try:
+            from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
+                DvtSecureSocketProxyService,
+            )
+            from pymobiledevice3.services.dvt.instruments.device_info import (
+                DeviceInfo as DvtDeviceInfo,
+            )
+            from pymobiledevice3.services.dvt.instruments.process_control import (
+                ProcessControl,
+            )
+            async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
+                di = DvtDeviceInfo(dvt)
+                processes = await di.proclist()
+                target_pid: Optional[int] = None
+                for proc in processes:
+                    if proc.get("bundleIdentifier") == bundle_id:
+                        target_pid = proc.get("pid")
+                        break
+                if target_pid is not None:
+                    pc = ProcessControl(dvt)
+                    await pc.kill(target_pid)
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(
+                "pmd3_error",
+                f"Failed to kill {bundle_id} on {udid}: {exc}",
+            ) from exc
 
 
 async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
     """Return PID for a running bundle, or None if not running."""
-    lc = await _lockdown(udid)
-    try:
-        from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
-            DvtSecureSocketProxyService,
-        )
-        from pymobiledevice3.services.dvt.instruments.device_info import (
-            DeviceInfo as DvtDeviceInfo,
-        )
-        async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
-            di = DvtDeviceInfo(dvt)
-            processes = await di.proclist()
-            for proc in processes:
-                if proc.get("bundleIdentifier") == bundle_id:
-                    pid = proc.get("pid")
-                    return int(pid) if pid is not None else None
-            return None
-    except Exception as exc:
-        raise BridgeError(
-            "pmd3_error",
-            f"Failed to query process list on {udid}: {exc}",
-        ) from exc
+    async with _lockdown_ctx(udid) as lc:
+        try:
+            from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
+                DvtSecureSocketProxyService,
+            )
+            from pymobiledevice3.services.dvt.instruments.device_info import (
+                DeviceInfo as DvtDeviceInfo,
+            )
+            async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
+                di = DvtDeviceInfo(dvt)
+                processes = await di.proclist()
+                for proc in processes:
+                    if proc.get("bundleIdentifier") == bundle_id:
+                        pid = proc.get("pid")
+                        return int(pid) if pid is not None else None
+                return None
+        except Exception as exc:
+            raise BridgeError(
+                "pmd3_error",
+                f"Failed to query process list on {udid}: {exc}",
+            ) from exc
 
 
 async def battery(udid: str) -> BatteryResponse:
     """Return battery level and charging state."""
-    lc = await _lockdown(udid)
-    try:
-        from pymobiledevice3.services.diagnostics import DiagnosticsService
-        svc = DiagnosticsService(lockdown=lc)
-        info = await svc.get_battery()
-    except BridgeError:
-        raise
-    except Exception as exc:
-        raise BridgeError(
-            "pmd3_error",
-            f"Failed to read battery on {udid}: {exc}",
-        ) from exc
+    async with _lockdown_ctx(udid) as lc:
+        try:
+            from pymobiledevice3.services.diagnostics import DiagnosticsService
+            svc = DiagnosticsService(lockdown=lc)
+            info = await svc.get_battery()
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(
+                "pmd3_error",
+                f"Failed to read battery on {udid}: {exc}",
+            ) from exc
 
     # pmd3 returns CurrentCapacity/MaxCapacity as 0..100 integers, and
     # IsCharging/ExternalConnected as bools. Level is normalised to 0..1.
@@ -258,19 +287,19 @@ async def battery(udid: str) -> BatteryResponse:
 
 async def screenshot(udid: str) -> str:
     """Take a screenshot; return base64-encoded PNG bytes."""
-    lc = await _lockdown(udid)
     started = time.monotonic()
-    try:
-        from pymobiledevice3.services.screenshot import ScreenshotService
-        svc = ScreenshotService(lockdown=lc)
-        png_bytes = await svc.take_screenshot()
-    except BridgeError:
-        raise
-    except Exception as exc:
-        raise BridgeError(
-            "pmd3_error",
-            f"Failed to take screenshot on {udid}: {exc}",
-        ) from exc
+    async with _lockdown_ctx(udid) as lc:
+        try:
+            from pymobiledevice3.services.screenshot import ScreenshotService
+            svc = ScreenshotService(lockdown=lc)
+            png_bytes = await svc.take_screenshot()
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(
+                "pmd3_error",
+                f"Failed to take screenshot on {udid}: {exc}",
+            ) from exc
     log.info("screenshot captured udid=%s bytes=%d elapsed_ms=%d",
              udid, len(png_bytes), int((time.monotonic() - started) * 1000))
     return base64.b64encode(png_bytes).decode()
@@ -324,19 +353,19 @@ async def crash_reports_list(
                 f"Invalid since_iso8601: {since_iso8601!r}: {exc}",
             ) from exc
 
-    lc = await _lockdown(udid)
     started = time.monotonic()
-    try:
-        from pymobiledevice3.services.crash_reports import CrashReportsManager
-        mgr = CrashReportsManager(lockdown=lc)
-        names = await mgr.ls(path="/", depth=1)
-    except BridgeError:
-        raise
-    except Exception as exc:
-        raise BridgeError(
-            "pmd3_error",
-            f"Failed to list crash reports on {udid}: {exc}",
-        ) from exc
+    async with _lockdown_ctx(udid) as lc:
+        try:
+            from pymobiledevice3.services.crash_reports import CrashReportsManager
+            mgr = CrashReportsManager(lockdown=lc)
+            names = await mgr.ls(path="/", depth=1)
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(
+                "pmd3_error",
+                f"Failed to list crash reports on {udid}: {exc}",
+            ) from exc
     log.info("crash_reports listed udid=%s names=%d elapsed_ms=%d",
              udid, len(names), int((time.monotonic() - started) * 1000))
 
@@ -389,7 +418,6 @@ async def crash_reports_pull(udid: str, name: str) -> AsyncIterator[bytes]:
             "pmd3_error",
             f"Invalid crash report name: {name!r}",
         )
-    lc = await _lockdown(udid)
     started = time.monotonic()
 
     # Pull the file to a tempdir synchronously so any device-side failure
@@ -398,18 +426,19 @@ async def crash_reports_pull(udid: str, name: str) -> AsyncIterator[bytes]:
     # completes (or is garbage-collected).
     tmp = tempfile.mkdtemp(prefix="pmd3-crash-")
     try:
-        from pymobiledevice3.services.crash_reports import CrashReportsManager
-        mgr = CrashReportsManager(lockdown=lc)
-        await mgr.pull(out=tmp, entry=name, progress_bar=False)
-        path = os.path.join(tmp, name)
-        if not os.path.exists(path):
-            files = os.listdir(tmp)
-            if not files:
-                raise BridgeError(
-                    "pmd3_error",
-                    f"Crash report {name} not found on {udid}",
-                )
-            path = os.path.join(tmp, files[0])
+        async with _lockdown_ctx(udid) as lc:
+            from pymobiledevice3.services.crash_reports import CrashReportsManager
+            mgr = CrashReportsManager(lockdown=lc)
+            await mgr.pull(out=tmp, entry=name, progress_bar=False)
+            path = os.path.join(tmp, name)
+            if not os.path.exists(path):
+                files = os.listdir(tmp)
+                if not files:
+                    raise BridgeError(
+                        "pmd3_error",
+                        f"Crash report {name} not found on {udid}",
+                    )
+                path = os.path.join(tmp, files[0])
     except BridgeError:
         _rmtree_quiet(tmp)
         raise
