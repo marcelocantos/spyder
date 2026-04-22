@@ -76,10 +76,19 @@ def main() -> None:
              port, log_level, os.getpid())
 
     import uvicorn
-    from pmd3_bridge.app import app, set_auth_token
+    from pmd3_bridge.app import app, set_auth_token, _set_services
 
     # Install the token into the app so the auth middleware can validate it.
     set_auth_token(token)
+
+    # Developer escape hatch for no-device integration testing (🎯T26.4):
+    # substitute the fakes module for the real pmd3-backed services. This
+    # is the ONLY fake surviving the mock retirement and it exists because
+    # pmd3 requires a paired device, not because we simulate misbehaviour.
+    if os.environ.get("SPYDER_BRIDGE_FAKE_SERVICES") == "1":
+        from pmd3_bridge import _fake_services
+        _set_services(_fake_services)
+        log.warning("pmd3-bridge: SPYDER_BRIDGE_FAKE_SERVICES=1 — pmd3 is stubbed")
 
     config = uvicorn.Config(
         app,

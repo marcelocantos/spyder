@@ -200,9 +200,13 @@ func (s *Supervisor) Stop(shutdownCtx context.Context) error {
 // watchdog goroutine.
 func (s *Supervisor) launch(ctx context.Context) error {
 	// Use a plain exec.Cmd so the watchdog — not Go's exec framework — owns
-	// the process lifetime.
+	// the process lifetime. Setpgid = true puts the bridge in its own
+	// process group so signalling the group tears down any child uv/python
+	// processes the bridge spawned (e.g. when launched via the dev
+	// wrapper script through uv run).
 	cmd := exec.Command(s.binaryPath) //nolint:forbidigo
 	cmd.Stderr = os.Stderr
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -337,10 +341,12 @@ func (s *Supervisor) watchdog() {
 
 	select {
 	case <-s.stopCh:
-		// Graceful shutdown requested.
+		// Graceful shutdown requested. Signal the whole process group
+		// (negative PID) so child uv/python processes from the dev
+		// wrapper are included in the SIGTERM.
 		if cmd.Process != nil {
 			s.log.Info("bridge supervisor: sending SIGTERM", "pid", cmd.Process.Pid)
-			_ = cmd.Process.Signal(syscall.SIGTERM)
+			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 		}
 		select {
 		case err := <-exitCh:
@@ -349,7 +355,7 @@ func (s *Supervisor) watchdog() {
 			if cmd.Process != nil {
 				s.log.Warn("bridge supervisor: shutdown timeout fired, sending SIGKILL",
 					"pid", cmd.Process.Pid)
-				_ = cmd.Process.Kill()
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 			}
 			<-exitCh
 		}
