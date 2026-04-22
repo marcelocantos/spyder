@@ -98,3 +98,23 @@ maintenance activities. Append-only — newest entries at the bottom.
   orientation, recording, crash reports, install/uninstall, net
   shaping, sim/emu lifecycle, log tailing, visual regression).
   Published for darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-22 — /release v0.7.0
+
+- **PR**: #25 (T26 umbrella: T26.1–T26.5)
+- **Outcome**: Hardening release on the daemon↔pmd3-bridge pairing.
+  Bridge transport moved to ephemeral loopback TCP + bearer token
+  over stdio (🎯T26.1) — no more filesystem socket. Fail-fast model
+  replaced retry/restart machinery; bridge unresponsiveness (transport
+  error, deadline, unexpected exit) panics the daemon and launchd
+  restarts. Liveness probe catches wedged-but-alive bridges — the
+  exact class of bug that stranded a device on v0.6.0. Streaming for
+  crash-report list (NDJSON) and pull (octet-stream) with a typed
+  inter-packet stall error. Comprehensive logging across Go + Python:
+  every MCP dispatch, shell-out, state transition, and pmd3 operation
+  leaves a breadcrumb. Tiered developer test suite with committed
+  `TEST-REPORT.json`; pre-push hook and `make bullseye` invariant
+  reject stale reports. Retired fault-injection mocks (the bridge is
+  paired, not hostile); detection logic tested at primitive layers
+  (parseReadyLine pure, stallReader on io.Pipe, watchdog on plain
+  subprocess). Published for darwin-arm64, linux-amd64, linux-arm64.

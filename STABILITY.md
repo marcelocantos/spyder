@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.6.0`.
+Snapshot as of `v0.7.0`.
 
 ## Interaction surface catalogue
 
@@ -278,20 +278,22 @@ builds. **Stable.**
   Name/version parity via per-package `dumpsys` is feasible but deferred.
 - **Android thermal state.** Not yet wired — `dumpsys thermalservice` is
   available, just not parsed.
-- **Tests for shell-out paths.** 105 test functions cover all pure
-  logic (inventory, parsers, classifiers, MCP dispatch, reservations,
-  daemon HTTP roundtrip). Shell-out orchestration in `internal/device`
-  (adapter methods wrapping `pymobiledevice3`/`adb`/`devicectl`),
-  `internal/notify` (osascript/terminal-notifier/alerter), and the
-  `internal/autoawake` supervisor loop is still ~20-30% covered. Before
-  1.0 these should gain env-gated live tests (e.g. `SPYDER_LIVE_TESTS=1`)
-  against real devices so regressions in the real-world path get caught.
+- **Shell-out path coverage.** Pure logic (inventory, parsers, classifiers,
+  MCP dispatch, reservations, daemon HTTP roundtrip, bridge protocol) is
+  unit-covered. The developer-run test-report workflow (🎯T26.4) adds real-
+  bridge integration and real-device device tiers, but the `internal/device`
+  adapter wrappers around `pymobiledevice3`/`adb`/`devicectl` and the
+  `internal/notify` OS-specific helpers still lack the same rigour. Before
+  1.0 these should be brought under the tiered test runner with their own
+  device-present coverage.
 - **`pmd3-bridge` internal dependency.** The `internal/pmd3bridge` package
-  wraps the FastAPI bridge subprocess (Unix socket, JSON/HTTP) as an internal
-  dependency; the Go daemon supervises it via `pmd3bridge.Supervisor`. The
-  bridge binary ships at `libexec/pmd3-bridge/pmd3-bridge` in the Homebrew
-  formula. Until 🎯T25.3 lands, the existing iOS adapter still shells out for
-  DVT operations and the bridge surface has no user-facing MCP tools yet.
+  wraps a FastAPI bridge subprocess as a daemon-private dependency (ephemeral
+  loopback port + bearer token, 🎯T26.1; fail-fast on any unresponsiveness,
+  🎯T26.2; NDJSON/octet-stream streaming with inter-packet deadline,
+  🎯T26.3). The bridge binary ships at `libexec/pmd3-bridge/pmd3-bridge` in
+  the Homebrew formula. Autoawake, screenshot, battery, list_apps,
+  launch/kill_app, crash-report surfaces all flow through the bridge.
+  Internal to the daemon and not part of the 1.0 stability contract.
 - **macOS-only host enforcement.** Spyder runs on Linux but iOS operations
   will fail noisily there. Either restrict the binary to Darwin or
   gracefully degrade iOS-related tools with a clear "host does not support
