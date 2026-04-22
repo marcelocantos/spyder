@@ -1,6 +1,6 @@
 bin/
 .DS_Store
-.claude/worktrees/
+.claude/
 .spyder/
 
 # xcodegen-generated (regenerated from project.yml)
