@@ -813,20 +813,25 @@ targets:
     discovered: 2026-04-22
     achieved: 2026-04-22
   T26.4:
-    name: Integration test harness exercises the full daemon↔bridge stack end-to-end, including induced-bug scenarios
+    name: Developer-run tiered test suite + committed TEST-REPORT.json; retire mocks that simulate bridge misbehaviour
     status: identified
     value: 0.0
     cost: 0.0
     observable: true
     acceptance:
-    - A new Go test package (e.g. `internal/pmd3bridge/integration_test.go` under a `//go:build integration` tag, or a top-level `tests/integration/`) spawns the real `bridge/pmd3-bridge` Python process and talks to it via the real transport from 🎯T26.1
-    - Tests run as part of `go test ./...` on a developer machine with `uv` installed; no Homebrew install, no real device required — the bridge runs with a test-mode services stub (same fake-services pattern already used by `bridge/tests/test_bridge.py`) selected via env var or CLI flag
-    - 'Happy-path coverage: bridge starts, daemon handshakes, `list_devices` returns the fake device list, a power assertion round-trips acquire→refresh→release without error, an NDJSON stream from `crash_reports_list` yields N lines and closes cleanly'
-    - 'Induced-bug coverage (each asserts that the daemon panics within the threshold, not hangs or retries): bridge SIGKILLed mid-call; bridge SIGSTOPped after sending `ready\n` (simulates the wedge we hit on 2026-04-22); bridge prints `ready\n` but binds no listener (simulates startup race); bridge answers first NDJSON chunk then SIGSTOPs (inter-packet stall)'
-    - Tests use a timeout-wrapped `assert panic` helper so a regression to the swallow-and-retry behaviour fails the test instead of hanging CI
-    - '`make test` or `go test ./...` runs both unit and integration tiers by default; `go test -short ./...` skips integration if the user wants the fast loop'
-    - CI runs the integration tier on macOS arm64
-    context: 'The current test pyramid has four isolated layers with every layer below mocked: `bridge/tests/test_bridge.py` uses ASGITransport (no Uvicorn); `client_test.go` uses httptest over TCP (not the real transport); `supervisor_test.go` uses a fake Go binary that never binds the socket; `autoawake_test.go` tests pure helpers only. No test exercises the real Python bridge process over its real transport, so the wedge mode we hit on 2026-04-22 (live Uvicorn, dead listener) has zero pre-install test coverage. A real-subprocess harness, combined with induced-bug scenarios (SIGKILL, SIGSTOP, startup race, inter-packet stall), is the thing that would actually catch this class of regression. Depends on 🎯T26.2 and 🎯T26.3 so the tests have concrete crash-on-bug behaviour to assert against.'
+    - '`make test-report` runs the full developer-machine test suite (Go unit, Python unit, integration against real bridge subprocess, optional device tier when devices are attached), refuses to run on a non-empty `git status --porcelain`, records `HEAD` SHA + per-suite outcomes into `TEST-REPORT.json` at the repo root'
+    - 'The developer workflow is: commit code → `make test-report` → `git commit --amend --no-edit TEST-REPORT.json` to fold the report into the commit it vouches for'
+    - '`scripts/hooks/pre-push` refuses pushes when `TEST-REPORT.json` is missing, has `overall != pass`, references an unknown SHA, or when `git diff --quiet $REPORT_SHA..HEAD` shows changes in source paths (internal/, bridge/src/, bridge/tests/, main.go, Makefile, go.mod, go.sum, bridge/pyproject.toml, bridge/uv.lock); bypassable with `--no-verify`'
+    - '`make bullseye` gains a `test-report-fresh` invariant that runs the same staleness check as the hook; CI fails on a stale or missing report'
+    - Integration tier spawns the real `pmd3-bridge` via `uv run python -m pmd3_bridge` (dev machines; no PyInstaller build required) or the bundled binary if present. Happy-path coverage exercises bridge startup, ready-line parse, bearer-auth round-trip, atomic endpoints (list_devices, battery, screenshot, power-assertion lifecycle), and streaming endpoints (crash_reports_list NDJSON, crash_reports_pull octet-stream)
+    - 'Device tier runs when at least one iOS or Android device is attached; tier reports `skipped` and overall is `partial` otherwise. The `overall` field accepts values: `pass`, `fail`, `partial`'
+    - 'Fault-injection stubs that pretend the bridge misbehaves are retired: no `BRIDGE_MODE=crash|malformed-ready|crash-before-ready` helper binary; no stall-on-demand httptest handlers dressed as bridge responses; no `bridge-returns-garbage-5xx` cases. The bridge is paired with the daemon and not treated as a hostile external service'
+    - 'Detection primitives are tested at their own layer with plumbing-level inputs: `parseReadyLine` as a pure-function unit test; `stallReader` against `io.Pipe`; `Supervisor.watchdog`''s fatal-on-exit path against a plain subprocess (`/bin/true` or equivalent); ready-timeout against a subprocess that never prints (`/bin/sleep`)'
+    - The only surviving Python fake is a runtime-loadable pmd3 shim activated by `SPYDER_BRIDGE_FAKE_SERVICES=1` inside the real bridge process; this exists because pmd3 requires a paired device, not because we are simulating a broken bridge
+    - At least one end-to-end scenario in the integration tier runs the real bridge subprocess, kills it mid-request (SIGKILL), and asserts the daemon panics within the supervisor's detection window. This validates the fail-fast chain via a real subprocess exit, not a mocked one
+    context: |-
+      Rescoped on 2026-04-22 after two related decisions: (1) the test-report workflow (developer-run tests attested by a HEAD-tagged report; CI trusts the report artefact rather than running tests), and (2) the principle that the bridge is paired with the daemon and should not be mocked as a misbehaving external service. Fault-injection stubs become "testing the daemon's handling of impossible bridge behaviour" — equivalent to mocking a called function to pretend it is broken. Detection primitives still need coverage, but at their own layer with plumbing-level inputs (io.Pipe, plain subprocess) rather than fake-bridge costumes. With this shift roughly 80% of today's mock/fake surface retires; detection logic is tested more honestly at a lower level; and real-bridge + real-pmd3 + real-device coverage becomes the primary integration signal. See conversation log 2026-04-22 for the full reasoning.</context>
+      <parameter name="tags">["testing", "integration", "observability", "mocks", "test-report", "pre-push"]
     depends_on:
     - T26.2
     - T26.3

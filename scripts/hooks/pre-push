@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Copyright 2026 Marcelo Cantos
+# SPDX-License-Identifier: Apache-2.0
+#
+# pre-push hook: refuse to push when TEST-REPORT.json is missing or stale
+# (🎯T26.4). Activate via `git config core.hooksPath scripts/hooks` after
+# clone.
+#
+# Bypass with `git push --no-verify` for docs-only branches or genuine
+# emergencies where CI will catch any real regression.
+
+set -euo pipefail
+
+repo_root=$(git rev-parse --show-toplevel)
+exec "$repo_root/scripts/check-test-report-fresh.sh"
