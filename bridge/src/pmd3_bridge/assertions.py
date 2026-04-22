@@ -141,6 +141,7 @@ class PowerAssertionManager:
         stop_event: asyncio.Event,
         active_event: asyncio.Event,
     ) -> None:
+        lc = None
         try:
             from pymobiledevice3.lockdown import create_using_usbmux
             from pymobiledevice3.services.power_assertion import PowerAssertionService
@@ -158,6 +159,15 @@ class PowerAssertionManager:
             log.exception("Power assertion task exiting with error (udid=%s)", udid)
             active_event.set()  # unblock _start_assertion so it can detect the failure
             raise
+        finally:
+            # Close the lockdown client so its usbmux socket is released.
+            # Without this, every assertion acquire/release cycle leaks a
+            # socket — the second half of the EMFILE bug seen in v0.7.0.
+            if lc is not None:
+                try:
+                    await lc.close()
+                except Exception:
+                    log.warning("lockdown close failed (udid=%s)", udid)
 
     @staticmethod
     async def _stop(handle: _AssertionHandle) -> None:

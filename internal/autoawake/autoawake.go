@@ -77,6 +77,20 @@ func New(bridge *pmd3bridge.Client, opts ...Option) *Supervisor {
 	return sv
 }
 
+// Status returns a snapshot of currently-held power assertions as
+// udid → handleID. A "" handleID means an acquisition is in flight;
+// a non-empty string means the assertion is live. Used by tests to
+// assert the supervisor's state without touching internal fields.
+func (s *Supervisor) Status() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.assertions))
+	for udid, h := range s.assertions {
+		out[udid] = h
+	}
+	return out
+}
+
 // Run blocks polling the device list until ctx is cancelled.
 func (s *Supervisor) Run(ctx context.Context) {
 	if s.bridge == nil {
