@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.7.0`.
+Snapshot as of `v0.8.0`.
 
 ## Interaction surface catalogue
 
