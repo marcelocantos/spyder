@@ -22,8 +22,10 @@ package rest
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 )
@@ -51,6 +53,40 @@ type restHandler struct {
 }
 
 func (rh *restHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
+	sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	defer func() {
+		slog.Info("rest",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", sw.status,
+			"duration_ms", time.Since(started).Milliseconds(),
+			"remote", r.RemoteAddr)
+	}()
+	rh.serve(sw, r)
+}
+
+// statusWriter captures the HTTP status code so the access log can record it.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if !s.wrote {
+		s.status = code
+		s.wrote = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	s.wrote = true
+	return s.ResponseWriter.Write(b)
+}
+
+func (rh *restHandler) serve(w http.ResponseWriter, r *http.Request) {
 	if !strings.HasPrefix(r.URL.Path, Prefix) {
 		http.NotFound(w, r)
 		return

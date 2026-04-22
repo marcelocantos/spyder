@@ -61,6 +61,9 @@ func Start(cfg Config) error {
 // (or the underlying HTTP server errors). Exposed for tests and for
 // embedders that want to own signal handling.
 func Run(ctx context.Context, cfg Config) error {
+	slog.Info("daemon: starting",
+		"addr", cfg.Addr, "version", cfg.Version,
+		"disable_autoawake", cfg.DisableAutoAwake)
 	handler, resvStore, bridgeSup := Build(cfg)
 
 	if bridgeSup != nil {
@@ -102,18 +105,21 @@ func Run(ctx context.Context, cfg Config) error {
 
 	select {
 	case <-ctx.Done():
-		slog.Info("shutting down")
+		slog.Info("daemon: shutting down (signal or context cancel)")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		if bridgeSup != nil {
 			if err := bridgeSup.Stop(shutdownCtx); err != nil {
-				slog.Warn("pmd3-bridge stop error", "error", err)
+				slog.Warn("daemon: pmd3-bridge stop error", "error", err)
 			}
 		}
+		slog.Info("daemon: draining http server")
 		_ = srv.Shutdown(shutdownCtx)
+		slog.Info("daemon: shutdown complete")
 		return nil
 	case err := <-errCh:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("daemon: http server errored", "error", err)
 			return fmt.Errorf("http server: %w", err)
 		}
 		return nil

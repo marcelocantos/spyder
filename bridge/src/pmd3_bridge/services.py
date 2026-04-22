@@ -13,9 +13,11 @@ app.py translates BridgeError into the corresponding HTTP status.
 from __future__ import annotations
 
 import base64
+import logging
 import os
 import re
 import tempfile
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -25,6 +27,8 @@ from .schemas import (
     CrashReportEntry,
     DeviceInfo,
 )
+
+log = logging.getLogger("pmd3_bridge.services")
 
 
 class BridgeError(Exception):
@@ -41,16 +45,25 @@ async def _lockdown(udid: str):  # type: ignore[return]
 
     Raises BridgeError if the device is not paired or not reachable.
     """
+    started = time.monotonic()
     try:
         from pymobiledevice3.lockdown import create_using_usbmux
-        return await create_using_usbmux(serial=udid)
+        lc = await create_using_usbmux(serial=udid)
+        log.debug("lockdown opened udid=%s elapsed_ms=%d",
+                  udid, int((time.monotonic() - started) * 1000))
+        return lc
     except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
         msg = str(exc).lower()
         if "pair" in msg or "trust" in msg:
+            log.warning("lockdown unpaired udid=%s elapsed_ms=%d err=%s",
+                        udid, elapsed_ms, exc)
             raise BridgeError(
                 "device_not_paired",
                 f"Device {udid} is not paired: {exc}",
             ) from exc
+        log.warning("lockdown failed udid=%s elapsed_ms=%d err=%s",
+                    udid, elapsed_ms, exc)
         raise BridgeError(
             "pmd3_error",
             f"Failed to connect to device {udid}: {exc}",
@@ -245,6 +258,7 @@ async def battery(udid: str) -> BatteryResponse:
 async def screenshot(udid: str) -> str:
     """Take a screenshot; return base64-encoded PNG bytes."""
     lc = await _lockdown(udid)
+    started = time.monotonic()
     try:
         from pymobiledevice3.services.screenshot import ScreenshotService
         svc = ScreenshotService(lockdown=lc)
@@ -256,6 +270,8 @@ async def screenshot(udid: str) -> str:
             "pmd3_error",
             f"Failed to take screenshot on {udid}: {exc}",
         ) from exc
+    log.info("screenshot captured udid=%s bytes=%d elapsed_ms=%d",
+             udid, len(png_bytes), int((time.monotonic() - started) * 1000))
     return base64.b64encode(png_bytes).decode()
 
 
@@ -298,6 +314,7 @@ async def crash_reports_list(
                 f"Invalid since_iso8601: {since_iso8601!r}: {exc}",
             ) from exc
 
+    started = time.monotonic()
     try:
         from pymobiledevice3.services.crash_reports import CrashReportsManager
         mgr = CrashReportsManager(lockdown=lc)
@@ -309,6 +326,8 @@ async def crash_reports_list(
             "pmd3_error",
             f"Failed to list crash reports on {udid}: {exc}",
         ) from exc
+    log.info("crash_reports listed udid=%s names=%d elapsed_ms=%d",
+             udid, len(names), int((time.monotonic() - started) * 1000))
 
     result: list[CrashReportEntry] = []
     for name in names:
@@ -342,6 +361,7 @@ async def crash_reports_pull(udid: str, name: str) -> str:
             f"Invalid crash report name: {name!r}",
         )
     lc = await _lockdown(udid)
+    started = time.monotonic()
     try:
         from pymobiledevice3.services.crash_reports import CrashReportsManager
         mgr = CrashReportsManager(lockdown=lc)
@@ -360,6 +380,8 @@ async def crash_reports_pull(udid: str, name: str) -> str:
                 path = os.path.join(tmp, files[0])
             with open(path, "rb") as fh:
                 raw = fh.read()
+        log.info("crash_reports pulled udid=%s name=%s bytes=%d elapsed_ms=%d",
+                 udid, name, len(raw), int((time.monotonic() - started) * 1000))
     except BridgeError:
         raise
     except Exception as exc:

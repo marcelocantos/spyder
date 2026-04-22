@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -129,6 +130,8 @@ func (s *Store) Open(device, owner, note string) (*Run, error) {
 	if err := writeManifest(dir, r); err != nil {
 		return nil, err
 	}
+	slog.Info("runs: opened",
+		"run", id, "device", device, "owner", owner, "dir", dir)
 	return r, nil
 }
 
@@ -146,7 +149,14 @@ func (s *Store) Close(runID string) error {
 	}
 	t := s.now()
 	r.ClosedAt = &t
-	return writeManifest(dir, r)
+	if err := writeManifest(dir, r); err != nil {
+		return err
+	}
+	slog.Info("runs: closed",
+		"run", runID, "device", r.Device, "owner", r.Owner,
+		"artefacts", len(r.Artefacts),
+		"size_bytes", runSize(*r))
+	return nil
 }
 
 // Active returns the most recent open run (ClosedAt == nil) matching

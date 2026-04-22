@@ -49,6 +49,8 @@ class PowerAssertionManager:
         handle_id = str(uuid.uuid4())
         handle = await self._start_assertion(udid, type_, name, timeout_sec, details)
         self._handles[handle_id] = handle
+        log.info("assertion acquired udid=%s type=%s name=%s handle=%s timeout=%ds",
+                 udid, type_, name, handle_id, timeout_sec)
         return handle_id
 
     async def refresh(self, handle_id: str, timeout_sec: int) -> None:
@@ -59,6 +61,8 @@ class PowerAssertionManager:
         old = self._handles.get(handle_id)
         if old is None:
             raise KeyError(handle_id)
+        log.debug("assertion refresh start handle=%s timeout=%ds",
+                  handle_id, timeout_sec)
 
         # Retrieve the original assertion parameters from the old task's name.
         # We encode them there at task-creation time.
@@ -78,18 +82,22 @@ class PowerAssertionManager:
 
         # Step 3: remap the caller's handle to the new task.
         self._handles[handle_id] = new_handle
+        log.debug("assertion refresh done handle=%s", handle_id)
 
     async def release(self, handle_id: str) -> None:
         """Release an assertion.  Silent no-op if handle_id is unknown."""
         handle = self._handles.pop(handle_id, None)
         if handle is None:
+            log.debug("assertion release unknown handle=%s (no-op)", handle_id)
             return
         await self._stop(handle)
+        log.info("assertion released handle=%s", handle_id)
 
     async def release_all(self) -> None:
         """Release all outstanding assertions (called on graceful shutdown)."""
         handles = list(self._handles.items())
         self._handles.clear()
+        log.info("assertion release_all count=%d", len(handles))
         await asyncio.gather(*(self._stop(h) for _, h in handles), return_exceptions=True)
 
     # ── private ────────────────────────────────────────────────────────────────

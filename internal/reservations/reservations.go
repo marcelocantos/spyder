@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -138,6 +139,8 @@ func (s *Store) Acquire(device, owner string, ttl time.Duration, note string) (R
 		}
 		s.state[key] = existing
 		_ = s.saveLocked()
+		slog.Info("reservation renewed (acquire by same owner)",
+			"device", key, "owner", owner, "ttl", ttl)
 		return existing, nil
 	}
 	r := Reservation{
@@ -149,6 +152,8 @@ func (s *Store) Acquire(device, owner string, ttl time.Duration, note string) (R
 	}
 	s.state[key] = r
 	_ = s.saveLocked()
+	slog.Info("reservation acquired",
+		"device", key, "owner", owner, "ttl", ttl, "note", note)
 	return r, nil
 }
 
@@ -167,6 +172,8 @@ func (s *Store) Release(device, owner string) error {
 	if s.now().After(existing.ExpiresAt) {
 		delete(s.state, key)
 		_ = s.saveLocked()
+		slog.Info("reservation released (already expired)",
+			"device", key, "prev_owner", existing.Owner)
 		return nil
 	}
 	if existing.Owner != owner {
@@ -174,6 +181,7 @@ func (s *Store) Release(device, owner string) error {
 	}
 	delete(s.state, key)
 	_ = s.saveLocked()
+	slog.Info("reservation released", "device", key, "owner", owner)
 	return nil
 }
 
@@ -201,6 +209,8 @@ func (s *Store) Renew(device, owner string, ttl time.Duration) (Reservation, err
 	existing.ExpiresAt = s.now().Add(ttl)
 	s.state[key] = existing
 	_ = s.saveLocked()
+	slog.Info("reservation renewed",
+		"device", key, "owner", owner, "ttl", ttl)
 	return existing, nil
 }
 

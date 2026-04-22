@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -238,11 +239,27 @@ func (a *IOSAdapter) State(id string) (State, error) {
 // human-readable diagnostics from stderr (pymobiledevice3 sometimes logs
 // errors to stderr with exit code 0).
 func runCapture(name string, args ...string) (stdout, stderr []byte, err error) {
+	started := time.Now()
 	var outBuf, errBuf bytes.Buffer
 	cmd := exec.Command(name, args...)
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	err = cmd.Run()
+
+	elapsedMs := time.Since(started).Milliseconds()
+	if err != nil {
+		slog.Warn("exec failed",
+			"cmd", name, "args", args,
+			"duration_ms", elapsedMs,
+			"error", err.Error(),
+			"stderr_tail", truncate(errBuf.String(), 200))
+	} else {
+		slog.Debug("exec ok",
+			"cmd", name, "args", args,
+			"duration_ms", elapsedMs,
+			"stdout_bytes", outBuf.Len(),
+			"stderr_bytes", errBuf.Len())
+	}
 	return outBuf.Bytes(), errBuf.Bytes(), err
 }
 

@@ -10,8 +10,10 @@ package simemu
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // --------------------------------------------------------------------------
@@ -315,13 +317,30 @@ func AVDDelete(name string) error {
 // runCapture runs cmd with args, returning stdout bytes on success or a
 // combined error (stderr included) on failure.
 func runCapture(name string, args ...string) ([]byte, error) {
+	started := time.Now()
 	cmd := exec.Command(name, args...)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &writerAdapter{&stdout}
 	cmd.Stderr = &writerAdapter{&stderr}
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+
+	elapsedMs := time.Since(started).Milliseconds()
+	if err != nil {
+		tail := stderr.String()
+		if len(tail) > 200 {
+			tail = tail[len(tail)-200:]
+		}
+		slog.Warn("simemu exec failed",
+			"cmd", name, "args", args,
+			"duration_ms", elapsedMs,
+			"error", err.Error(),
+			"stderr_tail", tail)
 		return nil, fmt.Errorf("%w\nstderr: %s", err, stderr.String())
 	}
+	slog.Debug("simemu exec ok",
+		"cmd", name, "args", args,
+		"duration_ms", elapsedMs,
+		"stdout_bytes", stdout.Len())
 	return []byte(stdout.String()), nil
 }
 
