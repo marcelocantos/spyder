@@ -64,10 +64,19 @@ func Run(ctx context.Context, cfg Config) error {
 	handler, resvStore, bridgeSup := Build(cfg)
 
 	if bridgeSup != nil {
+		// Bridge binary was resolved, so startup failure is a bug
+		// (missing Python deps, broken install, etc.), not a config state.
+		// Surface it by returning — the caller will treat this as a daemon
+		// startup error. The whole-process panic-on-unresponsiveness model
+		// only kicks in once the bridge is up.
 		if err := bridgeSup.Start(ctx); err != nil {
-			slog.Warn("pmd3-bridge startup failed — bridge tools disabled", "error", err)
-			// Non-fatal: the bridge is optional.
+			return fmt.Errorf("pmd3-bridge startup: %w", err)
 		}
+		// Liveness probe: periodic ListDevices from the daemon, so a wedged
+		// Uvicorn (alive process, dead listener) panics via the client's
+		// fatal hook rather than producing silent non-functionality.
+		probeClient := pmd3bridge.NewClient(paths.PMD3BridgeSocket())
+		go pmd3bridge.LivenessProbe(ctx, probeClient)
 	}
 
 	if !cfg.DisableAutoAwake {

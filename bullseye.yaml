@@ -760,7 +760,7 @@ targets:
     discovered: 2026-04-22
   T26.2:
     name: 'Atomic bridge calls fail-fast: generous per-endpoint timeouts; any breach panics the daemon'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -782,6 +782,7 @@ targets:
     - timeouts
     origin: forked-from T26 (decomposition 2026-04-22)
     discovered: 2026-04-22
+    achieved: 2026-04-22
   T26.3:
     name: 'Streaming bridge calls: NDJSON for list endpoints, octet-stream for file pulls, inter-packet deadline panics on stall'
     status: identified

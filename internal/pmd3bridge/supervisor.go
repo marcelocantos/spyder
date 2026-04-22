@@ -15,36 +15,12 @@ import (
 	"time"
 )
 
-const (
-	defaultReadyTimeout      = 10 * time.Second
-	defaultShutdownTimeout   = 5 * time.Second
-	defaultBackoffInitial    = 1 * time.Second
-	defaultBackoffCap        = 30 * time.Second
-	defaultBackoffResetAfter = 5 * time.Minute // reset backoff after this long without a crash
-)
-
-// clock abstracts time so tests can inject a deterministic implementation.
-type clock interface {
-	Now() time.Time
-	Sleep(d time.Duration)
-}
-
-type realClock struct{}
-
-func (realClock) Now() time.Time        { return time.Now() }
-func (realClock) Sleep(d time.Duration) { time.Sleep(d) }
-
 // Option configures a Supervisor.
 type Option func(*Supervisor)
 
 // WithLogger injects a custom slog.Logger. Defaults to slog.Default().
 func WithLogger(l *slog.Logger) Option {
 	return func(s *Supervisor) { s.log = l }
-}
-
-// WithBackoffCap sets the maximum restart backoff duration. Default: 30 s.
-func WithBackoffCap(d time.Duration) Option {
-	return func(s *Supervisor) { s.backoffCap = d }
 }
 
 // WithShutdownTimeout sets how long Stop waits for the watchdog to finish
@@ -59,30 +35,27 @@ func WithReadyTimeout(d time.Duration) Option {
 	return func(s *Supervisor) { s.readyTimeout = d }
 }
 
-// withClock injects a test clock. Not exported; only for unit tests in this
-// package.
-func withClock(c clock) Option {
-	return func(s *Supervisor) { s.clock = c }
-}
-
-// withBackoffInitial sets the initial backoff duration. Not exported; tests
-// only.
-func withBackoffInitial(d time.Duration) Option {
-	return func(s *Supervisor) { s.backoffInitial = d }
+// withFatal injects a test-only fatal hook. Not exported.
+func withFatal(f func(error)) Option {
+	return func(s *Supervisor) { s.fatal = f }
 }
 
 // Supervisor manages a pmd3-bridge subprocess. A single Supervisor must be
 // started exactly once; it may be stopped and is not restartable.
+//
+// Error model (see 🎯T26.2): the bridge is a same-host subprocess whose
+// availability is a hard invariant once Start succeeds. If the subprocess
+// exits before Stop is called, that is a bug — the supervisor panics via
+// its fatal hook and lets the external process supervisor restart the
+// whole daemon.
 type Supervisor struct {
 	binaryPath string
 	socketPath string
 
 	log             *slog.Logger
-	backoffCap      time.Duration
-	backoffInitial  time.Duration
 	shutdownTimeout time.Duration
 	readyTimeout    time.Duration
-	clock           clock
+	fatal           func(error)
 
 	mu      sync.Mutex
 	cmd     *exec.Cmd
@@ -103,11 +76,9 @@ func NewSupervisor(binaryPath, socketPath string, opts ...Option) *Supervisor {
 		binaryPath:      binaryPath,
 		socketPath:      socketPath,
 		log:             slog.Default(),
-		backoffCap:      defaultBackoffCap,
-		backoffInitial:  defaultBackoffInitial,
-		shutdownTimeout: defaultShutdownTimeout,
-		readyTimeout:    defaultReadyTimeout,
-		clock:           realClock{},
+		shutdownTimeout: 5 * time.Second,
+		readyTimeout:    timeoutReadyHandshake,
+		fatal:           func(err error) { panic(err) },
 		stopCh:          make(chan struct{}),
 		killCh:          make(chan struct{}),
 		doneCh:          make(chan struct{}),
@@ -137,7 +108,6 @@ func (s *Supervisor) Stop(shutdownCtx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		// doneCh may already be closed; just drain it.
 		<-s.doneCh
 		return nil
 	}
@@ -186,8 +156,7 @@ func (s *Supervisor) launch(ctx context.Context) error {
 	_ = os.Remove(s.socketPath)
 
 	// Use a plain exec.Cmd so the watchdog — not Go's exec framework — owns
-	// the process lifetime. exec.CommandContext would kill the process when
-	// ctx is cancelled, which conflicts with the watchdog's restart logic.
+	// the process lifetime.
 	cmd := exec.Command(s.binaryPath, "--socket", s.socketPath) //nolint:forbidigo
 	cmd.Stderr = os.Stderr
 
@@ -243,99 +212,76 @@ func (s *Supervisor) launch(ctx context.Context) error {
 	return nil
 }
 
-// watchdog waits for the current process to exit and restarts it on unexpected
-// failure. It exits when stopCh is closed.
+// watchdog waits for the subprocess to exit. If Stop has not been called,
+// subprocess exit is a bug: the supervisor invokes fatal to crash the
+// daemon, which the external process supervisor restarts.
+//
+// Unlike the older restart-on-crash design, we do NOT attempt to recover
+// in-process. A crashed bridge indicates a bug somewhere — in the bridge
+// itself, in the transport, or in our use of it — and the only sound
+// recovery is to surface the crash (stack trace + bridge stderr, already
+// inherited on os.Stderr) and restart the whole daemon cleanly.
 func (s *Supervisor) watchdog() {
 	defer func() {
 		close(s.doneCh)
 		_ = os.Remove(s.socketPath)
 	}()
 
-	backoff := s.backoffInitial
-	restartCount := 0
+	s.mu.Lock()
+	cmd := s.cmd
+	s.mu.Unlock()
 
-	for {
-		// Snapshot the current cmd under lock.
-		s.mu.Lock()
-		cmd := s.cmd
-		s.mu.Unlock()
+	exitCh := make(chan error, 1)
+	go func() { exitCh <- cmd.Wait() }()
 
-		// Wait for the process to exit in a goroutine so we can also select
-		// on stopCh.
-		exitCh := make(chan error, 1)
-		if cmd != nil {
-			go func() { exitCh <- cmd.Wait() }()
-		} else {
-			close(exitCh)
+	select {
+	case <-s.stopCh:
+		// Graceful shutdown requested.
+		if cmd.Process != nil {
+			_ = cmd.Process.Signal(syscall.SIGTERM)
+		}
+		select {
+		case <-exitCh:
+		case <-s.killCh:
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+			<-exitCh
 		}
 
+	case err := <-exitCh:
+		// Subprocess exited without Stop being called.
+		// Check once more (race with Stop) — if Stop closed stopCh
+		// between cmd.Wait() returning and us selecting, honour that.
 		select {
 		case <-s.stopCh:
-			// Graceful shutdown requested: SIGTERM the process.
-			if cmd != nil && cmd.Process != nil {
-				_ = cmd.Process.Signal(syscall.SIGTERM)
-			}
-			// Wait for the process to exit, but respect SIGKILL if the
-			// shutdown timeout fires.
-			select {
-			case <-exitCh:
-			case <-s.killCh:
-				if cmd != nil && cmd.Process != nil {
-					_ = cmd.Process.Kill()
-				}
-				<-exitCh
-			}
 			return
+		default:
+		}
+		s.fatal(fmt.Errorf("pmd3bridge: subprocess exited unexpectedly (this is a bug): %w", err))
+	}
+}
 
-		case err := <-exitCh:
-			// Process exited. Check whether Stop was called concurrently.
-			select {
-			case <-s.stopCh:
-				return
-			default:
-			}
-
-			restartCount++
-			s.log.Warn("pmd3bridge: subprocess exited unexpectedly; will restart",
-				"restart_count", restartCount,
-				"exit_error", err,
-				"backoff", backoff,
-			)
-
-			_ = os.Remove(s.socketPath)
-
-			// Sleep with interruptibility: honour a stop request during backoff.
-			backoffDone := make(chan struct{})
-			go func() {
-				s.clock.Sleep(backoff)
-				close(backoffDone)
-			}()
-			select {
-			case <-s.stopCh:
-				return
-			case <-backoffDone:
-			}
-
-			// Record when this restart attempt starts for backoff-reset logic.
-			startTime := s.clock.Now()
-
-			if err := s.launch(context.Background()); err != nil {
-				s.log.Error("pmd3bridge: restart failed",
-					"restart_count", restartCount, "error", err)
-			} else {
-				s.log.Info("pmd3bridge: restarted successfully",
-					"restart_count", restartCount)
-				elapsed := s.clock.Now().Sub(startTime)
-				if elapsed >= defaultBackoffResetAfter {
-					backoff = s.backoffInitial
-				}
-			}
-
-			// Grow backoff for the next potential crash.
-			backoff *= 2
-			if backoff > s.backoffCap {
-				backoff = s.backoffCap
-			}
+// LivenessProbe runs in a background goroutine and panics the daemon if the
+// bridge becomes unresponsive. It calls client.ListDevices every
+// intervalLivenessProbe (30 s); on any non-BridgeError failure, the client
+// itself panics via its fatal hook. Returns when ctx is cancelled.
+//
+// This complements watchdog()'s exit-detection: watchdog catches "process
+// died", LivenessProbe catches "process alive but not answering" (the Uvicorn
+// wedge observed on 2026-04-22).
+func LivenessProbe(ctx context.Context, client *Client) {
+	ticker := time.NewTicker(intervalLivenessProbe)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			// Discard result: we only care that the call returns
+			// successfully (or with a structured BridgeError). A
+			// transport error panics inside client.post.
+			_, _ = client.ListDevices(ctx)
 		}
 	}
 }

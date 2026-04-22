@@ -12,7 +12,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -47,7 +46,6 @@ func getHelperBin(t *testing.T) string {
 		if runtime.GOOS == "windows" {
 			helperBinPath += ".exe"
 		}
-		// Write the helper source then compile it.
 		src := filepath.Join(helperBinDir, "main.go")
 		if err := os.WriteFile(src, []byte(helperSrc), 0o644); err != nil {
 			helperBinErr = fmt.Errorf("write helper src: %w", err)
@@ -69,7 +67,7 @@ func getHelperBin(t *testing.T) string {
 // environment variable to decide its behaviour:
 //
 //   - "ready" — writes "ready\n", then blocks until SIGTERM.
-//   - "crash" — writes "ready\n", then exits immediately (simulates a crash).
+//   - "crash" — writes "ready\n", then exits immediately (simulates a bug-exit).
 //   - "crash-before-ready" — exits without writing "ready\n".
 const helperSrc = `package main
 
@@ -97,34 +95,6 @@ func main() {
 	}
 }
 `
-
-// fakeClock is a deterministic clock that never actually sleeps, making backoff
-// tests fast.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-
-	// sleptTotal accumulates all durations passed to Sleep.
-	sleptTotal atomic.Int64
-}
-
-func newFakeClock() *fakeClock {
-	return &fakeClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-}
-
-func (c *fakeClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeClock) Sleep(d time.Duration) {
-	c.sleptTotal.Add(int64(d))
-	// Do not actually sleep — just advance the fake clock.
-	c.mu.Lock()
-	c.now = c.now.Add(d)
-	c.mu.Unlock()
-}
 
 // --- Tests ---
 
@@ -158,8 +128,6 @@ func TestSupervisor_StartAndStop(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Socket should not be removed while running (bridge didn't bind one in the
-	// test helper, but we can verify Stop removes it cleanly).
 	stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if err := sup.Stop(stopCtx); err != nil {
@@ -204,19 +172,20 @@ func TestSupervisor_MissingBinary(t *testing.T) {
 	}
 }
 
-func TestSupervisor_RestartOnCrash(t *testing.T) {
-	// Build a helper that crashes immediately after printing "ready".
+// TestSupervisor_PanicsOnUnexpectedExit asserts that when the subprocess
+// exits before Stop is called, the supervisor invokes its fatal hook rather
+// than silently restarting. This is the core 🎯T26.2 behaviour: bridge
+// death is a bug, not a recoverable condition.
+func TestSupervisor_PanicsOnUnexpectedExit(t *testing.T) {
 	bin := getHelperBin(t)
-	sock := tempSock(t, "crash")
+	sock := tempSock(t, "unexpected-exit")
 
 	t.Setenv("BRIDGE_MODE", "crash")
 
-	fc := newFakeClock()
+	fatalCh := make(chan error, 1)
 	sup := NewSupervisor(bin, sock,
 		WithReadyTimeout(5*time.Second),
-		withClock(fc),
-		withBackoffInitial(1*time.Millisecond),
-		WithBackoffCap(10*time.Millisecond),
+		withFatal(func(err error) { fatalCh <- err }),
 	)
 
 	ctx := context.Background()
@@ -224,24 +193,16 @@ func TestSupervisor_RestartOnCrash(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Give the watchdog a moment to attempt at least one restart.
-	// Because the helper exits right after printing "ready", the watchdog
-	// should detect the exit and try to restart.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-		if fc.sleptTotal.Load() > 0 {
-			break
+	select {
+	case err := <-fatalCh:
+		if err == nil {
+			t.Fatal("fatal called with nil error")
 		}
-	}
-	if fc.sleptTotal.Load() == 0 {
-		t.Log("watchdog may not have restarted yet (timing); not failing")
-	}
-
-	stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := sup.Stop(stopCtx); err != nil {
-		t.Fatalf("Stop: %v", err)
+		if !strings.Contains(err.Error(), "subprocess exited unexpectedly") {
+			t.Errorf("unexpected fatal message: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("fatal hook not called after subprocess exit")
 	}
 }
 

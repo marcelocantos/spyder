@@ -8,10 +8,17 @@
 //
 // The supervisor is started by daemon.Start. It runs for the lifetime of the
 // server and exits on context cancel.
+//
+// Error model (🎯T26.2): the bridge client itself panics the daemon on
+// transport-level failures. Autoawake only handles structured BridgeError
+// responses (device_not_paired, etc.), which it treats as "skip this device"
+// rather than "crash". On shutdown release-all, failures are logged and
+// swallowed — the process is exiting anyway.
 package autoawake
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -96,11 +103,17 @@ func (s *Supervisor) Run(ctx context.Context) {
 }
 
 func (s *Supervisor) tick(ctx context.Context, seen map[string]bool) {
-	listCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	bridgeDevices, err := s.bridge.ListDevices(listCtx)
+	bridgeDevices, err := s.bridge.ListDevices(ctx)
 	if err != nil {
-		return // bridge unavailable — quiet retry next tick
+		// Only caller-initiated cancellation reaches here; bridge bugs
+		// panic inside the client. BridgeError from list_devices would
+		// be surprising (no device-scoped state to be wrong about) but
+		// we don't want to crash on it — log and skip this tick.
+		if errors.Is(err, context.Canceled) {
+			return
+		}
+		slog.Warn("autoawake: list_devices returned structured error", "error", err)
+		return
 	}
 	udids := make([]string, 0, len(bridgeDevices))
 	for _, d := range bridgeDevices {
@@ -176,14 +189,21 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 		}
 	}
 
-	acquireCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	handleID, err := s.bridge.AcquirePowerAssertion(acquireCtx, udid,
+	handleID, err := s.bridge.AcquirePowerAssertion(ctx, udid,
 		"PreventUserIdleSystemSleep", "spyder autoawake",
 		assertionTimeout, "")
 	if err != nil {
-		slog.Warn("autoawake: acquire assertion failed",
-			"udid", udid, "alias", alias, "error", summariseErr(err))
+		// Only reachable for structured BridgeError or caller-cancel;
+		// transport bugs panic inside the client. Typical cases:
+		// device_not_paired (just-plugged, trust not yet granted).
+		var be *pmd3bridge.BridgeError
+		if errors.As(err, &be) {
+			slog.Info("autoawake: skipping device with structured error",
+				"udid", udid, "alias", alias, "code", be.Code)
+		} else if !errors.Is(err, context.Canceled) {
+			slog.Warn("autoawake: acquire assertion returned unexpected error",
+				"udid", udid, "alias", alias, "error", summariseErr(err))
+		}
 		s.mu.Lock()
 		delete(s.assertions, udid)
 		s.mu.Unlock()
@@ -208,12 +228,17 @@ func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
 			case <-refreshCtx.Done():
 				return
 			case <-ticker.C:
-				rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
-				if rerr := s.bridge.RefreshPowerAssertion(rctx, handleID, assertionTimeout); rerr != nil {
-					slog.Warn("autoawake: refresh assertion failed",
-						"udid", udid, "alias", alias, "error", rerr)
+				// Non-BridgeError failures panic inside the client.
+				// Structured errors (e.g. not_found for a handle
+				// the bridge forgot) are logged and leave the
+				// assertion state as-is; we don't try to re-acquire.
+				if rerr := s.bridge.RefreshPowerAssertion(refreshCtx, handleID, assertionTimeout); rerr != nil {
+					if errors.Is(rerr, context.Canceled) {
+						return
+					}
+					slog.Warn("autoawake: refresh returned structured error",
+						"udid", udid, "alias", alias, "error", summariseErr(rerr))
 				}
-				rcancel()
 			}
 		}
 	}()
@@ -238,18 +263,20 @@ func (s *Supervisor) handleDeviceDisconnect(ctx context.Context, udid string) {
 		cancel()
 	}
 
-	rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
-	defer rcancel()
-	if err := s.bridge.ReleasePowerAssertion(rctx, handleID); err != nil {
-		slog.Warn("autoawake: release assertion failed on disconnect",
-			"udid", udid, "alias", alias, "error", err)
+	if err := s.bridge.ReleasePowerAssertion(ctx, handleID); err != nil {
+		if !errors.Is(err, context.Canceled) {
+			slog.Warn("autoawake: release returned structured error on disconnect",
+				"udid", udid, "alias", alias, "error", summariseErr(err))
+		}
 	} else {
 		slog.Info("autoawake: power assertion released (device disconnected)",
 			"udid", udid, "alias", alias, "handle", handleID)
 	}
 }
 
-// releaseAll releases all outstanding power assertions. Called on daemon shutdown.
+// releaseAll releases all outstanding power assertions. Called on daemon
+// shutdown. Releases run in parallel under a shared deadline so shutdown
+// doesn't balloon linearly with device count.
 func (s *Supervisor) releaseAll() {
 	s.mu.Lock()
 	handles := make(map[string]string, len(s.assertions))
@@ -264,28 +291,35 @@ func (s *Supervisor) releaseAll() {
 	s.cancels = map[string]context.CancelFunc{}
 	s.mu.Unlock()
 
-	for udid, cancel := range cancels {
+	for _, cancel := range cancels {
 		if cancel != nil {
 			cancel()
 		}
-		_ = udid
 	}
 
+	drainCtx, drainCancel := context.WithTimeout(context.Background(),
+		10*time.Second)
+	defer drainCancel()
+
+	var wg sync.WaitGroup
 	for udid, handleID := range handles {
 		if handleID == "" {
 			continue
 		}
-		alias := s.aliasOf(udid)
-		rctx, rcancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := s.bridge.ReleasePowerAssertion(rctx, handleID); err != nil {
-			slog.Warn("autoawake: release assertion failed on shutdown",
-				"udid", udid, "alias", alias, "error", err)
-		} else {
-			slog.Info("autoawake: power assertion released (shutdown)",
-				"udid", udid, "alias", alias, "handle", handleID)
-		}
-		rcancel()
+		wg.Add(1)
+		go func(udid, handleID string) {
+			defer wg.Done()
+			alias := s.aliasOf(udid)
+			if err := s.bridge.ReleasePowerAssertion(drainCtx, handleID); err != nil {
+				slog.Warn("autoawake: release failed on shutdown",
+					"udid", udid, "alias", alias, "error", summariseErr(err))
+			} else {
+				slog.Info("autoawake: power assertion released (shutdown)",
+					"udid", udid, "alias", alias, "handle", handleID)
+			}
+		}(udid, handleID)
 	}
+	wg.Wait()
 }
 
 // aliasOf resolves a UDID to an inventory alias, falling back to a

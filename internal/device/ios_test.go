@@ -4,13 +4,43 @@
 package device
 
 import (
+	"encoding/json"
 	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
+
+// newTestUnixSocket spins up an httptest.Server on a Unix socket and returns
+// the socket path. macOS limits Unix socket paths to 104 bytes, so the socket
+// file is created in os.TempDir() with a short name rather than t.TempDir().
+func newTestUnixSocket(t *testing.T, h http.Handler) string {
+	t.Helper()
+	f, err := os.CreateTemp("", "spyder-iost-*.sock")
+	if err != nil {
+		t.Fatalf("create temp sock: %v", err)
+	}
+	sock := f.Name()
+	_ = f.Close()
+	_ = os.Remove(sock)
+	t.Cleanup(func() { _ = os.Remove(sock) })
+
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listen unix %s: %v", sock, err)
+	}
+	srv := httptest.NewUnstartedServer(h)
+	srv.Listener = ln
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return sock
+}
 
 // --- parseDevicectlList ----------------------------------------------------
 
@@ -350,10 +380,25 @@ func TestStateCache_ReturnsWithinTTL(t *testing.T) {
 }
 
 // TestStateCache_MissDialsBridge verifies that an expired cache entry causes
-// the adapter to attempt to call the bridge. On failure the bridge error is
-// captured in Notes rather than returned as an error (State is best-effort).
+// the adapter to attempt to call the bridge. Under 🎯T26.2, structured
+// BridgeError responses (e.g. pmd3_error) are captured in Notes rather than
+// returned as an error. Transport-level failures would panic via the client's
+// fatal hook; they do not need test coverage at this layer.
 func TestStateCache_MissDialsBridge(t *testing.T) {
-	a := NewIOSAdapter(pmd3bridge.NewClient("/nonexistent.sock"))
+	// Stand up a unix-socket test server that returns a pmd3_error for
+	// /v1/battery, exercising the BridgeError → Notes path.
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/battery", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(500)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error":   "pmd3_error",
+			"message": "test: simulated bridge error",
+		})
+	})
+	sock := newTestUnixSocket(t, mux)
+
+	a := NewIOSAdapter(pmd3bridge.NewClient(sock))
 	// Prime with an expired entry.
 	a.mu.Lock()
 	a.cache["UDID"] = cachedState{state: State{}, at: time.Now().Add(-stateTTL - time.Second)}
@@ -363,15 +408,15 @@ func TestStateCache_MissDialsBridge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("State err = %v; want nil (bridge errors go to Notes)", err)
 	}
-	// The battery call failed on the bad socket; Notes should capture the error.
+	// The battery call returned a structured error; Notes should capture it.
 	hasNote := false
 	for _, n := range got.Notes {
-		if n != "" {
+		if strings.Contains(n, "battery data unavailable") {
 			hasNote = true
 			break
 		}
 	}
 	if !hasNote {
-		t.Error("expected at least one Note from bridge dial failure; got none")
+		t.Errorf("expected battery-data-unavailable note; got %v", got.Notes)
 	}
 }

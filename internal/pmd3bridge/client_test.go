@@ -7,11 +7,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -344,19 +346,74 @@ func TestClient_ErrorClassification_None(t *testing.T) {
 
 // --- Context cancellation ---
 
+// TestClient_ContextCancellation verifies that caller-initiated ctx cancel
+// returns context.Canceled instead of panicking. Cancellation is the sole
+// legitimate escape from the fail-fast error model — it represents daemon
+// shutdown, not a bug in the bridge.
 func TestClient_ContextCancellation(t *testing.T) {
-	dir := t.TempDir()
-	sock := filepath.Join(dir, "no.sock") // intentionally non-existent socket
+	mux := http.NewServeMux()
+	// Handler exists only so a Listener is available; it should never run.
+	mux.HandleFunc("/v1/list_devices", func(w http.ResponseWriter, r *http.Request) {})
+	_, c := unixTestServer(t, mux)
 
-	// Remove so it cannot be dialed; the dial error should surface via context.
-	_ = os.Remove(sock)
-
-	c := NewClient(sock)
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	// Pre-cancel the context so the dial fails with context.Canceled rather
+	// than making a real round-trip.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 
 	_, err := c.ListDevices(ctx)
 	if err == nil {
-		t.Error("expected error from non-existent socket; got nil")
+		t.Fatal("expected error from cancelled context; got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled; got %v", err)
+	}
+}
+
+// TestClient_TransportErrorCalledFatal verifies that a dial failure (bridge
+// socket missing) invokes the fatal hook rather than returning an error.
+// Under the 🎯T26.2 model, transport failures are bugs.
+func TestClient_TransportErrorCallsFatal(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "no.sock") // intentionally non-existent socket
+	_ = os.Remove(sock)
+
+	c := NewClient(sock)
+	var captured error
+	c.fatal = func(err error) { captured = err }
+
+	_, _ = c.ListDevices(context.Background())
+	if captured == nil {
+		t.Fatal("fatal hook was not called on dial failure")
+	}
+	if !strings.Contains(captured.Error(), "transport error") {
+		t.Errorf("unexpected fatal message: %v", captured)
+	}
+}
+
+// TestClient_DeadlineExceededCallsFatal verifies that the per-endpoint
+// deadline expiring treats the call as a bug (unresponsive bridge).
+func TestClient_DeadlineExceededCallsFatal(t *testing.T) {
+	// Handler that blocks past the client's endpoint timeout. We use a
+	// short custom client to avoid waiting 10s for the real timeout.
+	mux := http.NewServeMux()
+	release := make(chan struct{})
+	mux.HandleFunc("/v1/ping", func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	})
+	_, c := unixTestServer(t, mux)
+	defer close(release)
+
+	var captured error
+	c.fatal = func(err error) { captured = err }
+
+	// Use post() directly with a 100ms timeout to exercise deadline path.
+	_ = c.post(context.Background(), "/v1/ping", 100*time.Millisecond,
+		map[string]any{}, nil)
+	if captured == nil {
+		t.Fatal("fatal hook was not called on deadline expiry")
+	}
+	if !strings.Contains(captured.Error(), "transport error") {
+		t.Errorf("unexpected fatal message: %v", captured)
 	}
 }

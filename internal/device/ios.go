@@ -73,9 +73,7 @@ func (a *IOSAdapter) List() ([]Info, error) {
 	var devices []Info
 
 	if a.bridge != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if bridgeDevices, err := a.bridge.ListDevices(ctx); err == nil {
+		if bridgeDevices, err := a.bridge.ListDevices(context.Background()); err == nil {
 			for _, d := range bridgeDevices {
 				info := Info{
 					UUID:     d.UDID,
@@ -207,10 +205,8 @@ func (a *IOSAdapter) State(id string) (State, error) {
 
 	var state State
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	batt, err := a.bridge.Battery(ctx, id)
+	// Per-endpoint timeout is owned by the bridge client (🎯T26.2).
+	batt, err := a.bridge.Battery(context.Background(), id)
 	if err != nil {
 		if pmd3bridge.IsDeviceNotPaired(err) {
 			return State{}, fmt.Errorf("device not paired: %s", id)
@@ -266,8 +262,7 @@ func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 	if a.bridge == nil {
 		return nil, errNoBridge
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
 	data, err := a.bridge.Screenshot(ctx, id)
 	if err != nil {
 		if pmd3bridge.IsDeviceNotPaired(err) {
@@ -286,8 +281,7 @@ func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
 	if a.bridge == nil {
 		return nil, errNoBridge
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
 	bridgeApps, err := a.bridge.ListApps(ctx, id)
 	if err != nil {
 		if pmd3bridge.IsDeviceNotPaired(err) {
@@ -318,8 +312,7 @@ func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
 	if a.bridge == nil {
 		return errNoBridge
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
 	_, err := a.bridge.LaunchApp(ctx, id, bundleID)
 	if err != nil {
 		if pmd3bridge.IsDeviceNotPaired(err) {
@@ -341,8 +334,7 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 	if a.bridge == nil {
 		return errNoBridge
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
 	err := a.bridge.KillApp(ctx, id, bundleID)
 	if err != nil {
 		if pmd3bridge.IsDeviceNotPaired(err) {
@@ -365,8 +357,7 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if a.bridge == nil {
 		return 0, errNoBridge
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
 	pidPtr, err := a.bridge.PIDForBundle(ctx, id, bundleID)
 	if err != nil {
 		if pmd3bridge.IsDeviceNotPaired(err) {
@@ -389,8 +380,9 @@ func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]Cras
 	if a.bridge == nil {
 		return nil, errNoBridge
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	// TODO(🎯T26.3): streaming will replace this aggregate pattern. For now
+	// per-endpoint timeouts are owned by the bridge client (🎯T26.2).
+	ctx := context.Background()
 
 	bridgeReports, err := a.bridge.CrashReportsList(ctx, id, since, process)
 	if err != nil {

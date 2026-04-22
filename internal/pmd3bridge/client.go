@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -15,13 +16,28 @@ import (
 	"time"
 )
 
-const defaultClientTimeout = 30 * time.Second
-
 // Client calls the pmd3-bridge HTTP API over a Unix-domain socket. It is safe
 // for concurrent use after construction.
+//
+// Error model (see 🎯T26.2): client methods return nil on success or a
+// *BridgeError for structured responses from the bridge (device_not_paired,
+// bundle_not_installed, tunneld_unavailable, pmd3_error, not_found). Any
+// other failure mode — transport error, deadline exceeded, decode failure —
+// is treated as a bug and panics via the client's fatal hook. The daemon
+// process exits with the stack trace; the external process supervisor
+// restarts it cleanly.
+//
+// context.Canceled is the one exception: it indicates the caller (typically
+// daemon shutdown) has requested cancellation and is returned unchanged.
 type Client struct {
 	http       *http.Client
 	socketPath string
+
+	// fatal is called when a bridge call encounters a bug condition.
+	// Default: panic with the supplied error, crashing the daemon.
+	// Tests may replace this to capture fatals without terminating the
+	// test process.
+	fatal func(error)
 }
 
 // NewClient constructs a Client that dials the bridge over the given Unix
@@ -37,51 +53,69 @@ func NewClient(socketPath string) *Client {
 		socketPath: socketPath,
 		http: &http.Client{
 			Transport: transport,
-			Timeout:   defaultClientTimeout,
 		},
+		fatal: func(err error) { panic(err) },
 	}
 }
 
-// post encodes reqBody as JSON, POSTs to the given path, and decodes the
-// response into respBody. On 4xx/5xx the response is decoded as a BridgeError.
-// The "host" portion of the URL is irrelevant for Unix-socket transports — we
-// use "localhost" as a conventional placeholder.
-func (c *Client) post(ctx context.Context, path string, reqBody, respBody any) error {
+// post encodes reqBody as JSON, POSTs to the given path with the supplied
+// per-endpoint timeout applied as a context deadline, and decodes the response
+// into respBody. Returns nil or a *BridgeError; any other failure panics via
+// c.fatal.
+func (c *Client) post(ctx context.Context, path string, timeout time.Duration,
+	reqBody, respBody any,
+) error {
+	callCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	var body io.Reader
 	if reqBody != nil {
 		b, err := json.Marshal(reqBody)
 		if err != nil {
-			return fmt.Errorf("pmd3bridge: marshal request: %w", err)
+			// Static request shape; marshal failure = programmer bug.
+			c.fatal(fmt.Errorf("pmd3bridge: %s: marshal request: %w", path, err))
+			return err
 		}
 		body = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+	req, err := http.NewRequestWithContext(callCtx, http.MethodPost,
 		"http://localhost"+path, body)
 	if err != nil {
-		return fmt.Errorf("pmd3bridge: build request: %w", err)
+		c.fatal(fmt.Errorf("pmd3bridge: %s: build request: %w", path, err))
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("pmd3bridge: %s: %w", path, err)
+		// context.Canceled is caller-initiated shutdown, not a bug.
+		// Anything else — dial refused, EOF, EPIPE, deadline exceeded — is.
+		if errors.Is(err, context.Canceled) && ctx.Err() == context.Canceled {
+			return err
+		}
+		c.fatal(fmt.Errorf("pmd3bridge: %s: transport error after %s: %w",
+			path, timeout, err))
+		return err
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("pmd3bridge: read response: %w", err)
+		if errors.Is(err, context.Canceled) && ctx.Err() == context.Canceled {
+			return err
+		}
+		c.fatal(fmt.Errorf("pmd3bridge: %s: read response: %w", path, err))
+		return err
 	}
 
 	if resp.StatusCode >= 400 {
 		var errBody bridgeErrorBody
 		if jerr := json.Unmarshal(raw, &errBody); jerr != nil {
-			return &BridgeError{
-				Code:    "unknown",
-				Message: string(raw),
-				Status:  resp.StatusCode,
-			}
+			// 4xx/5xx with non-JSON body = bridge protocol bug.
+			c.fatal(fmt.Errorf("pmd3bridge: %s: unstructured error response (%d): %s",
+				path, resp.StatusCode, raw))
+			return &BridgeError{Code: "unknown", Message: string(raw), Status: resp.StatusCode}
 		}
 		return &BridgeError{
 			Code:    errBody.Error,
@@ -92,7 +126,8 @@ func (c *Client) post(ctx context.Context, path string, reqBody, respBody any) e
 
 	if respBody != nil {
 		if jerr := json.Unmarshal(raw, respBody); jerr != nil {
-			return fmt.Errorf("pmd3bridge: decode response from %s: %w", path, jerr)
+			c.fatal(fmt.Errorf("pmd3bridge: %s: decode response: %w", path, jerr))
+			return jerr
 		}
 	}
 	return nil
@@ -101,7 +136,8 @@ func (c *Client) post(ctx context.Context, path string, reqBody, respBody any) e
 // ListDevices returns the connected iOS devices visible to the bridge.
 func (c *Client) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
 	var resp listDevicesResponse
-	if err := c.post(ctx, "/v1/list_devices", listDevicesRequest{}, &resp); err != nil {
+	if err := c.post(ctx, "/v1/list_devices", timeoutListDevices,
+		listDevicesRequest{}, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Devices, nil
@@ -110,7 +146,8 @@ func (c *Client) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
 // ListApps returns the apps installed on the device identified by udid.
 func (c *Client) ListApps(ctx context.Context, udid string) ([]AppInfo, error) {
 	var resp listAppsResponse
-	if err := c.post(ctx, "/v1/list_apps", listAppsRequest{UDID: udid}, &resp); err != nil {
+	if err := c.post(ctx, "/v1/list_apps", timeoutListApps,
+		listAppsRequest{UDID: udid}, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Apps, nil
@@ -120,7 +157,7 @@ func (c *Client) ListApps(ctx context.Context, udid string) ([]AppInfo, error) {
 // and returns its PID.
 func (c *Client) LaunchApp(ctx context.Context, udid, bundleID string) (int, error) {
 	var resp launchAppResponse
-	if err := c.post(ctx, "/v1/launch_app",
+	if err := c.post(ctx, "/v1/launch_app", timeoutLaunchKillApp,
 		launchAppRequest{UDID: udid, BundleID: bundleID}, &resp); err != nil {
 		return 0, err
 	}
@@ -129,7 +166,7 @@ func (c *Client) LaunchApp(ctx context.Context, udid, bundleID string) (int, err
 
 // KillApp stops the app with bundleID on the device identified by udid.
 func (c *Client) KillApp(ctx context.Context, udid, bundleID string) error {
-	return c.post(ctx, "/v1/kill_app",
+	return c.post(ctx, "/v1/kill_app", timeoutLaunchKillApp,
 		killAppRequest{UDID: udid, BundleID: bundleID}, nil)
 }
 
@@ -137,7 +174,7 @@ func (c *Client) KillApp(ctx context.Context, udid, bundleID string) error {
 // identified by udid, or nil if the app is not running.
 func (c *Client) PIDForBundle(ctx context.Context, udid, bundleID string) (*int, error) {
 	var resp pidForBundleResponse
-	if err := c.post(ctx, "/v1/pid_for_bundle",
+	if err := c.post(ctx, "/v1/pid_for_bundle", timeoutPidForBundle,
 		pidForBundleRequest{UDID: udid, BundleID: bundleID}, &resp); err != nil {
 		return nil, err
 	}
@@ -147,7 +184,8 @@ func (c *Client) PIDForBundle(ctx context.Context, udid, bundleID string) (*int,
 // Battery returns the battery state for the device identified by udid.
 func (c *Client) Battery(ctx context.Context, udid string) (Battery, error) {
 	var resp Battery
-	if err := c.post(ctx, "/v1/battery", batteryRequest{UDID: udid}, &resp); err != nil {
+	if err := c.post(ctx, "/v1/battery", timeoutBattery,
+		batteryRequest{UDID: udid}, &resp); err != nil {
 		return Battery{}, err
 	}
 	return resp, nil
@@ -157,12 +195,14 @@ func (c *Client) Battery(ctx context.Context, udid string) (Battery, error) {
 // returns the raw PNG bytes (decoded from the bridge's base64 response).
 func (c *Client) Screenshot(ctx context.Context, udid string) ([]byte, error) {
 	var resp screenshotResponse
-	if err := c.post(ctx, "/v1/screenshot", screenshotRequest{UDID: udid}, &resp); err != nil {
+	if err := c.post(ctx, "/v1/screenshot", timeoutScreenshot,
+		screenshotRequest{UDID: udid}, &resp); err != nil {
 		return nil, err
 	}
 	data, err := base64.StdEncoding.DecodeString(resp.PNGBase64)
 	if err != nil {
-		return nil, fmt.Errorf("pmd3bridge: decode screenshot base64: %w", err)
+		c.fatal(fmt.Errorf("pmd3bridge: screenshot: decode base64: %w", err))
+		return nil, err
 	}
 	return data, nil
 }
@@ -179,7 +219,8 @@ func (c *Client) CrashReportsList(ctx context.Context, udid string, since time.T
 		req.Process = &process
 	}
 	var resp crashReportsListResponse
-	if err := c.post(ctx, "/v1/crash_reports_list", req, &resp); err != nil {
+	if err := c.post(ctx, "/v1/crash_reports_list", timeoutCrashReportsList,
+		req, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Reports, nil
@@ -188,7 +229,7 @@ func (c *Client) CrashReportsList(ctx context.Context, udid string, since time.T
 // CrashReportsPull returns the raw text content of the named crash report.
 func (c *Client) CrashReportsPull(ctx context.Context, udid, name string) (string, error) {
 	var resp crashReportsPullResponse
-	if err := c.post(ctx, "/v1/crash_reports_pull",
+	if err := c.post(ctx, "/v1/crash_reports_pull", timeoutCrashReportsPull,
 		crashReportsPullRequest{UDID: udid, Name: name}, &resp); err != nil {
 		return "", err
 	}
@@ -210,7 +251,8 @@ func (c *Client) AcquirePowerAssertion(ctx context.Context, udid, type_, name st
 		req.Details = &details
 	}
 	var resp acquirePowerAssertionResponse
-	if err := c.post(ctx, "/v1/acquire_power_assertion", req, &resp); err != nil {
+	if err := c.post(ctx, "/v1/acquire_power_assertion", timeoutPowerAssertion,
+		req, &resp); err != nil {
 		return "", err
 	}
 	return resp.HandleID, nil
@@ -219,13 +261,13 @@ func (c *Client) AcquirePowerAssertion(ctx context.Context, udid, type_, name st
 // RefreshPowerAssertion extends the lifetime of an existing power assertion
 // identified by handleID.
 func (c *Client) RefreshPowerAssertion(ctx context.Context, handleID string, timeoutSec int) error {
-	return c.post(ctx, "/v1/refresh_power_assertion",
+	return c.post(ctx, "/v1/refresh_power_assertion", timeoutPowerAssertion,
 		refreshPowerAssertionRequest{HandleID: handleID, TimeoutSec: timeoutSec}, nil)
 }
 
 // ReleasePowerAssertion releases a power assertion identified by handleID.
 // Releasing an unknown handle is a no-op (idempotent by bridge design).
 func (c *Client) ReleasePowerAssertion(ctx context.Context, handleID string) error {
-	return c.post(ctx, "/v1/release_power_assertion",
+	return c.post(ctx, "/v1/release_power_assertion", timeoutPowerAssertion,
 		releasePowerAssertionRequest{HandleID: handleID}, nil)
 }
