@@ -814,7 +814,7 @@ targets:
     achieved: 2026-04-22
   T26.4:
     name: Developer-run tiered test suite + committed TEST-REPORT.json; retire mocks that simulate bridge misbehaviour
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -843,6 +843,7 @@ targets:
     - observability
     origin: forked-from T26 (decomposition 2026-04-22)
     discovered: 2026-04-22
+    achieved: 2026-04-22
   T26.5:
     name: 'Observability: per-call tracing, slow-call warnings, liveness heartbeat, and bridge-side access/pmd3 logs'
     status: achieved
