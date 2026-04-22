@@ -29,6 +29,41 @@ import (
 // targeted notification and retry until the device is unlocked.
 var ErrLocked = errors.New("device is locked")
 
+// KeepAwakeBundleID is the bundle identifier of the ios/KeepAwake companion
+// app. The app's only job is to set UIApplication.isIdleTimerDisabled=true
+// while foregrounded, which is the sole iOS mechanism that reliably prevents
+// display auto-lock (🎯T31). pmd3's PowerAssertionService looked like a
+// replacement but turned out to be a no-op for display sleep; see T31's
+// context for the investigation.
+const KeepAwakeBundleID = "com.marcelocantos.spyder.KeepAwake"
+
+// LaunchKeepAwake foregrounds the KeepAwake companion app on the device via
+// `xcrun devicectl device process launch`. The id may be a hardware UDID,
+// CoreDevice UUID, or any other identifier devicectl's --device flag accepts.
+// Assumes the app is already installed on the device (developers install it
+// once via Xcode with their own signing identity; see ios/README.md).
+func (a *IOSAdapter) LaunchKeepAwake(id string) error {
+	if id == "" {
+		return errors.New("device identifier is empty")
+	}
+	started := time.Now()
+	cmd := exec.Command("xcrun", "devicectl", "device", "process", "launch",
+		"--device", id, KeepAwakeBundleID)
+	out, err := cmd.CombinedOutput()
+	elapsedMs := time.Since(started).Milliseconds()
+	if err != nil {
+		tail := strings.TrimSpace(string(out))
+		slog.Warn("devicectl launch KeepAwake failed",
+			"device", id, "duration_ms", elapsedMs,
+			"error", err.Error(), "output_tail", truncate(tail, 200))
+		return fmt.Errorf("devicectl launch KeepAwake: %w\n%s", err, tail)
+	}
+	slog.Debug("KeepAwake launched",
+		"device", id, "duration_ms", elapsedMs,
+		"bundle", KeepAwakeBundleID)
+	return nil
+}
+
 // stateTTL bounds how often we re-query a device. Tools called in quick
 // succession (e.g. from an agent reasoning loop) share a snapshot so the
 // device isn't hammered.
