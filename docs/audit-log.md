@@ -144,3 +144,26 @@ maintenance activities. Append-only — newest entries at the bottom.
   supervision absorbed into the bridge" where it was silently not
   re-implemented). Published for darwin-arm64, linux-amd64,
   linux-arm64.
+
+## 2026-04-24 — /release v0.9.0
+
+- **PR**: #29 (T31 KeepAwake restore)
+- **Outcome**: Keep-awake-actually-works release. T25 (v0.6.0) deleted
+  the KeepAwake companion app on the assumption that pmd3's
+  PowerAssertionService was a drop-in replacement; this release cycle
+  empirically confirmed it wasn't. Every assertion type accessible via
+  iOS's com.apple.mobile.assertion_agent (PreventUserIdleSystemSleep,
+  PreventUserIdleDisplaySleep, PreventSystemSleep) turned out to be a
+  no-op for display auto-lock on iOS. v0.6.0 / v0.7.0 / v0.8.0 all
+  shipped with autoawake claiming to keep devices awake while not
+  actually doing so. T31 restored the companion app (ios/KeepAwake,
+  SwiftUI, UIApplication.isIdleTimerDisabled=true when foregrounded)
+  and rewrote internal/autoawake to launch it via xcrun devicectl on
+  device arrival and periodically re-foreground. Per-developer signing
+  identity required; documented in ios/README.md. Bridge PowerAssertion
+  endpoints kept for potential future use but unwired from autoawake.
+  Also raised 🎯T29 (automated awake/asleep signal investigation —
+  IOPMrootDomain queries count as user activity) and 🎯T30 (iOS 17+
+  screenshot broken — legacy screenshotr deprecated, needs tunneld+RSD
+  restoration regressed at T25). Published for darwin-arm64,
+  linux-amd64, linux-arm64.
