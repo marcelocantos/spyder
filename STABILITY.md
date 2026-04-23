@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.8.0`.
+Snapshot as of `v0.9.0`.
 
 ## Interaction surface catalogue
 
@@ -291,9 +291,23 @@ builds. **Stable.**
   loopback port + bearer token, 🎯T26.1; fail-fast on any unresponsiveness,
   🎯T26.2; NDJSON/octet-stream streaming with inter-packet deadline,
   🎯T26.3). The bridge binary ships at `libexec/pmd3-bridge/pmd3-bridge` in
-  the Homebrew formula. Autoawake, screenshot, battery, list_apps,
-  launch/kill_app, crash-report surfaces all flow through the bridge.
-  Internal to the daemon and not part of the 1.0 stability contract.
+  the Homebrew formula. Battery, list_apps, launch/kill_app, crash-report,
+  screenshot (legacy path) surfaces flow through the bridge. Internal to
+  the daemon and not part of the 1.0 stability contract.
+- **iOS keep-awake via on-device companion app.** The `ios/KeepAwake/`
+  SwiftUI app sets `UIApplication.isIdleTimerDisabled = true` while
+  foregrounded. Autoawake detects newly-attached iOS devices and
+  foregrounds the app via `xcrun devicectl device process launch`
+  (🎯T31). pmd3's `PowerAssertionService` was attempted as a drop-in
+  replacement in v0.6.0–v0.8.0 but is a no-op for display sleep on iOS;
+  reverted in v0.9.0. Per-developer signing identity required (free-tier
+  Apple ID suffices); install once per device via Xcode Run.
+- **iOS 17+ screenshot broken** (🎯T30). Legacy
+  `com.apple.mobile.screenshotr` is deprecated since iOS 17; the bridge
+  currently uses it so screenshot returns `InvalidServiceError` on all
+  modern iOS devices. The DVT-based replacement path needs tunneld + RSD
+  integration which regressed when the pre-T25 tunneld supervision was
+  deleted. Follow-up release will restore it.
 - **macOS-only host enforcement.** Spyder runs on Linux but iOS operations
   will fail noisily there. Either restrict the binary to Darwin or
   gracefully degrade iOS-related tools with a clear "host does not support
