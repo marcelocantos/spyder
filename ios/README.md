@@ -20,8 +20,9 @@ open KeepAwake.xcodeproj
 In Xcode:
 
 1. Select your Apple ID team under **Signing & Capabilities** (free-tier
-   personal team works; the `project.pbxproj` pins Marcelo's personal team
-   ID, replace with your own).
+   personal team works; `DEVELOPMENT_TEAM` is blank in the committed
+   project so each developer sets their own locally — don't commit your
+   team ID back).
 2. Select the device as the run destination.
 3. Hit Run.
 4. On the device: trust the developer certificate at
