@@ -3,8 +3,9 @@ bin/
 .claude/
 .spyder/
 
-# xcodegen-generated (regenerated from project.yml)
-ios/**/*.xcodeproj
+# Xcode user-specific state (checked-in .xcodeproj but not per-user prefs)
+ios/**/*.xcodeproj/xcuserdata/
+ios/**/*.xcodeproj/project.xcworkspace/xcuserdata/
 
 # Python bridge
 bridge/.venv/

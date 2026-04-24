@@ -2,41 +2,41 @@
 
 Minimal SwiftUI companion app. Single responsibility: set
 `UIApplication.shared.isIdleTimerDisabled = true` while foregrounded; unset on
-background.
+background. This is the sole iOS mechanism that reliably prevents display
+auto-lock, which is why spyder's autoawake foregrounds this app rather than
+attempting pmd3 `PowerAssertion` calls (those turned out to be a no-op for
+display sleep; see 🎯T31).
 
 - **Bundle ID**: `com.marcelocantos.spyder.KeepAwake`
 - **Targets**: iOS 18+ (iPhone + iPad)
 
-## Build
-
-The Xcode project is regenerated from `KeepAwake/project.yml` via
-[xcodegen](https://github.com/yonaskolb/XcodeGen); the `.xcodeproj`
-itself is gitignored.
+## Install on your devices (one-time)
 
 ```bash
-brew install xcodegen            # once
 cd ios/KeepAwake
-xcodegen generate                # produces KeepAwake.xcodeproj
+open KeepAwake.xcodeproj
+```
 
-# Simulator build (no signing):
+In Xcode:
+
+1. Select your Apple ID team under **Signing & Capabilities** (free-tier
+   personal team works; the `project.pbxproj` pins Marcelo's personal team
+   ID, replace with your own).
+2. Select the device as the run destination.
+3. Hit Run.
+4. On the device: trust the developer certificate at
+   **Settings → General → VPN & Device Management**.
+5. Repeat for each device you want spyder to keep awake.
+
+First install per device requires this Xcode round-trip. After that, the app
+stays installed across reboots and autoawake foregrounds it via
+`xcrun devicectl device process launch --device <udid>
+com.marcelocantos.spyder.KeepAwake` on every new-device detection.
+
+## Simulator build (for development)
+
+```bash
 xcodebuild -project KeepAwake.xcodeproj -scheme KeepAwake \
   -destination "generic/platform=iOS Simulator" \
   CODE_SIGNING_ALLOWED=NO build
-
-# Device build (requires Apple ID linked in Xcode → Settings → Accounts,
-# with a personal team having GJF5DNC392 or update project.yml DEVELOPMENT_TEAM):
-xcodebuild -project KeepAwake.xcodeproj -scheme KeepAwake \
-  -destination "generic/platform=iOS" \
-  -allowProvisioningUpdates build
 ```
-
-## Install on Pippa
-
-Open `KeepAwake.xcodeproj` in Xcode, select Pippa as the run destination,
-and click Run. Xcode handles the signing/provisioning round-trip
-automatically on a free Apple ID. Once installed, the app survives
-device reboot.
-
-The `keepawake` MCP tool foregrounds the already-installed app via
-`xcrun devicectl device process launch --device <udid>
-com.marcelocantos.spyder.KeepAwake`.
