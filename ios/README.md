@@ -32,11 +32,3 @@ First install per device requires this Xcode round-trip. After that, the app
 stays installed across reboots and autoawake foregrounds it via
 `xcrun devicectl device process launch --device <udid>
 com.marcelocantos.spyder.KeepAwake` on every new-device detection.
-
-## Simulator build (for development)
-
-```bash
-xcodebuild -project KeepAwake.xcodeproj -scheme KeepAwake \
-  -destination "generic/platform=iOS Simulator" \
-  CODE_SIGNING_ALLOWED=NO build
-```
