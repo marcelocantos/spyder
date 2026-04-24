@@ -1002,6 +1002,31 @@ targets:
     - hil
     origin: discovered 2026-04-22 during v0.8.0 HIL validation — every pmd3 assertion type fails to prevent display auto-lock
     discovered: 2026-04-22
+  T32:
+    name: Autoawake auto-installs KeepAwake when preconditions allow; only prompts on genuinely human gates
+    status: converging
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - When autoawake detects a new iOS device and LaunchKeepAwake fails because the app is not installed, the supervisor attempts an autonomous install+launch cycle
+    - The autonomous path runs silently on success — no user prompt, no blocking. Log shows the normal `KeepAwake foregrounded` line once the app is running
+    - 'Preconditions probed before attempting install: (a) codesigning identity available in the Mac keychain via `security find-identity -p codesigning -v`; (b) iOS device Developer Mode enabled (via pymobiledevice3 amfi developer-mode-status or equivalent); (c) device Trust for the team already granted (probe via provisioning profiles with matching TeamIdentifier, or detect via the first install attempt)'
+    - On each failing precondition, autoawake logs a specific actionable message naming the exact device and what the user must do (e.g. 'Developer Mode is disabled on Jevons — enable at Settings → Privacy & Security → Developer Mode; device will reboot'). No interactive prompt — the log is the channel. Autoawake tracks per-device gate state and does NOT re-log the same gate every 15s; only on state change (device re-plugged, Developer Mode flipped, etc.)
+    - 'Build is cached per daemon lifetime: first install triggers an `xcodebuild -allowProvisioningUpdates DEVELOPMENT_TEAM=<detected> CODE_SIGN_STYLE=Automatic` into a daemon-owned derivedData path. Subsequent devices needing install in the same session reuse the cached .app bundle'
+    - '`DEVELOPMENT_TEAM` passed on the xcodebuild command line; the committed `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj` stays blank-team, never mutated at runtime'
+    - 'Idempotent: once KeepAwake is installed on a device, further attempts are just `devicectl launch` (the existing LaunchKeepAwake path). Re-polls every 15 s as today'
+    - New bridge endpoint or helper to detect Developer Mode status (reuses pmd3; no new wheel invented). Non-fatal — if the probe itself fails, autoawake degrades gracefully and falls back to the launch-and-see-what-happens path
+    - 'At least one manual gate is observable in the logs during HIL testing: either ''Developer Mode disabled'' or ''Trust not granted'' must be producible by deliberately breaking the precondition (e.g. toggle Developer Mode off on a device). The log line is specific enough that a human reading it knows exactly what tap to perform'
+    context: 'Raised 2026-04-24 after the v0.9.0 release restored the KeepAwake companion app as spyder''s keep-awake mechanism. Currently each developer has to build + install KeepAwake manually via Xcode Run once per device (documented in ios/README.md), then autoawake launches the already-installed app on device detection. T32 makes that install step invisible when preconditions allow: on first device detection, autoawake runs `xcodebuild` + `devicectl install` + `devicectl launch` end-to-end, prompting the human only when genuinely required (no codesigning identity → sign in to Xcode; Developer Mode disabled → device Settings; first install of this team on this device → Trust in Settings → VPN & Device Management). User''s explicit framing: "automation as transparent as possible. Only prompt when user input is required."'
+    tags:
+    - ios
+    - keep-awake
+    - automation
+    - unboxing
+    - autoawake
+    origin: user-requested 2026-04-24 during v0.9.0 post-release cleanup
+    discovered: 2026-04-24
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
