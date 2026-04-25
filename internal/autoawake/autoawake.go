@@ -180,6 +180,13 @@ func New(bridge *pmd3bridge.Client, opts ...Option) *Supervisor {
 // pollInterval for cheap enumeration, convergeInterval for the full
 // per-device sweep.
 func (s *Supervisor) Run(ctx context.Context) {
+	if ctx.Err() != nil {
+		// Pre-cancelled context: don't even start the initial poll
+		// (which can take seconds on a fresh CI runner where devicectl
+		// hasn't warmed up yet). Tests rely on this: a cancelled-from-
+		// the-start ctx means the supervisor should be a no-op.
+		return
+	}
 	slog.Info("autoawake: convergence supervisor started",
 		"poll", pollInterval, "converge", convergeInterval)
 
