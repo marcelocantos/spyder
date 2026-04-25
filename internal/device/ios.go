@@ -347,7 +347,9 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// Screenshot captures a PNG via the bridge.
+// Screenshot captures a PNG via the bridge. The iOS 17+ path routes
+// through pmd3 tunneld + RSD + DVT (🎯T30); typed errors from the
+// bridge are mapped to MCP-friendly messages here.
 func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
@@ -358,8 +360,16 @@ func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
 	data, err := a.bridge.Screenshot(ctx, id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
+		switch {
+		case pmd3bridge.IsDeviceNotPaired(err):
 			return nil, fmt.Errorf("device not connected: %s", id)
+		case pmd3bridge.IsTunneldUnavailable(err):
+			return nil, fmt.Errorf("tunneld is not running on the host; "+
+				"start it with `sudo pymobiledevice3 remote tunneld` (%v)", err)
+		case pmd3bridge.IsDeveloperModeDisabled(err):
+			return nil, fmt.Errorf("Developer Mode is not enabled on %s — "+
+				"enable at Settings → Privacy & Security → Developer Mode "+
+				"(device will reboot)", id)
 		}
 		return nil, fmt.Errorf("screenshot on %s: %v", id, err)
 	}

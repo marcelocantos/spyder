@@ -303,6 +303,10 @@ async def screenshot(udid: str) -> str:
     started = time.monotonic()
     rsd = await _tunneld_rsd_for(udid)
     try:
+        from pymobiledevice3.exceptions import (
+            DeveloperModeError,
+            DeveloperModeIsNotEnabledError,
+        )
         from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
         from pymobiledevice3.services.dvt.instruments.screenshot import Screenshot
         try:
@@ -310,7 +314,23 @@ async def screenshot(udid: str) -> str:
                 png_bytes = await shot.get_screenshot()
         except BridgeError:
             raise
+        except (DeveloperModeIsNotEnabledError, DeveloperModeError) as exc:
+            raise BridgeError(
+                "developer_mode_disabled",
+                f"Developer Mode is not enabled on {udid}: enable at "
+                f"Settings → Privacy & Security → Developer Mode (device will reboot)",
+            ) from exc
         except Exception as exc:
+            # Pattern-match on the message too — pmd3 sometimes raises a
+            # generic Exception when DDI services need DeveloperMode but
+            # the failure surfaces from a deeper layer.
+            if "developer mode" in str(exc).lower():
+                raise BridgeError(
+                    "developer_mode_disabled",
+                    f"Developer Mode is not enabled on {udid}: enable at "
+                    f"Settings → Privacy & Security → Developer Mode "
+                    f"(device will reboot). Underlying error: {exc}",
+                ) from exc
             raise BridgeError(
                 "pmd3_error",
                 f"Failed to take screenshot on {udid}: {exc}",
