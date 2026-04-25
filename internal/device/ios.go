@@ -37,11 +37,27 @@ var ErrLocked = errors.New("device is locked")
 // context for the investigation.
 const KeepAwakeBundleID = "com.marcelocantos.spyder.KeepAwake"
 
+// keepAwakeLaunchLockedPattern matches devicectl output indicating the
+// device is locked / passcode-protected. The exact message varies across
+// iOS / macOS versions; we keep the matcher generous.
+var keepAwakeLaunchLockedPattern = regexp.MustCompile(
+	`(?i)locked|passcode.*required|device must be unlocked|user must unlock`)
+
+// keepAwakeLaunchTrustPattern matches devicectl output indicating the
+// developer certificate has not been trusted on-device.
+var keepAwakeLaunchTrustPattern = regexp.MustCompile(
+	`(?i)untrusted.*developer|not.*explicitly trusted|requires.*trust|'Security'|invalid code signature`)
+
 // LaunchKeepAwake foregrounds the KeepAwake companion app on the device via
 // `xcrun devicectl device process launch`. The id may be a hardware UDID,
 // CoreDevice UUID, or any other identifier devicectl's --device flag accepts.
-// Assumes the app is already installed on the device (developers install it
-// once via Xcode with their own signing identity; see ios/README.md).
+// Assumes the app is already installed on the device.
+//
+// Error classification: returns ErrLocked when the device's screen is
+// locked (autoawake fires a persistent macOS alert asking the user to
+// unlock); ErrTrustNotGranted when the developer certificate hasn't
+// been trusted on the device; a generic error for anything else. The
+// typed errors let autoawake respond to each case appropriately.
 func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
@@ -53,6 +69,20 @@ func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 	elapsedMs := time.Since(started).Milliseconds()
 	if err != nil {
 		tail := strings.TrimSpace(string(out))
+		switch {
+		case keepAwakeLaunchMissingPattern.MatchString(tail):
+			slog.Debug("devicectl launch KeepAwake: not installed",
+				"device", id, "duration_ms", elapsedMs)
+			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrKeepAwakeNotInstalled)
+		case keepAwakeLaunchLockedPattern.MatchString(tail):
+			slog.Debug("devicectl launch KeepAwake: device locked",
+				"device", id, "duration_ms", elapsedMs)
+			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrLocked)
+		case keepAwakeLaunchTrustPattern.MatchString(tail):
+			slog.Debug("devicectl launch KeepAwake: trust not granted",
+				"device", id, "duration_ms", elapsedMs)
+			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrTrustNotGranted)
+		}
 		slog.Warn("devicectl launch KeepAwake failed",
 			"device", id, "duration_ms", elapsedMs,
 			"error", err.Error(), "output_tail", truncate(tail, 200))
@@ -63,6 +93,17 @@ func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 		"bundle", KeepAwakeBundleID)
 	return nil
 }
+
+// ErrKeepAwakeNotInstalled is surfaced when LaunchKeepAwake fails
+// because KeepAwake isn't installed on the device. Distinguished from
+// other launch failures so autoawake can trigger the auto-install flow
+// (🎯T32) instead of re-trying the launch.
+var ErrKeepAwakeNotInstalled = errors.New("KeepAwake not installed on device")
+
+// keepAwakeLaunchMissingPattern matches devicectl output indicating the
+// app bundle isn't present on the device.
+var keepAwakeLaunchMissingPattern = regexp.MustCompile(
+	`(?i)could not find.*app|app.*not installed|bundle.*not found|no such app`)
 
 // stateTTL bounds how often we re-query a device. Tools called in quick
 // succession (e.g. from an agent reasoning loop) share a snapshot so the
