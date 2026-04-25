@@ -27,12 +27,12 @@
 //     install (xcodebuild + devicectl install), then proceed.
 //  3. Try to launch via devicectl. Errors classify into:
 //     - locked: fire idempotent macOS alert; convergence next tick may
-//       succeed once the user unlocks.
+//     succeed once the user unlocks.
 //     - needs-trust: fire idempotent macOS alert; once the user trusts
-//       the cert, the next tick's launch succeeds.
+//     the cert, the next tick's launch succeeds.
 //     - needs-developer-mode / needs-xcode-signin: log on transition,
-//       no alert (the user must take action that requires their
-//       attention anyway).
+//     no alert (the user must take action that requires their
+//     attention anyway).
 //     - other: log + retry next tick.
 //
 // Idempotency: log lines and macOS alerts are emitted only on
