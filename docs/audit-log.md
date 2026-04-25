@@ -244,7 +244,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.13.0
 
-- **Commit**: `pending`
+- **Commit**: `904bd6a`
 - **Outcome**: Hotfix for autoawake's codesigning team selection.
   `DetectCodesigningTeam` previously preferred the user's free Personal
   Team (`isFreeProvisioningTeam = 1`) on the assumption that "every
