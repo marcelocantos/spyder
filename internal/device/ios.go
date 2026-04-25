@@ -67,7 +67,10 @@ func (a *IOSAdapter) KeepAwakeInstalled(id string) (bool, error) {
 	}
 	defer os.RemoveAll(tmp)
 	jsonPath := filepath.Join(tmp, "apps.json")
-	cmd := exec.Command("xcrun", "devicectl", "device", "info", "apps",
+	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "--timeout",
+		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "info", "apps",
 		"--device", id, "--quiet", "--json-output", jsonPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return false, fmt.Errorf("devicectl device info apps: %w\n%s",
@@ -120,7 +123,10 @@ func (a *IOSAdapter) KeepAwakeRunning(id string) (bool, error) {
 	}
 	defer os.RemoveAll(tmp)
 	jsonPath := filepath.Join(tmp, "procs.json")
-	cmd := exec.Command("xcrun", "devicectl", "device", "info", "processes",
+	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "--timeout",
+		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "info", "processes",
 		"--device", id, "--quiet", "--json-output", jsonPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return false, fmt.Errorf("devicectl device info processes: %w\n%s",
@@ -164,7 +170,10 @@ func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 		return errors.New("device identifier is empty")
 	}
 	started := time.Now()
-	cmd := exec.Command("xcrun", "devicectl", "device", "process", "launch",
+	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "--timeout",
+		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "process", "launch",
 		"--device", id, KeepAwakeBundleID)
 	out, err := cmd.CombinedOutput()
 	elapsedMs := time.Since(started).Milliseconds()
@@ -210,6 +219,21 @@ var keepAwakeLaunchMissingPattern = regexp.MustCompile(
 // succession (e.g. from an agent reasoning loop) share a snapshot so the
 // device isn't hammered.
 const stateTTL = 2 * time.Second
+
+// devicectlTimeoutSeconds caps every per-device devicectl invocation so
+// an unresponsive device can't wedge autoawake's convergence loop. We
+// pass it through as devicectl's own --timeout flag (its internal
+// machinery aborts the underlying CoreDevice operation cleanly) AND
+// wrap with a CommandContext deadline a couple of seconds longer so
+// the Go side reaps even if devicectl misbehaves on the timeout.
+//
+// Observed pre-fix: a freshly-rebooted device returned no
+// `device info processes` response for >6 minutes, holding the
+// per-device inFlight lock and silently parking convergence forever.
+const (
+	devicectlTimeoutSeconds = 30
+	devicectlTimeout        = (devicectlTimeoutSeconds + 2) * time.Second
+)
 
 // errNoBridge is returned by IOSAdapter methods when no bridge was injected.
 var errNoBridge = errors.New("iOS adapter requires the pmd3 bridge — ensure the bridge binary is installed")
@@ -280,8 +304,7 @@ func (a *IOSAdapter) List() ([]Info, error) {
 		if err == nil {
 			defer os.RemoveAll(tmp)
 			jsonPath := filepath.Join(tmp, "devices.json")
-			_, _, _ = runCapture("xcrun", "devicectl", "list", "devices",
-				"--quiet", "--json-output", jsonPath)
+			_, _, _ = runDevicectl("list", "devices", "--quiet", "--json-output", jsonPath)
 			if data, err := os.ReadFile(jsonPath); err == nil {
 				if parsed, err := parseDevicectlList(data); err == nil {
 					// parseDevicectlList already filters by tunnelState
@@ -320,8 +343,7 @@ func devicectlConnectedIOSDevices() (map[string]bool, error) {
 	}
 	defer os.RemoveAll(tmp)
 	jsonPath := filepath.Join(tmp, "devices.json")
-	if _, _, err := runCapture("xcrun", "devicectl", "list", "devices",
-		"--quiet", "--json-output", jsonPath); err != nil {
+	if _, _, err := runDevicectl("list", "devices", "--quiet", "--json-output", jsonPath); err != nil {
 		return nil, err
 	}
 	data, err := os.ReadFile(jsonPath)
@@ -487,9 +509,17 @@ func (a *IOSAdapter) State(id string) (State, error) {
 // human-readable diagnostics from stderr (pymobiledevice3 sometimes logs
 // errors to stderr with exit code 0).
 func runCapture(name string, args ...string) (stdout, stderr []byte, err error) {
+	return runCaptureCtx(context.Background(), name, args...)
+}
+
+// runCaptureCtx is the context-aware variant of runCapture. Per-devicectl
+// callers wrap with context.WithTimeout(devicectlTimeout) so a wedged
+// device (e.g. one where Xcode's DDI personalization is in flight)
+// can't park autoawake's per-device convergence forever.
+func runCaptureCtx(ctx context.Context, name string, args ...string) (stdout, stderr []byte, err error) {
 	started := time.Now()
 	var outBuf, errBuf bytes.Buffer
-	cmd := exec.Command(name, args...)
+	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
 	err = cmd.Run()
@@ -509,6 +539,19 @@ func runCapture(name string, args ...string) (stdout, stderr []byte, err error) 
 			"stderr_bytes", errBuf.Len())
 	}
 	return outBuf.Bytes(), errBuf.Bytes(), err
+}
+
+// runDevicectl invokes a devicectl subcommand with the standard
+// devicectlTimeout cap, automatically prepending devicectl's own
+// `--timeout <s>` flag so the binary aborts cleanly before our
+// CommandContext deadline fires. Always use this for
+// `xcrun devicectl ...` calls — never `runCapture` directly.
+func runDevicectl(args ...string) (stdout, stderr []byte, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
+	defer cancel()
+	full := append([]string{"devicectl", "--timeout",
+		fmt.Sprintf("%d", devicectlTimeoutSeconds)}, args...)
+	return runCaptureCtx(ctx, "xcrun", full...)
 }
 
 func truncate(s string, n int) string {
@@ -814,8 +857,7 @@ func (a *IOSAdapter) InstallApp(id, path string) error {
 	if id == "" || path == "" {
 		return errors.New("device id and path are required")
 	}
-	_, stderr, err := runCapture("xcrun", "devicectl", "device", "install", "app",
-		"--device", id, path)
+	_, stderr, err := runDevicectl("device", "install", "app", "--device", id, path)
 	if err != nil {
 		return fmt.Errorf("devicectl install app: %v\n%s", err, truncate(string(stderr), 300))
 	}
@@ -830,8 +872,7 @@ func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	_, stderr, err := runCapture("xcrun", "devicectl", "device", "uninstall", "app",
-		"--device", id, bundleID)
+	_, stderr, err := runDevicectl("device", "uninstall", "app", "--device", id, bundleID)
 	if err != nil {
 		return fmt.Errorf("devicectl uninstall app: %v\n%s", err, truncate(string(stderr), 300))
 	}
