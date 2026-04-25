@@ -217,32 +217,52 @@ func buildKeepAwakeNow(teamID string) (string, error) {
 	return appPath, nil
 }
 
-// findRepoRoot walks up from the executable's directory looking for the
-// ios/KeepAwake/ tree. Matches the same discovery pattern
-// resolveBridgeBinary uses in daemon.go.
+// findRepoRoot returns a directory under which `ios/KeepAwake/KeepAwake.
+// xcodeproj` exists. Three resolution paths in order:
+//
+//  1. **Production install**: `<real-exe-dir>/../libexec/spyder-source`.
+//     The Homebrew tarball bundles the KeepAwake Swift source under
+//     `libexec/spyder-source/ios/KeepAwake/`. Resolved via EvalSymlinks
+//     on `os.Executable()` so the Cellar path is found through the
+//     `/opt/homebrew/bin/spyder` symlink (same trick as 🎯T35).
+//  2. **Repo bin layout**: walk up from the (unresolved) executable
+//     directory looking for `ios/KeepAwake/KeepAwake.xcodeproj`.
+//     Catches `bin/spyder` when invoked from anywhere under the repo.
+//  3. **CWD-relative**: `cwd/ios/KeepAwake/KeepAwake.xcodeproj`. Dev
+//     fallback for `go run .` from the repo root.
 func findRepoRoot() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	dir := filepath.Dir(exe)
-	for range 8 {
-		if _, err := os.Stat(filepath.Join(dir, "ios", "KeepAwake", "KeepAwake.xcodeproj")); err == nil {
-			return dir, nil
+	// 1. Production install layout (Homebrew).
+	if exe, err := os.Executable(); err == nil {
+		if real, evalErr := filepath.EvalSymlinks(exe); evalErr == nil {
+			candidate := filepath.Join(filepath.Dir(real), "..", "libexec", "spyder-source")
+			if _, err := os.Stat(filepath.Join(candidate, "ios", "KeepAwake", "KeepAwake.xcodeproj")); err == nil {
+				return candidate, nil
+			}
 		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
 	}
-	// Fall back to CWD-relative lookup (dev-bin case).
+
+	// 2. Repo-bin layout.
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		for range 8 {
+			if _, err := os.Stat(filepath.Join(dir, "ios", "KeepAwake", "KeepAwake.xcodeproj")); err == nil {
+				return dir, nil
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+
+	// 3. CWD-relative.
 	if cwd, err := os.Getwd(); err == nil {
 		if _, err := os.Stat(filepath.Join(cwd, "ios", "KeepAwake", "KeepAwake.xcodeproj")); err == nil {
 			return cwd, nil
 		}
 	}
-	return "", errors.New("ios/KeepAwake/KeepAwake.xcodeproj not found relative to executable or cwd")
+	return "", errors.New("ios/KeepAwake/KeepAwake.xcodeproj not found in libexec/spyder-source, relative to executable, or in cwd")
 }
 
 // ── Install ──────────────────────────────────────────────────────────────────

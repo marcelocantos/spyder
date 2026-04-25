@@ -823,13 +823,15 @@ func (a *IOSAdapter) InstallApp(id, path string) error {
 }
 
 // UninstallApp removes an app by bundle identifier via
-// `xcrun devicectl device uninstall app --bundle-identifier`.
+// `xcrun devicectl device uninstall app <bundle-id>`. The bundle id is
+// a positional argument; an earlier version of this code passed it via
+// `--bundle-identifier` which devicectl rejects with `Unknown option`.
 func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
 	_, stderr, err := runCapture("xcrun", "devicectl", "device", "uninstall", "app",
-		"--device", id, "--bundle-identifier", bundleID)
+		"--device", id, bundleID)
 	if err != nil {
 		return fmt.Errorf("devicectl uninstall app: %v\n%s", err, truncate(string(stderr), 300))
 	}
