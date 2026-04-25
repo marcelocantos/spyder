@@ -254,7 +254,11 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 // Resolution order:
 //  1. SPYDER_PMD3_BRIDGE environment variable.
 //  2. Relative to the running executable: ../libexec/pmd3-bridge/pmd3-bridge
-//     (production install layout via Homebrew).
+//     (production install layout via Homebrew). Symlinks are resolved
+//     before computing the relative path so a Homebrew-style symlink
+//     `/opt/homebrew/bin/spyder → /opt/homebrew/Cellar/spyder/<v>/bin/spyder`
+//     points at the Cellar's libexec, not the empty `/opt/homebrew/libexec`
+//     (🎯T35).
 //  3. bridge/dist/pmd3-bridge/pmd3-bridge relative to the repo root
 //     (development fallback — best-effort).
 //
@@ -271,8 +275,10 @@ func resolveBridgeBinary() string {
 		return ""
 	}
 
-	// 2. Production layout: <exe-dir>/../libexec/pmd3-bridge/pmd3-bridge
-	if exe, err := os.Executable(); err == nil {
+	// 2. Production layout: <real-exe-dir>/../libexec/pmd3-bridge/pmd3-bridge.
+	// EvalSymlinks resolves the Homebrew bin/ symlink to the Cellar path
+	// where the libexec sibling actually lives.
+	if exe, err := exePathReal(); err == nil {
 		candidate := filepath.Join(filepath.Dir(exe), "..", "libexec", "pmd3-bridge", "pmd3-bridge")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
@@ -281,7 +287,9 @@ func resolveBridgeBinary() string {
 
 	// 3. Development fallback: walk up from the executable looking for
 	// bridge/dist/pmd3-bridge/pmd3-bridge. This handles `go run .` and
-	// `bin/spyder` from the repo root.
+	// `bin/spyder` from the repo root. The dev fallback intentionally
+	// uses os.Executable directly (no symlink eval) since the dev tree
+	// layout is not symlinked.
 	if exe, err := os.Executable(); err == nil {
 		dir := filepath.Dir(exe)
 		for range 5 {
@@ -301,6 +309,26 @@ func resolveBridgeBinary() string {
 	slog.Warn("pmd3-bridge binary not found — bridge tools disabled; " +
 		"set SPYDER_PMD3_BRIDGE or install via Homebrew")
 	return ""
+}
+
+// exePathReal returns the path to the running executable with all
+// symlinks resolved. Homebrew installs each formula in a versioned
+// Cellar directory and links the binary into a flat bin/ — `os.Executable`
+// returns the symlink path, but the libexec sibling lives next to the
+// real binary inside the Cellar. Without resolving the symlink, every
+// Homebrew-installed spyder fails to find the bundled bridge (🎯T35).
+func exePathReal() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		// Fall back to the unresolved path; better to attempt resolution
+		// against the symlink than to fail outright.
+		return exe, nil
+	}
+	return resolved, nil
 }
 
 // runsPolicyFromEnv reads the retention overrides from environment
