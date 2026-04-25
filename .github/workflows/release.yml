@@ -69,6 +69,13 @@ jobs:
           mkdir -p "${TARBALL_DIR}/bin" "${TARBALL_DIR}/libexec"
           cp dist/spyder "${TARBALL_DIR}/bin/"
           cp -R bridge/dist/pmd3-bridge "${TARBALL_DIR}/libexec/"
+          # Bundle the KeepAwake Swift source so a Homebrew-installed
+          # autoawake supervisor can rebuild + reinstall when the on-
+          # device profile expires (free-team 7-day cycle, or paid-team
+          # ~1-year cycle). findRepoRoot looks at
+          # `<exe-real-dir>/../libexec/spyder-source/ios/KeepAwake/`.
+          mkdir -p "${TARBALL_DIR}/libexec/spyder-source/ios"
+          cp -R ios/KeepAwake "${TARBALL_DIR}/libexec/spyder-source/ios/"
           mkdir -p dist
           tar czf "dist/${TARBALL_DIR}.tar.gz" "${TARBALL_DIR}"
           ls -la "dist/${TARBALL_DIR}.tar.gz"
@@ -96,7 +103,7 @@ jobs:
           github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           formula_folder: Formula
           version: ${{ github.event.release.tag_name }}
-          install: 'bin.install "bin/spyder" => "spyder"; libexec.install Dir["libexec/pmd3-bridge"]'
+          install: 'bin.install "bin/spyder" => "spyder"; libexec.install Dir["libexec/pmd3-bridge"]; libexec.install Dir["libexec/spyder-source"]'
           target_darwin_arm64: true
           target_linux_amd64: true
           target_linux_arm64: true
