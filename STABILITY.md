@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.9.0`.
+Snapshot as of `v0.10.0`.
 
 ## Interaction surface catalogue
 
@@ -66,8 +66,10 @@ Snapshot as of `v0.9.0`.
 | `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); field set and timestamp precision may evolve |
 
 Error classification is part of the contract: `device not connected`, `app
-not installed`, `app not running`, `'Locked'`, and `'Security'` (trust) are
-all surfaced as distinct tool-error text. Callers can match on these phrases.
+not installed`, `app not running`, `'Locked'`, `'Security'` (trust),
+`tunneld is not running on the host` (🎯T30), and `Developer Mode is not
+enabled` (🎯T30) are all surfaced as distinct tool-error text. Callers
+can match on these phrases.
 
 ### CLI subcommands
 
