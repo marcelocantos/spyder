@@ -1058,6 +1058,20 @@ targets:
     origin: user-decided 2026-04-25 after T32 HIL surfaced iOS 17+ enumeration gap; same root cause as T30
     discovered: 2026-04-25
     achieved: 2026-04-25
+  T34:
+    name: Autoawake recovers from a stale KeepAwake install on iOS
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - When devicectl process launch returns the CoreDevice 'No provider was found' error (Code=1002) — i.e. the bundle is installed but the host has no provisioning profile that matches the on-device signature — the convergence loop attempts uninstall + reinstall via the currently-detected codesigning team, then retries launch.
+    - On success the device transitions to converged on the next tick. On repeated failure the convergence loop logs once and stays in classOther without spamming the log.
+    - 'Acceptance test: a device with a stale KeepAwake install (e.g. Pippa, where KeepAwake is already on-device but signed by a no-longer-resolvable team) drives to converged within two convergence ticks (≤30 s) once spyder starts.'
+    context: |-
+      Raised 2026-04-25 during T32 HIL verification. Pippa (iPad Air 5, iOS 26.3.1) had a previously-installed KeepAwake from an earlier session whose provisioning profile is no longer resolvable on the host — every devicectl launch attempt fails with 'No provider was found' (CoreDeviceError Code=1002). The new convergence loop correctly observes installed=true and tries to launch each tick; the launch fails, gets classified as classOther, and stays stuck. The fix: detect that specific error pattern and treat it as 'install is corrupt; uninstall and reinstall'. Probably ~30 lines of Go in autoawake plus a new error sentinel from internal/device. Not a v0.10.0 release blocker (autoawake handles every other observed device correctly; Pippa just stays unmanaged), but should land soon to avoid the per-15s log line on hosts where any stale install lingers.</context>
+      <parameter name="tags">["ios", "autoawake", "follow-up", "post-t32"]
+    origin: manual
+    discovered: 2026-04-25
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved

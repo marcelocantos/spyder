@@ -296,12 +296,15 @@ builds. **Stable.**
   the daemon and not part of the 1.0 stability contract.
 - **iOS keep-awake via on-device companion app.** The `ios/KeepAwake/`
   SwiftUI app sets `UIApplication.isIdleTimerDisabled = true` while
-  foregrounded. Autoawake detects newly-attached iOS devices and
-  foregrounds the app via `xcrun devicectl device process launch`
-  (🎯T31). pmd3's `PowerAssertionService` was attempted as a drop-in
-  replacement in v0.6.0–v0.8.0 but is a no-op for display sleep on iOS;
-  reverted in v0.9.0. Per-developer signing identity required (free-tier
-  Apple ID suffices); install once per device via Xcode Run.
+  foregrounded. Autoawake runs a convergence loop (🎯T32): every 15 s
+  it observes whether KeepAwake is running on each connected device,
+  installs (xcodebuild + devicectl) when absent, launches when not
+  running, and re-tests human-gate states (locked, needs-trust,
+  needs-developer-mode) each tick so user-side resolutions are detected
+  without re-plugging. Per-developer signing identity required
+  (free-tier Apple ID suffices). pmd3's `PowerAssertionService` was
+  attempted as a drop-in replacement in v0.6.0–v0.8.0 but is a no-op
+  for display sleep on iOS; reverted in v0.9.0 (🎯T31).
 - **Tunneld lifecycle.** iOS 17+ screenshot (🎯T30) and any future
   DVT-instrument operations need an active RSD tunnel for the device.
   spyder's bridge does not currently start or supervise
