@@ -199,3 +199,24 @@ maintenance activities. Append-only — newest entries at the bottom.
   tunneld+DVT diagnosis; 🎯T34 (recover from stale KeepAwake install)
   raised as post-v0.10.0 follow-up. Published for darwin-arm64,
   linux-amd64, linux-arm64.
+
+## 2026-04-25 — /release v0.11.0
+
+- **Commit**: `pending`
+- **Outcome**: Re-release of v0.10.0 after that tag's release.yml run
+  failed in the Test step. The autoawake-supervisor convergence
+  rewrite (T32) removed the old `if s.bridge == nil { return }`
+  early-exit at the top of Run(); the existing
+  TestSupervisorNilBridge_RunExitsImmediately test relied on that
+  exit happening within 2s, and on a fresh darwin-arm64 CI runner
+  the convergence loop's initial `s.poll()` triggers
+  `xcrun devicectl list devices` which takes >2s before devicectl
+  has been warmed. Result: v0.10.0 was tagged on GitHub but no
+  binaries were uploaded (Test → Build → Upload all skipped on
+  failure). v0.10.0 left in place as a dead release for history;
+  v0.11.0 bumps minor per the project's "always bump MINOR" rule
+  and ships the same content as v0.10.0 was meant to ship plus the
+  one-line fix in autoawake.Run() to short-circuit on a pre-
+  cancelled context. PR #37 fixed the test; this release-prep PR
+  bumps STABILITY.md snapshot to v0.11.0 and records the audit-log
+  entry. Published for darwin-arm64, linux-amd64, linux-arm64.
