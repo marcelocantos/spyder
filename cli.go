@@ -6,6 +6,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -19,8 +20,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marcelocantos/spyder/internal/cliexit"
+	"github.com/marcelocantos/spyder/internal/clitimeout"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/rest"
+	"github.com/marcelocantos/spyder/internal/selector"
 )
 
 // daemonURLEnv overrides the REST base URL for `spyder <tool>`
@@ -55,13 +59,15 @@ func init() {
 		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
 		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
-		{"reserve", "spyder reserve (<device>|--selector JSON|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
+		{"reserve", "spyder reserve (<device>|--on PREDICATE|--selector JSON|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
 		{"reservations", "spyder reservations [--json]", runReservations},
 		{"runs", "spyder runs <list|show|artefacts> [args...]", runRuns},
 		{"rotate", "spyder rotate <device> --to <orientation> [--as OWNER]", runRotate},
 		{"crashes", "spyder crashes <device> [--since RFC3339] [--process NAME] [--as OWNER] [--json]", runCrashes},
+		{"diff", "spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]", runDiff},
+		{"baseline", "spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]", runBaseline},
 		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
@@ -102,45 +108,97 @@ type toolResultContent struct {
 	IsError bool `json:"isError"`
 }
 
+// daemonError is the structured failure the CLI surfaces from postTool
+// when the daemon returns an HTTP error or the transport blows up. It
+// carries the bits cliexit.MapDaemonError needs to pick a specific
+// exit code (statusCode, errorCode, errorMessage), wrapped in an
+// error type so it round-trips through the standard error-return path.
+type daemonError struct {
+	StatusCode   int    // 0 means transport-level (connection refused, deadline, etc.)
+	ErrorCode    string // daemon-side machine code (e.g. "device_not_paired"); "" when the daemon didn't return JSON
+	ErrorMessage string // human-readable message (transport text or daemon's "message" field)
+}
+
+func (e *daemonError) Error() string { return e.ErrorMessage }
+
+// asDaemonError extracts the *daemonError if err is one (directly or
+// wrapped). Returns (nil, false) for plain errors.
+func asDaemonError(err error) (*daemonError, bool) {
+	return errors.AsType[*daemonError](err)
+}
+
 // postTool POSTs args to /api/v1/<tool> on the local daemon and
-// returns the parsed result or a transport-level error. Tool errors
-// (result.isError=true) are returned as-is in the result; callers
-// decide how to surface them. If the first call fails with
-// ECONNREFUSED *and* the CLI is targeting the default loopback daemon,
-// it tries to spawn a detached `spyder serve` and retry once. Users
-// who set SPYDER_DAEMON_URL to a remote daemon get a plain error.
-func postTool(tool string, args map[string]any) (*toolResultContent, error) {
+// returns the parsed result or a *daemonError. Tool errors
+// (result.isError=true) are returned in the result; callers decide
+// how to surface them. If the first call fails with ECONNREFUSED
+// *and* the CLI is targeting the default loopback daemon, it tries
+// to spawn a detached `spyder serve` and retry once. Users who set
+// SPYDER_DAEMON_URL to a remote daemon get a plain transport error.
+func postTool(ctx context.Context, tool string, args map[string]any) (*toolResultContent, error) {
 	body, err := json.Marshal(args)
 	if err != nil {
 		return nil, fmt.Errorf("encode args: %w", err)
 	}
 	base := daemonBaseURL()
 	url := base + rest.Prefix + tool
-	resp, err := http.Post(url, "application/json", bytes.NewReader(body))
+	resp, err := postWithCtx(ctx, url, body)
 	if err != nil && isConnRefused(err) && base == defaultDaemonURL {
 		if spawnErr := autoStartDaemon(); spawnErr != nil {
-			return nil, fmt.Errorf("daemon not reachable at %s and auto-start failed: %v — try `brew services start spyder`",
-				base, spawnErr)
+			return nil, &daemonError{
+				ErrorMessage: fmt.Sprintf("daemon not reachable at %s and auto-start failed: %v — try `brew services start spyder`",
+					base, spawnErr),
+			}
 		}
-		resp, err = http.Post(url, "application/json", bytes.NewReader(body))
+		resp, err = postWithCtx(ctx, url, body)
 	}
 	if err != nil {
-		if isConnRefused(err) {
-			return nil, fmt.Errorf("daemon not reachable at %s — start it with `brew services start spyder` or `spyder serve`",
-				base)
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, &daemonError{ErrorMessage: fmt.Sprintf("request timed out: %v", err)}
 		}
-		return nil, err
+		if isConnRefused(err) {
+			return nil, &daemonError{
+				ErrorMessage: fmt.Sprintf("daemon not reachable at %s — start it with `brew services start spyder` or `spyder serve`",
+					base),
+			}
+		}
+		return nil, &daemonError{ErrorMessage: err.Error()}
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("daemon %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		// Daemon's REST error body is `{"error":"<code>","message":"<text>"}`.
+		// Decode it so the exit-code mapper can branch on the structured code.
+		var body struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(raw, &body)
+		msg := body.Message
+		if msg == "" {
+			msg = strings.TrimSpace(string(raw))
+		}
+		return nil, &daemonError{
+			StatusCode:   resp.StatusCode,
+			ErrorCode:    body.Error,
+			ErrorMessage: msg,
+		}
 	}
 	var out toolResultContent
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("parse daemon response: %w (body: %s)", err, raw)
+		return nil, &daemonError{ErrorMessage: fmt.Sprintf("parse daemon response: %v (body: %s)", err, raw)}
 	}
 	return &out, nil
+}
+
+// postWithCtx is http.Post with a context. Extracted so the retry path
+// can share the same helper.
+func postWithCtx(ctx context.Context, url string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return http.DefaultClient.Do(req)
 }
 
 // autoStartDaemon spawns a detached `spyder serve` process, logs its
@@ -202,6 +260,56 @@ func isConnRefused(err error) bool {
 	return errors.Is(err, syscall.ECONNREFUSED)
 }
 
+// setupCommand is the shared boilerplate every CLI subcommand runs
+// before dispatch:
+//
+//   - injects a `--timeout DURATION` flag on top of the caller-supplied
+//     stringFlags list, defaulting to defaultTimeout;
+//   - injects `-v` and `--verbose` bool flags on top of the caller-
+//     supplied boolFlags list (consumed by mutating commands to gate
+//     post-success output — see verbose() and dispatchAndExit's
+//     quietOnSuccess parameter);
+//   - parses argv via parseFlags, exiting with cliexit.ExitUsage on
+//     malformed flags (so callers don't have to repeat `if err != nil
+//     { fatalUsage(...) }`);
+//   - parses the resolved --timeout value (or default);
+//   - returns a context bounded by that timeout (or context.Background
+//     for timeout == 0), plus its cancel function — caller defers cancel.
+//
+// 🎯T37.1 + 🎯T37.3 + 🎯T37.5: every subcommand goes through this so
+// the --timeout, --verbose/-v flags, the per-command default, and the
+// timeout exit-code path are uniform across the surface.
+func setupCommand(
+	name string,
+	args []string,
+	stringFlags, boolFlags []string,
+	defaultTimeout time.Duration,
+) (parsedFlags, context.Context, context.CancelFunc) {
+	stringFlags = append(stringFlags, "--timeout")
+	boolFlags = append(boolFlags, "-v", "--verbose")
+	pf, err := parseFlags(args, stringFlags, boolFlags)
+	if err != nil {
+		fatalUsage(name, err)
+	}
+	timeout := defaultTimeout
+	if v := pf.flags["--timeout"]; v != "" {
+		d, perr := time.ParseDuration(v)
+		if perr != nil {
+			fatalUsage(name, fmt.Errorf("--timeout: %v", perr))
+		}
+		timeout = d
+	}
+	ctx, cancel := clitimeout.Context(timeout)
+	return pf, ctx, cancel
+}
+
+// verbose returns true when the user passed -v or --verbose on this
+// invocation. Used by mutating commands to decide whether to surface
+// the daemon's confirmation text on success (default: silent).
+func verbose(pf parsedFlags) bool {
+	return pf.bools["-v"] || pf.bools["--verbose"]
+}
+
 // firstText returns the first text content block's text, or "".
 func (r *toolResultContent) firstText() string {
 	for _, c := range r.Content {
@@ -228,13 +336,25 @@ func (r *toolResultContent) firstImage() ([]byte, string, bool) {
 }
 
 // renderResult prints result text to stdout and exits non-zero on
-// tool error. `json` mode prints the first text block verbatim
-// (handlers that return structured data already produce JSON).
-func renderResult(r *toolResultContent, jsonMode bool) {
+// tool error. `jsonMode` prints the first text block verbatim (handlers
+// that return structured data already produce JSON). `quietOnSuccess`
+// suppresses non-error output entirely — used by mutating commands so
+// the script-friendly default is "silent on success, exit 0".
+//
+// On a tool error the daemon's structured error code lives inside the
+// text block (best-effort prose match via cliexit.MapDaemonError); the
+// HTTP status is 200 even for tool errors because the JSON-RPC layer
+// wraps them. So we pass statusCode=0 to MapDaemonError and let the
+// prose path classify. Errors always print regardless of
+// quietOnSuccess.
+func renderResult(r *toolResultContent, jsonMode, quietOnSuccess bool) {
 	text := r.firstText()
 	if r.IsError {
-		fmt.Fprintln(os.Stderr, text)
-		os.Exit(1)
+		code := cliexit.MapDaemonError(0, "", text)
+		cliexit.Errorf(code, "%s", text)
+	}
+	if quietOnSuccess {
+		return
 	}
 	if jsonMode {
 		fmt.Println(text)
@@ -295,65 +415,81 @@ func parseFlags(args []string, stringFlags, boolFlags []string) (parsedFlags, er
 func requirePositional(name string, pf parsedFlags, n int) {
 	if len(pf.positional) != n {
 		cmd := lookupCLI(name)
-		fmt.Fprintf(os.Stderr, "%s: expected %d positional arg(s), got %d\n", name, n, len(pf.positional))
+		msg := fmt.Sprintf("%s: expected %d positional arg(s), got %d", name, n, len(pf.positional))
 		if cmd != nil {
-			fmt.Fprintf(os.Stderr, "%s\n", cmd.usage)
+			msg += "\n" + cmd.usage
 		}
-		os.Exit(2)
+		cliexit.Errorf(cliexit.ExitUsage, "%s", msg)
 	}
 }
 
-// dispatchAndExit runs postTool, prints the result, and exits.
-func dispatchAndExit(tool string, args map[string]any, jsonMode bool) {
-	res, err := postTool(tool, args)
+// dispatchAndExit runs postTool, prints the result, and exits. Failure
+// modes route through cliexit:
+//
+//   - daemonError → cliexit.MapDaemonError picks a code from the
+//     structured fields (ExitDeviceNotConnected, ExitAppNotInstalled,
+//     ExitTimeout, …);
+//   - plain error → ExitGeneric.
+//   - tool-error result → renderResult does the same mapping over the
+//     prose body.
+//
+// quietOnSuccess gates post-success output. Pass false for read
+// commands (the response IS the data the caller asked for); pass
+// !verbose(pf) for mutating commands so success defaults to silent
+// and -v restores the daemon's confirmation text.
+func dispatchAndExit(ctx context.Context, tool string, args map[string]any, jsonMode, quietOnSuccess bool) {
+	res, err := postTool(ctx, tool, args)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "spyder %s: %v\n", tool, err)
-		os.Exit(1)
+		cliexit.Errorf(daemonExitCode(err), "spyder %s: %v", tool, err)
 	}
-	renderResult(res, jsonMode)
+	renderResult(res, jsonMode, quietOnSuccess)
+}
+
+// daemonExitCode maps a postTool error to a cliexit code. *daemonError
+// goes through cliexit.MapDaemonError; everything else is generic.
+func daemonExitCode(err error) int {
+	if de, ok := asDaemonError(err); ok {
+		return cliexit.MapDaemonError(de.StatusCode, de.ErrorCode, de.ErrorMessage)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return cliexit.ExitTimeout
+	}
+	return cliexit.ExitGeneric
 }
 
 // --- subcommand implementations -------------------------------------
 
 func runDevices(args []string) {
-	pf, err := parseFlags(args, []string{"--platform"}, []string{"--json"})
-	if err != nil {
-		fatalUsage("devices", err)
-	}
+	pf, ctx, cancel := setupCommand("devices", args, []string{"--platform"}, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
 	a := map[string]any{}
 	if p := pf.flags["--platform"]; p != "" {
 		a["platform"] = p
 	}
-	dispatchAndExit("devices", a, pf.bools["--json"])
+	dispatchAndExit(ctx, "devices", a, pf.bools["--json"], false)
 }
 
 func runResolve(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("resolve", err)
-	}
+	pf, ctx, cancel := setupCommand("resolve", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
 	requirePositional("resolve", pf, 1)
-	dispatchAndExit("resolve",
+	dispatchAndExit(ctx, "resolve",
 		map[string]any{"name": pf.positional[0]},
-		pf.bools["--json"])
+		pf.bools["--json"], false)
 }
 
 func runDeviceState(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("device-state", err)
-	}
+	pf, ctx, cancel := setupCommand("device-state", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
 	requirePositional("device-state", pf, 1)
-	dispatchAndExit("device_state",
+	dispatchAndExit(ctx, "device_state",
 		map[string]any{"device": pf.positional[0]},
-		pf.bools["--json"])
+		pf.bools["--json"], false)
 }
 
 func runScreenshot(args []string) {
-	pf, err := parseFlags(args, []string{"--output", "--as"}, nil)
-	if err != nil {
-		fatalUsage("screenshot", err)
-	}
+	pf, ctx, cancel := setupCommand("screenshot", args, []string{"--output", "--as"}, nil, clitimeout.DefaultScreenshot)
+	defer cancel()
 	requirePositional("screenshot", pf, 1)
 	dev := pf.positional[0]
 	a := map[string]any{"device": dev}
@@ -363,19 +499,17 @@ func runScreenshot(args []string) {
 		a["owner"] = deriveOwner("")
 	}
 
-	res, err := postTool("screenshot", a)
+	res, err := postTool(ctx, "screenshot", a)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "spyder screenshot: %v\n", err)
-		os.Exit(1)
+		cliexit.Errorf(daemonExitCode(err), "spyder screenshot: %v", err)
 	}
 	if res.IsError {
-		fmt.Fprintln(os.Stderr, res.firstText())
-		os.Exit(1)
+		text := res.firstText()
+		cliexit.Errorf(cliexit.MapDaemonError(0, "", text), "%s", text)
 	}
 	png, mime, ok := res.firstImage()
 	if !ok {
-		fmt.Fprintf(os.Stderr, "spyder screenshot: no image in response\n")
-		os.Exit(1)
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder screenshot: no image in response")
 	}
 	output := pf.flags["--output"]
 	if output == "" {
@@ -384,28 +518,29 @@ func runScreenshot(args []string) {
 			time.Now().Format("20060102-150405"))
 	}
 	if err := os.WriteFile(output, png, 0o644); err != nil {
-		fmt.Fprintf(os.Stderr, "spyder screenshot: writing %s: %v\n", output, err)
-		os.Exit(1)
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder screenshot: writing %s: %v", output, err)
 	}
-	fmt.Printf("wrote %s (%d bytes, %s)\n", output, len(png), mime)
+	// Screenshot's true output is the file. Print the path on stdout
+	// so scripts can capture it (`OUT=$(spyder screenshot Pippa)`); the
+	// human-readable size+mime line goes to stderr only under -v.
+	fmt.Println(output)
+	if verbose(pf) {
+		fmt.Fprintf(os.Stderr, "wrote %s (%d bytes, %s)\n", output, len(png), mime)
+	}
 }
 
 func runListApps(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("list-apps", err)
-	}
+	pf, ctx, cancel := setupCommand("list-apps", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
 	requirePositional("list-apps", pf, 1)
-	dispatchAndExit("list_apps",
+	dispatchAndExit(ctx, "list_apps",
 		map[string]any{"device": pf.positional[0]},
-		pf.bools["--json"])
+		pf.bools["--json"], false)
 }
 
 func runLaunchApp(args []string) {
-	pf, err := parseFlags(args, []string{"--as"}, nil)
-	if err != nil {
-		fatalUsage("launch-app", err)
-	}
+	pf, ctx, cancel := setupCommand("launch-app", args, []string{"--as"}, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	requirePositional("launch-app", pf, 2)
 	a := map[string]any{
 		"device":    pf.positional[0],
@@ -416,14 +551,12 @@ func runLaunchApp(args []string) {
 	} else {
 		a["owner"] = deriveOwner("")
 	}
-	dispatchAndExit("launch_app", a, false)
+	dispatchAndExit(ctx, "launch_app", a, false, !verbose(pf))
 }
 
 func runTerminateApp(args []string) {
-	pf, err := parseFlags(args, []string{"--as"}, nil)
-	if err != nil {
-		fatalUsage("terminate-app", err)
-	}
+	pf, ctx, cancel := setupCommand("terminate-app", args, []string{"--as"}, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	requirePositional("terminate-app", pf, 2)
 	a := map[string]any{
 		"device":    pf.positional[0],
@@ -434,14 +567,12 @@ func runTerminateApp(args []string) {
 	} else {
 		a["owner"] = deriveOwner("")
 	}
-	dispatchAndExit("terminate_app", a, false)
+	dispatchAndExit(ctx, "terminate_app", a, false, !verbose(pf))
 }
 
 func runInstall(args []string) {
-	pf, err := parseFlags(args, []string{"--as"}, nil)
-	if err != nil {
-		fatalUsage("install", err)
-	}
+	pf, ctx, cancel := setupCommand("install", args, []string{"--as"}, nil, clitimeout.DefaultInstall)
+	defer cancel()
 	requirePositional("install", pf, 2)
 	a := map[string]any{
 		"device": pf.positional[0],
@@ -452,14 +583,12 @@ func runInstall(args []string) {
 	} else {
 		a["owner"] = deriveOwner("")
 	}
-	dispatchAndExit("install_app", a, false)
+	dispatchAndExit(ctx, "install_app", a, false, !verbose(pf))
 }
 
 func runUninstall(args []string) {
-	pf, err := parseFlags(args, []string{"--as"}, nil)
-	if err != nil {
-		fatalUsage("uninstall", err)
-	}
+	pf, ctx, cancel := setupCommand("uninstall", args, []string{"--as"}, nil, clitimeout.DefaultInstall)
+	defer cancel()
 	requirePositional("uninstall", pf, 2)
 	a := map[string]any{
 		"device":    pf.positional[0],
@@ -470,14 +599,12 @@ func runUninstall(args []string) {
 	} else {
 		a["owner"] = deriveOwner("")
 	}
-	dispatchAndExit("uninstall_app", a, false)
+	dispatchAndExit(ctx, "uninstall_app", a, false, !verbose(pf))
 }
 
 func runDeploy(args []string) {
-	pf, err := parseFlags(args, []string{"--as", "--bundle-id"}, nil)
-	if err != nil {
-		fatalUsage("deploy", err)
-	}
+	pf, ctx, cancel := setupCommand("deploy", args, []string{"--as", "--bundle-id"}, nil, clitimeout.DefaultDeploy)
+	defer cancel()
 	requirePositional("deploy", pf, 2)
 	a := map[string]any{
 		"device": pf.positional[0],
@@ -491,7 +618,7 @@ func runDeploy(args []string) {
 	if bid := pf.flags["--bundle-id"]; bid != "" {
 		a["bundle_id"] = bid
 	}
-	dispatchAndExit("deploy_app", a, false)
+	dispatchAndExit(ctx, "deploy_app", a, false, !verbose(pf))
 }
 
 func runReserve(args []string) {
@@ -511,19 +638,20 @@ func runReserve(args []string) {
 		filteredArgs = append(filteredArgs, args[i])
 	}
 
-	pf, err := parseFlags(filteredArgs,
-		[]string{"--as", "--ttl", "--note", "--selector", "--platform", "--model"},
+	pf, ctx, cancel := setupCommand("reserve", filteredArgs,
+		[]string{"--as", "--ttl", "--note", "--selector", "--on", "--platform", "--model"},
 		nil,
+		clitimeout.DefaultReserve,
 	)
-	if err != nil {
-		fatalUsage("reserve", err)
-	}
+	defer cancel()
 
 	a := map[string]any{}
 	a["owner"] = deriveOwner(pf.flags["--as"])
 
-	// Determine reservation target: positional device, --selector, or shorthand flags.
+	// Determine reservation target: positional device, --on PREDICATE,
+	// --selector JSON, or shorthand flags. Mutually exclusive.
 	selectorJSON := pf.flags["--selector"]
+	onPredicate := pf.flags["--on"]
 	platform := pf.flags["--platform"]
 	model := pf.flags["--model"]
 
@@ -532,21 +660,38 @@ func runReserve(args []string) {
 		literalDevice = pf.positional[0]
 	}
 
+	hasShorthand := platform != "" || len(tagValues) > 0 || model != ""
+	hasSelectorish := selectorJSON != "" || onPredicate != "" || hasShorthand
+
 	switch {
-	case literalDevice != "" && (selectorJSON != "" || platform != "" || len(tagValues) > 0 || model != ""):
+	case literalDevice != "" && hasSelectorish:
 		fatalUsage("reserve", fmt.Errorf("supply either a positional device or selector flags, not both"))
 
-	case selectorJSON != "" && (platform != "" || len(tagValues) > 0 || model != ""):
-		fatalUsage("reserve", fmt.Errorf("--selector and shorthand flags (--platform, --model, --tag) are mutually exclusive"))
+	case selectorJSON != "" && (onPredicate != "" || hasShorthand):
+		fatalUsage("reserve", fmt.Errorf("--selector and other selector flags (--on, --platform, --model, --tag) are mutually exclusive"))
+
+	case onPredicate != "" && hasShorthand:
+		fatalUsage("reserve", fmt.Errorf("--on and shorthand flags (--platform, --model, --tag) are mutually exclusive"))
 
 	case literalDevice != "":
 		a["device"] = literalDevice
 
+	case onPredicate != "":
+		// 🎯T37.4: parse --on PREDICATE into a Selector and marshal as JSON.
+		sel, perr := selector.ParseSelectorString(onPredicate)
+		if perr != nil {
+			fatalUsage("reserve", fmt.Errorf("--on: %v", perr))
+		}
+		selBytes, merr := json.Marshal(sel)
+		if merr != nil {
+			fatalUsage("reserve", fmt.Errorf("--on: marshal: %v", merr))
+		}
+		a["selector"] = string(selBytes)
+
 	case selectorJSON != "":
 		a["selector"] = selectorJSON
 
-	case platform != "" || len(tagValues) > 0 || model != "":
-		// Build selector JSON from shorthand flags.
+	case hasShorthand:
 		if platform == "" {
 			fatalUsage("reserve", fmt.Errorf("--platform is required when using selector shorthand flags"))
 		}
@@ -564,7 +709,7 @@ func runReserve(args []string) {
 		a["selector"] = string(selBytes)
 
 	default:
-		fatalUsage("reserve", fmt.Errorf("supply a device (positional) or --selector/--platform"))
+		fatalUsage("reserve", fmt.Errorf("supply a device (positional), --on PREDICATE, --selector JSON, or --platform/--model/--tag"))
 	}
 
 	if v := pf.flags["--ttl"]; v != "" {
@@ -577,27 +722,23 @@ func runReserve(args []string) {
 	if v := pf.flags["--note"]; v != "" {
 		a["note"] = v
 	}
-	dispatchAndExit("reserve", a, false)
+	dispatchAndExit(ctx, "reserve", a, false, !verbose(pf))
 }
 
 func runRelease(args []string) {
-	pf, err := parseFlags(args, []string{"--as"}, nil)
-	if err != nil {
-		fatalUsage("release", err)
-	}
+	pf, ctx, cancel := setupCommand("release", args, []string{"--as"}, nil, clitimeout.DefaultReserve)
+	defer cancel()
 	requirePositional("release", pf, 1)
 	a := map[string]any{
 		"device": pf.positional[0],
 		"owner":  deriveOwner(pf.flags["--as"]),
 	}
-	dispatchAndExit("release", a, false)
+	dispatchAndExit(ctx, "release", a, false, !verbose(pf))
 }
 
 func runRenew(args []string) {
-	pf, err := parseFlags(args, []string{"--as", "--ttl"}, nil)
-	if err != nil {
-		fatalUsage("renew", err)
-	}
+	pf, ctx, cancel := setupCommand("renew", args, []string{"--as", "--ttl"}, nil, clitimeout.DefaultReserve)
+	defer cancel()
 	requirePositional("renew", pf, 1)
 	a := map[string]any{
 		"device": pf.positional[0],
@@ -610,15 +751,13 @@ func runRenew(args []string) {
 		}
 		a["ttl_seconds"] = n
 	}
-	dispatchAndExit("renew", a, false)
+	dispatchAndExit(ctx, "renew", a, false, !verbose(pf))
 }
 
 func runReservations(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("reservations", err)
-	}
-	dispatchAndExit("reservations", map[string]any{}, pf.bools["--json"])
+	pf, ctx, cancel := setupCommand("reservations", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	dispatchAndExit(ctx, "reservations", map[string]any{}, pf.bools["--json"], false)
 }
 
 // runRuns dispatches `spyder runs <subcommand>` — a two-level
@@ -641,45 +780,38 @@ func runRuns(args []string) {
 }
 
 func runRunsList(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("runs", err)
-	}
-	dispatchAndExit("runs_list", map[string]any{}, pf.bools["--json"])
+	pf, ctx, cancel := setupCommand("runs", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	dispatchAndExit(ctx, "runs_list", map[string]any{}, pf.bools["--json"], false)
 }
 
 func runRunsShow(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("runs", err)
-	}
+	pf, ctx, cancel := setupCommand("runs", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("runs", fmt.Errorf("show expects one run-id"))
 	}
-	dispatchAndExit("runs_show",
+	dispatchAndExit(ctx, "runs_show",
 		map[string]any{"run_id": pf.positional[0]},
-		pf.bools["--json"])
+		pf.bools["--json"], false)
 }
 
 // runRunsArtefacts reuses runs_show and extracts just the artefacts
 // array so scripts can pipe it. Defaults to a tabular render; --json
 // emits the raw array.
 func runRunsArtefacts(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("runs", err)
-	}
+	pf, ctx, cancel := setupCommand("runs", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("runs", fmt.Errorf("artefacts expects one run-id"))
 	}
-	res, err := postTool("runs_show", map[string]any{"run_id": pf.positional[0]})
+	res, err := postTool(ctx, "runs_show", map[string]any{"run_id": pf.positional[0]})
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "spyder runs artefacts: %v\n", err)
-		os.Exit(1)
+		cliexit.Errorf(daemonExitCode(err), "spyder runs artefacts: %v", err)
 	}
 	if res.IsError {
-		fmt.Fprintln(os.Stderr, res.firstText())
-		os.Exit(1)
+		text := res.firstText()
+		cliexit.Errorf(cliexit.MapDaemonError(0, "", text), "%s", text)
 	}
 	var run struct {
 		ID        string `json:"id"`
@@ -692,8 +824,7 @@ func runRunsArtefacts(args []string) {
 		} `json:"artefacts"`
 	}
 	if err := json.Unmarshal([]byte(res.firstText()), &run); err != nil {
-		fmt.Fprintf(os.Stderr, "spyder runs artefacts: parse: %v\n", err)
-		os.Exit(1)
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder runs artefacts: parse: %v", err)
 	}
 	if pf.bools["--json"] {
 		data, _ := json.MarshalIndent(run.Artefacts, "", "  ")
@@ -712,10 +843,8 @@ func runRunsArtefacts(args []string) {
 }
 
 func runRotate(args []string) {
-	pf, err := parseFlags(args, []string{"--to", "--as"}, nil)
-	if err != nil {
-		fatalUsage("rotate", err)
-	}
+	pf, ctx, cancel := setupCommand("rotate", args, []string{"--to", "--as"}, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	requirePositional("rotate", pf, 1)
 	orientation := pf.flags["--to"]
 	if orientation == "" {
@@ -730,14 +859,12 @@ func runRotate(args []string) {
 	} else {
 		a["owner"] = deriveOwner("")
 	}
-	dispatchAndExit("rotate", a, false)
+	dispatchAndExit(ctx, "rotate", a, false, !verbose(pf))
 }
 
 func runCrashes(args []string) {
-	pf, err := parseFlags(args, []string{"--since", "--process", "--as"}, []string{"--json"})
-	if err != nil {
-		fatalUsage("crashes", err)
-	}
+	pf, ctx, cancel := setupCommand("crashes", args, []string{"--since", "--process", "--as"}, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
 	requirePositional("crashes", pf, 1)
 	a := map[string]any{"device": pf.positional[0]}
 	if s := pf.flags["--since"]; s != "" {
@@ -749,7 +876,7 @@ func runCrashes(args []string) {
 	if o := pf.flags["--as"]; o != "" {
 		a["owner"] = o
 	}
-	dispatchAndExit("crashes", a, pf.bools["--json"])
+	dispatchAndExit(ctx, "crashes", a, pf.bools["--json"], false)
 }
 
 // --- sim subcommands ------------------------------------------------
@@ -776,22 +903,18 @@ func runSim(args []string) {
 }
 
 func runSimList(args []string) {
-	pf, err := parseFlags(args, []string{"--state"}, []string{"--json"})
-	if err != nil {
-		fatalUsage("sim", err)
-	}
+	pf, ctx, cancel := setupCommand("sim", args, []string{"--state"}, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
 	a := map[string]any{}
 	if s := pf.flags["--state"]; s != "" {
 		a["state"] = s
 	}
-	dispatchAndExit("sim_list", a, pf.bools["--json"])
+	dispatchAndExit(ctx, "sim_list", a, pf.bools["--json"], false)
 }
 
 func runSimCreate(args []string) {
-	pf, err := parseFlags(args, []string{"--type", "--runtime"}, []string{"--json"})
-	if err != nil {
-		fatalUsage("sim", err)
-	}
+	pf, ctx, cancel := setupCommand("sim", args, []string{"--type", "--runtime"}, []string{"--json"}, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("sim", fmt.Errorf("create: expected <name> (with --type and --runtime flags)"))
 	}
@@ -803,44 +926,38 @@ func runSimCreate(args []string) {
 	if runtime == "" {
 		fatalUsage("sim", fmt.Errorf("create: --runtime <runtime-id> is required"))
 	}
-	dispatchAndExit("sim_create", map[string]any{
+	dispatchAndExit(ctx, "sim_create", map[string]any{
 		"name":           pf.positional[0],
 		"device_type_id": deviceType,
 		"runtime_id":     runtime,
-	}, pf.bools["--json"])
+	}, pf.bools["--json"], false)
 }
 
 func runSimBoot(args []string) {
-	pf, err := parseFlags(args, nil, nil)
-	if err != nil {
-		fatalUsage("sim", err)
-	}
+	pf, ctx, cancel := setupCommand("sim", args, nil, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("sim", fmt.Errorf("boot: expected <udid>"))
 	}
-	dispatchAndExit("sim_boot", map[string]any{"udid": pf.positional[0]}, false)
+	dispatchAndExit(ctx, "sim_boot", map[string]any{"udid": pf.positional[0]}, false, !verbose(pf))
 }
 
 func runSimShutdown(args []string) {
-	pf, err := parseFlags(args, nil, nil)
-	if err != nil {
-		fatalUsage("sim", err)
-	}
+	pf, ctx, cancel := setupCommand("sim", args, nil, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("sim", fmt.Errorf("shutdown: expected <udid>"))
 	}
-	dispatchAndExit("sim_shutdown", map[string]any{"udid": pf.positional[0]}, false)
+	dispatchAndExit(ctx, "sim_shutdown", map[string]any{"udid": pf.positional[0]}, false, !verbose(pf))
 }
 
 func runSimDelete(args []string) {
-	pf, err := parseFlags(args, nil, nil)
-	if err != nil {
-		fatalUsage("sim", err)
-	}
+	pf, ctx, cancel := setupCommand("sim", args, nil, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("sim", fmt.Errorf("delete: expected <udid>"))
 	}
-	dispatchAndExit("sim_delete", map[string]any{"udid": pf.positional[0]}, false)
+	dispatchAndExit(ctx, "sim_delete", map[string]any{"udid": pf.positional[0]}, false, !verbose(pf))
 }
 
 // --- emu subcommands ------------------------------------------------
@@ -867,18 +984,14 @@ func runEmu(args []string) {
 }
 
 func runEmuList(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("emu", err)
-	}
-	dispatchAndExit("emu_list", map[string]any{}, pf.bools["--json"])
+	pf, ctx, cancel := setupCommand("emu", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	dispatchAndExit(ctx, "emu_list", map[string]any{}, pf.bools["--json"], false)
 }
 
 func runEmuCreate(args []string) {
-	pf, err := parseFlags(args, []string{"--image", "--device"}, []string{"--json"})
-	if err != nil {
-		fatalUsage("emu", err)
-	}
+	pf, ctx, cancel := setupCommand("emu", args, []string{"--image", "--device"}, []string{"--json"}, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("emu", fmt.Errorf("create: expected <name> (with --image and --device flags)"))
 	}
@@ -890,51 +1003,43 @@ func runEmuCreate(args []string) {
 	if deviceProfile == "" {
 		fatalUsage("emu", fmt.Errorf("create: --device <device-profile> is required"))
 	}
-	dispatchAndExit("emu_create", map[string]any{
+	dispatchAndExit(ctx, "emu_create", map[string]any{
 		"name":           pf.positional[0],
 		"system_image":   image,
 		"device_profile": deviceProfile,
-	}, pf.bools["--json"])
+	}, pf.bools["--json"], false)
 }
 
 func runEmuBoot(args []string) {
-	pf, err := parseFlags(args, nil, nil)
-	if err != nil {
-		fatalUsage("emu", err)
-	}
+	pf, ctx, cancel := setupCommand("emu", args, nil, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("emu", fmt.Errorf("boot: expected <avd-name>"))
 	}
-	dispatchAndExit("emu_boot", map[string]any{"name": pf.positional[0]}, false)
+	dispatchAndExit(ctx, "emu_boot", map[string]any{"name": pf.positional[0]}, false, !verbose(pf))
 }
 
 func runEmuShutdown(args []string) {
-	pf, err := parseFlags(args, nil, nil)
-	if err != nil {
-		fatalUsage("emu", err)
-	}
+	pf, ctx, cancel := setupCommand("emu", args, nil, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("emu", fmt.Errorf("shutdown: expected <serial> (e.g. emulator-5554)"))
 	}
-	dispatchAndExit("emu_shutdown", map[string]any{"serial": pf.positional[0]}, false)
+	dispatchAndExit(ctx, "emu_shutdown", map[string]any{"serial": pf.positional[0]}, false, !verbose(pf))
 }
 
 func runEmuDelete(args []string) {
-	pf, err := parseFlags(args, nil, nil)
-	if err != nil {
-		fatalUsage("emu", err)
-	}
+	pf, ctx, cancel := setupCommand("emu", args, nil, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("emu", fmt.Errorf("delete: expected <avd-name>"))
 	}
-	dispatchAndExit("emu_delete", map[string]any{"name": pf.positional[0]}, false)
+	dispatchAndExit(ctx, "emu_delete", map[string]any{"name": pf.positional[0]}, false, !verbose(pf))
 }
 
 func runRecord(args []string) {
-	pf, err := parseFlags(args, []string{"--as"}, []string{"--start", "--stop"})
-	if err != nil {
-		fatalUsage("record", err)
-	}
+	pf, ctx, cancel := setupCommand("record", args, []string{"--as"}, []string{"--start", "--stop"}, clitimeout.DefaultRecord)
+	defer cancel()
 	requirePositional("record", pf, 1)
 	dev := pf.positional[0]
 	start := pf.bools["--start"]
@@ -949,17 +1054,15 @@ func runRecord(args []string) {
 		a["owner"] = deriveOwner("")
 	}
 	if start {
-		dispatchAndExit("record_start", a, false)
+		dispatchAndExit(ctx, "record_start", a, false, !verbose(pf))
 	} else {
-		dispatchAndExit("record_stop", a, false)
+		dispatchAndExit(ctx, "record_stop", a, false, !verbose(pf))
 	}
 }
 
 func runNet(args []string) {
-	pf, err := parseFlags(args, []string{"--profile", "--as"}, []string{"--clear"})
-	if err != nil {
-		fatalUsage("net", err)
-	}
+	pf, ctx, cancel := setupCommand("net", args, []string{"--profile", "--as"}, []string{"--clear"}, clitimeout.DefaultLaunch)
+	defer cancel()
 	requirePositional("net", pf, 1)
 	dev := pf.positional[0]
 	profile := pf.flags["--profile"]
@@ -981,17 +1084,22 @@ func runNet(args []string) {
 	} else {
 		a["profile"] = profile
 	}
-	dispatchAndExit("network", a, false)
+	dispatchAndExit(ctx, "network", a, false, !verbose(pf))
 }
 
 func runLog(args []string) {
-	pf, err := parseFlags(args,
+	// `log` has two modes: bounded range query (DefaultRead) and live
+	// follow (DefaultLogStream = 0, no timeout). Pick the per-mode
+	// default after parsing — setupCommand only sets one ceiling, and
+	// the user-supplied --timeout always wins anyway. Use DefaultRead
+	// here; the live-follow mode replaces the context below if no
+	// explicit --timeout was passed.
+	pf, ctx, cancel := setupCommand("log", args,
 		[]string{"--process", "--subsystem", "--tag", "--regex", "--since", "--until"},
 		[]string{"--follow", "--json"},
+		clitimeout.DefaultRead,
 	)
-	if err != nil {
-		fatalUsage("log", err)
-	}
+	defer cancel()
 	requirePositional("log", pf, 1)
 
 	dev := pf.positional[0]
@@ -999,6 +1107,15 @@ func runLog(args []string) {
 	jsonMode := pf.bools["--json"]
 
 	if follow {
+		// Live follow: drop the read-timeout unless the user explicitly
+		// passed --timeout. We can't tell from the parsed flags alone
+		// whether --timeout was set, so re-derive: if the supplied flag
+		// value is empty, restart with DefaultLogStream.
+		if pf.flags["--timeout"] == "" {
+			cancel()
+			ctx, cancel = clitimeout.Context(clitimeout.DefaultLogStream)
+			defer cancel()
+		}
 		// SSE live stream: POST to /api/v1/log_stream, print each event.
 		body := map[string]any{"device": dev}
 		if p := pf.flags["--process"]; p != "" {
@@ -1013,7 +1130,7 @@ func runLog(args []string) {
 		if r := pf.flags["--regex"]; r != "" {
 			body["regex"] = r
 		}
-		streamSSELog(body, jsonMode)
+		streamSSELog(ctx, body, jsonMode)
 		return
 	}
 
@@ -1025,39 +1142,48 @@ func runLog(args []string) {
 			a[key] = v
 		}
 	}
-	dispatchAndExit("logs", a, jsonMode)
+	dispatchAndExit(ctx, "logs", a, jsonMode, false)
 }
 
-// streamSSELog POSTs to the SSE log_stream endpoint and prints each event line.
-func streamSSELog(body map[string]any, jsonMode bool) {
+// streamSSELog POSTs to the SSE log_stream endpoint and prints each
+// event line. Errors route through cliexit so live-stream failures use
+// the same exit-code map as the rest of the CLI.
+func streamSSELog(ctx context.Context, body map[string]any, jsonMode bool) {
 	encoded, err := json.Marshal(body)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "spyder log: encode: %v\n", err)
-		os.Exit(1)
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder log: encode: %v", err)
 	}
 	base := daemonBaseURL()
 	url := base + rest.StreamPath
-	resp, err := http.Post(url, "application/json", bytes.NewReader(encoded))
+	resp, err := postWithCtx(ctx, url, encoded)
+	if err != nil && isConnRefused(err) && base == defaultDaemonURL {
+		if spawnErr := autoStartDaemon(); spawnErr == nil {
+			resp, err = postWithCtx(ctx, url, encoded)
+		}
+	}
 	if err != nil {
-		if isConnRefused(err) && base == defaultDaemonURL {
-			if spawnErr := autoStartDaemon(); spawnErr == nil {
-				resp, err = http.Post(url, "application/json", bytes.NewReader(encoded))
-			}
+		if errors.Is(err, context.DeadlineExceeded) {
+			cliexit.Errorf(cliexit.ExitTimeout, "spyder log: request timed out: %v", err)
 		}
-		if err != nil {
-			if isConnRefused(err) {
-				fmt.Fprintf(os.Stderr, "spyder log: daemon not reachable at %s\n", base)
-			} else {
-				fmt.Fprintf(os.Stderr, "spyder log: %v\n", err)
-			}
-			os.Exit(1)
+		if isConnRefused(err) {
+			cliexit.Errorf(cliexit.ExitDaemonUnreachable, "spyder log: daemon not reachable at %s", base)
 		}
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder log: %v", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(resp.Body)
-		fmt.Fprintf(os.Stderr, "spyder log: daemon %d: %s\n", resp.StatusCode, strings.TrimSpace(string(raw)))
-		os.Exit(1)
+		var dbody struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		_ = json.Unmarshal(raw, &dbody)
+		msg := dbody.Message
+		if msg == "" {
+			msg = strings.TrimSpace(string(raw))
+		}
+		code := cliexit.MapDaemonError(resp.StatusCode, dbody.Error, msg)
+		cliexit.Errorf(code, "spyder log: %s", msg)
 	}
 
 	// Read SSE events line by line. Each event ends with a blank line.
@@ -1098,8 +1224,7 @@ func streamSSELog(body map[string]any, jsonMode bool) {
 		fmt.Println(strings.Join(parts, " "))
 	}
 	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		fmt.Fprintf(os.Stderr, "spyder log: read: %v\n", err)
-		os.Exit(1)
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder log: read: %v", err)
 	}
 }
 
@@ -1123,18 +1248,14 @@ func runPool(args []string) {
 }
 
 func runPoolList(args []string) {
-	pf, err := parseFlags(args, nil, []string{"--json"})
-	if err != nil {
-		fatalUsage("pool", err)
-	}
-	dispatchAndExit("pool_list", map[string]any{}, pf.bools["--json"])
+	pf, ctx, cancel := setupCommand("pool", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	dispatchAndExit(ctx, "pool_list", map[string]any{}, pf.bools["--json"], false)
 }
 
 func runPoolWarm(args []string) {
-	pf, err := parseFlags(args, []string{"--count"}, nil)
-	if err != nil {
-		fatalUsage("pool", err)
-	}
+	pf, ctx, cancel := setupCommand("pool", args, []string{"--count"}, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("pool", fmt.Errorf("warm: expected <template>"))
 	}
@@ -1148,28 +1269,26 @@ func runPoolWarm(args []string) {
 		fatalUsage("pool", fmt.Errorf("--count: %v", perr))
 	}
 	a["count"] = n
-	dispatchAndExit("pool_warm", a, false)
+	dispatchAndExit(ctx, "pool_warm", a, false, !verbose(pf))
 }
 
 func runPoolDrain(args []string) {
-	pf, err := parseFlags(args, nil, nil)
-	if err != nil {
-		fatalUsage("pool", err)
-	}
+	pf, ctx, cancel := setupCommand("pool", args, nil, nil, clitimeout.DefaultLaunch)
+	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("pool", fmt.Errorf("drain: expected <template>"))
 	}
-	dispatchAndExit("pool_drain", map[string]any{"template": pf.positional[0]}, false)
+	dispatchAndExit(ctx, "pool_drain", map[string]any{"template": pf.positional[0]}, false, !verbose(pf))
 }
 
 // --- helpers --------------------------------------------------------
 
 func fatalUsage(cmd string, err error) {
-	fmt.Fprintf(os.Stderr, "spyder %s: %v\n", cmd, err)
+	msg := fmt.Sprintf("spyder %s: %v", cmd, err)
 	if c := lookupCLI(cmd); c != nil {
-		fmt.Fprintf(os.Stderr, "%s\n", c.usage)
+		msg += "\n" + c.usage
 	}
-	os.Exit(2)
+	cliexit.Errorf(cliexit.ExitUsage, "%s", msg)
 }
 
 // parsePositiveInt parses a positive integer out of a string, failing

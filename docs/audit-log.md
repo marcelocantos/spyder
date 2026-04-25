@@ -323,3 +323,72 @@ maintenance activities. Append-only — newest entries at the bottom.
   evidence: the Minicades scenario where v0.14.0 wedged for 6+ minutes
   would now retry every 15s with bounded probe duration. Published for
   darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-26 — /release v0.16.0 (CLI overhaul for Make-driven test infra)
+
+- **Commit**: `pending`
+- **Outcome**: Reshape the `spyder` CLI into a first-class tool for
+  driving Make-based test infrastructure (the user's stated use case
+  during v0.15.0 review — "we need a command line that leverages the
+  daemon in the background"). Decomposed into 🎯T37.1 through 🎯T37.7
+  and shipped as a single release per the user's "build the whole
+  thing end-to-end" directive. Six axes of change:
+  - **🎯T37.1 exit-code taxonomy.** New `internal/cliexit` package
+    defines 17 distinct exit codes per failure mode (10 daemon
+    unreachable, 11 device not found, 12 device not connected, 13
+    reservation conflict, 14 not reserved by you, 20 app not
+    installed, 21–24 install/launch/terminate/PID-verify failures,
+    30 timeout, 40 trust not granted, 41 developer mode disabled, 42
+    device locked). `MapDaemonError(statusCode, errorCode, message)`
+    routes daemon REST errors and prose-matched signals to the right
+    code. Replaces the prior 4-code surface (0/1/2/3). 27 tests cover
+    the mapping table.
+  - **🎯T37.5 universal `--timeout`.** New `internal/clitimeout`
+    package registers `--timeout DURATION` on every subcommand with a
+    per-command default (`10s` reads, `60s` launch ops, `5m` install,
+    `10m` deploy, `30s` screenshot/reserve, `60s` record, `0` for
+    `log --follow`). `setupCommand` is the shared boilerplate every
+    subcommand goes through; bounded contexts thread cleanly to
+    `postTool` and `streamSSELog`. 13 tests.
+  - **🎯T37.4 selector parity.** New `selector.ParseSelectorString`
+    parses `platform=ios,os>=17,tags=phone+test,attr.serial=ABC123`
+    into the existing `Selector` struct shared with the daemon.
+    `spyder reserve --on PREDICATE` is now the script-friendly path,
+    keeping the legacy `--platform`/`--model`/`--tag` shorthand and
+    `--selector` JSON for compatibility. 49 tests.
+  - **🎯T37.2 `--json` parity.** Audit confirmed every read-ish
+    command already accepts `--json` (devices, resolve, device-state,
+    list-apps, reservations, runs list/show/artefacts, crashes, sim
+    list, emu list, pool list, log, diff). No gaps to fill.
+  - **🎯T37.3 quiet-on-success.** Mutating commands (launch-app,
+    terminate-app, install, uninstall, deploy, reserve, release,
+    renew, rotate, baseline update, record, net) print nothing on
+    success unless `-v` / `--verbose` is set; failure always prints
+    to stderr with the appropriate exit code. `screenshot` prints
+    just the file path (script-friendly `OUT=$(spyder screenshot
+    Pippa)`); the human-readable size+mime line moves to stderr
+    behind `-v`. Read commands continue printing as before — they ARE
+    the data.
+  - **🎯T37.6 hermeticity.** New `TestCLIHermeticity` exercises
+    `postTool` against a stub HTTP server with `HOME` redirected to
+    a temp dir; asserts no `~/.spyder/` files are created. New
+    `TestCLINoStickyStateOutsideAllowList` source-scans cli.go,
+    cli_visual.go, and main.go for `paths.Base()` references and
+    confirms only `autoStartDaemon` (writes daemon.log) and `runCmd`
+    (`spyder run` is the daemonless wrapper) reference the data
+    directory. Adding a "spyder use <device>" sticky-state regression
+    would fail the second test before any runtime check could observe
+    it.
+  - **🎯T37.7 STABILITY+agents-guide.** STABILITY.md snapshot bumped
+    to v0.16.0; CLI catalogue table updated with new flags;
+    universal-flags subsection, selector-grammar subsection, full
+    exit-code table, and hermeticity contract documented.
+    agents-guide grows companion sections so agents and humans see
+    the same surface.
+
+  Implementation cost: ~600 line-diff across cli.go, cli_visual.go,
+  three new internal packages, two new test functions. Build clean,
+  full test suite green. Wired-but-previously-unreachable subcommands
+  fixed in passing: `spyder diff` and `spyder baseline` were defined
+  in cli_visual.go but never registered in `cliCommands`; both are
+  now reachable. Published for darwin-arm64, linux-amd64, linux-arm64.

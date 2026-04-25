@@ -57,10 +57,14 @@ const (
 // MapDaemonError converts a daemon HTTP error response into an exit code.
 //
 // Precedence (highest to lowest):
-//  1. statusCode == 0 with a network-y errorMessage (connection refused / no
-//     such host / context deadline exceeded without a daemon body) →
-//     ExitDaemonUnreachable. A zero status code means the HTTP call itself
-//     failed before a response was received.
+//  1. statusCode == 0 → transport-level failure before any HTTP response
+//     was received. Subdivided:
+//     - "context deadline exceeded" / "timeout" / "timed out" → ExitTimeout.
+//     - Everything else (connection refused, no such host, can't assign
+//       requested address, no route to host, network unreachable, …) →
+//       ExitDaemonUnreachable. A request that never reached the daemon
+//       is, by definition, an unreachable-daemon failure regardless of
+//       the specific syscall errno.
 //  2. statusCode == 503 → ExitDaemonUnreachable (upstream tunneld down).
 //  3. Explicit errorCode match — structured codes win over prose.
 //  4. Prose match on errorMessage (case-insensitive substring).
@@ -69,11 +73,12 @@ func MapDaemonError(statusCode int, errorCode, errorMessage string) int {
 	// 1. Network failure before any HTTP response.
 	if statusCode == 0 {
 		lower := strings.ToLower(errorMessage)
-		if strings.Contains(lower, "connection refused") ||
-			strings.Contains(lower, "no such host") ||
-			strings.Contains(lower, "context deadline exceeded") {
-			return ExitDaemonUnreachable
+		if strings.Contains(lower, "context deadline exceeded") ||
+			strings.Contains(lower, "timeout") ||
+			strings.Contains(lower, "timed out") {
+			return ExitTimeout
 		}
+		return ExitDaemonUnreachable
 	}
 
 	// 2. HTTP 503 — daemon or its upstream (tunneld) is down.

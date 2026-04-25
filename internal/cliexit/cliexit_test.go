@@ -33,9 +33,33 @@ func TestMapDaemonError(t *testing.T) {
 			want:         cliexit.ExitDaemonUnreachable,
 		},
 		{
-			name:         "network: context deadline exceeded (no body)",
+			name:         "network: context deadline exceeded (no body) → timeout, not unreachable",
 			statusCode:   0,
 			errorMessage: "context deadline exceeded",
+			want:         cliexit.ExitTimeout,
+		},
+		{
+			name:         "network: can't assign requested address (e.g. port 0)",
+			statusCode:   0,
+			errorMessage: "dial tcp 127.0.0.1:0: connect: can't assign requested address",
+			want:         cliexit.ExitDaemonUnreachable,
+		},
+		{
+			name:         "network: no route to host",
+			statusCode:   0,
+			errorMessage: "dial tcp: no route to host",
+			want:         cliexit.ExitDaemonUnreachable,
+		},
+		{
+			name:         "network: network is unreachable",
+			statusCode:   0,
+			errorMessage: "dial tcp: network is unreachable",
+			want:         cliexit.ExitDaemonUnreachable,
+		},
+		{
+			name:         "network: empty errorMessage with statusCode 0",
+			statusCode:   0,
+			errorMessage: "",
 			want:         cliexit.ExitDaemonUnreachable,
 		},
 
@@ -190,15 +214,14 @@ func TestMapDaemonError(t *testing.T) {
 			want:         cliexit.ExitGeneric,
 		},
 		{
-			name:         "zero status with non-network message → generic",
+			name:         "zero status with arbitrary message → daemon unreachable (any pre-response failure)",
 			statusCode:   0,
 			errorMessage: "something completely unrelated",
-			want:         cliexit.ExitGeneric,
+			want:         cliexit.ExitDaemonUnreachable,
 		},
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			got := cliexit.MapDaemonError(tc.statusCode, tc.errorCode, tc.errorMessage)
