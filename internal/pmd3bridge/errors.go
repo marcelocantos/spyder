@@ -54,6 +54,20 @@ func IsTunneldUnavailable(err error) bool {
 	return false
 }
 
+// IsDeveloperModeDisabled reports whether err indicates the device's
+// Developer Mode toggle is off (bridge error code
+// "developer_mode_disabled"). DVT-instrument operations like screenshot
+// require Developer Mode on iOS 17+; this lets the MCP layer return an
+// actionable error pointing the user at Settings → Privacy & Security →
+// Developer Mode.
+func IsDeveloperModeDisabled(err error) bool {
+	var be *BridgeError
+	if asErr(err, &be) {
+		return be.Code == "developer_mode_disabled"
+	}
+	return false
+}
+
 // IsPMD3Error reports whether err is a generic pymobiledevice3 error
 // (bridge error code "pmd3_error").
 func IsPMD3Error(err error) bool {

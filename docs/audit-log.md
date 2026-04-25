@@ -167,3 +167,35 @@ maintenance activities. Append-only — newest entries at the bottom.
   screenshot broken — legacy screenshotr deprecated, needs tunneld+RSD
   restoration regressed at T25). Published for darwin-arm64,
   linux-amd64, linux-arm64.
+
+## 2026-04-25 — /release v0.10.0
+
+- **Commit**: `pending`
+- **Outcome**: T30 (iOS 17+ screenshot) and T32 (transparent autoawake)
+  brought to working state via two structural changes. Screenshot
+  rewired to use pmd3's DVT instrument over a tunneld-mediated RSD
+  connection, replacing the legacy `com.apple.mobile.screenshotr`
+  lockdown service that Apple deprecated in iOS 17 (the bridge had been
+  returning `InvalidServiceError` on every modern device for months).
+  HIL-verified against Pippa (iPad, iOS 26.3.1), Jevons (iPhone, iOS
+  26.4.1), and Minicades (iPhone, iOS 26.2) — all three return real
+  PNGs. Bridge `list_devices` now reads tunneld's HTTP registry as
+  canonical so iOS 17+ enumeration is no longer subject to `pmd3 usbmux
+  list`'s random drops. Autoawake redesigned from a one-shot trigger-
+  based model into a convergence loop — every 15 s it observes each
+  connected device's KeepAwake-running and KeepAwake-installed state
+  and drives toward foregrounded; the user resolving a human gate
+  (trusting a developer cert, unlocking the device, toggling Developer
+  Mode) is detected on the next tick rather than requiring a re-plug.
+  HIL-verified end-to-end. Daemon shutdown race fixed (clean exit 0
+  under SIGTERM instead of panic). Ghost-UDID filter added (paired-but-
+  unavailable devices no longer surface as autoawake targets). New
+  typed BridgeError codes `tunneld_unavailable` and
+  `developer_mode_disabled` plumbed Go-side with actionable error text.
+  Stale auto-awake docs in agents-guide.md and README.md rewritten to
+  match post-v0.9.0 / post-T32 behaviour. Targets 🎯T31 (KeepAwake
+  restored — gap closed by convergence) and 🎯T32 (transparent install)
+  retired; 🎯T33 (Swift sidecar) abandoned without work after the
+  tunneld+DVT diagnosis; 🎯T34 (recover from stale KeepAwake install)
+  raised as post-v0.10.0 follow-up. Published for darwin-arm64,
+  linux-amd64, linux-arm64.

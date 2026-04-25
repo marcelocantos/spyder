@@ -62,6 +62,7 @@ def _classify(exc: BridgeError) -> JSONResponse:
     status = {
         "device_not_paired": 409,
         "bundle_not_installed": 422,
+        "developer_mode_disabled": 412,
         "tunneld_unavailable": 503,
         "pmd3_error": 500,
     }.get(exc.code, 500)
