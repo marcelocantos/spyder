@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 3
 targets:
   T1:
     name: Bimodal spyder MCP server registers with Claude Code and dispatches tool calls end-to-end
@@ -43,7 +43,7 @@ targets:
     status: achieved
     value: 3.0
     cost: 2.0
-    observable: true
+    showcase: true
     actual_cost: 2.0
     acceptance:
     - spyder serve creates ~/.spyder/spyder.sock with mode 0600
@@ -65,7 +65,7 @@ targets:
     status: achieved
     value: 3.0
     cost: 2.0
-    observable: true
+    showcase: true
     actual_cost: 1.0
     acceptance:
     - invoking spyder with no args and piping an MCP `initialize` request on stdin yields a valid MCP response on stdout
@@ -87,7 +87,7 @@ targets:
     status: achieved
     value: 2.0
     cost: 1.0
-    observable: true
+    showcase: true
     actual_cost: 1.0
     acceptance:
     - 'JSON-RPC tools/list via the stdio proxy returns exactly four tools: devices, resolve, keepawake, device_state'
@@ -107,7 +107,7 @@ targets:
     status: achieved
     value: 3.0
     cost: 2.0
-    observable: true
+    showcase: true
     actual_cost: 1.0
     acceptance:
     - tools/call devices returns a structured result (may be empty list if inventory unset, but with correct shape)
@@ -129,7 +129,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 1.0
-    observable: true
+    showcase: true
     actual_cost: 1.0
     acceptance:
     - '`claude mcp add --scope user spyder -- spyder` registers the server without error'
@@ -150,7 +150,7 @@ targets:
     status: achieved
     value: 13.0
     cost: 5.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - spyder serve supervises every iOS device that tunneld reports as paired, with no flag or allow-list — all iOS/iPadOS devices, all the time
@@ -201,7 +201,7 @@ targets:
     status: achieved
     value: 13.0
     cost: 5.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'Daemon exposes REST endpoints on the same HTTP listener as /mcp covering: devices, resolve, device_state, screenshot, list_apps, launch_app, terminate_app, keepawake, reserve, release, renew, reservations'
@@ -224,7 +224,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 2.0
-    observable: true
+    showcase: true
     actual_cost: 2.0
     acceptance:
     - spyder tool rotates an iOS simulator via simctl io <udid> rotate to portrait, landscape-left, landscape-right, portrait-upside-down
@@ -243,7 +243,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 5.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - start/stop recording a video on iOS simulator, iOS device, and Android (device+emu)
@@ -263,7 +263,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - 'iOS: fetch .ips reports via pymobiledevice3 crash-reports (or devicectl equivalent), optionally filtered by since-timestamp and process name'
@@ -283,7 +283,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - 'install_app tool: accepts an .app (iOS) or .apk (Android) path, installs on the reserved device'
@@ -302,7 +302,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 5.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'Named profiles: wifi, 4g, 3g, edge, offline, lossy-<pct>, delay-<ms>'
@@ -322,7 +322,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 8.0
-    observable: true
+    showcase: true
     actual_cost: 8.0
     acceptance:
     - 'iOS: list/create/boot/shutdown/delete simulators by type + runtime'
@@ -341,7 +341,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 5.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'Live tail: server-sent events (or chunked REST) streaming filtered log lines to a client'
@@ -361,7 +361,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    observable: true
+    showcase: true
     actual_cost: 2.0
     acceptance:
     - ~/.spyder/inventory.json format is documented with at least Pippa as a worked example
@@ -383,7 +383,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - Each reservation gets a run-id and a directory ~/.spyder/runs/<run-id>/
@@ -400,7 +400,7 @@ targets:
     status: achieved
     value: 13.0
     cost: 13.0
-    observable: true
+    showcase: true
     actual_cost: 8.0
     acceptance:
     - 'Baseline store: ~/.spyder/baselines/<suite>/<case>.{png,manifest.json} with per-device / per-orientation variants'
@@ -459,7 +459,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - IOSAdapter.List shells out to `pymobiledevice3 usbmux list` (USB) and `xcrun devicectl list devices` (CoreDevice) and fuses the two into a single []Info array keyed by UUID
@@ -478,7 +478,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - reserve accepts a `selector` argument as an alternative to a literal `device` — a structured predicate over (platform, model-family, OS-min, OS-max, orientation-capable, tags, and free-form attribute matchers)
@@ -509,7 +509,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'Pool catalogue at ~/.spyder/pool.yaml (or similar) declares stock sim/emu templates: device-type + runtime/system-image + tags + min/max desired-ready counts + per-template linger duration + per-template warm-pool size'
@@ -557,7 +557,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 13.0
     acceptance:
     - 'The iOS KeepAwake companion app and all its supporting machinery are deleted from spyder: the ios/KeepAwake/ project directory, the xcodegen/xcodebuild/devicectl install code path in internal/autoawake/autoawake.go (deployKeepAwake, findBuiltApp, findKeepAwakeProject), device.KeepAwakeBundleID and all references, and the SPYDER_KEEPAWAKE_PROJECT env var. The companion-app concept no longer exists in the codebase.'
@@ -585,7 +585,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - bridge/ Python package (uv-managed, pyproject.toml) with fastapi + uvicorn + pymobiledevice3 as direct deps
@@ -612,7 +612,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - internal/pmd3bridge/ package with a Client that wraps http.Client using a Unix-socket DialContext; one typed method per bridge endpoint (ListDevices, ListApps, LaunchApp, KillApp, PIDForBundle, Battery, Screenshot, CrashReportsList, CrashReportsPull, AcquirePowerAssertion, RefreshPowerAssertion, ReleasePowerAssertion)
@@ -639,7 +639,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - internal/device/ios.go contains zero exec.Command("pymobiledevice3", ...) calls. Every iOS operation (State, Screenshot, ListApps, LaunchApp, TerminateApp, AppPID, Crashes, logs-related) goes through a pmd3bridge.Client injected into IOSAdapter
@@ -665,7 +665,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 2.0
     acceptance:
     - ios/KeepAwake/ directory removed entirely (xcodegen project, Swift sources, provisioning, notes, README)
@@ -690,7 +690,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     actual_cost: 2.0
     acceptance:
     - release.yml CI workflow builds the pmd3-bridge PyInstaller --onedir bundle alongside the spyder binary for each release platform (darwin-arm64, linux-amd64, linux-arm64)
@@ -742,7 +742,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - Bridge binds 127.0.0.1:0 (kernel-assigned ephemeral port) instead of a filesystem socket
     - Bridge writes a single structured ready line on stdout carrying the port and a randomly-generated auth token, e.g. `ready port=NNNNN token=<32-byte-base64>\n`
@@ -766,7 +766,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - 'Per-endpoint bug-detection thresholds are set and named as constants in `internal/pmd3bridge`: list_devices 10 s; acquire/refresh/release_power_assertion 10 s; list_apps/battery/launch_app/kill_app/pid_for_bundle 30 s; screenshot 30 s; ready-handshake 10 s (existing)'
     - Every bridge client call carries a `context.WithTimeout` at its per-endpoint threshold; no call relies on the bare 30 s http.Client ceiling
@@ -791,7 +791,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - '`crash_reports_list` and the Android crash-equivalent return `Content-Type: application/x-ndjson` with one JSON object per line over chunked transfer encoding'
     - '`crash_reports_pull` returns `Content-Type: application/octet-stream` with chunked transfer encoding; the Go client exposes the response body as an `io.Reader` rather than buffering'
@@ -818,7 +818,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - '`make test-report` runs the full developer-machine test suite (Go unit, Python unit, integration against real bridge subprocess, optional device tier when devices are attached), refuses to run on a non-empty `git status --porcelain`, records `HEAD` SHA + per-suite outcomes into `TEST-REPORT.json` at the repo root'
     - 'The developer workflow is: commit code → `make test-report` → `git commit --amend --no-edit TEST-REPORT.json` to fold the report into the commit it vouches for'
@@ -850,7 +850,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - Every `client.post()` call emits a DEBUG log with endpoint, duration_ms, outcome (ok / bridge_error:$code / fatal), and the relevant UDID when present
     - Any call whose duration exceeds 0.5 × its endpoint threshold emits a WARN `bridge call slow` regardless of level, naming endpoint, duration_ms, and threshold_ms
@@ -878,7 +878,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - 'Test helpers for resource-axis accounting: process-group fd count (`lsof -g`), Go runtime.NumGoroutine, runtime.ReadMemStats, subprocess-tree descendant count; each exposed via `internal/pmd3bridge/testutil` or equivalent so tests across packages can assert on the same axes'
     - Primitive helper `assertNoResourceLeak(t, fn, iterations, maxDelta)` snapshots the chosen axis before and after running fn N times; fails if delta > maxDelta. Works for any of the axes above via a tiny sampler closure
@@ -901,7 +901,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - '`scripts/hil-verify.sh <scenario>` runs a named HIL scenario and prompts the operator for pass/fail with optional notes. Records outcome into `HIL-REPORT.json` at the repo root with HEAD SHA, operator email (from git config), timestamp, scenario name, duration, device used, and notes'
     - 'Scenario catalogue lives under `scripts/hil-scenarios/<name>.sh`; each is a bash script that prints instructions, runs whatever setup it needs (e.g. launching spyder with autoawake), waits for the operator''s window, then exits. First scenario: `stay-awake` — launches spyder, prompts operator to plug in an iPhone (30 s auto-lock), wait 90 s, confirm screen is still on'
@@ -939,7 +939,7 @@ targets:
     status: achieved
     value: 13.0
     cost: 8.0
-    observable: true
+    showcase: true
     actual_cost: 8.0
     acceptance:
     - ios/KeepAwake/ contains a buildable Xcode project producing com.marcelocantos.spyder.KeepAwake
@@ -1008,7 +1008,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - When autoawake detects a new iOS device and LaunchKeepAwake fails because the app is not installed, the supervisor attempts an autonomous install+launch cycle
     - The autonomous path runs silently on success — no user prompt, no blocking. Log shows the normal `KeepAwake foregrounded` line once the app is running
@@ -1034,7 +1034,7 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    observable: true
+    showcase: true
     acceptance:
     - A Swift binary (`spyder-iosbridge`) wraps Apple's CoreDevice.framework and is bundled in the spyder release tar alongside the Go daemon. Swift Package Manager build target lives under `ios-bridge/` (or similar) and is invoked from the spyder Makefile. KeepAwake stays separate (it ships on-device, not host).
     - 'spyder-iosbridge serves the same wire protocol the pmd3-bridge serves today: spawned by the daemon supervisor, ephemeral TCP port + bearer-token handshake over stdio (`ready port=NNNN token=XXXX`), NDJSON streaming where useful, fail-fast on protocol violation. The Go-side `internal/pmd3bridge` package keeps its public Client API; only the bridge implementation language changes.'
@@ -1072,12 +1072,41 @@ targets:
       <parameter name="tags">["ios", "autoawake", "follow-up", "post-t32"]
     origin: manual
     discovered: 2026-04-25
+  T35:
+    name: resolveBridgeBinary follows symlinks so Homebrew install finds the bundled bridge
+    status: converging
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - After `brew install marcelocantos/tap/spyder`, running `spyder serve` finds the bundled pmd3-bridge at the Cellar path without requiring SPYDER_PMD3_BRIDGE override.
+    - The daemon log shows `pmd3-bridge configured binary=/opt/homebrew/Cellar/spyder/<ver>/libexec/pmd3-bridge/pmd3-bridge` (or the equivalent on Linux Homebrew) — not the WARN line `pmd3-bridge binary not found — bridge tools disabled`.
+    - 'Fix is in `internal/daemon/daemon.go` `resolveBridgeBinary`: call `filepath.EvalSymlinks` on the result of `os.Executable()` before computing the relative path to libexec. The dev fallback (walking up looking for `bridge/dist/pmd3-bridge/pmd3-bridge`) stays unchanged.'
+    - 'Acceptance test: a Go unit test that constructs the resolution logic against a temp tree containing a symlink → real binary, asserting the symlink target''s libexec sibling is found.'
+    context: |-
+      Discovered 2026-04-25 testing v0.11.0 via `brew install marcelocantos/tap/spyder` immediately after release. The daemon started, listened on :3030, the autoawake convergence loop spun up — but every iOS tool call returned `iOS adapter requires the pmd3 bridge — ensure the bridge binary is installed`. Daemon log line: `pmd3-bridge binary not found — bridge tools disabled; set SPYDER_PMD3_BRIDGE or install via Homebrew`. Root cause: `os.Executable()` returns the symlink path `/opt/homebrew/bin/spyder` (linked from `/opt/homebrew/Cellar/spyder/0.11.0/bin/spyder`); `resolveBridgeBinary` then computes `<exe-dir>/../libexec/pmd3-bridge/pmd3-bridge` = `/opt/homebrew/libexec/pmd3-bridge/pmd3-bridge`, which doesn't exist. The actual bridge is in the Cellar at `/opt/homebrew/Cellar/spyder/0.11.0/libexec/pmd3-bridge/pmd3-bridge`. This affects every Homebrew user; CI's release-test step doesn't catch it because it tests the locally-built binary, not the installed-via-tap binary. Workaround: `SPYDER_PMD3_BRIDGE=/opt/homebrew/Cellar/spyder/0.11.0/libexec/pmd3-bridge/pmd3-bridge spyder serve` works fine and verified DVT screenshot of Jevons end-to-end via MCP. Should ship as v0.12.0 ASAP — every fresh install is broken otherwise.</context>
+      <parameter name="tags">["bug", "release", "homebrew", "ios", "post-v0.11.0"]
+    origin: manual
+    discovered: 2026-04-25
+  T36:
+    name: brew-services-supervised spyder daemon can reach loopback tunneld at 127.0.0.1:49151
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - When spyder is running as a Homebrew service (`brew services start spyder`), MCP screenshot calls succeed against iOS 17+ devices. Same code path that works in a foreground `spyder serve` invocation.
+    - 'Daemon log under brew services does NOT show `tunneld unreachable at (''127.0.0.1'', 49151): [Errno 65] No route to host` when the tunneld registry is in fact populated and reachable from the user shell.'
+    - 'Investigation notes recorded: which of the candidate causes (macOS Local Network privacy entitlement, launchd sandbox prohibiting loopback, IPv4-vs-IPv6 binding mismatch, missing `<key>RunAtLoad</key>` env propagation, etc.) is the actual culprit. The fix is whatever it takes to make the loopback reachable — likely a plist tweak, possibly a `setsockopt`/binding change in the bridge, possibly a separate Network framework path.'
+    context: |-
+      Discovered 2026-04-25 testing v0.11.0. Even after working around T35 (bridge binary location), spyder running under brew services hits `No route to host` errno 65 when the bridge subprocess tries to reach loopback tunneld. Same Python code, same loopback address, same time of day works fine when spyder is started in a foreground shell. Suspect the launchd context restricts something — possibly Local Network privacy (macOS 13+ requires apps to declare local-network access in Info.plist), possibly the brew-generated plist is missing some networking entitlement, possibly the bridge is binding/connecting via an interface that isn't routable in the launchd-spawned process. Affects the production deployment path: users following the standard `brew install` + `brew services start` flow can't take screenshots. Worked around T35 by env-overriding the bridge path; T36 needs a real fix because there's no analogous workaround for the network restriction beyond running spyder in a terminal. Likely a v0.12.0 follow-up alongside T35.</context>
+      <parameter name="tags">["bug", "homebrew", "launchd", "tunneld", "post-v0.11.0"]
+    origin: manual
+    discovered: 2026-04-25
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
     value: 13.0
     cost: 5.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - A wrapper command (subcommand or companion script) runs xcodebuild test/run with arbitrary args, waits for completion, and foregrounds KeepAwake on exit — success or failure
@@ -1099,7 +1128,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 8.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'device_state({device: "Pippa"}) returns battery level (0-100), charging bool, thermal state (nominal/fair/serious/critical), and foreground app bundle ID'
@@ -1122,7 +1151,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 2.0
-    observable: true
+    showcase: true
     actual_cost: 2.0
     acceptance:
     - devices tool lists Android devices via adb, annotated with inventory alias when matched, alongside iOS devices in a single call
@@ -1146,7 +1175,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - AndroidAdapter.List shells out to `adb devices -l` and returns one Info per attached device with UUID=serial, Platform=android, and Model/OS populated where available
@@ -1166,7 +1195,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 5.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - AndroidAdapter.State shells out to `adb -s <serial> shell dumpsys battery` and `dumpsys activity activities` (or equivalent) to populate BatteryLevel, Charging, and ForegroundApp
@@ -1190,7 +1219,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 8.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - spyder detects and health-probes an externally-managed tunneld on startup (default 127.0.0.1:49151) and logs the paired-device count on success
@@ -1211,7 +1240,7 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    observable: true
+    showcase: true
     actual_cost: 3.0
     acceptance:
     - New `screenshot` MCP tool accepts {device} and returns the screen as an image content block (base64 PNG) usable by mcp clients without intermediate files
@@ -1235,7 +1264,7 @@ targets:
     status: achieved
     value: 5.0
     cost: 5.0
-    observable: true
+    showcase: true
     actual_cost: 5.0
     acceptance:
     - '`list_apps({device})` returns installed third-party apps with bundle id, name, and version. iOS: `pymobiledevice3 apps list` (no DDI needed). Android: `adb shell pm list packages -3` + `cmd package dump <pkg>` for names'
