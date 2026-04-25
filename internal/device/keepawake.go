@@ -61,9 +61,20 @@ var teamBlockPattern = regexp.MustCompile(`\{[^{}]*teamID\s*=\s*[A-Z0-9]{10}[^{}
 // DetectCodesigningTeam returns the Xcode-registered provisioning team
 // to use for the KeepAwake build. Reads `defaults read com.apple.dt.Xcode
 // IDEProvisioningTeams` (the same data Xcode shows under Settings →
-// Accounts) and prefers a free Personal Team — that's the one any
-// developer signed in to Xcode has, and free provisioning auto-issues
-// dev profiles without needing a paid Apple Developer Program seat.
+// Accounts).
+//
+// Preference order:
+//
+//  1. **Paid Developer Program team** (`isFreeProvisioningTeam = 0`).
+//     Provisioning profiles last ~1 year, so an autoawake-built
+//     KeepAwake install survives well past the 7-day reinstall churn
+//     that the free path imposes.
+//  2. **Free Personal Team** (`isFreeProvisioningTeam = 1`). Profiles
+//     expire after 7 days; the convergence loop will see the install
+//     fail to launch with CoreDeviceError 1002 ("No provider was
+//     found") shortly after expiry, and (once 🎯T34 lands) auto-
+//     uninstall + reinstall to refresh the profile. Used only when no
+//     paid team is available.
 //
 // Returns ErrNoCodesigningIdentity when Xcode has no registered teams,
 // which means the user has not signed in to Xcode.
@@ -84,16 +95,17 @@ func DetectCodesigningTeam() (string, error) {
 	if len(blocks) == 0 {
 		return "", ErrNoCodesigningIdentity
 	}
-	// First pass: prefer a free Personal Team.
+	// First pass: prefer a paid (non-free) team.
 	for _, block := range blocks {
-		if !freeProvisioningPattern.MatchString(block) {
+		if freeProvisioningPattern.MatchString(block) {
 			continue
 		}
 		if m := teamIDPattern.FindStringSubmatch(block); len(m) >= 2 {
 			return m[1], nil
 		}
 	}
-	// Second pass: fall back to any team Xcode knows about.
+	// Second pass: fall back to a free Personal Team if that's all
+	// the user has.
 	for _, block := range blocks {
 		if m := teamIDPattern.FindStringSubmatch(block); len(m) >= 2 {
 			return m[1], nil
