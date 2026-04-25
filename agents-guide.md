@@ -724,13 +724,36 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
 
 ## Auto-awake supervisor
 
-`spyder serve` runs an always-on supervisor via the bundled pmd3 bridge.
-Whenever a new paired iOS device appears, spyder acquires a
-`PreventUserIdleSystemSleep` IOKit power assertion on the host. The assertion
-is refreshed before it would expire and released when the device disconnects or
-the daemon shuts down. No companion app to install, no on-device trust prompt,
-no lock-state detection — the power assertion prevents auto-lock in the first
-place.
+`spyder serve` runs an always-on supervisor that keeps attached iOS devices
+awake by foregrounding the on-device **KeepAwake** companion app. KeepAwake
+sets `UIApplication.isIdleTimerDisabled = true` while foregrounded — the
+canonical iOS mechanism for preventing display auto-lock. (The pre-v0.9.0
+attempts to use pmd3's `PowerAssertionService` as a drop-in replacement
+turned out to be no-ops for display sleep; v0.9.0 reverted to the companion
+app, 🎯T31.)
+
+When a new paired iOS device appears the supervisor:
+
+1. Tries to launch KeepAwake via `xcrun devicectl device process launch`.
+2. If KeepAwake isn't installed, attempts a **transparent install** (🎯T32):
+   builds `ios/KeepAwake.xcodeproj` via `xcodebuild` with the user's detected
+   codesigning identity and `DEVELOPMENT_TEAM`, installs the resulting bundle
+   via devicectl, then re-launches. Silent on success.
+3. If a precondition is missing (no codesigning identity, Developer Mode
+   disabled, trust not yet granted on this device, or the device is locked
+   mid-launch) the supervisor logs a specific actionable message and — for
+   the lock and trust cases — fires a persistent macOS notification asking
+   the user to perform the exact tap required. State is tracked per-device
+   so the same prompt isn't re-issued every poll.
+4. Re-foregrounds KeepAwake every 15 s on every healthy device so manual
+   task-switching / backgrounding self-heals before the next auto-lock fires.
+
+Per-developer signing identity is required (free-tier Apple ID suffices).
+First-time install of a developer's certificate on a device requires a one-
+time Trust tap in **Settings → VPN & Device Management** on the device. On
+iOS 17+ the device's **Developer Mode** toggle must be enabled too — visible
+under **Settings → Privacy & Security → Developer Mode** (toggling it
+reboots the device).
 
 ## Environment and dependencies
 
@@ -739,12 +762,17 @@ place.
   itself) but iOS operations will fail there.
 - **`pymobiledevice3` ≥ 8.2** — iOS operations. The `pmd3-bridge` FastAPI
   subprocess (bundled at `libexec/pmd3-bridge/pmd3-bridge`) provides a
-  persistent Unix-socket API over pmd3; spyder's Go daemon supervises it
-  automatically and falls back to shell-out paths when the binary is absent.
-- **`pymobiledevice3 remote tunneld`** — required for DVT operations on iOS 17+.
-  Run as root (TUN/TAP interface). Spyder detects and uses an externally-managed
-  instance by default; integrated supervision via `--supervise-tunneld` is
-  planned but not yet wired.
+  persistent loopback HTTP API over pmd3; spyder's Go daemon supervises
+  it automatically.
+- **`pymobiledevice3 remote tunneld`** — **required** for any DVT operation
+  on iOS 17+ (screenshot is the most user-visible) and for reliable
+  device enumeration on iOS 17+. Run as root (TUN/TAP interface), bound
+  to the default `127.0.0.1:49151`. Typical setup is a launchd service.
+  Spyder detects an externally-managed instance via the HTTP probe at
+  that address and falls back to USBMux-only enumeration when tunneld
+  is absent (older devices keep working; iOS 17+ screenshot returns
+  `tunneld_unavailable` until tunneld is up). Bridge-supervised tunneld
+  is a 1.0 prerequisite (🎯T30 follow-up).
 - **`adb`** — Android operations.
 - **`alerter`** — persistent macOS notifications for the locked-device prompt
   (fallbacks: `terminal-notifier`, `osascript`).
@@ -809,8 +837,14 @@ owner's reservation is released.
 ## Common gotchas
 
 - **"tunneld unavailable"** in a tool error → start
-  `sudo pymobiledevice3 remote tunneld` (or the systemd/launchd service that
-  wraps it) and retry.
+  `sudo pymobiledevice3 remote tunneld` (or the systemd/launchd service
+  that wraps it) and retry. Required on iOS 17+ for `screenshot` and
+  for stable device enumeration; iOS <17 devices keep working over
+  USBMux even without tunneld.
+- **"Developer Mode is not enabled"** in a tool error (iOS 17+) → on
+  the device, **Settings → Privacy & Security → Developer Mode**, toggle
+  on. The device reboots; trust the developer cert again afterwards if
+  prompted.
 - **Device listed but operations fail with "device not connected"** → the
   device appears in the paired list (USB/WiFi pairing record exists) but isn't
   currently reachable. Plug it back in, unlock, or re-enable "Connect via

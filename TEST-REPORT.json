@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "commit": "61a45f3abc091f92d825c23abf9dde42270c2a8c",
-  "generated_at": "2026-04-25T01:44:32Z",
+  "commit": "efe43bcef824584c448c0cf14df435321a48ade6",
+  "generated_at": "2026-04-25T07:46:28Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "go test ./...",
-      "duration_s": 1,
+      "duration_s": 0,
       "status": "pass"
     },
     {
@@ -18,8 +18,9 @@
     },
     {
       "name": "integration",
-      "status": "skipped",
-      "reason": "set SPYDER_INTEGRATION=1 to run (harness lands incrementally)"
+      "cmd": "go test -tags=integration ./internal/pmd3bridge/...",
+      "duration_s": 4,
+      "status": "pass"
     },
     {
       "name": "device",
