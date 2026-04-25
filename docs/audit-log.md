@@ -292,3 +292,34 @@ maintenance activities. Append-only — newest entries at the bottom.
   three; simulated Homebrew layout in /tmp/ confirms the libexec
   source path is found through the bin/spyder symlink. Published for
   darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-26 — /release v0.15.0
+
+- **Commit**: `pending`
+- **Outcome**: Hotfix bounding every `xcrun devicectl ...` invocation
+  with a 30-second timeout. Surfaced live during v0.14.0 verification:
+  Minicades had been force-restarted and was mid-DDI-personalization
+  under Xcode's "Preparing Minicades Test iPhone" spinner.
+  autoawake's per-device convergence step called
+  `devicectl device info processes` against it, which hangs
+  indefinitely on a device whose DVT/DDI subsystem isn't ready. With
+  no timeout, the call held the per-device inFlight lock for 6+
+  minutes; subsequent 15s convergence ticks skipped Minicades silently
+  and KeepAwake never got rebuilt + reinstalled. PR #50 introduces a
+  new `runDevicectl(args...)` helper that wraps every devicectl call
+  with `context.WithTimeout(32s)` plus passes devicectl's own
+  `--timeout 30` so its CoreDevice client aborts cleanly ahead of the
+  context deadline. Touches `KeepAwakeInstalled`, `KeepAwakeRunning`,
+  `LaunchKeepAwake`, `InstallApp`, `UninstallApp`,
+  `IOSAdapter.List`'s devicectl-merge, and
+  `devicectlConnectedIOSDevices`. Convergence-model fit: a
+  timeout-induced error classifies as `classOther`, which the model
+  already handles via "log on transition, retry next tick" — no new
+  latching states, no new alert behaviours. When the device recovers
+  (DDI prep finishes, USB cable jostle settles, etc.) the next tick's
+  calls return promptly and the device advances normally. Worst-case
+  latency from "device healthy" to "KeepAwake foregrounded" is one
+  convergeInterval (~15s) plus one round of devicectl probes. HIL
+  evidence: the Minicades scenario where v0.14.0 wedged for 6+ minutes
+  would now retry every 15s with bounded probe duration. Published for
+  darwin-arm64, linux-amd64, linux-arm64.
