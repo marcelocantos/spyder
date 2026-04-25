@@ -170,7 +170,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-25 — /release v0.10.0
 
-- **Commit**: `pending`
+- **Commit**: `497b436`
 - **Outcome**: T30 (iOS 17+ screenshot) and T32 (transparent autoawake)
   brought to working state via two structural changes. Screenshot
   rewired to use pmd3's DVT instrument over a tunneld-mediated RSD
