@@ -963,7 +963,7 @@ targets:
     achieved: 2026-04-18
   T30:
     name: Spyder screenshot works on iOS 17+ devices (legacy screenshotr deprecated)
-    status: identified
+    status: converging
     value: 0.0
     cost: 0.0
     acceptance:
