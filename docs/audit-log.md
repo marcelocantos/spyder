@@ -220,3 +220,24 @@ maintenance activities. Append-only — newest entries at the bottom.
   cancelled context. PR #37 fixed the test; this release-prep PR
   bumps STABILITY.md snapshot to v0.11.0 and records the audit-log
   entry. Published for darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-26 — /release v0.12.0
+
+- **Commit**: `pending`
+- **Outcome**: Hotfix release for 🎯T35. Post-v0.11.0 MCP testing surfaced
+  that every `brew install marcelocantos/tap/spyder` ran with the
+  bundled pmd3-bridge undiscoverable: the daemon's `resolveBridgeBinary`
+  computed the bridge path relative to `os.Executable()`, which on
+  macOS / Linux Homebrew installs returns the symlink path (e.g.
+  `/opt/homebrew/bin/spyder`) rather than the resolved Cellar path.
+  The libexec sibling lives next to the real binary inside the Cellar,
+  not next to the symlink under `/opt/homebrew/libexec`. Fix (PR #40):
+  add an `exePathReal()` helper that calls `filepath.EvalSymlinks` on
+  `os.Executable()` before computing the relative path. Verified
+  against a simulated Homebrew layout: bridge resolves through the
+  symlink correctly. v0.12.0 ships the fix; brew-services-supervised
+  daemons still hit 🎯T36 ("No route to host" on loopback tunneld) so
+  `brew services start spyder` users will see iOS screenshot fail
+  until that follow-up lands. Foreground `spyder serve` works fully
+  on a Homebrew install for the first time. Published for darwin-arm64,
+  linux-amd64, linux-arm64.
