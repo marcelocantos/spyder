@@ -48,6 +48,107 @@ var keepAwakeLaunchLockedPattern = regexp.MustCompile(
 var keepAwakeLaunchTrustPattern = regexp.MustCompile(
 	`(?i)untrusted.*developer|not.*explicitly trusted|requires.*trust|'Security'|invalid code signature`)
 
+// KeepAwakeInstalled reports whether the KeepAwake bundle is currently
+// installed on the device. Implemented as a `xcrun devicectl device info
+// apps` JSON query filtered for KeepAwakeBundleID. Used by autoawake's
+// convergence loop (🎯T32) to decide between install and launch each
+// tick rather than latching install state.
+//
+// Returns (false, nil) on a successful query that doesn't list the app
+// (the canonical "not installed" answer); (false, error) on a devicectl
+// failure (caller can treat that as "unknown" and skip).
+func (a *IOSAdapter) KeepAwakeInstalled(id string) (bool, error) {
+	if id == "" {
+		return false, errors.New("device identifier is empty")
+	}
+	tmp, err := os.MkdirTemp("", "spyder-devctl-apps-*")
+	if err != nil {
+		return false, fmt.Errorf("mkdir temp: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+	jsonPath := filepath.Join(tmp, "apps.json")
+	cmd := exec.Command("xcrun", "devicectl", "device", "info", "apps",
+		"--device", id, "--quiet", "--json-output", jsonPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("devicectl device info apps: %w\n%s",
+			err, truncate(string(out), 200))
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return false, fmt.Errorf("read devicectl apps JSON: %w", err)
+	}
+	var doc struct {
+		Result struct {
+			Apps []struct {
+				BundleIdentifier string `json:"bundleIdentifier"`
+			} `json:"apps"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return false, fmt.Errorf("decode devicectl apps JSON: %w", err)
+	}
+	for _, app := range doc.Result.Apps {
+		if app.BundleIdentifier == KeepAwakeBundleID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// KeepAwakeRunning reports whether a KeepAwake process is currently
+// running on the device. Implemented as a `xcrun devicectl device info
+// processes` JSON query filtered for an executableUrl ending in
+// `/KeepAwake.app/KeepAwake`. Used by autoawake's convergence loop
+// (🎯T32) to short-circuit launch when the app is already foregrounded.
+//
+// Note: this asserts the process is *running*, not that the app is
+// foregrounded. KeepAwake is a single-purpose app — the only reason
+// to launch it is to foreground it, and once running it's the foreground
+// app until the user task-switches. Foreground detection per-process
+// would require DVT instruments which we deliberately avoid in autoawake.
+//
+// Returns (false, nil) on a successful query that finds no matching
+// process; (false, error) on a devicectl failure (caller can treat as
+// "unknown" and proceed to launch).
+func (a *IOSAdapter) KeepAwakeRunning(id string) (bool, error) {
+	if id == "" {
+		return false, errors.New("device identifier is empty")
+	}
+	tmp, err := os.MkdirTemp("", "spyder-devctl-procs-*")
+	if err != nil {
+		return false, fmt.Errorf("mkdir temp: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+	jsonPath := filepath.Join(tmp, "procs.json")
+	cmd := exec.Command("xcrun", "devicectl", "device", "info", "processes",
+		"--device", id, "--quiet", "--json-output", jsonPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return false, fmt.Errorf("devicectl device info processes: %w\n%s",
+			err, truncate(string(out), 200))
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return false, fmt.Errorf("read devicectl processes JSON: %w", err)
+	}
+	var doc struct {
+		Result struct {
+			RunningProcesses []struct {
+				ExecutableURL string `json:"executableUrl"`
+			} `json:"runningProcesses"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return false, fmt.Errorf("decode devicectl processes JSON: %w", err)
+	}
+	const keepAwakeExecSuffix = "/KeepAwake.app/KeepAwake"
+	for _, p := range doc.Result.RunningProcesses {
+		if strings.HasSuffix(p.ExecutableURL, keepAwakeExecSuffix) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // LaunchKeepAwake foregrounds the KeepAwake companion app on the device via
 // `xcrun devicectl device process launch`. The id may be a hardware UDID,
 // CoreDevice UUID, or any other identifier devicectl's --device flag accepts.
@@ -133,25 +234,33 @@ func NewIOSAdapter(bridge *pmd3bridge.Client) *IOSAdapter {
 	return &IOSAdapter{bridge: bridge, cache: map[string]cachedState{}}
 }
 
-// List returns connected iOS devices by fusing two sources:
+// List returns iOS devices that are currently reachable. The set is the
+// intersection of:
 //
-//   - The pmd3 bridge's /v1/list_devices for USB-connected devices (keyed by
-//     hardware UDID; gives device name + product type + iOS version).
-//   - `xcrun devicectl list devices` for paired CoreDevice devices
-//     (gives marketingName, CoreDevice UUID, and richer metadata; may
-//     include devices that aren't currently USB-connected).
+//   - The pmd3 bridge's /v1/list_devices (tunneld registry + USBMux).
+//   - `xcrun devicectl list devices` filtered for tunnelState=connected
+//     OR a USB connection (USBMux-only iOS-<17 devices count too).
 //
-// Devices present in both sources are fused into a single entry keyed
-// by hardware UDID; devices present in only one source are listed
-// with whatever metadata is available. If both sources fail, the
-// function returns an empty list rather than an error — matching the
-// Android adapter's behaviour when adb is absent.
+// Devices the bridge knows about but devicectl reports as `unavailable`
+// are dropped — they're paired but not currently usable, and including
+// them produces useless install/launch attempts (autoawake's
+// convergence loop would fire `xcrun devicectl ... launch` per tick
+// for each ghost device, all returning "No provider was found"). When
+// neither source is available the function returns an empty list
+// rather than an error — matching the Android adapter's behaviour
+// when adb is absent.
 func (a *IOSAdapter) List() ([]Info, error) {
+	connected, _ := devicectlConnectedIOSDevices()
+
 	var devices []Info
 
 	if a.bridge != nil {
 		if bridgeDevices, err := a.bridge.ListDevices(context.Background()); err == nil {
 			for _, d := range bridgeDevices {
+				if connected != nil && !connected[d.UDID] {
+					// devicectl says this device isn't reachable — drop it.
+					continue
+				}
 				info := Info{
 					UUID:     d.UDID,
 					Name:     d.Name,
@@ -175,13 +284,76 @@ func (a *IOSAdapter) List() ([]Info, error) {
 				"--quiet", "--json-output", jsonPath)
 			if data, err := os.ReadFile(jsonPath); err == nil {
 				if parsed, err := parseDevicectlList(data); err == nil {
-					devices = mergeIOSDevices(devices, parsed)
+					// parseDevicectlList already filters by tunnelState
+					// internally for the merge step.
+					filtered := parsed[:0]
+					for _, d := range parsed {
+						if connected == nil || connected[d.UUID] {
+							filtered = append(filtered, d)
+						}
+					}
+					devices = mergeIOSDevices(devices, filtered)
 				}
 			}
 		}
 	}
 
 	return devices, nil
+}
+
+// devicectlConnectedIOSDevices returns the set of UDIDs that
+// `xcrun devicectl list devices --json-output` reports as
+// `tunnelState=connected` for the iOS platform. Used by IOSAdapter.List
+// to filter out paired-but-unavailable devices that the tunneld
+// registry would otherwise surface (e.g. a phone that was previously
+// trusted but is currently powered off).
+//
+// Returns (nil, error) when devicectl can't be queried — caller should
+// treat this as "filter unavailable" and pass everything through.
+func devicectlConnectedIOSDevices() (map[string]bool, error) {
+	if _, err := exec.LookPath("xcrun"); err != nil {
+		return nil, err
+	}
+	tmp, err := os.MkdirTemp("", "spyder-devctl-conn-*")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmp)
+	jsonPath := filepath.Join(tmp, "devices.json")
+	if _, _, err := runCapture("xcrun", "devicectl", "list", "devices",
+		"--quiet", "--json-output", jsonPath); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(jsonPath)
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Result struct {
+			Devices []struct {
+				HardwareProperties struct {
+					UDID     string `json:"udid"`
+					Platform string `json:"platform"`
+				} `json:"hardwareProperties"`
+				ConnectionProperties struct {
+					TunnelState string `json:"tunnelState"`
+				} `json:"connectionProperties"`
+			} `json:"devices"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(doc.Result.Devices))
+	for _, d := range doc.Result.Devices {
+		if d.HardwareProperties.Platform != "iOS" {
+			continue
+		}
+		if d.ConnectionProperties.TunnelState == "connected" {
+			out[d.HardwareProperties.UDID] = true
+		}
+	}
+	return out, nil
 }
 
 // parseDevicectlList parses the `xcrun devicectl list devices

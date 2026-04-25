@@ -1,35 +1,49 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package autoawake keeps attached iOS devices awake while spyder is
-// running. For each paired device it sees:
+// Package autoawake keeps attached iOS devices awake by ensuring the
+// KeepAwake companion app is running on each one. The supervisor runs
+// a convergence loop (🎯T32, redesigned 2026-04-25): rather than
+// latching gate states on first sight and only re-checking on re-plug,
+// each tick observes the *current* state of every connected device and
+// drives toward the desired state ("KeepAwake foregrounded").
 //
-//  1. Launch the KeepAwake companion app via xcrun devicectl (the app
-//     sets UIApplication.isIdleTimerDisabled=true while foregrounded,
-//     the only iOS mechanism that reliably prevents display auto-lock).
-//  2. If the app isn't installed yet, attempt an autonomous install
-//     cycle (🎯T32) — detect codesigning identity, build via
-//     xcodebuild with the developer's team, install via devicectl,
-//     launch. Silent on success; logs a specific actionable message
-//     when a human gate is hit (Developer Mode disabled, trust not
-//     granted, no Xcode signing identity).
-//  3. If the device is locked mid-launch, fire a persistent macOS
-//     notification prompting the user to unlock, retry every 10 s
-//     while locked, and dismiss the notification once the launch
-//     succeeds or the retry budget is exhausted.
-//  4. Periodically re-launch (every 15 s) on every known device so
-//     user-initiated task-switching / backgrounding self-heals before
-//     the next auto-lock fires.
+// Loop:
 //
-// Device enumeration still comes from the pmd3 bridge — that path is
-// fast, uses an already-running subprocess, and doesn't require
-// separate tunneld.
+//  1. Every pollInterval, enumerate connected iOS devices via
+//     IOSAdapter.List. New devices kick off an immediate convergence
+//     step in a goroutine; departed devices have their alerts dismissed
+//     and observation state pruned.
+//  2. Every convergeInterval, run convergence on every still-present
+//     device. This is what catches user-side resolutions of human
+//     gates (the user trusted the developer cert, unlocked the device,
+//     toggled Developer Mode, etc.) — observations are re-tested, the
+//     resolved gate is no longer in effect, and we proceed.
+//
+// Convergence per device:
+//
+//  1. Is KeepAwake running? (devicectl process query) → done.
+//  2. Is KeepAwake installed? (devicectl apps query) → if no, attempt
+//     install (xcodebuild + devicectl install), then proceed.
+//  3. Try to launch via devicectl. Errors classify into:
+//     - locked: fire idempotent macOS alert; convergence next tick may
+//       succeed once the user unlocks.
+//     - needs-trust: fire idempotent macOS alert; once the user trusts
+//       the cert, the next tick's launch succeeds.
+//     - needs-developer-mode / needs-xcode-signin: log on transition,
+//       no alert (the user must take action that requires their
+//       attention anyway).
+//     - other: log + retry next tick.
+//
+// Idempotency: log lines and macOS alerts are emitted only on
+// transition between observation classes, not every tick. So the same
+// "needs trust" state across many ticks emits one log line and holds
+// one alert.
 package autoawake
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -42,69 +56,100 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 )
 
-// OwnerID is the reservation owner identity used by auto-awake.
+// OwnerID is the reservation owner identity used by autoawake.
 // Exported so callers can reference it when checking reservations.
 const OwnerID = "autoawake"
 
 const (
-	pollInterval             = 2 * time.Second
-	relaunchInterval         = 15 * time.Second
-	retryWhileLockedInterval = 10 * time.Second
-	retryWhileLockedBudget   = 30 // ≈ 5 minutes of retries
-	settleDelay              = 3 * time.Second
+	// pollInterval is the cadence for the cheap enumeration tick that
+	// detects newly-attached / departed devices. New devices get an
+	// immediate convergence run; existing devices wait for the next
+	// convergeInterval.
+	pollInterval = 2 * time.Second
+
+	// convergeInterval is the cadence for the full per-device
+	// convergence sweep. Every tick re-observes every present device,
+	// catching user-side resolutions of trust / lock / developer-mode
+	// gates. A 15 s ceiling on user-perceived latency is fine: trust
+	// the cert, wait < 15 s, KeepAwake foregrounds.
+	convergeInterval = 15 * time.Second
 )
 
-// gateState names the per-device progress toward a running KeepAwake.
-// The state machine is:
-//
-//	initial → installed (install succeeded or app already present)
-//	initial → needs-trust (install blocked on on-device Trust step)
-//	initial → needs-developer-mode (device has Developer Mode off)
-//	initial → needs-xcode-signin (no codesigning identity in keychain)
-//	initial → install-failed (xcodebuild or devicectl install errored)
-//	installed → running (launch succeeded)
-//	installed → locked (launch blocked by lock screen — alert fired)
-//	installed → trust-lost (launch blocked by trust — alert fired)
-type gateState string
+// errorClass is the post-classification observation we record per
+// device. Convergence emits log lines and dispatches alerts only on
+// CHANGE between successive observations of the same device, so the
+// device sitting in needs-trust for hours produces one alert, not 240.
+type errorClass int
 
 const (
-	gateInitial            gateState = "initial"
-	gateInstalled          gateState = "installed"
-	gateRunning            gateState = "running"
-	gateLocked             gateState = "locked"
-	gateTrustLost          gateState = "trust-lost"
-	gateNeedsTrust         gateState = "needs-trust"
-	gateNeedsDeveloperMode gateState = "needs-developer-mode"
-	gateNeedsXcodeSignin   gateState = "needs-xcode-signin"
-	gateInstallFailed      gateState = "install-failed"
+	classUnknown errorClass = iota
+	classConverged
+	classLocked
+	classNeedsTrust
+	classNeedsDeveloperMode
+	classNeedsXcodeSignin
+	classNotInstalled
+	classOther
 )
 
-// deviceGate tracks what autoawake knows about a device across ticks.
-// Kept per-UDID in Supervisor.gates under s.mu.
-type deviceGate struct {
-	state        gateState
-	lastLaunchAt time.Time
+func (c errorClass) String() string {
+	switch c {
+	case classConverged:
+		return "converged"
+	case classLocked:
+		return "locked"
+	case classNeedsTrust:
+		return "needs-trust"
+	case classNeedsDeveloperMode:
+		return "needs-developer-mode"
+	case classNeedsXcodeSignin:
+		return "needs-xcode-signin"
+	case classNotInstalled:
+		return "not-installed"
+	case classOther:
+		return "other"
+	default:
+		return "unknown"
+	}
+}
 
-	// lockAlertGroup non-empty when a macOS alert is currently
-	// displayed for this device (either lock or trust). Cleared when
-	// the alert is dismissed.
+// deviceObs is the per-device observation record carried between
+// convergence ticks. The mu-protected fields are read-write; the rest
+// are written only on transitions.
+type deviceObs struct {
+	// lastClass is the most recent error classification for this
+	// device. Convergence transitions only emit log/alert side-effects
+	// when the class changes.
+	lastClass errorClass
+
+	// lockAlertGroup non-empty when a macOS lock alert is currently
+	// displayed for this device. Cleared when the alert is dismissed.
 	lockAlertGroup string
+
 	// trustAlertGroup separate so we can dismiss independently.
 	trustAlertGroup string
 }
 
-// Supervisor polls the pmd3 bridge device list and keeps KeepAwake
-// foregrounded on every iOS device.
+// Supervisor runs the convergence loop. Construct via New; call Run in
+// a goroutine for the lifetime of the daemon.
 type Supervisor struct {
+	// bridge is retained for compatibility with the daemon wiring but
+	// is otherwise unused — the convergence loop only depends on the
+	// IOSAdapter, which talks to devicectl directly. A nil bridge is
+	// fine; the IOSAdapter constructed below tolerates it for the
+	// keep-awake-relevant operations.
 	bridge       *pmd3bridge.Client
 	ios          *device.IOSAdapter
 	inventory    *inventory.Store
 	reservations *reservations.Store
 
-	mu    sync.Mutex
-	gates map[string]*deviceGate
-	// inFlight guards per-UDID serial handling so a slow handleNewDevice
-	// doesn't overlap with a periodic-relaunch tick for the same device.
+	mu sync.Mutex
+	// obs is the per-device observation record. Devices in this map are
+	// "currently known to be present" (or were on the most recent
+	// poll). Removed entries dismiss their alerts.
+	obs map[string]*deviceObs
+	// inFlight serialises convergence steps per device so a slow tick
+	// for a given device doesn't overlap with the next one.
 	inFlight map[string]bool
 }
 
@@ -114,12 +159,15 @@ func WithReservations(s *reservations.Store) Option {
 	return func(sv *Supervisor) { sv.reservations = s }
 }
 
+// New creates a new Supervisor. bridge may be nil; the convergence loop
+// uses devicectl directly via the IOSAdapter and doesn't depend on the
+// pmd3 bridge for any keep-awake operation.
 func New(bridge *pmd3bridge.Client, opts ...Option) *Supervisor {
 	sv := &Supervisor{
 		bridge:    bridge,
 		ios:       device.NewIOSAdapter(bridge),
 		inventory: inventory.New(),
-		gates:     map[string]*deviceGate{},
+		obs:       map[string]*deviceObs{},
 		inFlight:  map[string]bool{},
 	}
 	for _, opt := range opts {
@@ -128,96 +176,97 @@ func New(bridge *pmd3bridge.Client, opts ...Option) *Supervisor {
 	return sv
 }
 
-// Run blocks polling the device list until ctx is cancelled.
+// Run drives the convergence loop until ctx is cancelled. Two tickers:
+// pollInterval for cheap enumeration, convergeInterval for the full
+// per-device sweep.
 func (s *Supervisor) Run(ctx context.Context) {
-	if s.bridge == nil {
-		slog.Warn("autoawake: no bridge client — keep-awake disabled")
-		return
-	}
-	slog.Info("autoawake: supervisor started (KeepAwake companion app via devicectl)")
+	slog.Info("autoawake: convergence supervisor started",
+		"poll", pollInterval, "converge", convergeInterval)
 
 	pollTicker := time.NewTicker(pollInterval)
 	defer pollTicker.Stop()
-	relaunchTicker := time.NewTicker(relaunchInterval)
-	defer relaunchTicker.Stop()
+	convTicker := time.NewTicker(convergeInterval)
+	defer convTicker.Stop()
 
-	s.tick(ctx)
+	s.poll(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			s.dismissAllAlerts()
 			return
 		case <-pollTicker.C:
-			s.tick(ctx)
-		case <-relaunchTicker.C:
-			s.relaunchAll(ctx)
+			s.poll(ctx)
+		case <-convTicker.C:
+			s.convergeAll(ctx)
 		}
 	}
 }
 
-// tick polls the bridge for attached devices, spawns handleNewDevice
-// for new arrivals, and prunes departed devices from the gate map.
-func (s *Supervisor) tick(ctx context.Context) {
-	devices, err := s.bridge.ListDevices(ctx)
+// poll enumerates connected devices, kicks off a convergence step for
+// each newly-detected device, and prunes departed devices from the
+// observation map.
+func (s *Supervisor) poll(ctx context.Context) {
+	devices, err := s.ios.List()
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return
 		}
-		slog.Warn("autoawake: list_devices returned structured error", "error", err)
+		slog.Warn("autoawake: enumerate devices failed", "error", summariseErr(err))
 		return
 	}
 
-	current := make(map[string]struct{}, len(devices))
+	seen := make(map[string]struct{}, len(devices))
 	for _, d := range devices {
-		current[d.UDID] = struct{}{}
+		seen[d.UUID] = struct{}{}
 	}
 
 	s.mu.Lock()
-	for udid := range s.gates {
-		if _, still := current[udid]; !still {
-			s.dismissAlertsLocked(udid)
-			delete(s.gates, udid)
+	var fresh []string
+	for udid := range seen {
+		if _, known := s.obs[udid]; !known {
+			s.obs[udid] = &deviceObs{lastClass: classUnknown}
+			fresh = append(fresh, udid)
 		}
 	}
-	var fresh []string
-	for udid := range current {
-		if _, known := s.gates[udid]; !known {
-			s.gates[udid] = &deviceGate{state: gateInitial}
-			fresh = append(fresh, udid)
+	var gone []string
+	for udid := range s.obs {
+		if _, still := seen[udid]; !still {
+			gone = append(gone, udid)
 		}
 	}
 	s.mu.Unlock()
 
+	for _, udid := range gone {
+		s.removeDevice(udid)
+	}
 	for _, udid := range fresh {
-		go s.handleNewDevice(ctx, udid)
+		alias := s.aliasOf(udid)
+		slog.Info("autoawake: device attached", "udid", udid, "alias", alias)
+		go s.converge(ctx, udid)
 	}
 }
 
-// relaunchAll re-foregrounds KeepAwake on every device that's in a
-// runnable state. Silent on success / not-running. Devices that are
-// already alerting (locked / trust-lost) continue being driven by
-// their handleNewDevice goroutines; we don't duplicate alerts here.
-func (s *Supervisor) relaunchAll(ctx context.Context) {
+// convergeAll runs a convergence step for every currently-known device.
+// Called on the convergeInterval tick to re-observe state and detect
+// user-side resolution of human gates.
+func (s *Supervisor) convergeAll(ctx context.Context) {
 	s.mu.Lock()
-	udids := make([]string, 0, len(s.gates))
-	for udid, g := range s.gates {
-		switch g.state {
-		case gateRunning, gateInstalled:
-			udids = append(udids, udid)
-		}
+	udids := make([]string, 0, len(s.obs))
+	for udid := range s.obs {
+		udids = append(udids, udid)
 	}
 	s.mu.Unlock()
 
 	for _, udid := range udids {
-		go s.relaunchOne(ctx, udid)
+		go s.converge(ctx, udid)
 	}
 }
 
-// relaunchOne is the periodic-refresh path. It doesn't fire new
-// notifications — that's handleNewDevice's job. If the launch fails
-// because the device is now locked, we just upgrade the state and
-// let the next handleNewDevice-equivalent (re-plug) handle alerting.
-func (s *Supervisor) relaunchOne(ctx context.Context, udid string) {
+// converge observes the current state of one device and drives toward
+// the desired state (KeepAwake foregrounded). Errors classify into
+// errorClass values; transitions between classes emit log/alert
+// side-effects via advance().
+func (s *Supervisor) converge(ctx context.Context, udid string) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -227,135 +276,73 @@ func (s *Supervisor) relaunchOne(ctx context.Context, udid string) {
 	defer s.endInFlight(udid)
 
 	alias := s.aliasOf(udid)
-	err := s.ios.LaunchKeepAwake(udid)
-	if err == nil {
-		s.setGate(udid, gateRunning)
-		slog.Debug("autoawake: KeepAwake re-launched",
-			"udid", udid, "alias", alias, "reason", "periodic")
-		return
-	}
-	// Non-fatal — if the device got locked between ticks, we know;
-	// the next refresh cycle (or a new-device event on re-plug) will
-	// re-trigger the lock-alert flow.
-	switch {
-	case errors.Is(err, device.ErrLocked):
-		slog.Debug("autoawake: periodic relaunch: device locked",
-			"udid", udid, "alias", alias)
-	case errors.Is(err, device.ErrKeepAwakeNotInstalled):
-		// KeepAwake was uninstalled under us. Downgrade to initial
-		// and let handleNewDevice re-run the install flow on the next
-		// new-device edge (triggered by a re-plug or state-walk).
-		s.setGate(udid, gateInitial)
-		slog.Info("autoawake: KeepAwake disappeared — will reinstall on next attach",
-			"udid", udid, "alias", alias)
-	default:
-		slog.Debug("autoawake: periodic relaunch failed",
-			"udid", udid, "alias", alias, "error", summariseErr(err))
-	}
-}
-
-// handleNewDevice runs the full install + launch sequence for a newly-
-// seen UDID, including the persistent-alert retry loop for locked
-// devices. Safe to run concurrently with other handleNewDevice
-// goroutines (per-UDID inFlight guard).
-func (s *Supervisor) handleNewDevice(ctx context.Context, udid string) {
-	if !s.beginInFlight(udid) {
-		return
-	}
-	defer s.endInFlight(udid)
-
-	alias := s.aliasOf(udid)
-	slog.Info("autoawake: new device", "udid", udid, "alias", alias)
 
 	if s.reservations != nil {
 		if err := s.reservations.Authorize(udid, OwnerID); err != nil {
-			slog.Info("autoawake: skipping device held by another owner",
-				"udid", udid, "alias", alias, "error", err)
+			slog.Debug("autoawake: skipping device held by another owner",
+				"udid", udid, "alias", alias, "owner", err.Error())
 			return
 		}
 	}
 
-	// Brief settle so usbmux + any startup state is ready.
-	select {
-	case <-ctx.Done():
+	// 1) Fast path: if KeepAwake is already running, we're converged.
+	if running, err := s.ios.KeepAwakeRunning(udid); err == nil && running {
+		s.advance(udid, alias, classConverged, nil)
 		return
-	case <-time.After(settleDelay):
 	}
 
-	// First launch attempt. If KeepAwake isn't installed, fall into
-	// the auto-install path (🎯T32).
-	err := s.ios.LaunchKeepAwake(udid)
-	if errors.Is(err, device.ErrKeepAwakeNotInstalled) {
-		if !s.autoInstall(ctx, udid, alias) {
-			return
-		}
-		err = s.ios.LaunchKeepAwake(udid)
+	// 2) If KeepAwake isn't installed, run the transparent install
+	// cycle. attemptInstall handles its own classification on failure;
+	// on success we fall through to step 3.
+	installed, err := s.ios.KeepAwakeInstalled(udid)
+	if err != nil {
+		slog.Debug("autoawake: KeepAwakeInstalled probe failed; assuming installed",
+			"udid", udid, "alias", alias, "error", summariseErr(err))
+		installed = true
 	}
-
-	// Retry-while-locked loop. A locked device produces ErrLocked;
-	// we fire one persistent alert and retry silently every 10 s
-	// until the user unlocks or the retry budget expires.
-	for range retryWhileLockedBudget {
-		if err == nil {
-			s.setGate(udid, gateRunning)
-			s.dismissAlerts(udid)
-			slog.Info("autoawake: KeepAwake foregrounded",
-				"udid", udid, "alias", alias, "reason", "new device")
-			return
-		}
-		switch {
-		case errors.Is(err, device.ErrLocked):
-			s.ensureLockAlert(udid, alias)
-			s.setGate(udid, gateLocked)
-			select {
-			case <-ctx.Done():
-				s.dismissAlerts(udid)
-				return
-			case <-time.After(retryWhileLockedInterval):
-			}
-			err = s.ios.LaunchKeepAwake(udid)
-			continue
-		case errors.Is(err, device.ErrTrustNotGranted):
-			s.ensureTrustAlert(udid, alias)
-			s.setGate(udid, gateTrustLost)
-			return
-		default:
-			slog.Warn("autoawake: LaunchKeepAwake failed (non-recoverable)",
-				"udid", udid, "alias", alias, "error", summariseErr(err))
-			s.setGate(udid, gateInstallFailed)
+	if !installed {
+		if !s.attemptInstall(ctx, udid, alias) {
 			return
 		}
 	}
-	slog.Info("autoawake: giving up on locked device after retry budget",
-		"udid", udid, "alias", alias)
-	s.dismissAlerts(udid)
+
+	// 3) Installed but not running — try to launch. Classify on error.
+	launchErr := s.ios.LaunchKeepAwake(udid)
+	if launchErr == nil {
+		s.advance(udid, alias, classConverged, nil)
+		return
+	}
+	switch {
+	case errors.Is(launchErr, device.ErrLocked):
+		s.advance(udid, alias, classLocked, launchErr)
+	case errors.Is(launchErr, device.ErrTrustNotGranted):
+		s.advance(udid, alias, classNeedsTrust, launchErr)
+	case errors.Is(launchErr, device.ErrKeepAwakeNotInstalled):
+		// Race: app got uninstalled between observe and launch.
+		// Next tick's installed-probe will trigger reinstall.
+		s.advance(udid, alias, classNotInstalled, launchErr)
+	default:
+		s.advance(udid, alias, classOther, launchErr)
+	}
 }
 
-// autoInstall runs the transparent install cycle for 🎯T32 against a
+// attemptInstall runs the transparent install cycle (🎯T32) for a
 // device whose KeepAwake is missing. Returns true on success (caller
-// should attempt the launch again). Returns false when a human gate
-// is hit or install errors; the gate state is recorded so we don't
-// re-attempt on every tick.
-func (s *Supervisor) autoInstall(ctx context.Context, udid, alias string) bool {
+// should attempt the launch). Returns false when a precondition fails;
+// classification + alert dispatch happens before returning.
+func (s *Supervisor) attemptInstall(ctx context.Context, udid, alias string) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	// Codesigning identity probe — the one hard prerequisite.
+
 	team, err := device.DetectCodesigningTeam()
 	if err != nil {
-		slog.Warn("autoawake: no codesigning identity — KeepAwake install blocked. Sign in to Xcode → Settings → Accounts with your Apple ID.",
-			"udid", udid, "alias", alias, "error", err.Error())
-		s.setGate(udid, gateNeedsXcodeSignin)
+		s.advance(udid, alias, classNeedsXcodeSignin, err)
 		return false
 	}
 
-	// Developer Mode probe is best-effort — if the probe itself
-	// fails (pmd3 missing, transient), we fall through and let the
-	// install attempt surface the real error.
 	if enabled, probeErr := device.DetectDeveloperMode(udid); probeErr == nil && !enabled {
-		slog.Warn("autoawake: Developer Mode disabled on device — KeepAwake install blocked. Enable at Settings → Privacy & Security → Developer Mode (device will reboot).",
-			"udid", udid, "alias", alias)
-		s.setGate(udid, gateNeedsDeveloperMode)
+		s.advance(udid, alias, classNeedsDeveloperMode, nil)
 		return false
 	}
 
@@ -365,44 +352,114 @@ func (s *Supervisor) autoInstall(ctx context.Context, udid, alias string) bool {
 	if err != nil {
 		slog.Warn("autoawake: xcodebuild KeepAwake failed",
 			"udid", udid, "alias", alias, "error", summariseErr(err))
-		s.setGate(udid, gateInstallFailed)
+		s.advance(udid, alias, classOther, err)
 		return false
 	}
 
 	slog.Info("autoawake: installing KeepAwake", "udid", udid, "alias", alias)
 	if err := device.InstallKeepAwake(udid, appPath); err != nil {
 		if errors.Is(err, device.ErrTrustNotGranted) {
-			s.ensureTrustAlert(udid, alias)
-			s.setGate(udid, gateNeedsTrust)
+			s.advance(udid, alias, classNeedsTrust, err)
 			return false
 		}
 		slog.Warn("autoawake: devicectl install KeepAwake failed",
 			"udid", udid, "alias", alias, "error", summariseErr(err))
-		s.setGate(udid, gateInstallFailed)
+		s.advance(udid, alias, classOther, err)
 		return false
 	}
-	s.setGate(udid, gateInstalled)
 	return true
 }
 
-// ── alert / gate management ─────────────────────────────────────────────────
+// advance transitions the device's observation to a new class. Side-
+// effects (log lines, macOS alert dispatch / dismissal) fire only when
+// the class actually changes — the same class across ticks produces
+// no log noise and no alert duplication.
+func (s *Supervisor) advance(udid, alias string, class errorClass, err error) {
+	s.mu.Lock()
+	obs, ok := s.obs[udid]
+	if !ok {
+		// Device was pruned out (poll dropped it) between converge
+		// scheduling and now. Drop the result silently.
+		s.mu.Unlock()
+		return
+	}
+	prev := obs.lastClass
+	obs.lastClass = class
+	s.mu.Unlock()
+
+	if prev == class {
+		// Idempotent: silent re-observation of the same state.
+		return
+	}
+
+	switch class {
+	case classConverged:
+		slog.Info("autoawake: KeepAwake foregrounded", "udid", udid, "alias", alias)
+		s.dismissAlerts(udid)
+	case classLocked:
+		s.ensureLockAlert(udid, alias)
+		s.dismissTrustAlert(udid)
+	case classNeedsTrust:
+		s.ensureTrustAlert(udid, alias)
+		s.dismissLockAlert(udid)
+	case classNeedsDeveloperMode:
+		slog.Warn("autoawake: Developer Mode disabled — enable at Settings → Privacy & Security → Developer Mode (device will reboot)",
+			"udid", udid, "alias", alias)
+		s.dismissAlerts(udid)
+	case classNeedsXcodeSignin:
+		errMsg := ""
+		if err != nil {
+			errMsg = summariseErr(err)
+		}
+		slog.Warn("autoawake: no codesigning identity in keychain — sign in to Xcode → Settings → Accounts with your Apple ID",
+			"udid", udid, "alias", alias, "error", errMsg)
+		s.dismissAlerts(udid)
+	case classNotInstalled:
+		slog.Debug("autoawake: KeepAwake not installed; will reinstall next tick",
+			"udid", udid, "alias", alias)
+		s.dismissAlerts(udid)
+	case classOther:
+		errMsg := ""
+		if err != nil {
+			errMsg = summariseErr(err)
+		}
+		slog.Warn("autoawake: install/launch failed (will retry on next convergence tick)",
+			"udid", udid, "alias", alias, "error", errMsg)
+		s.dismissAlerts(udid)
+	}
+}
+
+// removeDevice prunes a departed device from the observation map and
+// dismisses any alerts that were active for it.
+func (s *Supervisor) removeDevice(udid string) {
+	alias := s.aliasOf(udid)
+	s.mu.Lock()
+	if obs := s.obs[udid]; obs != nil {
+		s.dismissAlertsLocked(udid)
+	}
+	delete(s.obs, udid)
+	s.mu.Unlock()
+	slog.Info("autoawake: device departed", "udid", udid, "alias", alias)
+}
+
+// ── alert dispatch ──────────────────────────────────────────────────────────
 
 func (s *Supervisor) ensureLockAlert(udid, alias string) {
 	s.mu.Lock()
-	g := s.gates[udid]
-	if g == nil || g.lockAlertGroup != "" {
+	obs := s.obs[udid]
+	if obs == nil || obs.lockAlertGroup != "" {
 		s.mu.Unlock()
 		return
 	}
 	group := "spyder-lock-" + udid
-	g.lockAlertGroup = group
+	obs.lockAlertGroup = group
 	s.mu.Unlock()
 
 	slog.Info("autoawake: device locked — alerting user",
 		"udid", udid, "alias", alias)
 	go func() {
 		if err := notify.MacOSAlert("spyder",
-			fmt.Sprintf("Unlock %s to enable keep-awake", alias),
+			"Unlock "+alias+" to enable keep-awake",
 			group); err != nil {
 			slog.Warn("autoawake: lock alert failed", "error", err)
 		}
@@ -411,20 +468,20 @@ func (s *Supervisor) ensureLockAlert(udid, alias string) {
 
 func (s *Supervisor) ensureTrustAlert(udid, alias string) {
 	s.mu.Lock()
-	g := s.gates[udid]
-	if g == nil || g.trustAlertGroup != "" {
+	obs := s.obs[udid]
+	if obs == nil || obs.trustAlertGroup != "" {
 		s.mu.Unlock()
 		return
 	}
 	group := "spyder-trust-" + udid
-	g.trustAlertGroup = group
+	obs.trustAlertGroup = group
 	s.mu.Unlock()
 
 	slog.Info("autoawake: developer certificate not trusted — alerting user",
 		"udid", udid, "alias", alias)
 	go func() {
 		if err := notify.MacOSAlert("spyder",
-			fmt.Sprintf("Trust the developer profile on %s to enable keep-awake (Settings → General → VPN & Device Management → tap developer entry → Trust)", alias),
+			"Trust the developer profile on "+alias+" to enable keep-awake (Settings → General → VPN & Device Management → tap developer entry → Trust)",
 			group); err != nil {
 			slog.Warn("autoawake: trust alert failed", "error", err)
 		}
@@ -437,41 +494,58 @@ func (s *Supervisor) dismissAlerts(udid string) {
 	s.mu.Unlock()
 }
 
-func (s *Supervisor) dismissAlertsLocked(udid string) {
-	g := s.gates[udid]
-	if g == nil {
+func (s *Supervisor) dismissLockAlert(udid string) {
+	s.mu.Lock()
+	obs := s.obs[udid]
+	if obs == nil || obs.lockAlertGroup == "" {
+		s.mu.Unlock()
 		return
 	}
-	if g.lockAlertGroup != "" {
-		group := g.lockAlertGroup
-		g.lockAlertGroup = ""
+	group := obs.lockAlertGroup
+	obs.lockAlertGroup = ""
+	s.mu.Unlock()
+	go func() { _ = notify.MacOSAlertRemove(group) }()
+}
+
+func (s *Supervisor) dismissTrustAlert(udid string) {
+	s.mu.Lock()
+	obs := s.obs[udid]
+	if obs == nil || obs.trustAlertGroup == "" {
+		s.mu.Unlock()
+		return
+	}
+	group := obs.trustAlertGroup
+	obs.trustAlertGroup = ""
+	s.mu.Unlock()
+	go func() { _ = notify.MacOSAlertRemove(group) }()
+}
+
+func (s *Supervisor) dismissAlertsLocked(udid string) {
+	obs := s.obs[udid]
+	if obs == nil {
+		return
+	}
+	if obs.lockAlertGroup != "" {
+		group := obs.lockAlertGroup
+		obs.lockAlertGroup = ""
 		go func() { _ = notify.MacOSAlertRemove(group) }()
 	}
-	if g.trustAlertGroup != "" {
-		group := g.trustAlertGroup
-		g.trustAlertGroup = ""
+	if obs.trustAlertGroup != "" {
+		group := obs.trustAlertGroup
+		obs.trustAlertGroup = ""
 		go func() { _ = notify.MacOSAlertRemove(group) }()
 	}
 }
 
 func (s *Supervisor) dismissAllAlerts() {
 	s.mu.Lock()
-	for udid := range s.gates {
+	for udid := range s.obs {
 		s.dismissAlertsLocked(udid)
 	}
 	s.mu.Unlock()
 }
 
-func (s *Supervisor) setGate(udid string, state gateState) {
-	s.mu.Lock()
-	if g := s.gates[udid]; g != nil {
-		g.state = state
-		if state == gateRunning {
-			g.lastLaunchAt = time.Now()
-		}
-	}
-	s.mu.Unlock()
-}
+// ── per-device convergence serialisation ────────────────────────────────────
 
 func (s *Supervisor) beginInFlight(udid string) bool {
 	s.mu.Lock()
@@ -501,14 +575,15 @@ func (s *Supervisor) aliasOf(udid string) string {
 	return udid
 }
 
-// Status returns a snapshot of per-device gate states for tests /
-// debugging.
+// Status returns a snapshot of per-device observation classes for
+// tests / debugging. Convergence-state (vs the old gate states) is the
+// public surface now.
 func (s *Supervisor) Status() map[string]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make(map[string]string, len(s.gates))
-	for udid, g := range s.gates {
-		out[udid] = string(g.state)
+	out := make(map[string]string, len(s.obs))
+	for udid, obs := range s.obs {
+		out[udid] = obs.lastClass.String()
 	}
 	return out
 }
@@ -516,6 +591,9 @@ func (s *Supervisor) Status() map[string]string {
 // summariseErr returns a brief error string with pmd3 / xcodebuild
 // traceback decorations stripped for log readability.
 func summariseErr(err error) string {
+	if err == nil {
+		return ""
+	}
 	s := err.Error()
 	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimSpace(line)
