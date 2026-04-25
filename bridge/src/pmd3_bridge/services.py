@@ -286,13 +286,28 @@ async def battery(udid: str) -> BatteryResponse:
 
 
 async def screenshot(udid: str) -> str:
-    """Take a screenshot; return base64-encoded PNG bytes."""
+    """Take a screenshot; return base64-encoded PNG bytes.
+
+    Routes through pmd3's DVT-based ``Screenshot`` instrument over a
+    tunneld-mediated RemoteServiceDiscovery (RSD) connection — the iOS
+    17+ path. The legacy ``com.apple.mobile.screenshotr`` lockdown
+    service was deprecated by Apple in iOS 17 and returns
+    InvalidServiceError on every modern device; this implementation
+    replaces it (🎯T30).
+
+    Requires an externally-managed ``pymobiledevice3 remote tunneld``
+    process — when absent, raises ``tunneld_unavailable``. When tunneld
+    is running but the device isn't in its registry, raises
+    ``device_not_paired``.
+    """
     started = time.monotonic()
-    async with _lockdown_ctx(udid) as lc:
+    rsd = await _tunneld_rsd_for(udid)
+    try:
+        from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+        from pymobiledevice3.services.dvt.instruments.screenshot import Screenshot
         try:
-            from pymobiledevice3.services.screenshot import ScreenshotService
-            svc = ScreenshotService(lockdown=lc)
-            png_bytes = await svc.take_screenshot()
+            async with DvtProvider(rsd) as dvt, Screenshot(dvt) as shot:
+                png_bytes = await shot.get_screenshot()
         except BridgeError:
             raise
         except Exception as exc:
@@ -300,9 +315,62 @@ async def screenshot(udid: str) -> str:
                 "pmd3_error",
                 f"Failed to take screenshot on {udid}: {exc}",
             ) from exc
+    finally:
+        try:
+            await rsd.close()
+        except Exception:
+            log.warning("rsd close failed udid=%s", udid)
     log.info("screenshot captured udid=%s bytes=%d elapsed_ms=%d",
              udid, len(png_bytes), int((time.monotonic() - started) * 1000))
     return base64.b64encode(png_bytes).decode()
+
+
+async def _tunneld_rsd_for(udid: str):  # type: ignore[no-untyped-def]
+    """Return the tunneld-registered ``RemoteServiceDiscoveryService`` for
+    the given UDID. Closes every other RSD tunneld registered before
+    returning so the caller only owns one connection.
+
+    Raises BridgeError("tunneld_unavailable") when tunneld is unreachable,
+    BridgeError("device_not_paired") when the udid isn't in the registry.
+    """
+    try:
+        from pymobiledevice3.tunneld.api import (
+            TUNNELD_DEFAULT_ADDRESS,
+            get_tunneld_devices,
+        )
+        rsds = await get_tunneld_devices(TUNNELD_DEFAULT_ADDRESS)
+    except Exception as exc:
+        raise BridgeError(
+            "tunneld_unavailable",
+            f"tunneld unreachable at {TUNNELD_DEFAULT_ADDRESS}: {exc}; "
+            "start it with `sudo pymobiledevice3 remote tunneld`",
+        ) from exc
+    if not rsds:
+        raise BridgeError(
+            "tunneld_unavailable",
+            "tunneld is running but has no devices registered; "
+            "ensure paired iOS 17+ devices are connected and trusted",
+        )
+    target = next((r for r in rsds if r.udid == udid), None)
+    if target is None:
+        for r in rsds:
+            try:
+                await r.close()
+            except Exception:
+                pass
+        raise BridgeError(
+            "device_not_paired",
+            f"device {udid} not in tunneld registry; "
+            f"available udids: {[r.udid for r in rsds]}",
+        )
+    for r in rsds:
+        if r is target:
+            continue
+        try:
+            await r.close()
+        except Exception:
+            pass
+    return target
 
 
 # ── Crash reports ─────────────────────────────────────────────────────────────
