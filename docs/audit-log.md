@@ -223,7 +223,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.12.0
 
-- **Commit**: `pending`
+- **Commit**: `66aaac0`
 - **Outcome**: Hotfix release for 🎯T35. Post-v0.11.0 MCP testing surfaced
   that every `brew install marcelocantos/tap/spyder` ran with the
   bundled pmd3-bridge undiscoverable: the daemon's `resolveBridgeBinary`
