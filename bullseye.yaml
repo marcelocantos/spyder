@@ -974,6 +974,8 @@ targets:
     - 'Device-tier Go test `TestDevice_Screenshot_WorksOniOS17Plus` in `internal/pmd3bridge/`: spawns the real bridge, calls the real screenshot endpoint against a real attached iOS 17+ device, asserts the response is a decodable PNG of reasonable size (> 4 KB) and has the PNG magic header. No fakes, no stubs, no golden-image comparison. Runs under SPYDER_DEVICES=1'
     - STABILITY.md `screenshot` entry reflects the actual iOS version support matrix and the new tunneld dependency
     context: 'Discovered 2026-04-22 while spiking stay-awake detection. Attempted ScreenshotService.take_screenshot() against both Minicades iPhone (iOS 26.2) and Jevons iPad (iOS 26.4.1); both returned pymobiledevice3.exceptions.InvalidServiceError: InvalidService regardless of awake/asleep state. The legacy com.apple.mobile.screenshotr service was deprecated in iOS 17; the current path is CoreDevice / DVT instruments. Our bridge''s services.screenshot uses ScreenshotService which routes to the legacy service, so MCP `screenshot` tool is likely non-functional on any iOS 17+ test device. This is a separate bug from the fd leak, not a release blocker for v0.8.0 (no regressions — it was probably broken all along) but should be addressed.'
+    depends_on:
+    - T33
     tags:
     - bug
     - ios
@@ -1019,6 +1021,8 @@ targets:
     - New bridge endpoint or helper to detect Developer Mode status (reuses pmd3; no new wheel invented). Non-fatal — if the probe itself fails, autoawake degrades gracefully and falls back to the launch-and-see-what-happens path
     - 'At least one manual gate is observable in the logs during HIL testing: either ''Developer Mode disabled'' or ''Trust not granted'' must be producible by deliberately breaking the precondition (e.g. toggle Developer Mode off on a device). The log line is specific enough that a human reading it knows exactly what tap to perform'
     context: 'Raised 2026-04-24 after the v0.9.0 release restored the KeepAwake companion app as spyder''s keep-awake mechanism. Currently each developer has to build + install KeepAwake manually via Xcode Run once per device (documented in ios/README.md), then autoawake launches the already-installed app on device detection. T32 makes that install step invisible when preconditions allow: on first device detection, autoawake runs `xcodebuild` + `devicectl install` + `devicectl launch` end-to-end, prompting the human only when genuinely required (no codesigning identity → sign in to Xcode; Developer Mode disabled → device Settings; first install of this team on this device → Trust in Settings → VPN & Device Management). User''s explicit framing: "automation as transparent as possible. Only prompt when user input is required."'
+    depends_on:
+    - T33
     tags:
     - ios
     - keep-awake
@@ -1027,6 +1031,32 @@ targets:
     - autoawake
     origin: user-requested 2026-04-24 during v0.9.0 post-release cleanup
     discovered: 2026-04-24
+  T33:
+    name: Spyder talks to iOS devices through a Swift CoreDevice sidecar; the Python pmd3-bridge is retired
+    status: identified
+    value: 0.0
+    cost: 0.0
+    observable: true
+    acceptance:
+    - A Swift binary (`spyder-iosbridge`) wraps Apple's CoreDevice.framework and is bundled in the spyder release tar alongside the Go daemon. Swift Package Manager build target lives under `ios-bridge/` (or similar) and is invoked from the spyder Makefile. KeepAwake stays separate (it ships on-device, not host).
+    - 'spyder-iosbridge serves the same wire protocol the pmd3-bridge serves today: spawned by the daemon supervisor, ephemeral TCP port + bearer-token handshake over stdio (`ready port=NNNN token=XXXX`), NDJSON streaming where useful, fail-fast on protocol violation. The Go-side `internal/pmd3bridge` package keeps its public Client API; only the bridge implementation language changes.'
+    - 'Every operation `internal/pmd3bridge.Client` exposes today is implemented via CoreDevice: list_devices, get_apps, running_processes, app_info, kill_app, screenshot, crash_reports, diagnostics. Power-assertion endpoints are NOT carried over (KeepAwake replaced them in T31; the old endpoints are deleted from the Client surface as part of this work).'
+    - 'iOS 17+ devices appear in `list_devices` reliably. HIL: with Pippa (iOS 26.3.1), Jevons (iOS 26.4.1), and Minicades (iOS 26.2) all attached, `spyder devices` returns all three from the bridge path (not the separate xctrace path) without needing usbmuxd interaction.'
+    - 'Screenshot works on iOS 17+ devices. Closes 🎯T30 — the InvalidServiceError disappears because we''re not using the legacy screenshotr. Acceptance test: `TestDevice_Screenshot_WorksOniOS17Plus` from T30 passes against Jevons.'
+    - Autoawake's full T32 HIL passes against every attached device — happy-path silent install on Jevons and Minicades (not just Pippa), locked-device alert + retry, trust-not-granted alert. Closes the gap that blocked T32 final verification.
+    - 'The Python bridge is fully removed: `bridge/` tree deleted, `scripts/run-dev-bridge.sh` deleted, `internal/pmd3bridge/integration_test.go` and `fdcount_test.go` deleted or rewritten against the Swift bridge, no remaining references to `pymobiledevice3`, `uv`, or the Python venv anywhere in the repo or release artifacts. CI workflow updated to drop the Python toolchain step.'
+    - 'Daemon-private security posture preserved or improved: bearer token enforced on every request, supervisor restarts the bridge fail-fast on protocol error, FD/connection counts bounded (no equivalent of the v0.7.0 EMFILE leak surfaceable through the new bridge).'
+    - Build is reproducible without a paid Apple Developer Program seat — the sidecar only links against system frameworks, no entitlements that require provisioning. (Distinct from KeepAwake which does need codesigning to run on-device.)
+    - All existing autoawake / runs / mcp / rest tests pass against the new bridge. The integration tier (`make test-integration`) covers the full bridge surface end-to-end against a real attached device, with no Python in the loop.
+    context: 'Raised 2026-04-25 after T32 HIL surfaced that the pmd3-bridge can''t enumerate iOS 17+ devices (Jevons, Minicades) — `pymobiledevice3 usbmux list` returns []. T30 (screenshot on iOS 17+) hit the same root cause two days earlier. Whack-a-mole pattern: every new bridge endpoint we touch turns out to be on a deprecated Apple service. The structural fix is to retire the Python bridge entirely and replace it with a Swift sidecar wrapping CoreDevice.framework — Apple''s modern, public, supported API for device control (Xcode and `xcrun devicectl` use it). Picked Swift sidecar over `xcrun devicectl` shell-outs because (a) no per-call subprocess overhead, (b) typed Swift API beats fragile JSON CLI scraping, (c) reuses the supervisor / handshake / streaming machinery from T26 unchanged, (d) we already ship a Swift artifact (KeepAwake) so the toolchain story is solved. Picked sidecar over full Swift rewrite because most of spyder is platform-neutral MCP / HTTP / orchestration plumbing where Go shines — the natural seam is exactly at the device-control boundary. Decomposition will likely happen as work proceeds (skeleton first, then per-operation) but the umbrella stays as one target until that''s needed.'
+    tags:
+    - ios
+    - bridge
+    - swift
+    - coredevice
+    - structural
+    origin: user-decided 2026-04-25 after T32 HIL surfaced iOS 17+ enumeration gap; same root cause as T30
+    discovered: 2026-04-25
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
