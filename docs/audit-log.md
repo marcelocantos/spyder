@@ -295,7 +295,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.15.0
 
-- **Commit**: `pending`
+- **Commit**: `859416b`
 - **Outcome**: Hotfix bounding every `xcrun devicectl ...` invocation
   with a 30-second timeout. Surfaced live during v0.14.0 verification:
   Minicades had been force-restarted and was mid-DDI-personalization
