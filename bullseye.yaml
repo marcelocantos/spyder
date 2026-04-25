@@ -983,7 +983,7 @@ targets:
     discovered: 2026-04-22
   T31:
     name: Restore KeepAwake companion app — spyder actually keeps iOS devices awake
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1002,9 +1002,10 @@ targets:
     - hil
     origin: discovered 2026-04-22 during v0.8.0 HIL validation — every pmd3 assertion type fails to prevent display auto-lock
     discovered: 2026-04-22
+    achieved: 2026-04-25
   T32:
     name: Autoawake auto-installs KeepAwake when preconditions allow; only prompts on genuinely human gates
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     observable: true
@@ -1027,6 +1028,7 @@ targets:
     - autoawake
     origin: user-requested 2026-04-24 during v0.9.0 post-release cleanup
     discovered: 2026-04-24
+    achieved: 2026-04-25
   T33:
     name: '[abandoned] Swift CoreDevice sidecar — premise was wrong; pmd3 + tunneld + DVT covers iOS 17+'
     status: achieved
