@@ -268,7 +268,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.14.0
 
-- **Commit**: `pending`
+- **Commit**: `56275fe`
 - **Outcome**: Two bugs from v0.13.0 MCP testing. (1) `UninstallApp` was
   passing the bundle id to `xcrun devicectl device uninstall app` via
   `--bundle-identifier`, which devicectl rejects with `Unknown option`
