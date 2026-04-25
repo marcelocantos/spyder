@@ -241,3 +241,27 @@ maintenance activities. Append-only — newest entries at the bottom.
   until that follow-up lands. Foreground `spyder serve` works fully
   on a Homebrew install for the first time. Published for darwin-arm64,
   linux-amd64, linux-arm64.
+
+## 2026-04-26 — /release v0.13.0
+
+- **Commit**: `pending`
+- **Outcome**: Hotfix for autoawake's codesigning team selection.
+  `DetectCodesigningTeam` previously preferred the user's free Personal
+  Team (`isFreeProvisioningTeam = 1`) on the assumption that "every
+  developer signed in to Xcode has one". For users who also have a paid
+  Developer Program seat, this picked the wrong team — KeepAwake got
+  signed with the free team's 7-day-expiring provisioning profile, the
+  install would launch successfully on first sight, then iOS would
+  refuse the next launch with "App Is No Longer Available" once the
+  profile expired (and devicectl would emit `CoreDeviceError 1002 No
+  provider was found` on the host side). Surfaced from a yesterday's
+  HIL screenshot of Jevons that captured the iOS dialog directly. Fix
+  (PR #44): invert the preference so paid teams win first; free
+  Personal Team stays as the second-pass fallback for users who only
+  have one of those. Live-keychain test added to keepawake_test.go.
+  Also touches the agents-guide.md "Auto-awake supervisor" section to
+  document the new preference order. Existing free-team-signed installs
+  on already-paired devices still expire weekly until either (a) the
+  user uninstalls + lets autoawake rebuild under the paid team, or (b)
+  🎯T34 (auto-recovery on stale install) lands. Published for
+  darwin-arm64, linux-amd64, linux-arm64.

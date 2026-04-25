@@ -748,7 +748,15 @@ When a new paired iOS device appears the supervisor:
 4. Re-foregrounds KeepAwake every 15 s on every healthy device so manual
    task-switching / backgrounding self-heals before the next auto-lock fires.
 
-Per-developer signing identity is required (free-tier Apple ID suffices).
+A codesigning identity is required. Autoawake reads
+`defaults read com.apple.dt.Xcode IDEProvisioningTeams` and prefers
+a paid Developer Program team (`isFreeProvisioningTeam = 0`) over a
+free Personal Team — paid-team profiles last ~1 year, free-team
+profiles expire after 7 days. A free-tier Apple ID still works as a
+fallback, but autoawake will rebuild + reinstall KeepAwake on each
+weekly expiration cycle until 🎯T34 (auto-recovery on stale install)
+lands. If you have a paid seat, sign in to Xcode → Settings →
+Accounts and confirm the team is registered.
 First-time install of a developer's certificate on a device requires a one-
 time Trust tap in **Settings → VPN & Device Management** on the device. On
 iOS 17+ the device's **Developer Mode** toggle must be enabled too — visible
