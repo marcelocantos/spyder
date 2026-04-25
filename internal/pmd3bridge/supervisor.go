@@ -116,6 +116,17 @@ func (s *Supervisor) Token() string {
 	return s.token
 }
 
+// Stopped reports whether Stop has been called on this supervisor. Used
+// by the Client to swallow transport errors during the bridge's
+// shutdown window — the daemon's own SIGINT/SIGTERM handler is the
+// authoritative termination path; the bridge subprocess dying mid-
+// request as a consequence of that is not a fatal client bug.
+func (s *Supervisor) Stopped() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopped
+}
+
 // Client constructs a new Client that reads the bridge's base URL and bearer
 // token from this Supervisor on every request. It is safe to call before
 // Start — requests issued before Start will fail their auth check (empty

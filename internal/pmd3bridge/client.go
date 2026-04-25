@@ -213,7 +213,19 @@ func (c *Client) logOutcome(path string, elapsed, timeout time.Duration, err err
 // fire emits an ERROR log with the failure context and then invokes the
 // fatal hook. The ERROR log ensures the breadcrumb survives even if the
 // stack-trace pipeline (stderr → launchd log) truncates the panic.
+//
+// Exception: when the supervisor has already begun shutdown (Stopped()
+// reports true), in-flight transport errors are an expected consequence
+// of the bridge subprocess having received SIGTERM and torn down its
+// listener. These are logged at WARN and swallowed rather than panicking
+// the daemon — the daemon is exiting anyway and the panic would mask
+// the SIGINT/SIGTERM handler's own clean-shutdown logging.
 func (c *Client) fire(err error) {
+	if c.sup != nil && c.sup.Stopped() {
+		slog.Warn("bridge call failed during shutdown — swallowed",
+			"error", err.Error())
+		return
+	}
 	slog.Error("bridge call FATAL — about to panic", "error", err.Error())
 	c.fatal(err)
 }
