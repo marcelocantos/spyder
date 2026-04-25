@@ -265,3 +265,30 @@ maintenance activities. Append-only — newest entries at the bottom.
   user uninstalls + lets autoawake rebuild under the paid team, or (b)
   🎯T34 (auto-recovery on stale install) lands. Published for
   darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-26 — /release v0.14.0
+
+- **Commit**: `pending`
+- **Outcome**: Two bugs from v0.13.0 MCP testing. (1) `UninstallApp` was
+  passing the bundle id to `xcrun devicectl device uninstall app` via
+  `--bundle-identifier`, which devicectl rejects with `Unknown option`
+  — the bundle id is a positional arg. The autoawake convergence loop
+  doesn't call UninstallApp directly (Install + Launch only), so the
+  symptom only surfaced via the MCP `uninstall_app` tool. (2) Brew-
+  installed spyder couldn't rebuild KeepAwake because the tarball
+  didn't ship the `ios/KeepAwake/` Swift source that xcodebuild needs;
+  `findRepoRoot` looked at the executable's directory and the cwd,
+  found nothing under either, and the convergence loop stayed stuck
+  whenever a stale install needed reinstalling (e.g. weekly free-team
+  profile expiry, or this release's transition off the wrong-team
+  installs from v0.10.0–v0.12.0). Fix in three parts: release.yml
+  Package step now copies `ios/KeepAwake/` into the tarball under
+  `libexec/spyder-source/ios/KeepAwake/`; homebrew-releaser's install
+  line installs that directory into the Cellar; `findRepoRoot` probes
+  `<real-exe-dir>/../libexec/spyder-source` first via EvalSymlinks
+  (same symlink-resolution trick T35 uses for the bridge). Foreground
+  spyder rebuilt KeepAwake on Jevons / Minicades / Pippa with
+  team=SWA3H3N7TW (paid Squz Pty Ltd) and installed cleanly on all
+  three; simulated Homebrew layout in /tmp/ confirms the libexec
+  source path is found through the bin/spyder symlink. Published for
+  darwin-arm64, linux-amd64, linux-arm64.
