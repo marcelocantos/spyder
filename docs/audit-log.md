@@ -202,7 +202,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-25 — /release v0.11.0
 
-- **Commit**: `pending`
+- **Commit**: `d0d2cf8`
 - **Outcome**: Re-release of v0.10.0 after that tag's release.yml run
   failed in the Test step. The autoawake-supervisor convergence
   rewrite (T32) removed the old `if s.bridge == nil { return }`
