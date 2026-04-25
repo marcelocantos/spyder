@@ -1074,7 +1074,7 @@ targets:
     discovered: 2026-04-25
   T35:
     name: resolveBridgeBinary follows symlinks so Homebrew install finds the bundled bridge
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1087,9 +1087,10 @@ targets:
       <parameter name="tags">["bug", "release", "homebrew", "ios", "post-v0.11.0"]
     origin: manual
     discovered: 2026-04-25
+    achieved: 2026-04-26
   T36:
-    name: brew-services-supervised spyder daemon can reach loopback tunneld at 127.0.0.1:49151
-    status: identified
+    name: '[unreproducible] brew-services-supervised loopback tunneld unreachability'
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1097,10 +1098,11 @@ targets:
     - 'Daemon log under brew services does NOT show `tunneld unreachable at (''127.0.0.1'', 49151): [Errno 65] No route to host` when the tunneld registry is in fact populated and reachable from the user shell.'
     - 'Investigation notes recorded: which of the candidate causes (macOS Local Network privacy entitlement, launchd sandbox prohibiting loopback, IPv4-vs-IPv6 binding mismatch, missing `<key>RunAtLoad</key>` env propagation, etc.) is the actual culprit. The fix is whatever it takes to make the loopback reachable — likely a plist tweak, possibly a `setsockopt`/binding change in the bridge, possibly a separate Network framework path.'
     context: |-
-      Discovered 2026-04-25 testing v0.11.0. Even after working around T35 (bridge binary location), spyder running under brew services hits `No route to host` errno 65 when the bridge subprocess tries to reach loopback tunneld. Same Python code, same loopback address, same time of day works fine when spyder is started in a foreground shell. Suspect the launchd context restricts something — possibly Local Network privacy (macOS 13+ requires apps to declare local-network access in Info.plist), possibly the brew-generated plist is missing some networking entitlement, possibly the bridge is binding/connecting via an interface that isn't routable in the launchd-spawned process. Affects the production deployment path: users following the standard `brew install` + `brew services start` flow can't take screenshots. Worked around T35 by env-overriding the bridge path; T36 needs a real fix because there's no analogous workaround for the network restriction beyond running spyder in a terminal. Likely a v0.12.0 follow-up alongside T35.</context>
-      <parameter name="tags">["bug", "homebrew", "launchd", "tunneld", "post-v0.11.0"]
+      Raised 2026-04-25 after a single observation of `[Errno 65] No route to host` on `127.0.0.1:49151` from the brew-services-supervised v0.11.0 daemon. Re-tested 2026-04-26 against the v0.12.0 daemon (which has the T35 bridge-resolution fix in place): five consecutive `spyder screenshot` calls via the brew-services daemon all succeeded against Jevons (44 KB → 6 MB PNGs depending on screen content), and the brew-services log shows the convergence loop's list_devices reading the tunneld registry every 2 s without errors. Conclusion: the original observation was either (a) a transient tunneld blip, (b) an artifact of the v0.11.0 broken-bridge state where the actual error path was different, or (c) a v0.11.0-specific issue that was incidentally fixed by the T35 path-resolution change. Retiring without further work; if the failure recurs with v0.12.0+, raise a fresh target with reproduction steps.</context>
+      <parameter name="acceptance">["Retired without work — see context. brew-services-supervised spyder screenshots iOS 17+ devices reliably under v0.12.0; the original 'No route to host' observation has not reproduced."]
     origin: manual
     discovered: 2026-04-25
+    achieved: 2026-04-26
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
