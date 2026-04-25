@@ -27,10 +27,10 @@ import (
 
 // ── Gate errors ──────────────────────────────────────────────────────────────
 
-// ErrNoCodesigningIdentity indicates no Apple Development codesigning
-// identity is in the Mac's keychain. Human fix: sign in to Xcode with
+// ErrNoCodesigningIdentity indicates Xcode has no provisioning team
+// registered in IDEProvisioningTeams. Human fix: sign in to Xcode with
 // an Apple ID at Xcode → Settings → Accounts.
-var ErrNoCodesigningIdentity = errors.New("no Apple Development codesigning identity in keychain")
+var ErrNoCodesigningIdentity = errors.New("no Xcode provisioning team registered (sign in at Xcode → Settings → Accounts)")
 
 // ErrDeveloperModeDisabled indicates the device has Developer Mode off.
 // Human fix: enable at Settings → Privacy & Security → Developer Mode
@@ -44,26 +44,62 @@ var ErrTrustNotGranted = errors.New("developer certificate not trusted on device
 
 // ── Codesigning identity discovery ───────────────────────────────────────────
 
-// codesigningTeamPattern matches the TEAM ID in parentheses within a
-// `security find-identity` line. Example line:
-//
-//	1) ABCDEF0123 "Apple Development: jane@example.com (TEAMID)"
-var codesigningTeamPattern = regexp.MustCompile(`Apple Development:[^)]*\(([A-Z0-9]{10})\)`)
+// teamIDPattern extracts the value of a `teamID = XXXXXXXXXX;` line in
+// the old-style plist dictionary that `defaults read` emits.
+var teamIDPattern = regexp.MustCompile(`teamID\s*=\s*([A-Z0-9]{10})\s*;`)
 
-// DetectCodesigningTeam scans the Mac's keychain for an Apple Development
-// codesigning identity and returns the team ID. Returns
-// ErrNoCodesigningIdentity if none present.
+// freeProvisioningPattern locates the `isFreeProvisioningTeam = 1;`
+// flag inside a team block.
+var freeProvisioningPattern = regexp.MustCompile(`isFreeProvisioningTeam\s*=\s*1\s*;`)
+
+// teamBlockPattern splits the IDEProvisioningTeams output into one
+// substring per team dict. The output's structure is a top-level dict
+// keyed by Apple ID whose values are arrays of team dicts; we only need
+// to find every team dict, regardless of which Apple ID owns it.
+var teamBlockPattern = regexp.MustCompile(`\{[^{}]*teamID\s*=\s*[A-Z0-9]{10}[^{}]*\}`)
+
+// DetectCodesigningTeam returns the Xcode-registered provisioning team
+// to use for the KeepAwake build. Reads `defaults read com.apple.dt.Xcode
+// IDEProvisioningTeams` (the same data Xcode shows under Settings →
+// Accounts) and prefers a free Personal Team — that's the one any
+// developer signed in to Xcode has, and free provisioning auto-issues
+// dev profiles without needing a paid Apple Developer Program seat.
+//
+// Returns ErrNoCodesigningIdentity when Xcode has no registered teams,
+// which means the user has not signed in to Xcode.
+//
+// Why not `security find-identity`? The keychain may contain certs for
+// teams Xcode has no registered Apple ID for (e.g. enterprise certs
+// imported from a colleague's keychain export). Building with such a
+// team fails with "No Account for Team". IDEProvisioningTeams is the
+// authoritative list of teams Xcode can fetch profiles for.
 func DetectCodesigningTeam() (string, error) {
-	cmd := exec.Command("security", "find-identity", "-p", "codesigning", "-v")
+	cmd := exec.Command("defaults", "read", "com.apple.dt.Xcode", "IDEProvisioningTeams")
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("security find-identity: %w", err)
-	}
-	matches := codesigningTeamPattern.FindStringSubmatch(string(out))
-	if len(matches) < 2 {
+		// `defaults read` exits non-zero if the key is missing.
 		return "", ErrNoCodesigningIdentity
 	}
-	return matches[1], nil
+	blocks := teamBlockPattern.FindAllString(string(out), -1)
+	if len(blocks) == 0 {
+		return "", ErrNoCodesigningIdentity
+	}
+	// First pass: prefer a free Personal Team.
+	for _, block := range blocks {
+		if !freeProvisioningPattern.MatchString(block) {
+			continue
+		}
+		if m := teamIDPattern.FindStringSubmatch(block); len(m) >= 2 {
+			return m[1], nil
+		}
+	}
+	// Second pass: fall back to any team Xcode knows about.
+	for _, block := range blocks {
+		if m := teamIDPattern.FindStringSubmatch(block); len(m) >= 2 {
+			return m[1], nil
+		}
+	}
+	return "", ErrNoCodesigningIdentity
 }
 
 // ── Developer Mode probe ─────────────────────────────────────────────────────
