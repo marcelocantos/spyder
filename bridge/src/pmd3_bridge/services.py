@@ -95,46 +95,108 @@ async def _lockdown(udid: str):  # type: ignore[return]
 
 
 async def list_devices() -> list[DeviceInfo]:
-    """Return every USB-connected device visible to usbmux.
+    """Return every iOS device currently reachable from this host.
 
-    Every call opens (and explicitly closes) a lockdown client per device to
-    read metadata. Without the close, pymobiledevice3 leaks the underlying
-    usbmux sockets — observed in v0.7.0 as EMFILE ("Too many open files")
-    after a few minutes of 2 s autoawake polling.
+    Two sources are unioned, in this order:
+
+      1. **Tunneld registry** (`pymobiledevice3.tunneld.api.get_tunneld_devices`).
+         Authoritative for iOS 17+ devices — `pmd3 usbmux list` drops them
+         randomly across runs (observed: Jevons missing one tick, Minicades
+         missing the next), but tunneld's RSD registry has them stably as
+         long as the user-managed `pymobiledevice3 remote tunneld` has
+         negotiated a tunnel. Each RSD carries udid, product_type, and
+         product_version directly — no extra lockdown round-trip needed.
+      2. **USBMux** for any device tunneld didn't list. Covers iOS <17
+         devices and any device tunneld hasn't tunneled yet. Per-device
+         lockdown read enriches metadata; explicit close prevents the
+         v0.7.0 EMFILE leak.
+
+    The Go-side adapter further enriches with `xcrun devicectl list devices`
+    to backfill the user-visible name (e.g. "Pippa", "Jevons") that neither
+    tunneld nor lockdown surfaces directly.
+
+    No tunneld is not an error — when the registry is unreachable we fall
+    back to USBMux only (matching pre-T30 behaviour).
     """
+    seen: dict[str, DeviceInfo] = {}
+
+    # 1) tunneld registry — HTTP probe rather than full RSD-connect.
+    # `get_tunneld_devices()` silently drops devices whose RSD-connect
+    # times out (observed: Pippa intermittently missing from the RSD-
+    # connect path despite being in the registry). The HTTP endpoint at
+    # http://127.0.0.1:49151/ is the canonical "what's tunneled" view —
+    # we read the UDID list from it directly and let the Go-side
+    # `xcrun devicectl list devices` enrichment fill in metadata.
+    try:
+        import requests
+        from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS
+        host, port = TUNNELD_DEFAULT_ADDRESS
+        resp = requests.get(f"http://{host}:{port}", timeout=2.0)
+        tunnels = resp.json()
+        for udid in tunnels.keys():
+            seen[udid] = DeviceInfo(
+                udid=udid,
+                # Metadata not on the HTTP shape; Go side backfills via
+                # devicectl. Keep fields populated with placeholders so
+                # downstream JSON consumers don't choke on missing keys.
+                name="",
+                product_type="",
+                os_version="",
+            )
+    except Exception as exc:
+        log.debug("tunneld registry unreachable; falling back to USBMux: %s", exc)
+
+    # 2) USBMux fallback for devices tunneld didn't surface.
     try:
         from pymobiledevice3.usbmux import select_devices_by_connection_type
         muxes = await select_devices_by_connection_type(connection_type="USB")
     except Exception as exc:
-        raise BridgeError(
-            "pmd3_error",
-            f"Failed to list devices: {exc}",
-        ) from exc
+        if not seen:
+            raise BridgeError(
+                "pmd3_error",
+                f"Failed to list devices via tunneld and USBMux: {exc}",
+            ) from exc
+        log.debug("USBMux enumeration failed but tunneld populated; continuing: %s", exc)
+        muxes = []
 
-    result: list[DeviceInfo] = []
     for dev in muxes:
+        if dev.serial in seen:
+            continue
         try:
             async with _lockdown_ctx(dev.serial) as lc:
-                result.append(
-                    DeviceInfo(
-                        udid=dev.serial,
-                        name=lc.display_name,
-                        product_type=lc.product_type,
-                        os_version=lc.product_version,
-                    )
+                seen[dev.serial] = DeviceInfo(
+                    udid=dev.serial,
+                    name=lc.display_name,
+                    product_type=lc.product_type,
+                    os_version=lc.product_version,
                 )
         except BridgeError:
-            # Include unpaired devices with placeholder fields so callers
-            # can still see them.
-            result.append(
-                DeviceInfo(
-                    udid=dev.serial,
-                    name="unknown",
-                    product_type="unknown",
-                    os_version="unknown",
-                )
+            seen[dev.serial] = DeviceInfo(
+                udid=dev.serial,
+                name="unknown",
+                product_type="unknown",
+                os_version="unknown",
             )
-    return result
+
+    # Enrich tunneld-only entries (those still with empty fields) via
+    # lockdown. iOS 17+ devices that legacy lockdown can't read stay
+    # empty — Go side backfills via devicectl.
+    for udid, info in list(seen.items()):
+        if info.name or info.product_type or info.os_version:
+            continue
+        try:
+            async with _lockdown_ctx(udid) as lc:
+                seen[udid] = DeviceInfo(
+                    udid=udid,
+                    name=lc.display_name or "",
+                    product_type=lc.product_type or "",
+                    os_version=lc.product_version or "",
+                )
+        except BridgeError:
+            # Leave the empty-field entry; downstream enrichment fills it.
+            pass
+
+    return list(seen.values())
 
 
 async def list_apps(udid: str) -> list[AppInfo]:
