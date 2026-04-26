@@ -89,13 +89,13 @@ async def _lockdown(udid: str):  # type: ignore[return]
         elapsed_ms = int((time.monotonic() - started) * 1000)
         msg = str(exc).lower()
         if "pair" in msg or "trust" in msg:
-            log.warning("lockdown unpaired udid=%s elapsed_ms=%d err=%s",
+            log.warning("lockdown unpaired udid=%s elapsed_ms=%d err=%r",
                         udid, elapsed_ms, exc)
             raise BridgeError(
                 "device_not_paired",
                 f"Device {udid} is not paired: {exc}",
             ) from exc
-        log.warning("lockdown failed udid=%s elapsed_ms=%d err=%s",
+        log.warning("lockdown failed udid=%s elapsed_ms=%d err=%r",
                     udid, elapsed_ms, exc)
         raise BridgeError(
             "pmd3_error",
