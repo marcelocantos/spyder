@@ -31,6 +31,8 @@ from .schemas import (
     CrashReportsListResponse,
     CrashReportsPullRequest,
     CrashReportsPullResponse,
+    DevicePowerStateRequest,
+    DevicePowerStateResponse,
     KillAppRequest,
     KillAppResponse,
     LaunchAppRequest,
@@ -304,6 +306,25 @@ async def crash_reports_pull(body: CrashReportsPullRequest) -> Any:
                  body.udid, body.name, total)
 
     return StreamingResponse(_iter(), media_type="application/octet-stream")
+
+
+@app.post("/v1/device_power_state", response_model=DevicePowerStateResponse)
+async def device_power_state(body: DevicePowerStateRequest) -> Any:
+    """Query the power/display state of a device (🎯T29).
+
+    Uses the DVT Screenshot instrument via tunneld RSD. Reading the
+    framebuffer does NOT reset the device's idle timer (non-observation
+    requirement). See docs/papers/t29-device-state-detection.md.
+    """
+    log.debug("device_power_state udid=%s", body.udid)
+    try:
+        result = await _services.device_power_state(body.udid)
+        log.debug("device_power_state udid=%s state=%s", body.udid, result.state)
+        return result
+    except BridgeError as exc:
+        log.warning("device_power_state udid=%s failed code=%s message=%s",
+                    body.udid, exc.code, exc.message)
+        return _classify(exc)
 
 
 @app.post("/v1/acquire_power_assertion", response_model=AcquirePowerAssertionResponse)
