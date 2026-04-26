@@ -495,3 +495,27 @@ maintenance activities. Append-only — newest entries at the bottom.
   worktrees — both T35 and T36 agents independently fixed it; the
   T35 patch was kept and T36's duplicate skipped at cherry-pick
   time. Published for darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-26 — /release v0.18.0
+
+- **Commit**: `pending`
+- **Outcome**: Released v0.18.0. Fixes a relaunch loop between
+  the autoawake supervisor and the on-device KeepAwake app for
+  Wi-Fi-reachable iOS devices: the host's
+  `devicectlConnectedIOSDevices` filter now requires
+  `transportType=wired` (not just `tunnelState=connected`), so a
+  device on the local network with the cable unplugged is treated
+  as departed instead of triggering a launch → unplugged-self-exit
+  → relaunch cycle. Root cause was a sensor mismatch — the host
+  observed the data plane (tunneld + devicectl) while KeepAwake
+  observed the power plane (`UIDevice.batteryState`); the two
+  only coincide with a normal data+power cable to the dev laptop.
+  Verified end-to-end on Pippa: with cable unplugged but on
+  Wi-Fi the supervisor ignores her; plugging in attaches +
+  foregrounds KeepAwake within one converge tick. Added a
+  `parseDevicectlConnectedIOSDevices` unit test covering wired,
+  Wi-Fi, unavailable, and non-iOS rows. Also bundles 🎯T29 HIL
+  test parking + the 🎯T38 acceptance-criteria expansion for
+  `spyder run --on PREDICATE` and `spyder run --timeout
+  DURATION` surfaced by ge's matrix-cell.sh migration (ge PR
+  #44). Published for darwin-arm64, linux-amd64, linux-arm64.

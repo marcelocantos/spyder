@@ -4,7 +4,10 @@
 for "device is currently asleep/awake" queryable from pmd3-bridge.
 
 **Date:** 2026-04-26
-**Status:** Prototype implemented (ScreenshotService path); HIL verification pending.
+**Status:** Prototype implemented (ScreenshotService path); mechanical
+acceptance test abandoned. Stay-awake correctness is trusted via the
+foreground-KeepAwake guarantee plus operator observation; revisit only
+if a regression surfaces in production use.
 
 ---
 
@@ -165,14 +168,32 @@ Rationale:
 - Degrades gracefully: tunneld_unavailable → `"unknown"` rather than
   error; developer_mode_disabled → `"unknown"` with actionable message.
 
-**What remains for HIL verification:**
-- Test against Pippa (00008103-000D39301A6A201E) with screen on/off.
-- Document the exact pmd3 exception string that surfaces when display is off.
-- Tighten the exception heuristic matchers from `"unknown"` to `"asleep"` or
-  `"display_off"` once real exception shapes are known.
-- Run `TestDevice_StaysAwake_Mechanical` with SPYDER_DEVICES=1 against a
-  device where: (a) spyder holds power assertion — should report `"awake"`;
-  (b) no assertion held — after idle timeout should report `"display_off"`.
+**Why no mechanical acceptance test:**
+
+A 2026-04-26 attempt at `TestDevice_StaysAwake_Mechanical` revealed
+that the test was conflating two unrelated mechanisms:
+
+- `AcquirePowerAssertion` is a *host-side* power assertion — it keeps
+  the Mac awake, not the iPad. Wrong system to exercise.
+- `DevicePowerState` (the screenshot probe in this paper) is the only
+  available oracle for "is the iPad awake?", but the screenshot path
+  itself goes through tunneld RSD and is not trusted as an
+  observation-free signal in practice.
+
+The actual stay-awake guarantee is iOS-level: a foregrounded app with
+idle-disable keeps the screen on. Spyder relies on the
+`autoawake.Supervisor` to keep KeepAwake foregrounded; if that
+foreground-state probe (`ios.KeepAwakeRunning`) returns true, iOS
+guarantees the rest. The probe is already exercised in production
+every poll cycle.
+
+A behavioural test that exercises `autoawake.Supervisor` end-to-end
+against a real device is feasible but expensive to set up and
+maintain. The HIL flow used during the v0.8.0 release (operator
+observes Pippa, agent asks, operator reports) is sufficient for the
+foreseeable future. Revisit if production usage surfaces a regression
+that the existing fd-leak guard (🎯T27) and foreground-state probe
+don't already catch.
 
 ---
 

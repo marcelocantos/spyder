@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.17.0`.
+Snapshot as of `v0.18.0`.
 
 ## Interaction surface catalogue
 
@@ -376,15 +376,19 @@ builds. **Stable.**
   the daemon and not part of the 1.0 stability contract.
 - **iOS keep-awake via on-device companion app.** The `ios/KeepAwake/`
   SwiftUI app sets `UIApplication.isIdleTimerDisabled = true` while
-  foregrounded. Autoawake runs a convergence loop (🎯T32): every 15 s
-  it observes whether KeepAwake is running on each connected device,
-  installs (xcodebuild + devicectl) when absent, launches when not
-  running, and re-tests human-gate states (locked, needs-trust,
-  needs-developer-mode) each tick so user-side resolutions are detected
-  without re-plugging. Per-developer signing identity required
-  (free-tier Apple ID suffices). pmd3's `PowerAssertionService` was
-  attempted as a drop-in replacement in v0.6.0–v0.8.0 but is a no-op
-  for display sleep on iOS; reverted in v0.9.0 (🎯T31).
+  foregrounded and exits on `batteryState == .unplugged` so iOS reclaims
+  the slot when the cable is pulled. Autoawake runs a convergence loop
+  (🎯T32): every 15 s it observes whether KeepAwake is running on each
+  connected device, installs (xcodebuild + devicectl) when absent,
+  launches when not running, and re-tests human-gate states (locked,
+  needs-trust, needs-developer-mode) each tick so user-side resolutions
+  are detected without re-plugging. The "connected" filter is wired-only
+  (`devicectl transportType=wired`); Wi-Fi-reachable devices are
+  excluded so they don't fight KeepAwake's unplugged self-exit in a
+  relaunch loop. Per-developer signing identity required (free-tier
+  Apple ID suffices). pmd3's `PowerAssertionService` was attempted as a
+  drop-in replacement in v0.6.0–v0.8.0 but is a no-op for display sleep
+  on iOS; reverted in v0.9.0 (🎯T31).
 - **Tunneld lifecycle.** iOS 17+ screenshot and any future
   DVT-instrument operations need an active RSD tunnel for the device.
   spyder's bridge expects an externally-managed `pymobiledevice3 remote
