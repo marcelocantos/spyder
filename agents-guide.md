@@ -853,9 +853,9 @@ reboots the device).
 
 ## Environment and dependencies
 
-- **macOS host.** Tested on macOS 15+ / Apple Silicon. Linux builds exist for
-  spyder's non-iOS-specific surface (devices list, Android, the MCP server
-  itself) but iOS operations will fail there.
+- **macOS host.** macOS 15+ / Apple Silicon only. Spyder's value is iOS device
+  orchestration via macOS-specific tooling (`xcrun devicectl`, pmd3 tunneld
+  + RSD, CoreDevice); Linux is not a release target. (🎯T45)
 - **`pymobiledevice3` ≥ 8.2** — iOS operations. The `pmd3-bridge` FastAPI
   subprocess (bundled at `libexec/pmd3-bridge/pmd3-bridge`) provides a
   persistent loopback HTTP API over pmd3; spyder's Go daemon supervises

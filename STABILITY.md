@@ -19,6 +19,16 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
+## Supported platforms
+
+**macOS arm64 only.** Spyder's iOS device orchestration relies on macOS-only
+tooling (`xcrun devicectl`, `pymobiledevice3 remote tunneld` with RSD,
+CoreDevice). The bundled `pmd3-bridge` subprocess is the value proposition
+and it's Mac-only. The Android adapter via `adb` is cross-platform in
+principle, but `adb` itself is cross-platform; spyder doesn't add value to
+adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
+Homebrew tap formula targets darwin-arm64 only. (🎯T45)
+
 Snapshot as of `v0.20.0`.
 
 ## Interaction surface catalogue
