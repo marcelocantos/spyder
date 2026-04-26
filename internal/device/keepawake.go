@@ -42,6 +42,14 @@ var ErrDeveloperModeDisabled = errors.New("Developer Mode disabled on device")
 // VPN & Device Management, tap the developer entry, tap Trust.
 var ErrTrustNotGranted = errors.New("developer certificate not trusted on device")
 
+// ErrNoProviderFound is returned when devicectl process launch fails with
+// CoreDeviceError Code=1002 "No provider was found". This means the bundle
+// is installed on the device but the host has no matching provisioning
+// profile — the profile has expired (free Personal Teams expire after 7
+// days) or was signed with a different team. The fix is to uninstall the
+// stale copy and reinstall with the currently-detected codesigning team.
+var ErrNoProviderFound = errors.New("no CoreDevice provider for installed KeepAwake (stale provisioning profile — will reinstall)")
+
 // ── Codesigning identity discovery ───────────────────────────────────────────
 
 // teamIDPattern extracts the value of a `teamID = XXXXXXXXXX;` line in
@@ -169,6 +177,15 @@ func BuildKeepAwake(teamID string) (string, error) {
 		globalKeepAwakeBuild.path, globalKeepAwakeBuild.err = buildKeepAwakeNow(teamID)
 	})
 	return globalKeepAwakeBuild.path, globalKeepAwakeBuild.err
+}
+
+// ResetKeepAwakeBuild discards the cached build result so the next
+// BuildKeepAwake call triggers a fresh xcodebuild. Called by autoawake
+// when ErrNoProviderFound is detected: the installed app has a stale
+// provisioning profile, so we need to rebuild (which fetches a new
+// profile via -allowProvisioningUpdates) before reinstalling.
+func ResetKeepAwakeBuild() {
+	globalKeepAwakeBuild = keepAwakeBuild{}
 }
 
 func buildKeepAwakeNow(teamID string) (string, error) {

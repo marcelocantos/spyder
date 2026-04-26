@@ -89,6 +89,7 @@ const (
 	classNeedsDeveloperMode
 	classNeedsXcodeSignin
 	classNotInstalled
+	classStaleInstall
 	classOther
 )
 
@@ -106,6 +107,8 @@ func (c errorClass) String() string {
 		return "needs-xcode-signin"
 	case classNotInstalled:
 		return "not-installed"
+	case classStaleInstall:
+		return "stale-install"
 	case classOther:
 		return "other"
 	default:
@@ -130,6 +133,17 @@ type deviceObs struct {
 	trustAlertGroup string
 }
 
+// iosAdapter is the subset of *device.IOSAdapter used by the convergence
+// loop. Extracted as an interface so tests can inject a fake without
+// starting real devicectl processes.
+type iosAdapter interface {
+	List() ([]device.Info, error)
+	KeepAwakeRunning(id string) (bool, error)
+	KeepAwakeInstalled(id string) (bool, error)
+	LaunchKeepAwake(id string) error
+	UninstallApp(id, bundleID string) error
+}
+
 // Supervisor runs the convergence loop. Construct via New; call Run in
 // a goroutine for the lifetime of the daemon.
 type Supervisor struct {
@@ -139,7 +153,7 @@ type Supervisor struct {
 	// fine; the IOSAdapter constructed below tolerates it for the
 	// keep-awake-relevant operations.
 	bridge       *pmd3bridge.Client
-	ios          *device.IOSAdapter
+	ios          iosAdapter
 	inventory    *inventory.Store
 	reservations *reservations.Store
 
@@ -157,6 +171,13 @@ type Option func(*Supervisor)
 
 func WithReservations(s *reservations.Store) Option {
 	return func(sv *Supervisor) { sv.reservations = s }
+}
+
+// withIOSAdapter replaces the default IOSAdapter with the given
+// implementation. Intentionally unexported; test packages use it via
+// the autoawake_test build tag to inject fakes.
+func withIOSAdapter(a iosAdapter) Option {
+	return func(sv *Supervisor) { sv.ios = a }
 }
 
 // New creates a new Supervisor. bridge may be nil; the convergence loop
@@ -328,6 +349,10 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 		// Race: app got uninstalled between observe and launch.
 		// Next tick's installed-probe will trigger reinstall.
 		s.advance(udid, alias, classNotInstalled, launchErr)
+	case errors.Is(launchErr, device.ErrNoProviderFound):
+		// Stale provisioning profile: uninstall the corrupt copy so the
+		// next tick's install-probe triggers a fresh install + launch.
+		s.attemptReinstall(ctx, udid, alias)
 	default:
 		s.advance(udid, alias, classOther, launchErr)
 	}
@@ -377,6 +402,58 @@ func (s *Supervisor) attemptInstall(ctx context.Context, udid, alias string) boo
 	return true
 }
 
+// attemptReinstall handles the ErrNoProviderFound recovery path (🎯T34).
+// The installed KeepAwake copy has a stale provisioning profile (e.g. a
+// free Personal Team profile expired after 7 days). We:
+//  1. Uninstall the stale copy.
+//  2. Reset the build cache so the next BuildKeepAwake call fetches a
+//     fresh profile via xcodebuild -allowProvisioningUpdates.
+//  3. Run the normal attemptInstall + launch cycle.
+//
+// Transitions to classStaleInstall on entry so the loop body emits exactly
+// one log line per error session. On repeated failure (e.g. uninstall or
+// rebuild also fail) we fall through to classOther, which is also
+// idempotent.
+func (s *Supervisor) attemptReinstall(ctx context.Context, udid, alias string) {
+	// Transition to classStaleInstall so advance() emits exactly one log
+	// line for this error session regardless of how many ticks we spend here.
+	s.advance(udid, alias, classStaleInstall, nil)
+
+	slog.Info("autoawake: uninstalling stale KeepAwake (stale provisioning profile)",
+		"udid", udid, "alias", alias)
+	if err := s.ios.UninstallApp(udid, device.KeepAwakeBundleID); err != nil {
+		slog.Warn("autoawake: uninstall stale KeepAwake failed",
+			"udid", udid, "alias", alias, "error", summariseErr(err))
+		s.advance(udid, alias, classOther, err)
+		return
+	}
+
+	// Reset the cached build so the next build fetches a fresh profile.
+	device.ResetKeepAwakeBuild()
+
+	// Re-run the full install + launch cycle.
+	if !s.attemptInstall(ctx, udid, alias) {
+		return
+	}
+	launchErr := s.ios.LaunchKeepAwake(udid)
+	if launchErr == nil {
+		s.advance(udid, alias, classConverged, nil)
+		return
+	}
+	// If launch fails again, classify normally — advance() keeps it
+	// idempotent so we don't spam on repeated failure.
+	switch {
+	case errors.Is(launchErr, device.ErrLocked):
+		s.advance(udid, alias, classLocked, launchErr)
+	case errors.Is(launchErr, device.ErrTrustNotGranted):
+		s.advance(udid, alias, classNeedsTrust, launchErr)
+	case errors.Is(launchErr, device.ErrKeepAwakeNotInstalled):
+		s.advance(udid, alias, classNotInstalled, launchErr)
+	default:
+		s.advance(udid, alias, classOther, launchErr)
+	}
+}
+
 // advance transitions the device's observation to a new class. Side-
 // effects (log lines, macOS alert dispatch / dismissal) fire only when
 // the class actually changes — the same class across ticks produces
@@ -423,6 +500,10 @@ func (s *Supervisor) advance(udid, alias string, class errorClass, err error) {
 		s.dismissAlerts(udid)
 	case classNotInstalled:
 		slog.Debug("autoawake: KeepAwake not installed; will reinstall next tick",
+			"udid", udid, "alias", alias)
+		s.dismissAlerts(udid)
+	case classStaleInstall:
+		slog.Warn("autoawake: KeepAwake has stale provisioning profile; uninstalling and reinstalling",
 			"udid", udid, "alias", alias)
 		s.dismissAlerts(udid)
 	case classOther:

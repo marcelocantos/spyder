@@ -48,6 +48,14 @@ var keepAwakeLaunchLockedPattern = regexp.MustCompile(
 var keepAwakeLaunchTrustPattern = regexp.MustCompile(
 	`(?i)untrusted.*developer|not.*explicitly trusted|requires.*trust|'Security'|invalid code signature`)
 
+// keepAwakeLaunchNoProviderPattern matches the CoreDeviceError Code=1002
+// "No provider was found" failure that devicectl emits when the bundle is
+// installed but the host's provisioning profile doesn't match the on-device
+// signature (e.g. free Personal Team profile expired after 7 days, or the
+// host signed with a different team). Fix: uninstall + reinstall.
+var keepAwakeLaunchNoProviderPattern = regexp.MustCompile(
+	`(?i)no provider was found|CoreDeviceError.*[Cc]ode=?1002|error 1002`)
+
 // KeepAwakeInstalled reports whether the KeepAwake bundle is currently
 // installed on the device. Implemented as a `xcrun devicectl device info
 // apps` JSON query filtered for KeepAwakeBundleID. Used by autoawake's
@@ -192,6 +200,10 @@ func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 			slog.Debug("devicectl launch KeepAwake: trust not granted",
 				"device", id, "duration_ms", elapsedMs)
 			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrTrustNotGranted)
+		case keepAwakeLaunchNoProviderPattern.MatchString(tail):
+			slog.Debug("devicectl launch KeepAwake: no provider (stale profile)",
+				"device", id, "duration_ms", elapsedMs)
+			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrNoProviderFound)
 		}
 		slog.Warn("devicectl launch KeepAwake failed",
 			"device", id, "duration_ms", elapsedMs,
