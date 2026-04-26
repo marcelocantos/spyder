@@ -23,6 +23,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
+# Maximum attempts and inter-attempt pause for tunneld probes. These values
+# are tuned for the startup-race window: the brew-service daemon may attempt
+# its first screenshot a few seconds after tunneld finishes negotiating a
+# new device tunnel. Three attempts at 0.5 s cover the observed ~1 s window
+# without adding noticeable latency to the steady-state success path.
+_TUNNELD_MAX_ATTEMPTS = 3
+_TUNNELD_RETRY_DELAY_S = 0.5
+
 from .schemas import (
     AppInfo,
     BatteryResponse,
@@ -128,12 +136,32 @@ async def list_devices() -> list[DeviceInfo]:
     # http://127.0.0.1:49151/ is the canonical "what's tunneled" view —
     # we read the UDID list from it directly and let the Go-side
     # `xcrun devicectl list devices` enrichment fill in metadata.
+    #
+    # Retry up to _TUNNELD_MAX_ATTEMPTS times on transient transport errors
+    # (errno 65 EHOSTUNREACH on macOS loopback during wake-from-sleep or
+    # tunneld restart). Falls back to USBMux-only on exhaustion. See
+    # docs/papers/t36-tunneld-launchd-investigation.md.
     try:
         import requests
         from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS
         host, port = TUNNELD_DEFAULT_ADDRESS
-        resp = requests.get(f"http://{host}:{port}", timeout=2.0)
-        tunnels = resp.json()
+        tunnels: dict = {}
+        _last_probe_exc: Exception | None = None
+        for _attempt in range(_TUNNELD_MAX_ATTEMPTS):
+            if _attempt > 0:
+                time.sleep(_TUNNELD_RETRY_DELAY_S)
+            try:
+                resp = requests.get(f"http://{host}:{port}", timeout=2.0)
+                tunnels = resp.json()
+                _last_probe_exc = None
+                break
+            except Exception as exc:
+                _last_probe_exc = exc
+                log.debug(
+                    "tunneld HTTP probe attempt=%d failed: %s", _attempt, exc
+                )
+        if _last_probe_exc is not None:
+            raise _last_probe_exc
         for udid in tunnels.keys():
             seen[udid] = DeviceInfo(
                 udid=udid,
@@ -415,19 +443,38 @@ async def _tunneld_rsd_for(udid: str):  # type: ignore[no-untyped-def]
 
     Raises BridgeError("tunneld_unavailable") when tunneld is unreachable,
     BridgeError("device_not_paired") when the udid isn't in the registry.
+
+    Retries up to _TUNNELD_MAX_ATTEMPTS times on transient transport errors
+    (errno 65 EHOSTUNREACH, ConnectionError, OSError). This covers the
+    startup-race window where the brew-service daemon launches and attempts
+    a screenshot a few seconds before tunneld finishes negotiating a tunnel
+    or recovers from a brief restart. See docs/papers/t36-tunneld-launchd-
+    investigation.md for the full root-cause analysis.
     """
-    try:
-        from pymobiledevice3.tunneld.api import (
-            TUNNELD_DEFAULT_ADDRESS,
-            get_tunneld_devices,
-        )
-        rsds = await get_tunneld_devices(TUNNELD_DEFAULT_ADDRESS)
-    except Exception as exc:
+    from pymobiledevice3.tunneld.api import (
+        TUNNELD_DEFAULT_ADDRESS,
+        get_tunneld_devices,
+    )
+    last_exc: Exception | None = None
+    for attempt in range(_TUNNELD_MAX_ATTEMPTS):
+        if attempt > 0:
+            await asyncio.sleep(_TUNNELD_RETRY_DELAY_S)
+            log.debug("tunneld_rsd_for: retry attempt=%d udid=%s", attempt, udid)
+        try:
+            rsds = await get_tunneld_devices(TUNNELD_DEFAULT_ADDRESS)
+            break  # success — fall through to UDID search
+        except Exception as exc:
+            last_exc = exc
+            log.debug(
+                "tunneld_rsd_for: attempt=%d failed: %s", attempt, exc
+            )
+    else:
+        # All attempts exhausted.
         raise BridgeError(
             "tunneld_unavailable",
-            f"tunneld unreachable at {TUNNELD_DEFAULT_ADDRESS}: {exc}; "
+            f"tunneld unreachable at {TUNNELD_DEFAULT_ADDRESS}: {last_exc}; "
             "start it with `sudo pymobiledevice3 remote tunneld`",
-        ) from exc
+        ) from last_exc
     if not rsds:
         raise BridgeError(
             "tunneld_unavailable",
