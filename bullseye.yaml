@@ -1475,6 +1475,34 @@ targets:
     origin: forked-from user-reported orphaned pmd3 processes 2026-04-26 (jevons session 11191d31)
     discovered: 2026-04-26
     achieved: 2026-04-26
+  T45:
+    name: spyder release ships macOS arm64 only — drop Linux build matrix
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`.github/workflows/release.yml`''s build matrix has darwin-arm64 only. linux-amd64 and linux-arm64 entries are removed.'
+    - 'homebrew-releaser config in the same workflow has `target_darwin_arm64: true` only; `target_linux_amd64` and `target_linux_arm64` are removed (or set to false).'
+    - STABILITY.md notes spyder is macOS-only as part of the public contract — the iOS device adapter requires `xcrun devicectl` and a host-side `pymobiledevice3 remote tunneld`, both macOS-specific; the Android adapter via `adb` is cross-platform in principle but the bundled `pmd3-bridge` is the value proposition and it's Mac-only.
+    - agents-guide.md's install instructions don't suggest a Linux install path that doesn't exist.
+    context: |-
+      Question raised 2026-04-26 mid-v0.20.0 release: why do we ship Linux tarballs? Spyder's value proposition is iOS device orchestration via macOS-only tooling (xcrun devicectl, pymobiledevice3 with tunneld, CoreDevice integration). The bundled pmd3-bridge subprocess is part of the brew formula's libexec; it's the iOS path. Android-only users via adb are theoretically possible but vanishingly unlikely — nobody picks spyder for adb wrapping when adb itself is cross-platform.
+
+      Cost of the current matrix:
+      - ~2/3 of build CI minutes per release.
+      - Two tarballs per release that nobody downloads (no Linux ARM iOS dev workflow exists).
+      - homebrew-releaser config keeps the formula multi-platform.
+
+      The Linux entries in `.github/workflows/release.yml` carried over from the global /release skill default at the v0.1.0 boostrap. By v0.20.0 we have evidence of zero Linux value. Prune to darwin-arm64 only.
+
+      Not done in v0.20.0 because the workflow was mid-flight when the question was raised. Defer to v0.21.0 or later — not blocking any current work.
+    tags:
+    - release
+    - ci
+    - platform-pruning
+    - low-effort
+    origin: forked-from v0.20.0 release observation 2026-04-26
+    discovered: 2026-04-27
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
