@@ -1230,6 +1230,21 @@ targets:
     origin: manual
     discovered: 2026-04-26
     achieved: 2026-04-26
+  T38:
+    name: 'Verify: brew-services-supervised spyder takes iOS 17+ screenshots end-to-end'
+    kind: verify
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A clean install via `brew install marcelocantos/tap/spyder` followed by `brew services start spyder` reaches the steady-state where an MCP `screenshot` call against a paired iOS 17+ device returns a valid PNG.
+    - 'No `tunneld unreachable at (''127.0.0.1'', 49151): [Errno 65] No route to host` line appears in the brew-services daemon log during the screenshot call.'
+    - 'HIL-style verification recorded in `docs/audit-log.md` for the release that ships the fix: device used, brew-services launchctl state, screenshot byte count, daemon log excerpt.'
+    context: Companion verify checkpoint for 🎯T36. Without a verify target above T36, the frontier had no checkpoint reachable and convergence reported a tunnel — every active target sat alone with `no checkpoint reachable`. This verify target turns T36 into work-with-checkpoint (dist=1), giving the convergence loop somewhere to head. The actual investigation work (which of macOS Local Network privacy / launchd sandbox / IPv4-vs-IPv6 / RunAtLoad env propagation is the culprit) lives in T36 itself; this target only locks the user-visible end-to-end signal that the fix worked.
+    verifies:
+    - T36
+    origin: manual
+    discovered: 2026-04-26
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
