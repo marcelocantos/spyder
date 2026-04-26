@@ -25,6 +25,7 @@ from pmd3_bridge.schemas import (
     BatteryResponse,
     CrashReportEntry,
     DeviceInfo,
+    DevicePowerStateResponse,
 )
 from pmd3_bridge.services import BridgeError
 
@@ -102,9 +103,13 @@ def _make_fake_services(
             yield b"crash report content"
         return _stream()
 
+    async def device_power_state(udid: str) -> DevicePowerStateResponse:
+        return DevicePowerStateResponse(state="awake")
+
     for fn in [
         list_devices, list_apps, launch_app, kill_app, pid_for_bundle,
         battery, screenshot, crash_reports_list, crash_reports_pull,
+        device_power_state,
     ]:
         setattr(svc, fn.__name__, fn)
 
@@ -249,6 +254,32 @@ async def test_crash_reports_pull_happy(client: AsyncClient) -> None:
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/octet-stream")
     assert r.content == b"crash report content"
+
+
+# ── device_power_state (🎯T29) ─────────────────────────────────────────────────
+
+async def test_device_power_state_awake(client: AsyncClient) -> None:
+    r = await client.post("/v1/device_power_state", json={"udid": FAKE_UDID})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "awake"
+
+
+async def test_device_power_state_tunneld_unavailable(client: AsyncClient) -> None:
+    """Tunneld unavailable → unknown (not a hard error)."""
+    from pmd3_bridge.services import BridgeError as BE
+
+    async def _fail(udid: str) -> DevicePowerStateResponse:
+        raise BE("tunneld_unavailable", "tunneld not running")
+
+    svc = _make_fake_services()
+    svc.device_power_state = _fail  # type: ignore[attr-defined]
+    _set_services(svc)
+
+    r = await client.post("/v1/device_power_state", json={"udid": FAKE_UDID})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "unknown"
 
 
 # ── Power assertion helpers ────────────────────────────────────────────────────
