@@ -7,6 +7,7 @@ package pmd3bridge
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 )
@@ -30,9 +31,21 @@ import (
 //   - the screenshot call does NOT reset the idle timer, and
 //   - the bridge correctly classifies the display-off exception shape from pmd3.
 //
-// Once HIL-verified, remove the t.Skip below and update the T29 design doc.
+// HIL run protocol:
+//  1. On the device (Pippa preferred): set Settings → Display & Brightness
+//     → Auto-Lock to 30 seconds. Confirm Developer Mode is enabled and the
+//     device is paired and tunneled.
+//  2. Export SPYDER_T29_HIL=1 (gates the test) and optionally
+//     SPYDER_TEST_UDID=<pippa-udid> to pin a specific device.
+//  3. Lay the device flat, screen visible, and don't touch it during the
+//     2-minute run. Phase 2 needs the auto-lock idle timer to expire.
+//
+// Once HIL-verified across a few runs, the env-var gate can be lifted
+// (or kept as a safety so CI without a device doesn't accidentally try).
 func TestDevice_StaysAwake_Mechanical(t *testing.T) {
-	t.Skip("🎯T29: HIL verification pending — remove skip once display-off exception shape is confirmed against Pippa")
+	if os.Getenv("SPYDER_T29_HIL") != "1" {
+		t.Skip("🎯T29: HIL run gated — set SPYDER_T29_HIL=1 (and ideally SPYDER_TEST_UDID=<pippa>) to run; needs auto-lock ≤30s and ~2 min undisturbed")
+	}
 
 	_, c := startRealBridge(t)
 	d := firstIOSDevice(t, c)

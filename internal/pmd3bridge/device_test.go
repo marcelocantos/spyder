@@ -77,21 +77,39 @@ func startRealBridge(t *testing.T) (*Supervisor, *Client) {
 	return sup, sup.Client()
 }
 
-// firstIOSDevice returns the first non-disconnected iOS device the
-// bridge can see; skips the test if none.
+// firstIOSDevice returns an iOS device the bridge can see. If
+// SPYDER_TEST_UDID is set, that exact UDID wins (so HIL runs can pin
+// Pippa even when other devices are also tunneled). Otherwise, prefer
+// devices with a populated lockdown name; fall back to the first
+// device with a non-empty UDID — tunneld-only enrolment (iOS 17+ over
+// WiFi) returns empty name fields from the bridge because devicectl
+// backfill lives in the Go-side adapter, not in the bridge itself.
 func firstIOSDevice(t *testing.T, c *Client) DeviceInfo {
 	t.Helper()
 	devs, err := c.ListDevices(context.Background())
 	if err != nil {
 		t.Fatalf("ListDevices: %v", err)
 	}
+	if len(devs) == 0 {
+		t.Skip("no iOS device attached; skipping device tier")
+	}
+	if pin := strings.TrimSpace(os.Getenv("SPYDER_TEST_UDID")); pin != "" {
+		for _, d := range devs {
+			if d.UDID == pin {
+				return d
+			}
+		}
+		t.Skipf("SPYDER_TEST_UDID=%q not present in %d attached devices; skipping device tier", pin, len(devs))
+	}
 	for _, d := range devs {
 		if d.Name != "" && d.Name != "unknown" {
 			return d
 		}
 	}
-	if len(devs) == 0 {
-		t.Skip("no iOS device attached; skipping device tier")
+	for _, d := range devs {
+		if d.UDID != "" {
+			return d
+		}
 	}
 	t.Skipf("no paired iOS device among %d attached; skipping device tier", len(devs))
 	return DeviceInfo{}

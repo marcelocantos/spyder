@@ -4,7 +4,7 @@
 for "device is currently asleep/awake" queryable from pmd3-bridge.
 
 **Date:** 2026-04-26
-**Status:** Prototype implemented (ScreenshotService path); HIL verification pending.
+**Status:** Prototype implemented (ScreenshotService path); HIL run env-gated and ready to execute.
 
 ---
 
@@ -166,13 +166,37 @@ Rationale:
   error; developer_mode_disabled → `"unknown"` with actionable message.
 
 **What remains for HIL verification:**
+
 - Test against Pippa (00008103-000D39301A6A201E) with screen on/off.
 - Document the exact pmd3 exception string that surfaces when display is off.
 - Tighten the exception heuristic matchers from `"unknown"` to `"asleep"` or
   `"display_off"` once real exception shapes are known.
-- Run `TestDevice_StaysAwake_Mechanical` with SPYDER_DEVICES=1 against a
-  device where: (a) spyder holds power assertion — should report `"awake"`;
-  (b) no assertion held — after idle timeout should report `"display_off"`.
+
+**HIL run protocol (one command after device prep):**
+
+1. On Pippa: Settings → Display & Brightness → Auto-Lock → 30 seconds.
+   Confirm Developer Mode on, paired, and reachable via `pymobiledevice3
+   remote tunneld` (check `curl http://127.0.0.1:49151/`).
+2. Lay Pippa flat, screen visible, undisturbed for ~2 minutes.
+3. Run:
+
+   ```bash
+   SPYDER_DEVICES=1 SPYDER_T29_HIL=1 \
+     SPYDER_TEST_UDID=00008103-000D39301A6A201E \
+     go test -tags=device -v \
+     -run TestDevice_StaysAwake_Mechanical \
+     ./internal/pmd3bridge/
+   ```
+
+   Phase 1 expects `"awake"` after 60 s with the assertion held. Phase 2
+   expects `"display_off"` or `"asleep"` after 60 s with the assertion
+   released.
+
+The `SPYDER_T29_HIL=1` gate keeps the test off the default device-tier
+run so it doesn't fire accidentally without the auto-lock prep.
+`SPYDER_TEST_UDID` pins the device when multiple are tunneled —
+`firstIOSDevice` otherwise picks the first one with non-empty UDID,
+which on a multi-device host may not be Pippa.
 
 ---
 
