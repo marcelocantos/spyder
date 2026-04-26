@@ -1237,9 +1237,26 @@ targets:
     achieved: 2026-04-26
   T38:
     name: 'Spyder CLI fills the rough edges surfaced by ge''s first integration: is_running primitive, archived-log query on iOS, selector-aware resolve'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    showcase: true
+    demonstration: |-
+      Five acceptance bullets implemented and exercised against the built binary. Demonstration evidence captured in this session's transcript:
+
+      - `bin/spyder` (no args) lists `is-running` in the device-tools section, alongside the existing `launch-app`/`terminate-app` siblings.
+      - `bin/spyder is-running` (no args) — usage error, exit 2 with `spyder is-running <device> <bundle-id> [--json]` synopsis.
+      - `bin/spyder resolve Pippa` — returns the full inventory entry JSON (alias, platform, ios_uuid, ios_coredevice, notes), exit 0.
+      - `bin/spyder resolve "this-is-not-an-alias-or-predicate"` — exit 15 with `"…" is not a known alias and not a parseable selector predicate (no '=' found)`.
+      - `bin/spyder resolve "platform=android,bogus=true"` — exit 15 surfacing the parse error: `selector parse: unknown key "bogus" in "bogus=true"`.
+      - `bin/spyder run --timeout banana -- echo hi` — exit 2 with `--timeout: time: invalid duration "banana"`.
+      - `bin/spyder run --device foo --on "platform=ios" -- echo` — exit 2 with `--device and --on are mutually exclusive`.
+
+      Showcase paper at `docs/papers/t38-cli-rough-edges.md` walks each acceptance bullet with before/after snippets ge's smoke-test.sh and matrix-cell.sh can adopt.
+
+      iOS archived-log query (Bullet 2) was discharged via documentation: `STABILITY.md` §"iOS log live-window contract" codifies the constraint and points callers to `crashes` / `--follow` for the use cases that previously required retrospective queries. A runtime archived-log mode would require a bridge-layer OsTraceService binding pmd3 doesn't expose stably; the spec explicitly allows the documentation alternative.
+
+      `make bullseye` standing invariants pass; TEST-REPORT.json refreshed.
     acceptance:
     - A `spyder is_running --device <device> --bundle-id <id>` (or equivalent) returns exit 0 if the app is running, exit 20 if not installed, exit 22 if installed-but-not-running. Distinct from `device_state.foreground_app` because it works even when the app is backgrounded, and distinct from `launch_app`'s PID-verify because it doesn't require launching anything. iOS implementation can use pmd3's `developer dvt process-id-for-bundle-id` (already used internally by autoawake's `isKeepAwakeRunning`).
     - '`spyder logs` on iOS physical devices supports an archived-log query mode in addition to the current live-window mode, so callers asking ''did this process log anything in the last 5 minutes?'' get a deterministic answer. May require routing through pmd3''s `OsTraceService` or similar; document the constraints in STABILITY.md if a true archived-log query isn''t possible (e.g. ''live tail starting from --since requires --since to be within the live-window grace period'').'
@@ -1253,6 +1270,28 @@ targets:
     - ge-feedback
     - v0.18-candidate
     origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T39:
+    name: test-report freshness watch list covers all top-level Go sources, not just main.go
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`scripts/check-test-report-fresh.sh`''s `source_paths` list covers `cli.go`, `cli_visual.go`, and any other top-level `*.go` file alongside `main.go` — either by enumerating them or by switching to a glob (e.g. `*.go` / `./*.go`). After the change, modifying `cli.go` between commits should cause `make bullseye` to flag TEST-REPORT.json as stale (same way `main.go` does today).'
+    - 'A regression test or shell snippet in the script (or a sibling test) confirms the watch list catches changes to `cli.go`. Optional but recommended: a unit-style assertion in CI so future top-level `.go` additions don''t quietly fall outside coverage.'
+    context: |-
+      Surfaced 2026-04-26 while exercising the 🎯T38 showcase. Edits to `cli.go` (a top-level Go source file holding ~1300 lines of CLI subcommand implementations) didn't invalidate `TEST-REPORT.json` per `make bullseye` — `make bullseye` reported `✓ test-report fresh` even though the cli.go changes were unverified by the recorded test run.
+
+      Root cause: `scripts/check-test-report-fresh.sh` line 48-59 enumerates a `source_paths` list that includes `internal/`, `bridge/src/`, `bridge/tests/`, `main.go`, `Makefile`, `go.mod`, `go.sum`, `bridge/pyproject.toml`, `bridge/uv.lock`, `scripts/` — but not `cli.go`, `cli_visual.go`, or `hermeticity_test.go`. So changes confined to those files slip past the freshness gate. The fix is one or two lines in the script — either enumerate the missing files or glob `./*.go`.
+
+      Filed during the 🎯T38 wrap-up so it doesn't get lost; not blocking any current work.
+    tags:
+    - test-report
+    - invariants
+    - tooling
+    - scripts
+    origin: forked-from 🎯T38 retirement (2026-04-26)
     discovered: 2026-04-26
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
@@ -1276,6 +1315,22 @@ targets:
     origin: manual
     discovered: 2026-04-17
     achieved: 2026-04-18
+  T40:
+    name: Spyder's streamable-HTTP MCP server keeps idle Claude Code sessions connected via heartbeat pings
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - internal/daemon/daemon.go's server.NewStreamableHTTPServer call passes server.WithHeartbeatInterval(30*time.Second) (or similar finite duration)
+    - 'A Claude Code session that calls a spyder tool, idles for 5+ minutes, then calls another spyder tool does NOT see ''MCP error -32000: Connection closed'''
+    - go test ./... still passes
+    context: 'mark3labs/mcp-go''s StreamableHTTPServer ships with WithHeartbeatInterval disabled by default. Without it, the GET (SSE) stream that Claude Code holds open has no application-layer keepalive, so OS / NAT collapses the underlying TCP after ~3 minutes of idle and the next tool call surfaces as ''MCP error -32000: Connection closed'' before transparent reconnect succeeds. Same one-line fix as the mnemo commit shipped 2026-04-26 (mnemo master 4057332). Confirmed spyder is affected by inspection: internal/daemon/daemon.go:248 calls server.NewStreamableHTTPServer with no heartbeat option.'
+    tags:
+    - mcp
+    - reliability
+    origin: forked-from mnemo disconnect investigation 2026-04-26
+    discovered: 2026-04-26
+    achieved: 2026-04-26
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved

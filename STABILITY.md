@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.18.0`.
+Snapshot as of `v0.19.0`.
 
 ## Interaction surface catalogue
 
@@ -28,11 +28,12 @@ Snapshot as of `v0.18.0`.
 | Tool | Input schema | Output | Stability |
 |---|---|---|---|
 | `devices` | `{platform?: "ios"\|"android"\|"all"}` (default `all`). | JSON array of `device.Info` (`uuid`, `name`, `platform`, `model`, `os`, `alias`). When `platform=all` and an adapter errors, wraps as `{devices: [...], errors: [...]}`. | Stable |
-| `resolve` | `{name: string}` (required). | JSON-encoded `inventory.Entry` (`alias`, `platform`, `ios_uuid`, `ios_coredevice`, `android_serial`, `notes`). | Needs review — passthrough shape for unknown IDs may evolve |
+| `resolve` | `{name?: string, selector?: string}`. Exactly one of name (alias / raw UUID) or selector (JSON predicate, same grammar as `reserve`'s selector) required. | JSON-encoded `inventory.Entry` (`alias`, `platform`, `ios_uuid`, `ios_coredevice`, `android_serial`, `notes`). With selector, returns the entry of the first matching live device. | Needs review — passthrough shape for unknown IDs may evolve |
 | `device_state` | `{device: string}` (required; alias or raw UUID/serial). | JSON-encoded `device.State` (`battery_level?`, `charging?`, `thermal_state?`, `foreground_app?`, `storage_free_mb?`, `notes?`). | Needs review — pointer-typed optionals, field additions expected |
 | `screenshot` | `{device: string, owner?: string}` (device required; owner for reservation auth). | MCP image content block (base64 PNG, `image/png`). iOS 17+ devices (iOS 17, 18, 26+) route through pmd3's DVT Screenshot instrument over a tunneld-mediated RSD connection; requires an externally-managed `pymobiledevice3 remote tunneld` on the host (typically a launchd service). Pre-iOS-17 devices are not currently supported (legacy `com.apple.mobile.screenshotr` fallback not implemented). Surfaces `tunneld_unavailable` (HTTP 503) when tunneld is down or the device is not in the tunnel registry, and `developer_mode_disabled` (HTTP 412) when the device's Developer Mode toggle is off. | Stable |
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
 | `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
+| `is_running` | `{device: string, bundle_id: string}` (both required). | JSON `{state: "running"\|"not_running"\|"not_installed", pid?: number}`. Read-only; not subject to reservations. iOS uses pmd3 dvt process-id-for-bundle-id (requires tunneld); Android uses `adb shell pidof`. ListApps cross-check distinguishes not_running from not_installed. | Stable (🎯T38.1) |
 | `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `install_app` | `{device: string, path: string, owner?: string}` (device and path required). Path must not contain `..` and must exist. | Text confirmation. | Stable |
 | `uninstall_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required). | Text confirmation. | Stable |
@@ -63,7 +64,7 @@ Snapshot as of `v0.18.0`.
 | `record_start` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with subprocess PID and output path. | Needs review — iOS simulator UDID must be passed directly; iOS physical devices return an immediate error. |
 | `record_stop` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with the local mp4 path. | Needs review |
 | `network` | `{device: string, owner: string, profile?: string}` or `{device: string, owner: string, clear: true}`. Exactly one of profile or clear required. | Text confirmation. | Beta — Android emulator only; iOS and physical Android return clear errors. |
-| `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); field set and timestamp precision may evolve |
+| `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); see *iOS log live-window contract* below. Field set and timestamp precision may evolve |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust),
@@ -71,18 +72,53 @@ not installed`, `app not running`, `'Locked'`, `'Security'` (trust),
 enabled` are all surfaced as distinct tool-error text. Callers
 can match on these phrases.
 
+#### iOS log live-window contract (🎯T38.2)
+
+`logs` and `log_stream` on iOS physical devices are **live-window only**:
+they shell out to `pymobiledevice3 syslog live`, which streams lines as
+they arrive on the device. There is no archived-log query mode — pmd3
+does not expose `OsTraceService` or equivalent through a stable CLI
+surface that spyder can consume reliably.
+
+The hard rule callers can rely on:
+
+- A `since` timestamp **older than the moment the live tail subscribes
+  to the device** will silently miss lines that occurred before the
+  subscription started.
+- The live-tail subscription begins when the spyder daemon receives the
+  `logs` request and pmd3's syslog reader connects (typically <1s).
+- The collector caps the wait at 30s (or `until - now`, whichever is
+  smaller) to bound query latency.
+
+Practical consequence for callers:
+- "Did this process log anything in the **last 5 minutes**?" cannot be
+  answered against archived logs. The window starts now.
+- For crash detection, prefer the `crashes` tool (which reads
+  `~/Library/Logs/CrashReporter/MobileDevice/<device>/`-style aggregate
+  storage on the host) over `logs`.
+- For continuous monitoring, use `log --follow` (live SSE stream) and
+  inspect lines as they arrive rather than retrospectively.
+
+iOS simulators and Android devices do not share this constraint —
+simulators read from the host's unified-log store via `xcrun simctl
+spawn ... log`, and Android's `adb logcat` has its own ring buffer.
+
+This contract may relax post-1.0 if pmd3 stabilises an OsTraceService
+binding that spyder can wrap.
+
 ### CLI subcommands
 
 | Invocation | Behaviour | Stability |
 |---|---|---|
 | `spyder` (no args) | Prints usage to stdout. | Stable |
 | `spyder serve [--addr :PORT]` | HTTP MCP server + auto-awake supervisor + bundled pmd3 bridge. Blocks until SIGINT/SIGTERM. | Stable |
-| `spyder run [--device ALIAS\|-d ALIAS] [--as OWNER] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. | Stable |
+| `spyder run [--device ALIAS\|-d ALIAS\|--on PREDICATE] [--as OWNER] [--timeout DURATION] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. `--on PREDICATE` resolves+reserves atomically via the daemon (closing the resolve→release→re-acquire race window). `--timeout DURATION` (e.g. `5m`) bounds the wrapped child invocation; on deadline, exits 30 (`ExitTimeout`) instead of forwarding the child's signal-induced exit. `--device` and `--on` are mutually exclusive. | Stable (🎯T38.4 + 🎯T38.5) |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |
 | `spyder help-agent` / `--help-agent` / `-help-agent` | Usage + embedded agents-guide.md. | Stable |
 | `spyder devices [--platform ios\|android\|all] [--json]` | REST proxy to `devices` tool. | Stable |
-| `spyder resolve <name> [--json]` | REST proxy to `resolve` tool. | Stable |
+| `spyder resolve (<name>\|--on PREDICATE) [--json]` | REST proxy to `resolve` tool. Positional `<name>` is treated as an alias / raw UUID. `--on PREDICATE` (or a positional that contains `=`) is parsed as a selector predicate, resolved against live devices via the daemon, and the matched inventory entry is returned. Inputs that are neither a known alias (per local inventory) nor a parseable predicate exit 15 (`ExitSelectorNotSupported`) — distinct from exit 1 for alias-known-but-resolution-failed. The CLI does the alias/predicate triage locally before round-tripping to the daemon, so unknown strings no longer get the synthetic Android-serial classification the underlying MCP `resolve` tool falls back to for legacy callers. | Stable (🎯T38.3) |
+| `spyder is-running <device> <bundle-id> [--json]` | REST proxy to `is_running`. Exits 0 (running, prints `running pid=<n>`), 20 (not installed), or 22 (installed but not running). `--json` emits the raw `{state, pid?}` body in addition to the exit code. | Stable (🎯T38.1) |
 | `spyder device-state <device> [--json]` | REST proxy to `device_state` tool. | Stable |
 | `spyder screenshot <device> [--output FILE] [--as OWNER]` | REST proxy to `screenshot`; writes PNG to `--output` (default `<device>-<ts>.png`). | Stable |
 | `spyder list-apps <device> [--json]` | REST proxy to `list_apps`. | Stable |
@@ -177,9 +213,10 @@ shape via `cliexit.MapDaemonError(statusCode, errorCode, message)`.
 | 12 | `ExitDeviceNotConnected` | Device known but not currently connected, paired, or reachable. |
 | 13 | `ExitReservationConflict` | Device held by another owner; `spyder reserve` cannot acquire. Also returned by `spyder run` when the auto-acquire fails for this reason. |
 | 14 | `ExitNotReservedByYou` | Operation requires reservation by the supplied owner, and you don't hold it. |
-| 20 | `ExitAppNotInstalled` | Bundle id not installed on the device. |
+| 15 | `ExitSelectorNotSupported` | `spyder resolve` input is neither a known alias nor a parseable selector predicate. Distinct from exit 1 so scripts can fall through to platform-specific tooling rather than retrying. (🎯T38.3) |
+| 20 | `ExitAppNotInstalled` | Bundle id not installed on the device. Also surfaced by `is-running`. |
 | 21 | `ExitInstallFailed` | `install_app` / `deploy_app` failed (signing, profile, transport). |
-| 22 | `ExitLaunchFailed` | `launch_app` / `deploy_app` failed at the launch step. |
+| 22 | `ExitLaunchFailed` / `ExitAppNotRunning` | `launch_app` / `deploy_app` failed at the launch step **or** `is-running` reports installed-but-not-running. The two share a code because semantically both mean "the app is not currently running". (🎯T38.1) |
 | 23 | `ExitTerminateFailed` | `terminate_app` could not stop the running process. |
 | 24 | `ExitPIDVerificationFailed` | `deploy_app` succeeded at install+launch but PID-verification (post-launch liveness check) failed. |
 | 30 | `ExitTimeout` | `--timeout DURATION` exceeded (or implicit per-command default exceeded). |

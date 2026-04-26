@@ -245,7 +245,13 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv))
+	// 30s heartbeat keeps idle Claude Code sessions' SSE GET streams from
+	// being collapsed by OS/NAT after ~3 minutes of silence (🎯T40).
+	// Without this, the next tool call after an idle period surfaces as
+	// "MCP error -32000: Connection closed" before transparent reconnect
+	// succeeds. mark3labs/mcp-go ships heartbeat disabled by default.
+	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv,
+		server.WithHeartbeatInterval(30*time.Second)))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
 	return mux, resvStore, bridgeSup
 }

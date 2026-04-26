@@ -160,11 +160,54 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 }
 
 func (h *Handler) handleResolve(args map[string]any) (*mcpgo.CallToolResult, error) {
-	name, err := requireString(args, "name")
-	if err != nil {
-		return nil, err
+	name := optString(args, "name")
+	selRaw := optString(args, "selector")
+
+	if name == "" && selRaw == "" {
+		return nil, fmt.Errorf("name or selector is required")
+	}
+	if name != "" && selRaw != "" {
+		return toolErr("resolve: supply either name or selector, not both")
 	}
 
+	// Selector path: resolve to the first matching live device, then
+	// project back to its inventory entry (or a synthetic entry built
+	// from the live device.Info).
+	if selRaw != "" {
+		var sel selector.Selector
+		if err := json.Unmarshal([]byte(selRaw), &sel); err != nil {
+			return toolErr("resolve: invalid selector JSON: %v", err)
+		}
+		if sel.Platform == "" {
+			return toolErr("resolve: selector.platform is required")
+		}
+
+		h.mu.Lock()
+		defer h.mu.Unlock()
+
+		candidates := h.buildCandidates(sel.Platform)
+		info, err := selector.Resolve(sel, candidates, h.pool)
+		if err != nil {
+			return toolErr("resolve: %v", err)
+		}
+		entry, ok := h.inventory.Lookup(info.UUID)
+		if !ok {
+			// Fall back to a synthetic entry from the live device.Info.
+			entry = inventory.Entry{
+				Alias:    info.Alias,
+				Platform: info.Platform,
+			}
+			switch info.Platform {
+			case "ios":
+				entry.IOSUUID = info.UUID
+			case "android":
+				entry.AndroidSerial = info.UUID
+			}
+		}
+		return toolJSON(entry)
+	}
+
+	// Name path (existing behaviour): inventory lookup with raw fallback.
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -305,6 +348,55 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
 	}
 	return toolText(fmt.Sprintf("launched %s on %s", bundleID, dev))
+}
+
+// isRunningResult is the structured response of the is_running tool.
+// state is one of "running", "not_running", or "not_installed". pid is
+// populated only when state == "running".
+type isRunningResult struct {
+	State string `json:"state"`
+	PID   int    `json:"pid,omitempty"`
+}
+
+// handleIsRunning answers "is this app currently running on this device?"
+// without forcing a launch (distinct from launch_app's PID-verify).
+// Read-only; not subject to reservations. Used by ge's smoke-test
+// scripts to passively check app state. (🎯T38.1)
+func (h *Handler) handleIsRunning(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	bundleID, err := requireString(args, "bundle_id")
+	if err != nil {
+		return nil, err
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	adapter, _, id, err := h.resolveAdapter(dev)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+
+	// Try AppPID first — fast and authoritative for "running".
+	if pid, pidErr := adapter.AppPID(id, bundleID); pidErr == nil && pid > 0 {
+		return toolJSON(isRunningResult{State: "running", PID: pid})
+	}
+
+	// Not running — distinguish "not installed" from "not running" via
+	// ListApps. Some adapters return errors that already indicate
+	// installation state; the ListApps cross-check is the universal
+	// source of truth.
+	apps, listErr := adapter.ListApps(id)
+	if listErr != nil {
+		return toolErr("is_running: list_apps on %s: %v", dev, listErr)
+	}
+	for _, app := range apps {
+		if app.BundleID == bundleID {
+			return toolJSON(isRunningResult{State: "not_running"})
+		}
+	}
+	return toolJSON(isRunningResult{State: "not_installed"})
 }
 
 func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult, error) {

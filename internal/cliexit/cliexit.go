@@ -15,9 +15,12 @@
 //	12 – device not connected (cable, trust, pairing)
 //	13 – reservation conflict (device held by another session)
 //	14 – device not reserved by the calling session
+//	15 – selector grammar not supported (input is neither a known alias
+//	     nor a parseable predicate)
 //	20 – app not installed on device
 //	21 – app install failed
-//	22 – app launch failed
+//	22 – app not running on device (also: launch failed). Used by
+//	     `is_running` for "installed but not currently running".
 //	23 – app terminate failed
 //	24 – PID verification failed
 //	30 – timeout
@@ -43,9 +46,11 @@ const (
 	ExitDeviceNotConnected    = 12
 	ExitReservationConflict   = 13
 	ExitNotReservedByYou      = 14
+	ExitSelectorNotSupported  = 15
 	ExitAppNotInstalled       = 20
 	ExitInstallFailed         = 21
-	ExitLaunchFailed          = 22
+	ExitLaunchFailed          = 22 // also surfaced by is_running as ExitAppNotRunning
+	ExitAppNotRunning         = 22
 	ExitTerminateFailed       = 23
 	ExitPIDVerificationFailed = 24
 	ExitTimeout               = 30

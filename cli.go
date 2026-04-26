@@ -22,6 +22,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/cliexit"
 	"github.com/marcelocantos/spyder/internal/clitimeout"
+	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/selector"
@@ -50,12 +51,13 @@ var cliCommands []cliCommand
 func init() {
 	cliCommands = []cliCommand{
 		{"devices", "spyder devices [--platform ios|android|all] [--json]", runDevices},
-		{"resolve", "spyder resolve <name> [--json]", runResolve},
+		{"resolve", "spyder resolve (<name>|--on PREDICATE) [--json]", runResolve},
 		{"device-state", "spyder device-state <device> [--json]", runDeviceState},
 		{"screenshot", "spyder screenshot <device> [--output FILE] [--as OWNER]", runScreenshot},
 		{"list-apps", "spyder list-apps <device> [--json]", runListApps},
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
 		{"terminate-app", "spyder terminate-app <device> <bundle-id> [--as OWNER]", runTerminateApp},
+		{"is-running", "spyder is-running <device> <bundle-id> [--json]", runIsRunning},
 		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
 		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
@@ -457,6 +459,46 @@ func daemonExitCode(err error) int {
 	return cliexit.ExitGeneric
 }
 
+// reserveViaDaemon parses an --on predicate, posts to /api/v1/reserve so
+// the daemon resolves+acquires atomically, and returns the canonical
+// alias from the response. Used by `spyder run --on PREDICATE` to close
+// the resolve→release→re-acquire race window in the previous workaround
+// pattern (🎯T38).
+func reserveViaDaemon(predicate, owner string) (string, error) {
+	sel, perr := selector.ParseSelectorString(predicate)
+	if perr != nil {
+		return "", fmt.Errorf("parse selector: %w", perr)
+	}
+	selBytes, merr := json.Marshal(sel)
+	if merr != nil {
+		return "", fmt.Errorf("marshal selector: %w", merr)
+	}
+	args := map[string]any{
+		"selector": string(selBytes),
+		"owner":    owner,
+		"note":     "spyder run --on",
+	}
+	ctx, cancel := clitimeout.Context(clitimeout.DefaultReserve)
+	defer cancel()
+	res, err := postTool(ctx, "reserve", args)
+	if err != nil {
+		return "", err
+	}
+	if res.IsError {
+		return "", errors.New(res.firstText())
+	}
+	var reservation struct {
+		Device string `json:"device"`
+	}
+	if err := json.Unmarshal([]byte(res.firstText()), &reservation); err != nil {
+		return "", fmt.Errorf("parse reserve response: %w", err)
+	}
+	if reservation.Device == "" {
+		return "", errors.New("daemon returned empty device alias")
+	}
+	return reservation.Device, nil
+}
+
 // --- subcommand implementations -------------------------------------
 
 func runDevices(args []string) {
@@ -470,12 +512,79 @@ func runDevices(args []string) {
 }
 
 func runResolve(args []string) {
-	pf, ctx, cancel := setupCommand("resolve", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	pf, ctx, cancel := setupCommand("resolve", args, []string{"--on"}, []string{"--json"}, clitimeout.DefaultRead)
 	defer cancel()
-	requirePositional("resolve", pf, 1)
-	dispatchAndExit(ctx, "resolve",
-		map[string]any{"name": pf.positional[0]},
-		pf.bools["--json"], false)
+
+	onPredicate := pf.flags["--on"]
+	switch {
+	case onPredicate != "" && len(pf.positional) > 0:
+		fatalUsage("resolve", fmt.Errorf("supply either a positional name or --on PREDICATE, not both"))
+	case onPredicate != "":
+		sel, perr := selector.ParseSelectorString(onPredicate)
+		if perr != nil {
+			cliexit.Errorf(cliexit.ExitSelectorNotSupported,
+				"spyder resolve: --on: %v", perr)
+		}
+		selBytes, merr := json.Marshal(sel)
+		if merr != nil {
+			cliexit.Errorf(cliexit.ExitGeneric,
+				"spyder resolve: marshal selector: %v", merr)
+		}
+		dispatchAndExit(ctx, "resolve",
+			map[string]any{"selector": string(selBytes)},
+			pf.bools["--json"], false)
+	case len(pf.positional) == 1:
+		name := pf.positional[0]
+		// 🎯T38.3: distinguish three cases:
+		//  1. Known alias (or raw UUID matching a known device) → daemon
+		//     resolve with `name`, return inventory entry, exit 0.
+		//  2. Predicate (contains '=' or other selector grammar) → parse;
+		//     resolve via daemon's selector path, exit 0 on match. Bad
+		//     parse → exit 15.
+		//  3. Neither alias nor parseable predicate → exit 15. Distinct
+		//     from exit 1 so scripts can fall through to platform-specific
+		//     tooling rather than retrying. The previous echo-back behavior
+		//     (synthetic android-serial classification) silently
+		//     misclassified arbitrary strings; that path is gone for the
+		//     CLI surface (the MCP `resolve` tool retains it for legacy
+		//     callers — see STABILITY.md).
+		invStore := inventory.New()
+		if _, ok := invStore.Lookup(name); ok {
+			dispatchAndExit(ctx, "resolve",
+				map[string]any{"name": name},
+				pf.bools["--json"], false)
+			return
+		}
+		if looksLikeSelector(name) {
+			sel, perr := selector.ParseSelectorString(name)
+			if perr != nil {
+				cliexit.Errorf(cliexit.ExitSelectorNotSupported,
+					"spyder resolve: %q is not a known alias and not a parseable selector predicate: %v",
+					name, perr)
+			}
+			selBytes, merr := json.Marshal(sel)
+			if merr != nil {
+				cliexit.Errorf(cliexit.ExitGeneric,
+					"spyder resolve: marshal selector: %v", merr)
+			}
+			dispatchAndExit(ctx, "resolve",
+				map[string]any{"selector": string(selBytes)},
+				pf.bools["--json"], false)
+			return
+		}
+		cliexit.Errorf(cliexit.ExitSelectorNotSupported,
+			"spyder resolve: %q is not a known alias and not a parseable selector predicate (no '=' found)",
+			name)
+	default:
+		fatalUsage("resolve", fmt.Errorf("supply a name (positional) or --on PREDICATE"))
+	}
+}
+
+// looksLikeSelector returns true when s contains a selector-grammar
+// separator ('=' or comma between key/value tokens). Aliases are
+// short identifiers with no '=' so this heuristic doesn't false-match.
+func looksLikeSelector(s string) bool {
+	return strings.ContainsAny(s, "=")
 }
 
 func runDeviceState(args []string) {
@@ -552,6 +661,56 @@ func runLaunchApp(args []string) {
 		a["owner"] = deriveOwner("")
 	}
 	dispatchAndExit(ctx, "launch_app", a, false, !verbose(pf))
+}
+
+func runIsRunning(args []string) {
+	pf, ctx, cancel := setupCommand("is-running", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	requirePositional("is-running", pf, 2)
+
+	res, err := postTool(ctx, "is_running", map[string]any{
+		"device":    pf.positional[0],
+		"bundle_id": pf.positional[1],
+	})
+	if err != nil {
+		cliexit.Errorf(daemonExitCode(err), "spyder is-running: %v", err)
+	}
+	text := res.firstText()
+	if res.IsError {
+		cliexit.Errorf(cliexit.MapDaemonError(0, "", text), "%s", text)
+	}
+
+	var out struct {
+		State string `json:"state"`
+		PID   int    `json:"pid,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder is-running: parse: %v", err)
+	}
+
+	if pf.bools["--json"] {
+		fmt.Println(text)
+	}
+
+	switch out.State {
+	case "running":
+		if !pf.bools["--json"] {
+			fmt.Printf("running pid=%d\n", out.PID)
+		}
+		os.Exit(cliexit.ExitOK)
+	case "not_running":
+		if !pf.bools["--json"] {
+			fmt.Println("not running")
+		}
+		os.Exit(cliexit.ExitAppNotRunning)
+	case "not_installed":
+		if !pf.bools["--json"] {
+			fmt.Println("not installed")
+		}
+		os.Exit(cliexit.ExitAppNotInstalled)
+	default:
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder is-running: unexpected state %q", out.State)
+	}
 }
 
 func runTerminateApp(args []string) {

@@ -6,6 +6,7 @@ package main
 import (
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseRunArgs(t *testing.T) {
@@ -105,6 +106,54 @@ func TestParseRunArgs(t *testing.T) {
 				t.Errorf("cmd = %v; want %v", got.Command, c.wantCmd)
 			}
 		})
+	}
+}
+
+func TestParseRunArgs_Timeout(t *testing.T) {
+	got, err := parseRunArgs([]string{"--timeout", "90s", "--", "echo"})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got.Timeout != 90*time.Second {
+		t.Errorf("Timeout = %v; want 90s", got.Timeout)
+	}
+	if got.Device != defaultRunDevice {
+		t.Errorf("Device = %q; want %q", got.Device, defaultRunDevice)
+	}
+}
+
+func TestParseRunArgs_TimeoutInvalid(t *testing.T) {
+	_, err := parseRunArgs([]string{"--timeout", "banana", "--", "echo"})
+	if err == nil || !containsStr(err.Error(), "--timeout") {
+		t.Fatalf("err = %v; want --timeout parse error", err)
+	}
+}
+
+func TestParseRunArgs_TimeoutNonPositive(t *testing.T) {
+	_, err := parseRunArgs([]string{"--timeout", "0s", "--", "echo"})
+	if err == nil || !containsStr(err.Error(), "--timeout must be positive") {
+		t.Fatalf("err = %v; want positive-timeout error", err)
+	}
+}
+
+func TestParseRunArgs_OnPredicate(t *testing.T) {
+	got, err := parseRunArgs([]string{"--on", "platform=ios,os>=17", "--", "echo"})
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if got.On != "platform=ios,os>=17" {
+		t.Errorf("On = %q; want %q", got.On, "platform=ios,os>=17")
+	}
+	// --on suppresses defaultRunDevice — it'll be filled in after daemon resolution.
+	if got.Device != "" {
+		t.Errorf("Device = %q; want empty (resolved from --on at run time)", got.Device)
+	}
+}
+
+func TestParseRunArgs_OnAndDeviceMutuallyExclusive(t *testing.T) {
+	_, err := parseRunArgs([]string{"--device", "Foo", "--on", "platform=ios", "--", "echo"})
+	if err == nil || !containsStr(err.Error(), "mutually exclusive") {
+		t.Fatalf("err = %v; want mutual-exclusion error", err)
 	}
 }
 

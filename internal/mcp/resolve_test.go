@@ -6,7 +6,10 @@ package mcp
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/marcelocantos/spyder/internal/device"
 )
 
 const testInventory = `[
@@ -123,5 +126,53 @@ func TestDispatch_ResolveMissingName(t *testing.T) {
 	_, err := h.Dispatch("resolve", map[string]any{})
 	if err == nil {
 		t.Error("Dispatch(resolve, {}) returned nil err; want error for missing name")
+	}
+}
+
+// TestResolve_Selector covers 🎯T38.3: resolve accepts a selector
+// predicate and returns the inventory entry of the first matching device.
+func TestResolve_Selector(t *testing.T) {
+	h, _ := newHandlerWithReservationsAndDevices(t, []device.Info{
+		{
+			UUID:     "00008103-000D39301A6A201E",
+			Name:     "Pippa",
+			Platform: "ios",
+			Model:    "iPad Air",
+			OS:       "17.4",
+		},
+	})
+	r := dispatchJSON(t, h, "resolve", map[string]any{
+		"selector": `{"platform":"ios"}`,
+	})
+	if r.IsError {
+		t.Fatalf("resolve with selector should succeed; body=%s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	if !strings.Contains(body, "Pippa") {
+		t.Errorf("resolve should return Pippa's entry; got %s", body)
+	}
+}
+
+// TestResolve_SelectorAndNameMutualExclusion validates the input contract.
+func TestResolve_SelectorAndNameMutualExclusion(t *testing.T) {
+	h := newTestHandler(t)
+	r := dispatchJSON(t, h, "resolve", map[string]any{
+		"name":     "Pippa",
+		"selector": `{"platform":"ios"}`,
+	})
+	if !r.IsError {
+		t.Fatal("resolve with both name and selector should be a tool error")
+	}
+}
+
+// TestResolve_SelectorBadJSON ensures malformed selector JSON surfaces a
+// tool error (not a panic).
+func TestResolve_SelectorBadJSON(t *testing.T) {
+	h := newTestHandler(t)
+	r := dispatchJSON(t, h, "resolve", map[string]any{
+		"selector": `not json`,
+	})
+	if !r.IsError {
+		t.Fatal("malformed selector JSON should be a tool error")
 	}
 }

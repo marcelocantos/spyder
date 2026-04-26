@@ -680,6 +680,7 @@ spyder devices --platform ios --json
 spyder screenshot Pippa --output /tmp/pippa.png
 spyder reserve Pippa --ttl 600 --note "UI sweep"
 spyder list-apps Pippa --json
+spyder is-running Pippa com.example.app   # exit 0 / 20 / 22
 spyder release Pippa
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
@@ -726,9 +727,23 @@ machine-parseable when asked, bounded latency).
 
 ### Selector grammar (`--on PREDICATE`)
 
-`spyder reserve --on PREDICATE` parses a comma-separated key=value
+`spyder reserve --on PREDICATE`, `spyder run --on PREDICATE`, and
+`spyder resolve --on PREDICATE` all parse a comma-separated key=value
 selector into the same struct the MCP `reserve` tool consumes. Useful
-for Make targets that can't hard-code a device alias.
+for Make targets that can't hard-code a device alias. `spyder resolve`
+also auto-detects predicates in the positional argument when it
+contains `=` (so `spyder resolve platform=ios` works without an
+explicit `--on`); inputs that are neither alias nor parseable predicate
+exit 15 (`ExitSelectorNotSupported`).
+
+`spyder run --on PREDICATE` resolves+reserves+runs **atomically** via
+the daemon — no resolve→release→re-acquire dance, no race window.
+Combine with `--timeout DURATION` to declare a cell budget:
+
+```bash
+spyder run --on platform=ios,model=ipad --timeout 5m -- \
+  ./tools/matrix-cell.sh ui_smoke
+```
 
 ```bash
 spyder reserve --on platform=ios,os>=17,tags=phone+test --as ci
@@ -755,9 +770,10 @@ can branch on them:
 | 12 | Device not connected. |
 | 13 | Reservation conflict (held by another owner). |
 | 14 | Not reserved by you. |
-| 20 | App not installed. |
+| 15 | Selector grammar not supported (resolve input is neither alias nor parseable predicate). |
+| 20 | App not installed (also: `is-running` reports not installed). |
 | 21 | Install / deploy failed. |
-| 22 | Launch failed. |
+| 22 | Launch failed (also: `is-running` reports installed but not running). |
 | 23 | Terminate failed. |
 | 24 | PID-verification failed (deploy). |
 | 30 | `--timeout` exceeded. |
