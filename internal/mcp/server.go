@@ -277,6 +277,8 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleNetwork(args)
 	case "logs":
 		return h.handleLogsRange(args)
+	case "is_running":
+		return h.handleIsRunning(args)
 	// --- pool tools (🎯T24) -----------------------------------------------
 	case "pool_list":
 		return h.handlePoolList(args)
@@ -306,10 +308,12 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("resolve",
-			mcpgo.WithDescription("Resolve a symbolic device name (e.g. 'Pippa') to its platform-specific UUIDs for use with xcodebuild, devicectl, pymobiledevice3, or adb."),
+			mcpgo.WithDescription("Resolve a symbolic device name (e.g. 'Pippa') to its platform-specific UUIDs for use with xcodebuild, devicectl, pymobiledevice3, or adb. Supply exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`'s selector). With `selector`, returns the inventory entry of the first matching live device. (🎯T38.3)"),
 			mcpgo.WithString("name",
-				mcpgo.Required(),
-				mcpgo.Description("Symbolic name or raw UUID from the device inventory"),
+				mcpgo.Description("Symbolic name or raw UUID from the device inventory (mutually exclusive with selector)"),
+			),
+			mcpgo.WithString("selector",
+				mcpgo.Description("JSON selector predicate (mutually exclusive with name). Same grammar as the `reserve` selector argument."),
 			),
 		),
 
@@ -352,6 +356,18 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
+		),
+
+		mcpgo.NewTool("is_running",
+			mcpgo.WithDescription("Report whether an app is currently running on the device, without forcing a launch. Returns JSON {state, pid?} where state ∈ {running, not_running, not_installed}. Distinct from device_state.foreground_app (only sees the foreground app, not backgrounded ones) and from launch_app's PID-verify (which would force a launch). iOS uses pmd3 dvt process-id-for-bundle-id; Android uses adb shell pidof, with a list_apps cross-check to distinguish not_running from not_installed. Read-only; not subject to reservations. (🎯T38.1)"),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID"),
+			),
+			mcpgo.WithString("bundle_id",
+				mcpgo.Required(),
+				mcpgo.Description("App bundle identifier (e.g. com.example.app)"),
 			),
 		),
 

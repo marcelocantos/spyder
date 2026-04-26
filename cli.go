@@ -50,12 +50,13 @@ var cliCommands []cliCommand
 func init() {
 	cliCommands = []cliCommand{
 		{"devices", "spyder devices [--platform ios|android|all] [--json]", runDevices},
-		{"resolve", "spyder resolve <name> [--json]", runResolve},
+		{"resolve", "spyder resolve (<name>|--on PREDICATE) [--json]", runResolve},
 		{"device-state", "spyder device-state <device> [--json]", runDeviceState},
 		{"screenshot", "spyder screenshot <device> [--output FILE] [--as OWNER]", runScreenshot},
 		{"list-apps", "spyder list-apps <device> [--json]", runListApps},
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
 		{"terminate-app", "spyder terminate-app <device> <bundle-id> [--as OWNER]", runTerminateApp},
+		{"is-running", "spyder is-running <device> <bundle-id> [--json]", runIsRunning},
 		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
 		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
@@ -510,12 +511,63 @@ func runDevices(args []string) {
 }
 
 func runResolve(args []string) {
-	pf, ctx, cancel := setupCommand("resolve", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	pf, ctx, cancel := setupCommand("resolve", args, []string{"--on"}, []string{"--json"}, clitimeout.DefaultRead)
 	defer cancel()
-	requirePositional("resolve", pf, 1)
-	dispatchAndExit(ctx, "resolve",
-		map[string]any{"name": pf.positional[0]},
-		pf.bools["--json"], false)
+
+	onPredicate := pf.flags["--on"]
+	switch {
+	case onPredicate != "" && len(pf.positional) > 0:
+		fatalUsage("resolve", fmt.Errorf("supply either a positional name or --on PREDICATE, not both"))
+	case onPredicate != "":
+		sel, perr := selector.ParseSelectorString(onPredicate)
+		if perr != nil {
+			cliexit.Errorf(cliexit.ExitSelectorNotSupported,
+				"spyder resolve: --on: %v", perr)
+		}
+		selBytes, merr := json.Marshal(sel)
+		if merr != nil {
+			cliexit.Errorf(cliexit.ExitGeneric,
+				"spyder resolve: marshal selector: %v", merr)
+		}
+		dispatchAndExit(ctx, "resolve",
+			map[string]any{"selector": string(selBytes)},
+			pf.bools["--json"], false)
+	case len(pf.positional) == 1:
+		name := pf.positional[0]
+		// 🎯T38.3: when the positional looks like a predicate (contains '='
+		// outside an alias), treat it as a selector and route through the
+		// daemon's selector resolution path so callers don't need a separate
+		// flag for the common case.
+		if looksLikeSelector(name) {
+			sel, perr := selector.ParseSelectorString(name)
+			if perr != nil {
+				cliexit.Errorf(cliexit.ExitSelectorNotSupported,
+					"spyder resolve: %q is not a known alias and not a parseable selector predicate: %v",
+					name, perr)
+			}
+			selBytes, merr := json.Marshal(sel)
+			if merr != nil {
+				cliexit.Errorf(cliexit.ExitGeneric,
+					"spyder resolve: marshal selector: %v", merr)
+			}
+			dispatchAndExit(ctx, "resolve",
+				map[string]any{"selector": string(selBytes)},
+				pf.bools["--json"], false)
+			return
+		}
+		dispatchAndExit(ctx, "resolve",
+			map[string]any{"name": name},
+			pf.bools["--json"], false)
+	default:
+		fatalUsage("resolve", fmt.Errorf("supply a name (positional) or --on PREDICATE"))
+	}
+}
+
+// looksLikeSelector returns true when s contains a selector-grammar
+// separator ('=' or comma between key/value tokens). Aliases are
+// short identifiers with no '=' so this heuristic doesn't false-match.
+func looksLikeSelector(s string) bool {
+	return strings.ContainsAny(s, "=")
 }
 
 func runDeviceState(args []string) {
@@ -592,6 +644,56 @@ func runLaunchApp(args []string) {
 		a["owner"] = deriveOwner("")
 	}
 	dispatchAndExit(ctx, "launch_app", a, false, !verbose(pf))
+}
+
+func runIsRunning(args []string) {
+	pf, ctx, cancel := setupCommand("is-running", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	requirePositional("is-running", pf, 2)
+
+	res, err := postTool(ctx, "is_running", map[string]any{
+		"device":    pf.positional[0],
+		"bundle_id": pf.positional[1],
+	})
+	if err != nil {
+		cliexit.Errorf(daemonExitCode(err), "spyder is-running: %v", err)
+	}
+	text := res.firstText()
+	if res.IsError {
+		cliexit.Errorf(cliexit.MapDaemonError(0, "", text), "%s", text)
+	}
+
+	var out struct {
+		State string `json:"state"`
+		PID   int    `json:"pid,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(text), &out); err != nil {
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder is-running: parse: %v", err)
+	}
+
+	if pf.bools["--json"] {
+		fmt.Println(text)
+	}
+
+	switch out.State {
+	case "running":
+		if !pf.bools["--json"] {
+			fmt.Printf("running pid=%d\n", out.PID)
+		}
+		os.Exit(cliexit.ExitOK)
+	case "not_running":
+		if !pf.bools["--json"] {
+			fmt.Println("not running")
+		}
+		os.Exit(cliexit.ExitAppNotRunning)
+	case "not_installed":
+		if !pf.bools["--json"] {
+			fmt.Println("not installed")
+		}
+		os.Exit(cliexit.ExitAppNotInstalled)
+	default:
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder is-running: unexpected state %q", out.State)
+	}
 }
 
 func runTerminateApp(args []string) {
