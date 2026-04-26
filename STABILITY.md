@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.15.0`.
+Snapshot as of `v0.16.0`.
 
 ## Interaction surface catalogue
 
@@ -91,7 +91,7 @@ can match on these phrases.
 | `spyder install <device> <path> [--as OWNER]` | REST proxy to `install_app`. | Stable |
 | `spyder uninstall <device> <bundle-id> [--as OWNER]` | REST proxy to `uninstall_app`. | Stable |
 | `spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]` | REST proxy to `deploy_app`. Derives bundle id from Info.plist (iOS) or `aapt` (Android) when `--bundle-id` is omitted. | Stable |
-| `spyder reserve (<device>\|--selector JSON\|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]` | REST proxy to `reserve`. Positional device = literal pin. `--selector` = JSON predicate. Shorthand `--platform`/`--model`/`--tag` flags build the selector inline. | Needs review — selector grammar may evolve |
+| `spyder reserve (<device>\|--on PREDICATE\|--selector JSON\|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]` | REST proxy to `reserve`. Positional device = literal pin. `--on PREDICATE` = comma-separated key=value selector grammar (see "CLI selector grammar" below). `--selector` = JSON predicate. Shorthand `--platform`/`--model`/`--tag` flags build the selector inline. | Stable (positional, --on, --selector); Needs review (shorthand --platform/--model/--tag — may consolidate around --on) |
 | `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
 | `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |
 | `spyder reservations [--json]` | REST proxy to `reservations`. | Stable |
@@ -123,10 +123,88 @@ All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 (text tools) or write the first image content block to disk
 (`screenshot`). `--as OWNER` defaults to `filepath.Base(cwd)`.
 
-Exit codes: `0` success; `1` server startup / unclassified child-process error;
-`2` argument parsing error; `3` reservation conflict at `spyder run`
-startup (device held by another owner); the child command's own exit
-code for `spyder run` when the command itself exits non-zero.
+#### Universal flags (every device-tool subcommand)
+
+These flags are auto-registered by `setupCommand` (cli.go) so the
+surface is uniform across the CLI:
+
+| Flag | Default | Behaviour |
+|---|---|---|
+| `--timeout DURATION` | per-command (see below) | Bounds the daemon HTTP call. Go-style duration string (`30s`, `5m`, `2h`). `0` disables the timeout. Exceeded → exit `30` (`timeout`). |
+| `--verbose` / `-v` | off | For mutating commands (silent on success by default), restores the daemon's confirmation text on stdout. For read commands, no behavioural change today (reserved for future per-tool diagnostic chatter to stderr). |
+| `--json` | off | On read-ish commands (devices, resolve, device-state, list-apps, reservations, runs, crashes, sim list, emu list, pool list, log, diff), emits the daemon's JSON response verbatim for piping to `jq`. Mutating commands do not accept `--json` (their value is the exit code). |
+
+Per-command `--timeout` defaults: read commands `10s`; launch / terminate
+/ rotate / sim/emu/net / pool ops `60s`; install / uninstall `5m`;
+deploy `10m`; screenshot `30s`; reserve / release / renew `30s`;
+record `60s`; `log --follow` and `spyder run -- <cmd>` no timeout.
+
+#### CLI selector grammar (`--on PREDICATE`)
+
+`--on` parses a comma-separated string into the same
+`internal/selector.Selector` struct used by the MCP `reserve` tool.
+Recognised keys:
+
+| Key | Value | Meaning |
+|---|---|---|
+| `platform` | `ios` / `android` / `ios-sim` / `android-emu` | Required for selector dispatch. Matches `device.Info.Platform`. |
+| `model` | family name (case-insensitive) | Matches `device.Info.Model` and inventory `Tags`. Examples: `ipad`, `iphone`, `phone`, `tablet`. |
+| `os>=VERSION` | semver string | Lower bound (inclusive) on `device.Info.OS`. |
+| `os<=VERSION` | semver string | Upper bound (inclusive). |
+| `os_min`, `os_max` | semver string | Alternate spellings for the above. |
+| `orientation_capable` | `true` / `false` / `1` / `0` | Match only sims/emus (rotation is a software feature). |
+| `tags` | `tag1+tag2+…` | Plus-separated set; all must be present on the inventory entry's `Tags`. |
+| `attr.<name>` | string | Per-key exact match against the inventory entry's `Attrs[name]`. |
+
+Example: `spyder reserve --on platform=ios,os>=17,tags=phone+test --as ci`.
+
+Empty input, unknown keys, duplicate keys, and malformed bool/version
+values are reported as `selector parse: …` errors with exit code `2`.
+
+#### Exit codes
+
+Standardised across every CLI subcommand. Defined in
+`internal/cliexit/cliexit.go`; mappable from the daemon's REST error
+shape via `cliexit.MapDaemonError(statusCode, errorCode, message)`.
+
+| Code | Constant | Meaning |
+|---|---|---|
+| 0 | `ExitOK` | Success. |
+| 1 | `ExitGeneric` | Unclassified failure. Reserved for paths that genuinely can't be attributed to a more specific cause. |
+| 2 | `ExitUsage` | Argument parsing error (unknown flag, missing positional, bad format). |
+| 10 | `ExitDaemonUnreachable` | Daemon not reachable at `$SPYDER_DAEMON_URL` (and auto-start failed for the default loopback target). |
+| 11 | `ExitDeviceNotFound` | Alias / UDID does not resolve to a known device. |
+| 12 | `ExitDeviceNotConnected` | Device known but not currently connected, paired, or reachable. |
+| 13 | `ExitReservationConflict` | Device held by another owner; `spyder reserve` cannot acquire. Also returned by `spyder run` when the auto-acquire fails for this reason. |
+| 14 | `ExitNotReservedByYou` | Operation requires reservation by the supplied owner, and you don't hold it. |
+| 20 | `ExitAppNotInstalled` | Bundle id not installed on the device. |
+| 21 | `ExitInstallFailed` | `install_app` / `deploy_app` failed (signing, profile, transport). |
+| 22 | `ExitLaunchFailed` | `launch_app` / `deploy_app` failed at the launch step. |
+| 23 | `ExitTerminateFailed` | `terminate_app` could not stop the running process. |
+| 24 | `ExitPIDVerificationFailed` | `deploy_app` succeeded at install+launch but PID-verification (post-launch liveness check) failed. |
+| 30 | `ExitTimeout` | `--timeout DURATION` exceeded (or implicit per-command default exceeded). |
+| 40 | `ExitTrustNotGranted` | iOS device pair-record missing or trust dialog not accepted. |
+| 41 | `ExitDeveloperModeDisabled` | iOS Developer Mode toggle is off. |
+| 42 | `ExitDeviceLocked` | Device is locked (passcode prompt active). |
+
+The `1.0` commitment is on the codes above and their *meaning*. Adding
+new codes for previously-unclassified causes is non-breaking. Repurposing
+or removing a code is breaking and forbidden after 1.0.
+
+#### Hermeticity
+
+Each `spyder` proxy CLI invocation is independent: no sticky-state
+files under `~/.spyder/`, no implicit "current device". The only
+filesystem touches the proxy CLI ever does are:
+
+- `~/.spyder/daemon.log` when auto-spawning a daemon for the default
+  loopback target (CLI logs the spawn for diagnostics).
+- `<screenshot --output FILE>` — the user-supplied path.
+
+`spyder run` is the one daemonless wrapper and does manage
+`~/.spyder/reservations.json` + `~/.spyder/runs/` directly; this is
+documented and locked into the contract. The hermeticity rule is
+enforced by `TestCLIHermeticity` and `TestCLINoStickyStateOutsideAllowList`.
 
 ### HTTP MCP endpoint
 

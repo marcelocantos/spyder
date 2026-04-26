@@ -1101,6 +1101,135 @@ targets:
       <parameter name="tags">["bug", "homebrew", "launchd", "tunneld", "post-v0.11.0"]
     origin: manual
     discovered: 2026-04-25
+  T37:
+    name: 'CLI overhaul: spyder''s command-line surface is fit for Make-driven test infrastructure'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Distinct exit codes for every classifiable failure mode (device-not-found, install-failed, launch-failed, PID-verification-failed, timeout, etc.). Documented in agents-guide.md and locked into STABILITY.md's CLI catalogue as Stable.
+    - Every read-ish command supports --json for machine-parseable output. Write commands stay text-only (just the exit code matters).
+    - 'Default verbosity: writes are silent on success, reads emit only the requested data on stdout. Informational logging goes to stderr behind -v.'
+    - CLI device arguments accept the same fuzzy-selector grammar the MCP reserve tool accepts (platform=ios,os>=17), parsed into the existing internal/selector.Selector struct shared with the daemon.
+    - Every subcommand grows a --timeout DURATION flag with a sensible per-command default. Maps to the daemon's per-call deadline.
+    - 'Stateful flags audit: each CLI invocation is hermetic — no ~/.spyder/current-device-style sticky state. Verified by a hermeticity test.'
+    context: 'User feedback during v0.15.0 work: spyder''s CLI needs to be a first-class tool for driving Make-based test infrastructure, not just an agent-driven proxy. Daemon-backed (the user explicitly doesn''t want a daemonless mode); spyder doesn''t and won''t run in CI. Suggestions came from a peer review: distinct exit codes, JSON everywhere, quiet-on-success, selector parity with MCP, no stateful flags, timeouts everywhere. Decomposed into T37.1 through T37.7 leaves; ship as a single v0.16.0 release per user''s directive.'
+    tags:
+    - cli
+    - test-infra
+    - structural
+    origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T37.1:
+    name: 'CLI exit-code taxonomy: distinct codes per failure mode'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A new internal/cliexit/ package defines exit-code constants: 0 OK, 1 generic, 2 usage, 10 daemon-unreachable, 11 device-not-found, 12 device-not-connected, 13 reservation-conflict, 14 not-reserved-by-you, 20 app-not-installed, 21 install-failed, 22 launch-failed, 23 terminate-failed, 24 PID-verification-failed, 30 timeout, 40 trust-not-granted, 41 developer-mode-disabled, 42 device-locked.'
+    - Provides MapDaemonError(statusCode, errorCode, errorMessage) int that maps daemon REST API JSON error responses to exit codes. Recognises the daemon's error codes (device_not_paired, bundle_not_installed, tunneld_unavailable, developer_mode_disabled, pmd3_error) and prose-matches Locked/Security/trust phrases.
+    - Provides Errorf(code, format, args...) that prints to stderr and exits with code — the standard CLI failure exit point.
+    - Every os.Exit(1) and os.Exit(2) call site in cli.go and cli_visual.go is converted to the new taxonomy with the appropriate code.
+    - Table-driven tests cover every entry in the mapping.
+    - agents-guide.md documents the exit-code table.
+    depends_on:
+    - T37
+    origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T37.2:
+    name: 'CLI --json parity: every read-ish command emits machine-parseable output'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Read-ish commands (devices, resolve, device-state, list-apps, reservations, runs list/show/artefacts, crashes, diff, sim list, emu list, pool list, log) all accept --json. Already in place for some; this audits and fills the gaps.
+    - When --json is set, the command emits the daemon's raw JSON response on stdout with no human-readable wrapper. Suitable for piping to jq.
+    - Write commands (launch-app, terminate-app, install, uninstall, deploy, reserve, release, renew, rotate, baseline update, record, net) stay text-only; their value to scripts is the exit code, not the response body.
+    - Each --json output is documented in the command's help text.
+    depends_on:
+    - T37
+    origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T37.3:
+    name: 'CLI quiet-on-success: writes silent, reads emit only data, -v opt-in for chatter'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Write commands (launch-app, terminate-app, install, uninstall, deploy, reserve, release, renew, rotate, record, net) print nothing on success; success = exit 0. Failure prints to stderr and exits with the appropriate T37.1 code.
+    - Read commands print only the requested data on stdout (text or --json). No banners, no 'wrote N bytes' lines.
+    - Every spyder subcommand accepts -v / --verbose. When set, informational logging goes to stderr.
+    - Errors always go to stderr regardless of -v.
+    depends_on:
+    - T37.1
+    origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T37.4:
+    name: 'CLI selector parity: device argument accepts the same fuzzy grammar as MCP reserve'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A new ParseSelectorString(s string) (Selector, error) function in internal/selector/ parses comma-separated key=value (and key>=value, key<=value) into the existing Selector struct. Examples: platform=ios; platform=ios,model=iPhone; platform=ios,os>=17,os<=18.6; tags=phone+test; orientation_capable=true; attr.serial=ABC123.'
+    - 'CLI subcommands that take a device argument accept either: a literal alias/UDID (existing behaviour), or --on PREDICATE for the selector grammar. spyder run --on platform=ios,os>=17 -- xcodebuild test should reserve a matching device and run the test.'
+    - ParseSelectorString returns descriptive errors on malformed input.
+    - Table-driven tests cover the parser cases and error paths.
+    depends_on:
+    - T37
+    origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T37.5:
+    name: CLI --timeout DURATION on every subcommand
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A new internal/clitimeout/ helper provides RegisterFlag(fs, default) registering --timeout on a flag set with a sensible default, and Context(d) returning a context.WithTimeout (or context.Background with no-op cancel when d == 0).
+    - 'Default timeouts: 10s for read commands, 60s for launch/terminate, 5min for install/uninstall/deploy, 30s for screenshot, 0 (no timeout) for log --follow and run -- <cmd>.'
+    - Every subcommand registers and honours --timeout; the resulting context is the one used for the daemon HTTP call.
+    - Timeout exceeded translates to exit code 30 via T37.1 mapping.
+    depends_on:
+    - T37
+    origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T37.6:
+    name: 'CLI hermeticity: each invocation is independent, no sticky state files'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A test asserts that `spyder` CLI invocations do not read or write any state file under ~/.spyder/ other than the inventory.json (read-only) and reservations.json (managed by the daemon, not the CLI). No sticky 'current device' file, no cached selectors.
+    - Audit confirms there are no flags like 'spyder use <device>' that mutate persistent state outside the daemon's reservation store.
+    depends_on:
+    - T37
+    origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T37.7:
+    name: 'STABILITY.md: lock CLI exit codes + --json + selector grammar as Stable surface'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - STABILITY.md CLI subcommand catalogue lists every subcommand with its full flag set, marked Stable.
+    - An 'Exit codes' subsection enumerates the T37.1 taxonomy as part of the 1.0 stability commitment.
+    - The selector grammar from T37.4 is documented in the catalogue.
+    depends_on:
+    - T37.1
+    - T37.2
+    - T37.3
+    - T37.4
+    - T37.5
+    - T37.6
+    origin: manual
+    discovered: 2026-04-26
+    achieved: 2026-04-26
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved

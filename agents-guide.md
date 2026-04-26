@@ -707,6 +707,78 @@ non-default daemon (e.g. `http://127.0.0.1:13030` during development).
 Reservation state is shared between transports: an agent holding a
 lock via MCP blocks a shell script hitting REST and vice versa.
 
+### Universal flags
+
+Every device-tool subcommand auto-registers three flags. The defaults
+match the Make-driven test infrastructure use case (silent on success,
+machine-parseable when asked, bounded latency).
+
+- `--timeout DURATION` — Bounds the daemon HTTP call. Go duration
+  (`30s`, `5m`, `2h`); `0` disables. Per-command defaults: `10s` for
+  reads; `60s` for launch/terminate/rotate/sim/emu/net/pool ops; `5m`
+  for install/uninstall; `10m` for deploy; `30s` for screenshot; `30s`
+  for reserve/release/renew; `60s` for record; no timeout for
+  `log --follow` and `spyder run -- <cmd>`. Exceeded → exit `30`.
+- `--json` — On read-ish commands, emits the daemon's JSON response
+  verbatim. Pipe to `jq` from shell scripts.
+- `-v` / `--verbose` — On mutating commands (silent on success by
+  default), restores the daemon's confirmation text on stdout.
+
+### Selector grammar (`--on PREDICATE`)
+
+`spyder reserve --on PREDICATE` parses a comma-separated key=value
+selector into the same struct the MCP `reserve` tool consumes. Useful
+for Make targets that can't hard-code a device alias.
+
+```bash
+spyder reserve --on platform=ios,os>=17,tags=phone+test --as ci
+spyder reserve --on platform=android,model=pixel
+spyder reserve --on platform=ios,attr.serial=ABC123
+```
+
+Recognised keys: `platform`, `model`, `os>=`/`os<=`/`os_min`/`os_max`,
+`orientation_capable`, `tags=tag1+tag2`, `attr.<name>`. See
+`STABILITY.md` for the full schema.
+
+### Exit codes (machine-readable failure classification)
+
+The CLI returns distinct exit codes per failure mode so Make targets
+can branch on them:
+
+| Code | Meaning |
+|---|---|
+| 0 | Success. |
+| 1 | Generic / unclassified failure. |
+| 2 | Argument parsing error. |
+| 10 | Daemon not reachable (`$SPYDER_DAEMON_URL`). |
+| 11 | Device not found. |
+| 12 | Device not connected. |
+| 13 | Reservation conflict (held by another owner). |
+| 14 | Not reserved by you. |
+| 20 | App not installed. |
+| 21 | Install / deploy failed. |
+| 22 | Launch failed. |
+| 23 | Terminate failed. |
+| 24 | PID-verification failed (deploy). |
+| 30 | `--timeout` exceeded. |
+| 40 | Trust not granted (iOS pair-record). |
+| 41 | Developer Mode disabled. |
+| 42 | Device locked. |
+
+Defined in `internal/cliexit/cliexit.go`. The mapping from daemon
+REST errors to exit codes lives in `cliexit.MapDaemonError`. Exit-code
+*meaning* is part of the 1.0 stability commitment (see STABILITY.md);
+adding new codes for previously-unclassified causes is non-breaking.
+
+### Hermeticity
+
+Each proxy CLI invocation is independent — no `~/.spyder/` state is
+read or written by the CLI itself. The two exceptions are documented:
+auto-spawning a daemon writes `~/.spyder/daemon.log`, and `spyder run`
+manages its own reservation+runs store directly (it's the daemonless
+wrapper). Tests in the main package (`TestCLIHermeticity`,
+`TestCLINoStickyStateOutsideAllowList`) lock this contract.
+
 ## The `spyder run` test wrapper
 
 Beyond the MCP surface, spyder exposes a CLI wrapper that runs a command

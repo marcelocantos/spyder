@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/marcelocantos/spyder/internal/cliexit"
+	"github.com/marcelocantos/spyder/internal/clitimeout"
 )
 
 // runDiff implements `spyder diff <suite>/<case> <screenshot> [<manifest>]
@@ -19,13 +22,12 @@ import (
 //	1 — fail (structural or pixel change outside tolerance)
 //	2 — argument error
 func runDiff(args []string) {
-	pf, err := parseFlags(args,
+	pf, ctx, cancel := setupCommand("diff", args,
 		[]string{"--variant", "--tolerance"},
 		[]string{"--json"},
+		clitimeout.DefaultRead,
 	)
-	if err != nil {
-		fatalUsage("diff", err)
-	}
+	defer cancel()
 	if len(pf.positional) < 2 || len(pf.positional) > 3 {
 		fatalUsage("diff", fmt.Errorf("expected <suite>/<case> <screenshot> [<manifest>]"))
 	}
@@ -56,22 +58,20 @@ func runDiff(args []string) {
 	if len(pf.positional) == 3 {
 		manifestRaw, rerr := os.ReadFile(pf.positional[2])
 		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "spyder diff: read manifest %q: %v\n", pf.positional[2], rerr)
-			os.Exit(1)
+			cliexit.Errorf(cliexit.ExitGeneric, "spyder diff: read manifest %q: %v", pf.positional[2], rerr)
 		}
 		a["manifest"] = string(manifestRaw)
 	}
 
-	res, err := postTool("diff", a)
+	res, err := postTool(ctx, "diff", a)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "spyder diff: %v\n", err)
-		os.Exit(1)
+		cliexit.Errorf(daemonExitCode(err), "spyder diff: %v", err)
 	}
 	if res.IsError {
-		fmt.Fprintln(os.Stderr, res.firstText())
-		os.Exit(1)
+		text := res.firstText()
+		cliexit.Errorf(cliexit.MapDaemonError(0, "", text), "%s", text)
 	}
-	renderResult(res, pf.bools["--json"])
+	renderResult(res, pf.bools["--json"], false)
 
 	// Parse the Pass field from the JSON and exit non-zero on fail.
 	if !pf.bools["--json"] {
@@ -81,7 +81,7 @@ func runDiff(args []string) {
 	// In --json mode, parse the report and exit 1 if Pass=false.
 	text := res.firstText()
 	if strings.Contains(text, `"pass": false`) || strings.Contains(text, `"pass":false`) {
-		os.Exit(1)
+		cliexit.Exit(cliexit.ExitGeneric)
 	}
 }
 
@@ -104,10 +104,8 @@ func runBaseline(args []string) {
 // runBaselineUpdate implements `spyder baseline update <suite>/<case>
 // <screenshot> [<manifest>] [--variant V]`.
 func runBaselineUpdate(args []string) {
-	pf, err := parseFlags(args, []string{"--variant"}, nil)
-	if err != nil {
-		fatalUsage("baseline", err)
-	}
+	pf, ctx, cancel := setupCommand("baseline", args, []string{"--variant"}, nil, clitimeout.DefaultRead)
+	defer cancel()
 	if len(pf.positional) < 2 || len(pf.positional) > 3 {
 		fatalUsage("baseline", fmt.Errorf("expected <suite>/<case> <screenshot> [<manifest>]"))
 	}
@@ -128,13 +126,12 @@ func runBaselineUpdate(args []string) {
 	if len(pf.positional) == 3 {
 		manifestRaw, rerr := os.ReadFile(pf.positional[2])
 		if rerr != nil {
-			fmt.Fprintf(os.Stderr, "spyder baseline update: read manifest %q: %v\n",
+			cliexit.Errorf(cliexit.ExitGeneric, "spyder baseline update: read manifest %q: %v",
 				pf.positional[2], rerr)
-			os.Exit(1)
 		}
 		a["manifest"] = string(manifestRaw)
 	}
-	dispatchAndExit("baseline_update", a, false)
+	dispatchAndExit(ctx, "baseline_update", a, false, !verbose(pf))
 }
 
 // splitSuiteCase splits "suite/case" into ("suite", "case", true).
