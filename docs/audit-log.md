@@ -326,7 +326,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.16.0 (CLI overhaul for Make-driven test infra)
 
-- **Commit**: `pending`
+- **Commit**: `b402e0b`
 - **Outcome**: Reshape the `spyder` CLI into a first-class tool for
   driving Make-based test infrastructure (the user's stated use case
   during v0.15.0 review — "we need a command line that leverages the
