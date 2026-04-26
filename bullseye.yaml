@@ -1272,6 +1272,27 @@ targets:
     origin: manual
     discovered: 2026-04-26
     achieved: 2026-04-26
+  T39:
+    name: test-report freshness watch list covers all top-level Go sources, not just main.go
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`scripts/check-test-report-fresh.sh`''s `source_paths` list covers `cli.go`, `cli_visual.go`, and any other top-level `*.go` file alongside `main.go` — either by enumerating them or by switching to a glob (e.g. `*.go` / `./*.go`). After the change, modifying `cli.go` between commits should cause `make bullseye` to flag TEST-REPORT.json as stale (same way `main.go` does today).'
+    - 'A regression test or shell snippet in the script (or a sibling test) confirms the watch list catches changes to `cli.go`. Optional but recommended: a unit-style assertion in CI so future top-level `.go` additions don''t quietly fall outside coverage.'
+    context: |-
+      Surfaced 2026-04-26 while exercising the 🎯T38 showcase. Edits to `cli.go` (a top-level Go source file holding ~1300 lines of CLI subcommand implementations) didn't invalidate `TEST-REPORT.json` per `make bullseye` — `make bullseye` reported `✓ test-report fresh` even though the cli.go changes were unverified by the recorded test run.
+
+      Root cause: `scripts/check-test-report-fresh.sh` line 48-59 enumerates a `source_paths` list that includes `internal/`, `bridge/src/`, `bridge/tests/`, `main.go`, `Makefile`, `go.mod`, `go.sum`, `bridge/pyproject.toml`, `bridge/uv.lock`, `scripts/` — but not `cli.go`, `cli_visual.go`, or `hermeticity_test.go`. So changes confined to those files slip past the freshness gate. The fix is one or two lines in the script — either enumerate the missing files or glob `./*.go`.
+
+      Filed during the 🎯T38 wrap-up so it doesn't get lost; not blocking any current work.
+    tags:
+    - test-report
+    - invariants
+    - tooling
+    - scripts
+    origin: forked-from 🎯T38 retirement (2026-04-26)
+    discovered: 2026-04-26
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
@@ -1294,6 +1315,22 @@ targets:
     origin: manual
     discovered: 2026-04-17
     achieved: 2026-04-18
+  T40:
+    name: Spyder's streamable-HTTP MCP server keeps idle Claude Code sessions connected via heartbeat pings
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - internal/daemon/daemon.go's server.NewStreamableHTTPServer call passes server.WithHeartbeatInterval(30*time.Second) (or similar finite duration)
+    - 'A Claude Code session that calls a spyder tool, idles for 5+ minutes, then calls another spyder tool does NOT see ''MCP error -32000: Connection closed'''
+    - go test ./... still passes
+    context: 'mark3labs/mcp-go''s StreamableHTTPServer ships with WithHeartbeatInterval disabled by default. Without it, the GET (SSE) stream that Claude Code holds open has no application-layer keepalive, so OS / NAT collapses the underlying TCP after ~3 minutes of idle and the next tool call surfaces as ''MCP error -32000: Connection closed'' before transparent reconnect succeeds. Same one-line fix as the mnemo commit shipped 2026-04-26 (mnemo master 4057332). Confirmed spyder is affected by inspection: internal/daemon/daemon.go:248 calls server.NewStreamableHTTPServer with no heartbeat option.'
+    tags:
+    - mcp
+    - reliability
+    origin: forked-from mnemo disconnect investigation 2026-04-26
+    discovered: 2026-04-26
+    achieved: 2026-04-26
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
