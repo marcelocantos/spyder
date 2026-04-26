@@ -1,20 +1,20 @@
 {
   "schema_version": 1,
-  "commit": "df7ccd26a03996bd6895bb0b6bcf3672d395a2f4",
-  "generated_at": "2026-04-26T05:50:22Z",
+  "commit": "a09afe8d720f4cc833a50c9d1a4081476c2261be",
+  "generated_at": "2026-04-26T06:14:45Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "go test ./...",
-      "duration_s": 1,
+      "duration_s": 0,
       "status": "pass"
     },
     {
       "name": "bridge-python-unit",
-      "cmd": "cd bridge && uv run --project . pytest tests/",
+      "cmd": "cd bridge && uv run --project . --extra dev pytest tests/",
       "duration_s": 1,
-      "status": "fail"
+      "status": "pass"
     },
     {
       "name": "integration",
@@ -27,5 +27,5 @@
       "reason": "set SPYDER_DEVICES=1 to run; requires a paired device"
     }
   ],
-  "overall": "fail"
+  "overall": "partial"
 }
