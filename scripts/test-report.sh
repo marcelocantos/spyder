@@ -70,7 +70,7 @@ run_suite_skipped() {
 run_suite go-unit "go test ./..."
 
 # ── Tier 1: Python bridge unit ───────────────────────────────────────────────
-run_suite bridge-python-unit "cd bridge && uv run --project . pytest tests/"
+run_suite bridge-python-unit "cd bridge && uv run --project . --extra dev pytest tests/"
 
 # ── Tier 2: integration against real bridge subprocess ───────────────────────
 # Gated on INTEGRATION=1 until the harness lands (🎯T26.4 part 3).
