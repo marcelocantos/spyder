@@ -139,6 +139,26 @@ class ReleasePowerAssertionResponse(BaseModel):
     pass
 
 
+class DevicePowerStateRequest(BaseModel):
+    udid: str
+
+
+class DevicePowerStateResponse(BaseModel):
+    """Power/display state of a device.
+
+    state values:
+      "awake"       — display is on and the framebuffer is readable (DVT screenshot succeeded).
+      "display_off" — screenshot succeeded but pixels are entirely dark (framebuffer
+                      blank, display off or screen saver).
+      "asleep"      — screenshot failed with an error that indicates the display/device
+                      is off or asleep (e.g. DVT instrument closed by device).
+      "unknown"     — could not determine state (tunneld unavailable, developer mode
+                      off, or unrecognised error).
+    """
+    state: str
+    detail: Optional[str] = None
+
+
 class ErrorResponse(BaseModel):
     error: str
     message: str

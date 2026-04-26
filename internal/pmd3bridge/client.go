@@ -304,6 +304,22 @@ func (c *Client) Screenshot(ctx context.Context, udid string) ([]byte, error) {
 	return data, nil
 }
 
+// DevicePowerState queries the power/display state of the device without
+// resetting its idle timer (🎯T29). The bridge uses the DVT Screenshot
+// instrument to probe the framebuffer — a GPU/display read that does not
+// write to IOPMrootDomain user-activity registers.
+//
+// State values: "awake", "display_off", "asleep", "unknown".
+// See DevicePowerState doc and docs/papers/t29-device-state-detection.md.
+func (c *Client) DevicePowerState(ctx context.Context, udid string) (DevicePowerState, error) {
+	var resp DevicePowerState
+	if err := c.post(ctx, "/v1/device_power_state", timeoutDeviceState,
+		devicePowerStateRequest{UDID: udid}, &resp); err != nil {
+		return DevicePowerState{}, err
+	}
+	return resp, nil
+}
+
 // CrashReportsList lists crash reports on the device. since is optional
 // (zero time = no lower bound). process is optional (empty = all processes).
 //

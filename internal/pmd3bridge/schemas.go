@@ -114,6 +114,24 @@ type releasePowerAssertionRequest struct {
 	HandleID string `json:"handle_id"`
 }
 
+// DevicePowerState is the structured result from /v1/device_power_state (🎯T29).
+//
+// State values:
+//
+//	"awake"       — display on, DVT screenshot succeeded, non-trivial pixel content.
+//	"display_off" — screenshot succeeded but framebuffer was all-black.
+//	"asleep"      — screenshot failed with a pattern indicating device/display off.
+//	"unknown"     — prerequisite missing (tunneld down, developer mode off) or
+//	                unrecognised error; cannot determine state.
+type DevicePowerState struct {
+	State  string  `json:"state"`
+	Detail *string `json:"detail,omitempty"`
+}
+
+type devicePowerStateRequest struct {
+	UDID string `json:"udid"`
+}
+
 // listDevicesResponse wraps the devices array from the bridge.
 type listDevicesResponse struct {
 	Devices []DeviceInfo `json:"devices"`
