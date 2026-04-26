@@ -338,10 +338,13 @@ func (a *IOSAdapter) List() ([]Info, error) {
 
 // devicectlConnectedIOSDevices returns the set of UDIDs that
 // `xcrun devicectl list devices --json-output` reports as
-// `tunnelState=connected` for the iOS platform. Used by IOSAdapter.List
-// to filter out paired-but-unavailable devices that the tunneld
-// registry would otherwise surface (e.g. a phone that was previously
-// trusted but is currently powered off).
+// `tunnelState=connected` AND `transportType=wired` for the iOS
+// platform. Used by IOSAdapter.List to filter out paired-but-unavailable
+// devices that the tunneld registry would otherwise surface (e.g. a
+// phone that was previously trusted but is currently powered off), and
+// to exclude devices reachable only over the local network — autoawake's
+// KeepAwake exits when batteryState=.unplugged, so a Wi-Fi-only device
+// would just spin in a launch/exit loop.
 //
 // Returns (nil, error) when devicectl can't be queried — caller should
 // treat this as "filter unavailable" and pass everything through.
@@ -370,7 +373,8 @@ func devicectlConnectedIOSDevices() (map[string]bool, error) {
 					Platform string `json:"platform"`
 				} `json:"hardwareProperties"`
 				ConnectionProperties struct {
-					TunnelState string `json:"tunnelState"`
+					TunnelState   string `json:"tunnelState"`
+					TransportType string `json:"transportType"`
 				} `json:"connectionProperties"`
 			} `json:"devices"`
 		} `json:"result"`
@@ -383,9 +387,13 @@ func devicectlConnectedIOSDevices() (map[string]bool, error) {
 		if d.HardwareProperties.Platform != "iOS" {
 			continue
 		}
-		if d.ConnectionProperties.TunnelState == "connected" {
-			out[d.HardwareProperties.UDID] = true
+		if d.ConnectionProperties.TunnelState != "connected" {
+			continue
 		}
+		if d.ConnectionProperties.TransportType != "wired" {
+			continue
+		}
+		out[d.HardwareProperties.UDID] = true
 	}
 	return out, nil
 }
