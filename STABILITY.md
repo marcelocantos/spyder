@@ -30,7 +30,7 @@ Snapshot as of `v0.16.0`.
 | `devices` | `{platform?: "ios"\|"android"\|"all"}` (default `all`). | JSON array of `device.Info` (`uuid`, `name`, `platform`, `model`, `os`, `alias`). When `platform=all` and an adapter errors, wraps as `{devices: [...], errors: [...]}`. | Stable |
 | `resolve` | `{name: string}` (required). | JSON-encoded `inventory.Entry` (`alias`, `platform`, `ios_uuid`, `ios_coredevice`, `android_serial`, `notes`). | Needs review — passthrough shape for unknown IDs may evolve |
 | `device_state` | `{device: string}` (required; alias or raw UUID/serial). | JSON-encoded `device.State` (`battery_level?`, `charging?`, `thermal_state?`, `foreground_app?`, `storage_free_mb?`, `notes?`). | Needs review — pointer-typed optionals, field additions expected |
-| `screenshot` | `{device: string, owner?: string}` (device required; owner for reservation auth). | MCP image content block (base64 PNG, `image/png`). iOS 17+ devices route through pmd3's DVT instrument over tunneld-mediated RSD (🎯T30); requires an externally-managed `pymobiledevice3 remote tunneld` on the host. Surfaces `tunneld_unavailable` when tunneld is down and `developer_mode_disabled` when the device's Developer Mode toggle is off. | Stable |
+| `screenshot` | `{device: string, owner?: string}` (device required; owner for reservation auth). | MCP image content block (base64 PNG, `image/png`). iOS 17+ devices (iOS 17, 18, 26+) route through pmd3's DVT Screenshot instrument over a tunneld-mediated RSD connection; requires an externally-managed `pymobiledevice3 remote tunneld` on the host (typically a launchd service). Pre-iOS-17 devices are not currently supported (legacy `com.apple.mobile.screenshotr` fallback not implemented). Surfaces `tunneld_unavailable` (HTTP 503) when tunneld is down or the device is not in the tunnel registry, and `developer_mode_disabled` (HTTP 412) when the device's Developer Mode toggle is off. | Stable |
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
 | `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
@@ -67,8 +67,8 @@ Snapshot as of `v0.16.0`.
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, `'Locked'`, `'Security'` (trust),
-`tunneld is not running on the host` (🎯T30), and `Developer Mode is not
-enabled` (🎯T30) are all surfaced as distinct tool-error text. Callers
+`tunneld is not running on the host`, and `Developer Mode is not
+enabled` are all surfaced as distinct tool-error text. Callers
 can match on these phrases.
 
 ### CLI subcommands
@@ -385,16 +385,16 @@ builds. **Stable.**
   (free-tier Apple ID suffices). pmd3's `PowerAssertionService` was
   attempted as a drop-in replacement in v0.6.0–v0.8.0 but is a no-op
   for display sleep on iOS; reverted in v0.9.0 (🎯T31).
-- **Tunneld lifecycle.** iOS 17+ screenshot (🎯T30) and any future
+- **Tunneld lifecycle.** iOS 17+ screenshot and any future
   DVT-instrument operations need an active RSD tunnel for the device.
-  spyder's bridge does not currently start or supervise
-  `pymobiledevice3 remote tunneld` itself — it expects an external
-  instance on `127.0.0.1:49151` (typically a launchd service) and
-  surfaces `tunneld_unavailable` when absent. Bridge-supervised tunneld
-  remains a 🎯T30 follow-up acceptance criterion and a 1.0
-  prerequisite. Pre-iOS-17 devices that don't appear in the tunneld
-  registry will currently fail screenshot too — a legacy
-  `com.apple.mobile.screenshotr` fallback for those is also deferred
+  spyder's bridge expects an externally-managed `pymobiledevice3 remote
+  tunneld` process on `127.0.0.1:49151` (typically a launchd service
+  installed by the user) and surfaces `tunneld_unavailable` (bridge error
+  code, HTTP 503) when tunneld is unreachable or has no registered devices.
+  This is the accepted design for v0.x — the bridge does not start or
+  supervise tunneld itself. Pre-iOS-17 devices that are not in the tunneld
+  registry will fail screenshot with `device_not_paired`; a legacy
+  `com.apple.mobile.screenshotr` fallback for pre-17 devices is deferred
   (no test target on currently-paired hardware).
 - **macOS-only host enforcement.** Spyder runs on Linux but iOS operations
   will fail noisily there. Either restrict the binary to Darwin or
