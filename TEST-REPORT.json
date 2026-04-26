@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "commit": "5b71f2dedd5002dc99cd3ab7ba7793214078f2d1",
-  "generated_at": "2026-04-26T03:41:12Z",
+  "commit": "df7ccd26a03996bd6895bb0b6bcf3672d395a2f4",
+  "generated_at": "2026-04-26T05:50:22Z",
   "host": "colossus",
   "suites": [
     {
@@ -13,8 +13,8 @@
     {
       "name": "bridge-python-unit",
       "cmd": "cd bridge && uv run --project . pytest tests/",
-      "duration_s": 0,
-      "status": "pass"
+      "duration_s": 1,
+      "status": "fail"
     },
     {
       "name": "integration",
@@ -27,5 +27,5 @@
       "reason": "set SPYDER_DEVICES=1 to run; requires a paired device"
     }
   ],
-  "overall": "partial"
+  "overall": "fail"
 }
