@@ -97,6 +97,45 @@ func TestParseDevicectlList_UDIDFallbackToIdentifier(t *testing.T) {
 	}
 }
 
+// --- parseDevicectlConnectedIOSDevices -------------------------------------
+
+func TestParseDevicectlConnectedIOSDevices_WiredOnly(t *testing.T) {
+	// Three iOS devices: one wired+connected (kept), one
+	// localNetwork+connected (filtered — Wi-Fi reachable but the
+	// supervisor must not target it), one wired+unavailable (filtered —
+	// paired but not currently usable). Plus one macOS device that
+	// happens to be wired+connected (filtered — non-iOS platform).
+	data := []byte(`{
+		"result": {
+			"devices": [
+				{
+					"hardwareProperties": {"udid": "WIRED-IOS", "platform": "iOS"},
+					"connectionProperties": {"tunnelState": "connected", "transportType": "wired"}
+				},
+				{
+					"hardwareProperties": {"udid": "WIFI-IOS", "platform": "iOS"},
+					"connectionProperties": {"tunnelState": "connected", "transportType": "localNetwork"}
+				},
+				{
+					"hardwareProperties": {"udid": "OFF-IOS", "platform": "iOS"},
+					"connectionProperties": {"tunnelState": "unavailable", "transportType": "wired"}
+				},
+				{
+					"hardwareProperties": {"udid": "WIRED-MAC", "platform": "macOS"},
+					"connectionProperties": {"tunnelState": "connected", "transportType": "wired"}
+				}
+			]
+		}
+	}`)
+	got, err := parseDevicectlConnectedIOSDevices(data)
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if len(got) != 1 || !got["WIRED-IOS"] {
+		t.Errorf("got %v; want only WIRED-IOS", got)
+	}
+}
+
 // --- mergeIOSDevices -------------------------------------------------------
 
 func TestMergeIOSDevices_OverlayByUDID(t *testing.T) {

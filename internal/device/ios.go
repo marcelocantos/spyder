@@ -365,6 +365,13 @@ func devicectlConnectedIOSDevices() (map[string]bool, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseDevicectlConnectedIOSDevices(data)
+}
+
+// parseDevicectlConnectedIOSDevices applies the wired+connected filter
+// to the devicectl JSON document. Extracted from the shell-out wrapper
+// so it can be unit-tested without invoking xcrun.
+func parseDevicectlConnectedIOSDevices(data []byte) (map[string]bool, error) {
 	var doc struct {
 		Result struct {
 			Devices []struct {
