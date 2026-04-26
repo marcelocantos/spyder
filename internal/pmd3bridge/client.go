@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -210,24 +211,78 @@ func (c *Client) logOutcome(path string, elapsed, timeout time.Duration, err err
 	}
 }
 
-// fire emits an ERROR log with the failure context and then invokes the
-// fatal hook. The ERROR log ensures the breadcrumb survives even if the
-// stack-trace pipeline (stderr → launchd log) truncates the panic.
+// fire classifies a bridge-call failure and either swallows it (transport
+// errors and shutdown-window errors) or panics (genuine protocol/programmer
+// bugs). The split exists because the bridge supervisor manages a child
+// subprocess that can hang or restart for environmental reasons; panicking
+// the daemon on every transport blip would short-circuit the supervisor's
+// own recovery path, and that's exactly what 🎯T41 found in production.
 //
-// Exception: when the supervisor has already begun shutdown (Stopped()
-// reports true), in-flight transport errors are an expected consequence
-// of the bridge subprocess having received SIGTERM and torn down its
-// listener. These are logged at WARN and swallowed rather than panicking
-// the daemon — the daemon is exiting anyway and the panic would mask
-// the SIGINT/SIGTERM handler's own clean-shutdown logging.
+// Cases:
+//
+//  1. Supervisor in shutdown (Stopped() true) — in-flight transport errors
+//     are expected (bridge got SIGTERM, listener torn down). WARN + swallow.
+//     The daemon is exiting anyway; panicking would mask the SIGINT/SIGTERM
+//     handler's clean-shutdown logging.
+//
+//  2. Recoverable transport error (deadline exceeded, dial refused, EOF/EPIPE
+//     mid-call, network unreachable) on a steady-state call — the bridge
+//     subprocess is wedged or briefly unavailable. WARN + return; the caller
+//     gets the error and the supervisor's liveness probe will restart the
+//     subprocess transparently. Panicking here would kick every connected
+//     MCP client across the daemon (including a Claude Code session held
+//     open via /mcp's GET stream), which 🎯T41 documents was happening every
+//     ~30 minutes in production.
+//
+//  3. Genuine bug — marshal failure on a static request shape, decode
+//     failure on the response, unstructured non-JSON 4xx/5xx, anything else
+//     fire() is invoked with. ERROR + panic. These are programmer or
+//     protocol bugs that should surface immediately, not be silently
+//     swallowed.
 func (c *Client) fire(err error) {
 	if c.sup != nil && c.sup.Stopped() {
 		slog.Warn("bridge call failed during shutdown — swallowed",
 			"error", err.Error())
 		return
 	}
+	if isRecoverableTransportError(err) {
+		slog.Warn("bridge call transport error — daemon stays up, supervisor will recover",
+			"error", err.Error())
+		return
+	}
 	slog.Error("bridge call FATAL — about to panic", "error", err.Error())
 	c.fatal(err)
+}
+
+// isRecoverableTransportError returns true when err represents a transport
+// or transient subprocess fault rather than a protocol/programmer bug.
+// These are recoverable in the sense that retrying the call (after the
+// supervisor's liveness probe restarts the bridge subprocess if needed)
+// will succeed.
+func isRecoverableTransportError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Per-endpoint deadline expiry — bridge is wedged or genuinely slow.
+	// (context.Canceled is not in this set: it's caller-initiated and
+	// already short-circuited before fire() is called.)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	// Dial refused / connection reset / EPIPE / EOF mid-call / network
+	// unreachable — anything net.OpError surfaces. These cover the case
+	// where the bridge subprocess crashed or its listener went away
+	// between calls.
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		return true
+	}
+	// EOF mid-body during io.ReadAll(resp.Body) doesn't always wrap a
+	// net.OpError on macOS/Linux — match by sentinel as a safety net.
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		return true
+	}
+	return false
 }
 
 // ListDevices returns the connected iOS devices visible to the bridge.

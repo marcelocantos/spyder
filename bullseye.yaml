@@ -1331,6 +1331,45 @@ targets:
     origin: forked-from mnemo disconnect investigation 2026-04-26
     discovered: 2026-04-26
     achieved: 2026-04-26
+  T41:
+    name: pmd3 bridge transport timeouts on idempotent read endpoints don't panic the daemon
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A transport-level timeout on `pmd3bridge.Client.post()` for an idempotent read endpoint (`/v1/list_devices`, battery, foreground app, etc.) returns the error to the caller and logs at WARN — it does NOT call `c.fatal()` / panic the daemon. The daemon stays up; the next poll retries cleanly.
+    - Real protocol bugs (decode failures, unstructured non-2xx responses, marshal failures) still go through the fatal/panic path so genuine code bugs surface immediately.
+    - 'The bridge-supervisor restart path remains available: if the bridge subprocess crashes or hangs persistently, the supervisor restarts it and clients see at most a brief in-flight failure window.'
+    - An integration test (or unit test with a fake bridge that hangs on /v1/list_devices) confirms the daemon survives a transport timeout and the next poll succeeds after the bridge recovers.
+    context: |-
+      Surfaced 2026-04-26 ~22:30 local: user reported "spyder MCP server keeps disconnecting." Investigation traced it to /opt/homebrew/var/log/spyder.log showing daemon process restarts every ~30 minutes across both v0.18.0 and v0.19.0. v0.19.0's WithHeartbeatInterval(30s) fix from 🎯T40 is real and necessary for genuine idle-NAT timeouts, but it can't help here because the process itself is dying.
+
+      Pattern in the log:
+        2026/04/26 22:58:37 ERROR bridge call FATAL — about to panic error="pmd3bridge: /v1/list_devices: transport error after 10s: Post \"http://127.0.0.1:57911/v1/list_devices\": context deadline exceeded"
+        panic: pmd3bridge: /v1/list_devices: transport error after 10s ...
+
+      Then launchd respawns spyder (homebrew.mxcl.spyder.plist has KeepAlive=true) and the cycle repeats. Claude Code sees this as a hard MCP disconnect because the JSON-RPC session is gone.
+
+      Root cause: internal/pmd3bridge/client.go:223 `func (c *Client) fire(err error)` treats every error as fatal — logs ERROR "bridge call FATAL — about to panic" then calls `c.fatal(err)` (which is `panic(err)` in production). This is invoked from `post()` and `postStream()` for marshal failures, transport errors, decode errors, unstructured non-2xx responses, etc. There's only one exception: when the supervisor is already in shutdown (`c.sup.Stopped()` true).
+
+      The autoawake supervisor polls /v1/list_devices every 2 seconds. When the bridge subprocess hangs once (likely a pmd3 syslog-stream lock or a lockdown freeze on Pippa or the iPhone — both UDIDs were emitting lockdown failure warnings every poll), the timeout fires, the daemon panics, and Claude Code drops.
+
+      Architecturally: the bridge supervisor exists precisely so the bridge can fault without taking the daemon down. The current panic-on-transport-error short-circuits that recovery. The minimal, correct fix is to distinguish fault classes in `fire()`:
+      - Transport errors (context.DeadlineExceeded, net.Error, refused) → log WARN, return error to caller, supervisor optionally restarts bridge.
+      - Decode errors / unstructured 5xx / marshal errors → still fatal (these are genuine code bugs).
+
+      A second-order issue: this is the same iPad+iPhone whose lockdown queries were warning continuously (00008130-... and 00008110-...). Pippa's UDID is the iPad. The other is presumably an iPhone freshly added without trust. The bridge stall may correlate with one of those devices being unresponsive.
+
+      This is high-priority — every Claude Code session today is being kicked every ~30 minutes until this lands.
+    tags:
+    - bridge
+    - reliability
+    - panic
+    - v0.20-candidate
+    - high-priority
+    origin: forked-from user-reported MCP disconnect investigation 2026-04-26
+    discovered: 2026-04-26
+    achieved: 2026-04-26
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
