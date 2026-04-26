@@ -315,6 +315,13 @@ async def device_power_state(body: DevicePowerStateRequest) -> Any:
     Uses the DVT Screenshot instrument via tunneld RSD. Reading the
     framebuffer does NOT reset the device's idle timer (non-observation
     requirement). See docs/papers/t29-device-state-detection.md.
+
+    BridgeErrors that indicate a missing prerequisite (tunneld_unavailable,
+    developer_mode_disabled, device_not_paired) map to state="unknown" so
+    the caller always gets a structured DevicePowerStateResponse rather than
+    an HTTP error. Hard errors (pmd3_error with unrecognised cause) are
+    handled by the service function; any unexpected BridgeError that escapes
+    is mapped to unknown here as a safety net.
     """
     log.debug("device_power_state udid=%s", body.udid)
     try:
@@ -322,9 +329,12 @@ async def device_power_state(body: DevicePowerStateRequest) -> Any:
         log.debug("device_power_state udid=%s state=%s", body.udid, result.state)
         return result
     except BridgeError as exc:
-        log.warning("device_power_state udid=%s failed code=%s message=%s",
+        # Safety net: any BridgeError that escapes device_power_state becomes
+        # state="unknown" rather than an HTTP error. The service function
+        # should handle all known codes; this path should not normally fire.
+        log.warning("device_power_state udid=%s escaped BridgeError code=%s message=%s",
                     body.udid, exc.code, exc.message)
-        return _classify(exc)
+        return DevicePowerStateResponse(state="unknown", detail=exc.message)
 
 
 @app.post("/v1/acquire_power_assertion", response_model=AcquirePowerAssertionResponse)
