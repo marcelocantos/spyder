@@ -457,6 +457,46 @@ func daemonExitCode(err error) int {
 	return cliexit.ExitGeneric
 }
 
+// reserveViaDaemon parses an --on predicate, posts to /api/v1/reserve so
+// the daemon resolves+acquires atomically, and returns the canonical
+// alias from the response. Used by `spyder run --on PREDICATE` to close
+// the resolve→release→re-acquire race window in the previous workaround
+// pattern (🎯T38).
+func reserveViaDaemon(predicate, owner string) (string, error) {
+	sel, perr := selector.ParseSelectorString(predicate)
+	if perr != nil {
+		return "", fmt.Errorf("parse selector: %w", perr)
+	}
+	selBytes, merr := json.Marshal(sel)
+	if merr != nil {
+		return "", fmt.Errorf("marshal selector: %w", merr)
+	}
+	args := map[string]any{
+		"selector": string(selBytes),
+		"owner":    owner,
+		"note":     "spyder run --on",
+	}
+	ctx, cancel := clitimeout.Context(clitimeout.DefaultReserve)
+	defer cancel()
+	res, err := postTool(ctx, "reserve", args)
+	if err != nil {
+		return "", err
+	}
+	if res.IsError {
+		return "", errors.New(res.firstText())
+	}
+	var reservation struct {
+		Device string `json:"device"`
+	}
+	if err := json.Unmarshal([]byte(res.firstText()), &reservation); err != nil {
+		return "", fmt.Errorf("parse reserve response: %w", err)
+	}
+	if reservation.Device == "" {
+		return "", errors.New("daemon returned empty device alias")
+	}
+	return reservation.Device, nil
+}
+
 // --- subcommand implementations -------------------------------------
 
 func runDevices(args []string) {

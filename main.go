@@ -91,11 +91,20 @@ Serve:
   The same listener exposes REST at http://<host>/api/v1/<tool> (POST JSON).
 
 Run:
-  spyder run [--device <alias>] -- <command> [args...]
+  spyder run [--device <alias> | --on PREDICATE] [--timeout DURATION]
+             [--as OWNER] -- <command> [args...]
 
   Executes <command> with its args, waits for it to exit, then releases
   the device reservation. Exits with the command's exit code. Useful for
   wrapping xcodebuild test commands under an auto-acquired reservation.
+
+  --on PREDICATE accepts the same selector grammar as
+  'spyder reserve --on PREDICATE' (e.g. platform=ios,os>=17). The daemon
+  resolves+acquires atomically — no two-phase race window.
+
+  --timeout DURATION (e.g. 5m, 90s) bounds the wrapped child invocation.
+  When the deadline fires, the child is signalled and spyder exits with
+  code 30 (timeout) instead of forwarding the child's signal-induced exit.
 `
 
 func main() {
@@ -154,14 +163,17 @@ func runServe(args []string) {
 // runArgs are the parsed CLI flags for `spyder run`.
 type runArgs struct {
 	Device  string
-	Owner   string // empty = derive from filepath.Base(cwd)
+	On      string        // selector predicate (--on); resolved to a device alias before Acquire
+	Owner   string        // empty = derive from filepath.Base(cwd)
+	Timeout time.Duration // 0 = no cell budget (current behaviour)
 	Command []string
 }
 
 // parseRunArgs parses the flag portion of `spyder run`. Extracted so
 // it can be unit-tested without touching exec/os.
 func parseRunArgs(args []string) (runArgs, error) {
-	out := runArgs{Device: defaultRunDevice}
+	out := runArgs{}
+	deviceSet := false
 	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
 		if args[0] == "--" {
 			args = args[1:]
@@ -173,6 +185,13 @@ func parseRunArgs(args []string) (runArgs, error) {
 				return runArgs{}, fmt.Errorf("--device requires a value")
 			}
 			out.Device = args[1]
+			deviceSet = true
+			args = args[2:]
+		case "--on":
+			if len(args) < 2 {
+				return runArgs{}, fmt.Errorf("--on requires a value")
+			}
+			out.On = args[1]
 			args = args[2:]
 		case "--as":
 			if len(args) < 2 {
@@ -180,12 +199,31 @@ func parseRunArgs(args []string) (runArgs, error) {
 			}
 			out.Owner = args[1]
 			args = args[2:]
+		case "--timeout":
+			if len(args) < 2 {
+				return runArgs{}, fmt.Errorf("--timeout requires a value")
+			}
+			d, err := time.ParseDuration(args[1])
+			if err != nil {
+				return runArgs{}, fmt.Errorf("--timeout: %v", err)
+			}
+			if d <= 0 {
+				return runArgs{}, fmt.Errorf("--timeout must be positive, got %s", args[1])
+			}
+			out.Timeout = d
+			args = args[2:]
 		default:
 			return runArgs{}, fmt.Errorf("unknown flag %q", args[0])
 		}
 	}
+	if out.On != "" && deviceSet {
+		return runArgs{}, fmt.Errorf("--device and --on are mutually exclusive")
+	}
+	if !deviceSet && out.On == "" {
+		out.Device = defaultRunDevice
+	}
 	if len(args) == 0 {
-		return runArgs{}, fmt.Errorf("no command provided — usage: spyder run [--device X] [--as OWNER] -- <cmd> [args...]")
+		return runArgs{}, fmt.Errorf("no command provided — usage: spyder run [--device X | --on PREDICATE] [--as OWNER] [--timeout DURATION] -- <cmd> [args...]")
 	}
 	out.Command = args
 	return out, nil
@@ -205,10 +243,10 @@ func deriveOwner(supplied string) string {
 	return filepath.Base(wd)
 }
 
-// runCmd implements the `spyder run [--device X] -- <cmd> [args]`
+// runCmd implements the `spyder run [--device X|--on PREDICATE] [--timeout D] -- <cmd> [args]`
 // subcommand: exec the command, wait for exit, then release the device
 // reservation regardless of success/failure. Exits with the command's
-// exit code.
+// exit code (or ExitTimeout when --timeout fires before the child exits).
 func runCmd(args []string) {
 	parsed, err := parseRunArgs(args)
 	if err != nil {
@@ -224,6 +262,16 @@ func runCmd(args []string) {
 		}
 		return ref
 	}
+
+	if parsed.On != "" {
+		alias, resolveErr := resolveSelectorViaDaemon(parsed.On, owner)
+		if resolveErr != nil {
+			fmt.Fprintf(os.Stderr, "spyder run: --on: %v\n", resolveErr)
+			os.Exit(1)
+		}
+		parsed.Device = alias
+	}
+
 	resvStore, resvErr := reservations.New(
 		filepath.Join(paths.Base(), "reservations.json"),
 		reservations.WithNormalizer(normalize),
@@ -276,8 +324,17 @@ func runCmd(args []string) {
 
 	// Opportunistic renewal so long-running commands don't expire
 	// mid-run. Ticker interval is less than half the TTL for safety.
-	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer cancel()
+	// --timeout, when set, bounds the child's lifetime via context
+	// cancellation; on timeout we exit ExitTimeout instead of forwarding
+	// the child's signal-induced exit code.
+	baseCtx, baseCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer baseCancel()
+	ctx := baseCtx
+	var cancel context.CancelFunc
+	if parsed.Timeout > 0 {
+		ctx, cancel = context.WithTimeout(baseCtx, parsed.Timeout)
+		defer cancel()
+	}
 	go func() {
 		tick := time.NewTicker(reservations.DefaultTTL / 3)
 		defer tick.Stop()
@@ -298,6 +355,11 @@ func runCmd(args []string) {
 	runErr := child.Run()
 	exitCode := 0
 	if runErr != nil {
+		if parsed.Timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "spyder run: timed out after %s\n", parsed.Timeout)
+			release()
+			os.Exit(30) // cliexit.ExitTimeout
+		}
 		if ee, ok := errors.AsType[*exec.ExitError](runErr); ok {
 			exitCode = ee.ExitCode()
 		} else {
@@ -307,4 +369,17 @@ func runCmd(args []string) {
 	}
 	release()
 	os.Exit(exitCode)
+}
+
+// resolveSelectorViaDaemon parses --on PREDICATE as a selector predicate,
+// reserves a matching device atomically via the daemon's `reserve` REST
+// endpoint, and returns the canonical alias. The caller's local store
+// will subsequently see the daemon's reservation record (same file) and
+// renew/release it through the normal `spyder run` lifecycle.
+//
+// Returning here means the device is already reserved for owner; if the
+// caller fails to call Release, the reservation will expire on TTL.
+func resolveSelectorViaDaemon(predicate, owner string) (string, error) {
+	// Defined in cli.go — calls /api/v1/reserve with auto-start fallback.
+	return reserveViaDaemon(predicate, owner)
 }

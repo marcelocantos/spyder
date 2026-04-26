@@ -1240,6 +1240,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
+    showcase: true
     acceptance:
     - A `spyder is_running --device <device> --bundle-id <id>` (or equivalent) returns exit 0 if the app is running, exit 20 if not installed, exit 22 if installed-but-not-running. Distinct from `device_state.foreground_app` because it works even when the app is backgrounded, and distinct from `launch_app`'s PID-verify because it doesn't require launching anything. iOS implementation can use pmd3's `developer dvt process-id-for-bundle-id` (already used internally by autoawake's `isKeepAwakeRunning`).
     - '`spyder logs` on iOS physical devices supports an archived-log query mode in addition to the current live-window mode, so callers asking ''did this process log anything in the last 5 minutes?'' get a deterministic answer. May require routing through pmd3''s `OsTraceService` or similar; document the constraints in STABILITY.md if a true archived-log query isn''t possible (e.g. ''live tail starting from --since requires --since to be within the live-window grace period'').'
