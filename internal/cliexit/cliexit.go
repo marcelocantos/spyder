@@ -35,23 +35,23 @@ import (
 // Exit-code constants. Values are intentionally stable — scripts may
 // hard-code them.
 const (
-	ExitOK                  = 0
-	ExitGeneric             = 1
-	ExitUsage               = 2
-	ExitDaemonUnreachable   = 10
-	ExitDeviceNotFound      = 11
-	ExitDeviceNotConnected  = 12
-	ExitReservationConflict = 13
-	ExitNotReservedByYou    = 14
-	ExitAppNotInstalled     = 20
-	ExitInstallFailed       = 21
-	ExitLaunchFailed        = 22
-	ExitTerminateFailed     = 23
+	ExitOK                    = 0
+	ExitGeneric               = 1
+	ExitUsage                 = 2
+	ExitDaemonUnreachable     = 10
+	ExitDeviceNotFound        = 11
+	ExitDeviceNotConnected    = 12
+	ExitReservationConflict   = 13
+	ExitNotReservedByYou      = 14
+	ExitAppNotInstalled       = 20
+	ExitInstallFailed         = 21
+	ExitLaunchFailed          = 22
+	ExitTerminateFailed       = 23
 	ExitPIDVerificationFailed = 24
-	ExitTimeout             = 30
-	ExitTrustNotGranted     = 40
+	ExitTimeout               = 30
+	ExitTrustNotGranted       = 40
 	ExitDeveloperModeDisabled = 41
-	ExitDeviceLocked        = 42
+	ExitDeviceLocked          = 42
 )
 
 // MapDaemonError converts a daemon HTTP error response into an exit code.
@@ -61,10 +61,10 @@ const (
 //     was received. Subdivided:
 //     - "context deadline exceeded" / "timeout" / "timed out" → ExitTimeout.
 //     - Everything else (connection refused, no such host, can't assign
-//       requested address, no route to host, network unreachable, …) →
-//       ExitDaemonUnreachable. A request that never reached the daemon
-//       is, by definition, an unreachable-daemon failure regardless of
-//       the specific syscall errno.
+//     requested address, no route to host, network unreachable, …) →
+//     ExitDaemonUnreachable. A request that never reached the daemon
+//     is, by definition, an unreachable-daemon failure regardless of
+//     the specific syscall errno.
 //  2. statusCode == 503 → ExitDaemonUnreachable (upstream tunneld down).
 //  3. Explicit errorCode match — structured codes win over prose.
 //  4. Prose match on errorMessage (case-insensitive substring).
