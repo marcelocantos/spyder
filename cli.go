@@ -22,6 +22,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/cliexit"
 	"github.com/marcelocantos/spyder/internal/clitimeout"
+	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/selector"
@@ -534,10 +535,26 @@ func runResolve(args []string) {
 			pf.bools["--json"], false)
 	case len(pf.positional) == 1:
 		name := pf.positional[0]
-		// 🎯T38.3: when the positional looks like a predicate (contains '='
-		// outside an alias), treat it as a selector and route through the
-		// daemon's selector resolution path so callers don't need a separate
-		// flag for the common case.
+		// 🎯T38.3: distinguish three cases:
+		//  1. Known alias (or raw UUID matching a known device) → daemon
+		//     resolve with `name`, return inventory entry, exit 0.
+		//  2. Predicate (contains '=' or other selector grammar) → parse;
+		//     resolve via daemon's selector path, exit 0 on match. Bad
+		//     parse → exit 15.
+		//  3. Neither alias nor parseable predicate → exit 15. Distinct
+		//     from exit 1 so scripts can fall through to platform-specific
+		//     tooling rather than retrying. The previous echo-back behavior
+		//     (synthetic android-serial classification) silently
+		//     misclassified arbitrary strings; that path is gone for the
+		//     CLI surface (the MCP `resolve` tool retains it for legacy
+		//     callers — see STABILITY.md).
+		invStore := inventory.New()
+		if _, ok := invStore.Lookup(name); ok {
+			dispatchAndExit(ctx, "resolve",
+				map[string]any{"name": name},
+				pf.bools["--json"], false)
+			return
+		}
 		if looksLikeSelector(name) {
 			sel, perr := selector.ParseSelectorString(name)
 			if perr != nil {
@@ -555,9 +572,9 @@ func runResolve(args []string) {
 				pf.bools["--json"], false)
 			return
 		}
-		dispatchAndExit(ctx, "resolve",
-			map[string]any{"name": name},
-			pf.bools["--json"], false)
+		cliexit.Errorf(cliexit.ExitSelectorNotSupported,
+			"spyder resolve: %q is not a known alias and not a parseable selector predicate (no '=' found)",
+			name)
 	default:
 		fatalUsage("resolve", fmt.Errorf("supply a name (positional) or --on PREDICATE"))
 	}
