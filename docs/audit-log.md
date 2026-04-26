@@ -498,7 +498,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.18.0
 
-- **Commit**: `pending`
+- **Commit**: `5d596dd`
 - **Outcome**: Released v0.18.0. Fixes a relaunch loop between
   the autoawake supervisor and the on-device KeepAwake app for
   Wi-Fi-reachable iOS devices: the host's
