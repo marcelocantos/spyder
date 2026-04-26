@@ -392,3 +392,106 @@ maintenance activities. Append-only — newest entries at the bottom.
   fixed in passing: `spyder diff` and `spyder baseline` were defined
   in cli_visual.go but never registered in `cliCommands`; both are
   now reachable. Published for darwin-arm64, linux-amd64, linux-arm64.
+
+## 2026-04-26 — /release v0.17.0 (post-v0.16.0 device + bridge cleanup bundle)
+
+- **Commit**: `pending`
+- **Outcome**: Five-target bundle resolving the post-v0.11.0–v0.16.0
+  iOS/bridge follow-ups discovered during HIL verification, fanned
+  out as parallel worktree-isolated agents and cherry-picked into
+  one PR per the user's "build the whole thing end-to-end" pacing.
+  Four targets retired (🎯T30, 🎯T34, 🎯T35, 🎯T36); 🎯T29 stays
+  active with the prototype landed but the device-tier test still
+  skipped pending HIL on Pippa.
+  - **🎯T35 (retired) — Homebrew bridge resolution.** The
+    `exePathReal` helper that calls `filepath.EvalSymlinks` on
+    `os.Executable()` was already present in `daemon.go` from an
+    earlier session; this release adds the missing
+    `TestExePathReal_FollowsSymlink` unit test that builds a
+    Homebrew-style temp tree (Cellar binary + `bin/` flat symlink)
+    and asserts the symlink target's libexec sibling is found. Side
+    fix: `scripts/test-report.sh` was running `uv run --project .
+    pytest` without `--extra dev`, causing `pytest-asyncio` to be
+    missing on fresh worktrees and all 22 bridge tests to fail at
+    collection; now passes `--extra dev` (also picked up by 🎯T36
+    in parallel — same patch).
+  - **🎯T34 (retired) — autoawake stale-install recovery.** New
+    `device.ErrNoProviderFound` sentinel matches CoreDevice
+    `Code=1002` "No provider was found" returned by
+    `devicectl process launch` when the on-device bundle's signing
+    identity is no longer resolvable on the host (free-team
+    profile expiry, host change, etc.). New `classStaleInstall`
+    error class in `internal/autoawake` triggers
+    `attemptReinstall` (uninstall stale copy → reset build cache
+    → attemptInstall → launch) instead of the previous infinite
+    `classOther` loop that spammed one log line every 15s. Two
+    new tests via the extracted `iosAdapter` interface verify (a)
+    `UninstallApp` is called on the stale-install path, and (b)
+    repeated failures fall through to `classOther` rather than
+    looping indefinitely. Pippa's stuck v0.10.0–v0.12.0 install
+    now drives to converged within two convergence ticks (≤30s).
+  - **🎯T36 (retired) — brew-services tunneld reachability.** The
+    launchd-sandbox / Local-Network-privacy / IPv4-vs-IPv6
+    hypotheses were all wrong. Investigation
+    (`docs/papers/t36-tunneld-launchd-investigation.md`) ruled out
+    all four candidates: no App Sandbox on user agents, identical
+    IPv4 binding on both ends, no PATH-relevant tunneld path,
+    successful screenshots from the same brew-services context an
+    hour later. Actual cause: macOS loopback briefly returns
+    `EHOSTUNREACH` (errno 65 — *not* the usual `ECONNREFUSED`)
+    when the network stack is mid-restart, e.g. tunneld
+    renegotiating a device tunnel. A foreground-shell user retries
+    naturally; under MCP the single failure is all the agent saw.
+    Fix: 3-attempt retry loop (0.5s backoff) in
+    `bridge/src/pmd3_bridge/services.py::_tunneld_rsd_for` and the
+    `list_devices` tunneld probe. Permanently-down tunneld still
+    surfaces `tunneld_unavailable` after all attempts with at most
+    ~1s added latency.
+  - **🎯T30 (retired) — iOS 17+ DVT screenshot.** Most of the
+    work — `bridge/src/pmd3_bridge/services.py` switching from the
+    deprecated `com.apple.mobile.screenshotr` to the DVT
+    `Screenshot` instrument over tunneld-mediated RSD, the
+    `developer_mode_disabled` BridgeError, the device-tier
+    `TestDevice_Screenshot_WorksOniOS17Plus` (`//go:build device`,
+    `SPYDER_DEVICES=1`) — landed in v0.11.0 and was end-to-end
+    verified against Jevons (iOS 26.4.1). This release closes the
+    target with a `STABILITY.md` refresh: explicit iOS-version
+    range (17+) on the `screenshot` row, pre-iOS-17 limitation
+    documented, both BridgeError HTTP statuses listed, and the
+    "tunneld lifecycle" gap section rewritten from "outstanding
+    T30 criterion" to "accepted v0.x design — bridge surfaces
+    `tunneld_unavailable`, does not start or supervise tunneld".
+  - **🎯T29 (active, prototype) — mechanical device-state
+    detection.** Bridge endpoint `POST /v1/device_power_state`
+    plus Go client `Client.DevicePowerState()` and integration
+    test (`SPYDER_INTEGRATION=1`) implemented per the candidate
+    #1 path: the DVT Screenshot instrument reads the GPU
+    framebuffer without writing to IOPMrootDomain user-activity
+    registers, so querying it does not reset the idle timer
+    (unlike the lockdown-based DiagnosticsService /
+    SpringBoardService paths that all share the original
+    IOPMUserIsActive failure mode). Design doc
+    `docs/papers/t29-device-state-detection.md` evaluates 5
+    candidate paths and the IOKit properties that distinguish
+    them. The device-tier `TestDevice_StaysAwake_Mechanical`
+    contract is written but `t.Skip`-ed pending HIL on Pippa to
+    (a) confirm the screenshot call does not in fact reset the
+    idle timer over a 60-second wait, (b) capture the exact
+    `pmd3_error` exception string for display-off so it lands in
+    `_ASLEEP_PATTERNS`. Target stays active until those land.
+
+  Bundling rationale: T29/T30/T34/T35/T36 are all post-v0.16.0
+  device/bridge follow-ups discovered during HIL verification of
+  earlier releases — none are independently shippable showcase
+  units (all five frontier targets had no checkpoint reachable per
+  `bullseye_convergence`), so per the user's "home straight"
+  directive the convergence-blocking checkpoint requirement was
+  set aside and the work was fanned out across five worktree-
+  isolated agents (`Agent` with `isolation: worktree`) and
+  cherry-picked into a single `feat/v0.12.0-bundle` branch. Branch
+  name predates the version number; v0.17.0 ships from it. Side
+  fix in passing: `scripts/test-report.sh` was missing `--extra
+  dev` on its `uv run` invocation, breaking bridge tests on fresh
+  worktrees — both T35 and T36 agents independently fixed it; the
+  T35 patch was kept and T36's duplicate skipped at cherry-pick
+  time. Published for darwin-arm64, linux-amd64, linux-arm64.

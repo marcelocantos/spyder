@@ -23,11 +23,20 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import AsyncIterator, Optional
 
+# Maximum attempts and inter-attempt pause for tunneld probes. These values
+# are tuned for the startup-race window: the brew-service daemon may attempt
+# its first screenshot a few seconds after tunneld finishes negotiating a
+# new device tunnel. Three attempts at 0.5 s cover the observed ~1 s window
+# without adding noticeable latency to the steady-state success path.
+_TUNNELD_MAX_ATTEMPTS = 3
+_TUNNELD_RETRY_DELAY_S = 0.5
+
 from .schemas import (
     AppInfo,
     BatteryResponse,
     CrashReportEntry,
     DeviceInfo,
+    DevicePowerStateResponse,
 )
 
 log = logging.getLogger("pmd3_bridge.services")
@@ -127,12 +136,32 @@ async def list_devices() -> list[DeviceInfo]:
     # http://127.0.0.1:49151/ is the canonical "what's tunneled" view —
     # we read the UDID list from it directly and let the Go-side
     # `xcrun devicectl list devices` enrichment fill in metadata.
+    #
+    # Retry up to _TUNNELD_MAX_ATTEMPTS times on transient transport errors
+    # (errno 65 EHOSTUNREACH on macOS loopback during wake-from-sleep or
+    # tunneld restart). Falls back to USBMux-only on exhaustion. See
+    # docs/papers/t36-tunneld-launchd-investigation.md.
     try:
         import requests
         from pymobiledevice3.tunneld.api import TUNNELD_DEFAULT_ADDRESS
         host, port = TUNNELD_DEFAULT_ADDRESS
-        resp = requests.get(f"http://{host}:{port}", timeout=2.0)
-        tunnels = resp.json()
+        tunnels: dict = {}
+        _last_probe_exc: Exception | None = None
+        for _attempt in range(_TUNNELD_MAX_ATTEMPTS):
+            if _attempt > 0:
+                time.sleep(_TUNNELD_RETRY_DELAY_S)
+            try:
+                resp = requests.get(f"http://{host}:{port}", timeout=2.0)
+                tunnels = resp.json()
+                _last_probe_exc = None
+                break
+            except Exception as exc:
+                _last_probe_exc = exc
+                log.debug(
+                    "tunneld HTTP probe attempt=%d failed: %s", _attempt, exc
+                )
+        if _last_probe_exc is not None:
+            raise _last_probe_exc
         for udid in tunnels.keys():
             seen[udid] = DeviceInfo(
                 udid=udid,
@@ -414,19 +443,38 @@ async def _tunneld_rsd_for(udid: str):  # type: ignore[no-untyped-def]
 
     Raises BridgeError("tunneld_unavailable") when tunneld is unreachable,
     BridgeError("device_not_paired") when the udid isn't in the registry.
+
+    Retries up to _TUNNELD_MAX_ATTEMPTS times on transient transport errors
+    (errno 65 EHOSTUNREACH, ConnectionError, OSError). This covers the
+    startup-race window where the brew-service daemon launches and attempts
+    a screenshot a few seconds before tunneld finishes negotiating a tunnel
+    or recovers from a brief restart. See docs/papers/t36-tunneld-launchd-
+    investigation.md for the full root-cause analysis.
     """
-    try:
-        from pymobiledevice3.tunneld.api import (
-            TUNNELD_DEFAULT_ADDRESS,
-            get_tunneld_devices,
-        )
-        rsds = await get_tunneld_devices(TUNNELD_DEFAULT_ADDRESS)
-    except Exception as exc:
+    from pymobiledevice3.tunneld.api import (
+        TUNNELD_DEFAULT_ADDRESS,
+        get_tunneld_devices,
+    )
+    last_exc: Exception | None = None
+    for attempt in range(_TUNNELD_MAX_ATTEMPTS):
+        if attempt > 0:
+            await asyncio.sleep(_TUNNELD_RETRY_DELAY_S)
+            log.debug("tunneld_rsd_for: retry attempt=%d udid=%s", attempt, udid)
+        try:
+            rsds = await get_tunneld_devices(TUNNELD_DEFAULT_ADDRESS)
+            break  # success — fall through to UDID search
+        except Exception as exc:
+            last_exc = exc
+            log.debug(
+                "tunneld_rsd_for: attempt=%d failed: %s", attempt, exc
+            )
+    else:
+        # All attempts exhausted.
         raise BridgeError(
             "tunneld_unavailable",
-            f"tunneld unreachable at {TUNNELD_DEFAULT_ADDRESS}: {exc}; "
+            f"tunneld unreachable at {TUNNELD_DEFAULT_ADDRESS}: {last_exc}; "
             "start it with `sudo pymobiledevice3 remote tunneld`",
-        ) from exc
+        ) from last_exc
     if not rsds:
         raise BridgeError(
             "tunneld_unavailable",
@@ -453,6 +501,122 @@ async def _tunneld_rsd_for(udid: str):  # type: ignore[no-untyped-def]
         except Exception:
             pass
     return target
+
+
+# ── Device power state (🎯T29) ────────────────────────────────────────────────
+
+# Pixel-black threshold for the framebuffer-blank heuristic (candidate #5
+# in the T29 design doc). If the first _PIXEL_SAMPLE_BYTES of the raw PNG
+# data are entirely zero after stripping the PNG header, we classify as
+# "display_off". In practice a real-content screenshot will have varied
+# pixel values; an all-black framebuffer will be near-zero throughout.
+#
+# We sample the raw PNG bytes (not decoded pixels) so we don't need an
+# image decoding dependency. PNG DEFLATE-compressed all-black data is
+# highly repetitive and produces byte sequences that are almost all
+# zeros after decompression — but even at the compressed level the
+# sequence has very low entropy. The heuristic is conservative: we
+# require > 95% zero-valued bytes in the first 4 KB of the PNG body
+# (after the 8-byte PNG magic) to call it "display_off".
+_PIXEL_SAMPLE_BYTES = 4096
+_BLACK_THRESHOLD = 0.95
+
+# Exception message fragments that indicate the device display/framebuffer
+# is off or the device is asleep. Derived from observed pmd3 behaviour on
+# locked/sleeping devices. Updated as HIL testing reveals new shapes.
+_ASLEEP_PATTERNS = (
+    "display off",
+    "device is sleeping",
+    "screen is off",
+    "lockdown failed",
+    "unable to retrieve screenshot",
+    "device not connected",
+    "remotexpc connection interrupted",
+    "connection closed",
+)
+
+
+async def device_power_state(udid: str) -> DevicePowerStateResponse:
+    """Query the power/display state of a device without resetting its idle timer.
+
+    Implementation (🎯T29, candidate #1 — ScreenshotService behaviour):
+    attempts a DVT screenshot via tunneld RSD. The framebuffer read is a
+    GPU/display-driver operation that does NOT write to IOPMrootDomain
+    user-activity registers, satisfying the non-observation requirement.
+
+    State mapping:
+      "awake"       — screenshot succeeded and pixel content is non-trivial.
+      "display_off" — screenshot succeeded but image is all-black (framebuffer blank).
+      "asleep"      — screenshot failed with a pattern indicating display/device off.
+      "unknown"     — prerequisite missing (tunneld down, developer mode off)
+                      or unrecognised error; cannot determine state.
+
+    See docs/papers/t29-device-state-detection.md for the full candidate
+    analysis and the HIL verification protocol.
+    """
+    started = time.monotonic()
+    try:
+        png_b64 = await screenshot(udid)
+    except BridgeError as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        detail = exc.message
+
+        # Prerequisites missing — cannot determine state.
+        if exc.code in ("tunneld_unavailable",):
+            log.info("device_power_state udid=%s state=unknown (tunneld) elapsed_ms=%d",
+                     udid, elapsed_ms)
+            return DevicePowerStateResponse(state="unknown", detail=detail)
+
+        if exc.code == "developer_mode_disabled":
+            log.info("device_power_state udid=%s state=unknown (devmode) elapsed_ms=%d",
+                     udid, elapsed_ms)
+            return DevicePowerStateResponse(state="unknown", detail=detail)
+
+        # pmd3_error with a pattern matching sleep/display-off messages.
+        if exc.code == "pmd3_error":
+            lower = exc.message.lower()
+            for pattern in _ASLEEP_PATTERNS:
+                if pattern in lower:
+                    log.info("device_power_state udid=%s state=asleep (pmd3 pattern %r) elapsed_ms=%d",
+                             udid, pattern, elapsed_ms)
+                    return DevicePowerStateResponse(state="asleep", detail=detail)
+            # pmd3_error with unrecognised message — conservative fallback.
+            log.info("device_power_state udid=%s state=unknown (pmd3_error unrecognised) elapsed_ms=%d",
+                     udid, elapsed_ms)
+            return DevicePowerStateResponse(state="unknown", detail=detail)
+
+        # device_not_paired or other known bridge codes.
+        log.info("device_power_state udid=%s state=unknown (bridge code=%s) elapsed_ms=%d",
+                 udid, exc.code, elapsed_ms)
+        return DevicePowerStateResponse(state="unknown", detail=detail)
+
+    # Screenshot succeeded — check for all-black framebuffer.
+    import base64 as _base64
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    try:
+        raw = _base64.b64decode(png_b64)
+    except Exception:
+        # Corrupt base64 — treat as unknown rather than crashing.
+        log.warning("device_power_state udid=%s state=unknown (b64 decode failed) elapsed_ms=%d",
+                    udid, elapsed_ms)
+        return DevicePowerStateResponse(state="unknown",
+                                        detail="base64 decode of screenshot failed")
+
+    # Skip the 8-byte PNG magic and sample the first _PIXEL_SAMPLE_BYTES.
+    sample = raw[8:8 + _PIXEL_SAMPLE_BYTES]
+    if sample:
+        zero_fraction = sample.count(0) / len(sample)
+        if zero_fraction >= _BLACK_THRESHOLD:
+            log.info("device_power_state udid=%s state=display_off (%.0f%% zeros) elapsed_ms=%d",
+                     udid, zero_fraction * 100, elapsed_ms)
+            return DevicePowerStateResponse(
+                state="display_off",
+                detail=f"screenshot all-black ({zero_fraction * 100:.0f}% zero bytes in first {len(sample)} bytes)",
+            )
+
+    log.info("device_power_state udid=%s state=awake elapsed_ms=%d bytes=%d",
+             udid, elapsed_ms, len(raw))
+    return DevicePowerStateResponse(state="awake")
 
 
 # ── Crash reports ─────────────────────────────────────────────────────────────

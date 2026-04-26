@@ -126,6 +126,17 @@ func TestIntegration_Screenshot(t *testing.T) {
 	}
 }
 
+func TestIntegration_DevicePowerState(t *testing.T) {
+	_, c := startFakeServicesBridge(t)
+	state, err := c.DevicePowerState(context.Background(), "00000000-FAKEFAKE0000")
+	if err != nil {
+		t.Fatalf("DevicePowerState: %v", err)
+	}
+	if state.State != "awake" {
+		t.Errorf("state = %q; want \"awake\"", state.State)
+	}
+}
+
 func TestIntegration_AuthHeaderEnforced(t *testing.T) {
 	sup, _ := startFakeServicesBridge(t)
 	// Construct a client with the WRONG token and assert the bridge

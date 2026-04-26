@@ -24,6 +24,7 @@ const (
 	timeoutPidForBundle   = 30 * time.Second
 	timeoutBattery        = 30 * time.Second
 	timeoutScreenshot     = 30 * time.Second
+	timeoutDeviceState    = 35 * time.Second // screenshot + classification overhead (🎯T29)
 	timeoutReadyHandshake = 10 * time.Second
 	intervalLivenessProbe = 30 * time.Second
 

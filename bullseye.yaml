@@ -963,7 +963,7 @@ targets:
     achieved: 2026-04-18
   T30:
     name: Spyder screenshot works on iOS 17+ devices (legacy screenshotr deprecated)
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -981,6 +981,7 @@ targets:
     - pmd3
     origin: discovered 2026-04-22 during T29 spike — InvalidServiceError on both test devices
     discovered: 2026-04-22
+    achieved: 2026-04-26
   T31:
     name: Restore KeepAwake companion app — spyder actually keeps iOS devices awake
     status: achieved
@@ -1060,7 +1061,7 @@ targets:
     achieved: 2026-04-25
   T34:
     name: Autoawake recovers from a stale KeepAwake install on iOS
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1072,9 +1073,10 @@ targets:
       <parameter name="tags">["ios", "autoawake", "follow-up", "post-t32"]
     origin: manual
     discovered: 2026-04-25
+    achieved: 2026-04-26
   T35:
     name: resolveBridgeBinary follows symlinks so Homebrew install finds the bundled bridge
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1087,9 +1089,10 @@ targets:
       <parameter name="tags">["bug", "release", "homebrew", "ios", "post-v0.11.0"]
     origin: manual
     discovered: 2026-04-25
+    achieved: 2026-04-26
   T36:
     name: brew-services-supervised spyder daemon can reach loopback tunneld at 127.0.0.1:49151
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1101,6 +1104,7 @@ targets:
       <parameter name="tags">["bug", "homebrew", "launchd", "tunneld", "post-v0.11.0"]
     origin: manual
     discovered: 2026-04-25
+    achieved: 2026-04-26
   T37:
     name: 'CLI overhaul: spyder''s command-line surface is fit for Make-driven test infrastructure'
     status: achieved

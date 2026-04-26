@@ -16,7 +16,7 @@ import asyncio
 import base64
 from typing import AsyncIterator, Optional
 
-from .schemas import AppInfo, BatteryResponse, CrashReportEntry, DeviceInfo
+from .schemas import AppInfo, BatteryResponse, CrashReportEntry, DeviceInfo, DevicePowerStateResponse
 from .services import BridgeError  # re-export for app classifier
 
 FAKE_UDID = "00000000-FAKEFAKE0000"
@@ -70,6 +70,13 @@ _FAKE_PNG = b"\x89PNG\r\n\x1a\nfake"
 async def screenshot(udid: str) -> str:
     _check_udid(udid)
     return base64.b64encode(_FAKE_PNG).decode()
+
+
+async def device_power_state(udid: str) -> DevicePowerStateResponse:
+    _check_udid(udid)
+    # Fake always reports awake — the integration test just validates
+    # the endpoint round-trips correctly, not the real device state.
+    return DevicePowerStateResponse(state="awake")
 
 
 async def crash_reports_list(

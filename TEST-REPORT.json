@@ -1,19 +1,19 @@
 {
   "schema_version": 1,
-  "commit": "5b71f2dedd5002dc99cd3ab7ba7793214078f2d1",
-  "generated_at": "2026-04-26T03:41:12Z",
+  "commit": "a09afe8d720f4cc833a50c9d1a4081476c2261be",
+  "generated_at": "2026-04-26T06:14:45Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "go test ./...",
-      "duration_s": 1,
+      "duration_s": 0,
       "status": "pass"
     },
     {
       "name": "bridge-python-unit",
-      "cmd": "cd bridge && uv run --project . pytest tests/",
-      "duration_s": 0,
+      "cmd": "cd bridge && uv run --project . --extra dev pytest tests/",
+      "duration_s": 1,
       "status": "pass"
     },
     {

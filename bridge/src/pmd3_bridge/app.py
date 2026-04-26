@@ -31,6 +31,8 @@ from .schemas import (
     CrashReportsListResponse,
     CrashReportsPullRequest,
     CrashReportsPullResponse,
+    DevicePowerStateRequest,
+    DevicePowerStateResponse,
     KillAppRequest,
     KillAppResponse,
     LaunchAppRequest,
@@ -304,6 +306,35 @@ async def crash_reports_pull(body: CrashReportsPullRequest) -> Any:
                  body.udid, body.name, total)
 
     return StreamingResponse(_iter(), media_type="application/octet-stream")
+
+
+@app.post("/v1/device_power_state", response_model=DevicePowerStateResponse)
+async def device_power_state(body: DevicePowerStateRequest) -> Any:
+    """Query the power/display state of a device (🎯T29).
+
+    Uses the DVT Screenshot instrument via tunneld RSD. Reading the
+    framebuffer does NOT reset the device's idle timer (non-observation
+    requirement). See docs/papers/t29-device-state-detection.md.
+
+    BridgeErrors that indicate a missing prerequisite (tunneld_unavailable,
+    developer_mode_disabled, device_not_paired) map to state="unknown" so
+    the caller always gets a structured DevicePowerStateResponse rather than
+    an HTTP error. Hard errors (pmd3_error with unrecognised cause) are
+    handled by the service function; any unexpected BridgeError that escapes
+    is mapped to unknown here as a safety net.
+    """
+    log.debug("device_power_state udid=%s", body.udid)
+    try:
+        result = await _services.device_power_state(body.udid)
+        log.debug("device_power_state udid=%s state=%s", body.udid, result.state)
+        return result
+    except BridgeError as exc:
+        # Safety net: any BridgeError that escapes device_power_state becomes
+        # state="unknown" rather than an HTTP error. The service function
+        # should handle all known codes; this path should not normally fire.
+        log.warning("device_power_state udid=%s escaped BridgeError code=%s message=%s",
+                    body.udid, exc.code, exc.message)
+        return DevicePowerStateResponse(state="unknown", detail=exc.message)
 
 
 @app.post("/v1/acquire_power_assertion", response_model=AcquirePowerAssertionResponse)
