@@ -1331,6 +1331,150 @@ targets:
     origin: forked-from mnemo disconnect investigation 2026-04-26
     discovered: 2026-04-26
     achieved: 2026-04-26
+  T41:
+    name: pmd3 bridge transport timeouts on idempotent read endpoints don't panic the daemon
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A transport-level timeout on `pmd3bridge.Client.post()` for an idempotent read endpoint (`/v1/list_devices`, battery, foreground app, etc.) returns the error to the caller and logs at WARN — it does NOT call `c.fatal()` / panic the daemon. The daemon stays up; the next poll retries cleanly.
+    - Real protocol bugs (decode failures, unstructured non-2xx responses, marshal failures) still go through the fatal/panic path so genuine code bugs surface immediately.
+    - 'The bridge-supervisor restart path remains available: if the bridge subprocess crashes or hangs persistently, the supervisor restarts it and clients see at most a brief in-flight failure window.'
+    - An integration test (or unit test with a fake bridge that hangs on /v1/list_devices) confirms the daemon survives a transport timeout and the next poll succeeds after the bridge recovers.
+    context: |-
+      Surfaced 2026-04-26 ~22:30 local: user reported "spyder MCP server keeps disconnecting." Investigation traced it to /opt/homebrew/var/log/spyder.log showing daemon process restarts every ~30 minutes across both v0.18.0 and v0.19.0. v0.19.0's WithHeartbeatInterval(30s) fix from 🎯T40 is real and necessary for genuine idle-NAT timeouts, but it can't help here because the process itself is dying.
+
+      Pattern in the log:
+        2026/04/26 22:58:37 ERROR bridge call FATAL — about to panic error="pmd3bridge: /v1/list_devices: transport error after 10s: Post \"http://127.0.0.1:57911/v1/list_devices\": context deadline exceeded"
+        panic: pmd3bridge: /v1/list_devices: transport error after 10s ...
+
+      Then launchd respawns spyder (homebrew.mxcl.spyder.plist has KeepAlive=true) and the cycle repeats. Claude Code sees this as a hard MCP disconnect because the JSON-RPC session is gone.
+
+      Root cause: internal/pmd3bridge/client.go:223 `func (c *Client) fire(err error)` treats every error as fatal — logs ERROR "bridge call FATAL — about to panic" then calls `c.fatal(err)` (which is `panic(err)` in production). This is invoked from `post()` and `postStream()` for marshal failures, transport errors, decode errors, unstructured non-2xx responses, etc. There's only one exception: when the supervisor is already in shutdown (`c.sup.Stopped()` true).
+
+      The autoawake supervisor polls /v1/list_devices every 2 seconds. When the bridge subprocess hangs once (likely a pmd3 syslog-stream lock or a lockdown freeze on Pippa or the iPhone — both UDIDs were emitting lockdown failure warnings every poll), the timeout fires, the daemon panics, and Claude Code drops.
+
+      Architecturally: the bridge supervisor exists precisely so the bridge can fault without taking the daemon down. The current panic-on-transport-error short-circuits that recovery. The minimal, correct fix is to distinguish fault classes in `fire()`:
+      - Transport errors (context.DeadlineExceeded, net.Error, refused) → log WARN, return error to caller, supervisor optionally restarts bridge.
+      - Decode errors / unstructured 5xx / marshal errors → still fatal (these are genuine code bugs).
+
+      A second-order issue: this is the same iPad+iPhone whose lockdown queries were warning continuously (00008130-... and 00008110-...). Pippa's UDID is the iPad. The other is presumably an iPhone freshly added without trust. The bridge stall may correlate with one of those devices being unresponsive.
+
+      This is high-priority — every Claude Code session today is being kicked every ~30 minutes until this lands.
+    tags:
+    - bridge
+    - reliability
+    - panic
+    - v0.20-candidate
+    - high-priority
+    origin: forked-from user-reported MCP disconnect investigation 2026-04-26
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T42:
+    name: iOS 17+ device operations route through tunneld RSD, not USBMux lockdown
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Operations that today fail on iOS 17+ devices with `device not connected: <alias>` — `device_state` (battery/thermal/foreground app), `launch_app`, `terminate_app`, `list_apps`, `logs`, `crashes` — succeed when the device is in the tunneld RSD registry, mirroring the path `screenshot` already takes. Verified end-to-end against Jevons (iPad mini A17 Pro on iOS 26.4.1) and at least one other iOS 17+ device.'
+    - When tunneld is down, the same operations report `tunneld_unavailable` (HTTP 503) with the existing actionable message, not a generic `pmd3_error`/`device not connected` mash-up.
+    - iOS <17 devices continue to use the USBMux lockdown path. The bridge picks the right transport based on the device's tunneld-registry membership, not the OS version string (which it doesn't always know).
+    - The 'lockdown failed udid=... err=' empty-error log artefact (see 🎯T43) is gone for these endpoints — failures here are routed through the RSD path's structured error handling.
+    - An integration test (env-gated with SPYDER_DEVICES=1) drives one full lifecycle (device_state → launch_app → is_running → terminate_app) against an iOS 17+ device and asserts every step returns a successful structured response.
+    context: |-
+      Surfaced 2026-04-26 ~23:00 local while the user was driving spyder from a jevons MCP session against Jevons (iPad mini A17 Pro, UDID 00008130-0009702E1110001C, iOS 26.4.1). Symptoms captured in the jevons transcript at /Users/marcelo/.claude/projects/-Users-marcelo-work-github-com-marcelocantos-jevons/11191d31-...jsonl around 22:55-23:05:
+
+      1. `mcp__spyder__devices` returned Jevons + Minicades Test iPhone (00008110-...) cleanly.
+      2. `mcp__spyder__terminate_app device=Jevons bundle_id=com.marcelocantos.jevon` → `device not connected: Jevons`.
+      3. `mcp__spyder__launch_app` → `device not connected: Jevons`.
+      4. `mcp__spyder__device_state` → `reading state: device not connected: Jevons`.
+      5. Meanwhile `xcrun devicectl device process launch ...` (which goes through tunneld) succeeded against the same UDID at the same wall-clock time.
+
+      Root cause: bridge/src/pmd3_bridge/services.py:73 `_open_lockdown(udid)` calls `pymobiledevice3.lockdown.create_using_usbmux(serial=udid)`, which is unreliable for iOS 17+ devices — usbmuxd's view of these devices flickers, and `screenshot()` already abandoned this path in 🎯T30 in favour of `_tunneld_rsd_for(udid)` for exactly this reason. But the lockdown path is still used for everything else: device_state, launch_app, terminate_app, list_apps, logs, crashes. Each of those silently degrades to `device not connected` on iOS 17+ even when the device is fully reachable via the tunnel.
+
+      The bridge already has `_tunneld_rsd_for(udid)` plumbed (services.py:439) returning a `RemoteServiceDiscoveryService` for any UDID in the tunneld registry. It just needs the lockdown-using endpoints rewired to consume RSD-mediated lockdown (`pymobiledevice3.lockdown.create_using_remote(rsd)`) when the device is in the tunneld registry, falling through to USBMux lockdown otherwise (covering iOS <17).
+
+      Architecturally this is the iOS 17+ migration that 🎯T30 started for screenshot but never finished for the rest of the surface. There's a likely test-coverage hole too: bridge unit tests probably mock the lockdown layer in a way that doesn't expose this transport split.
+
+      This is the second class of bug behind the user-visible "spyder keeps disconnecting" complaint, the first being the panic-on-transport-error behaviour fixed in 🎯T41. With 🎯T41 alone, the daemon stays up — but operations on iOS 17+ devices still fail with a confusing `device not connected` error.
+
+      Companion bug 🎯T43 (empty err= in logs) makes diagnosing this harder than it should be.
+    tags:
+    - bridge
+    - ios17
+    - rsd
+    - tunneld
+    - device_not_connected
+    - high-priority
+    origin: forked-from user-reported MCP disconnect investigation 2026-04-26 (jevons session 11191d31)
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T43:
+    name: Bridge logs include exception-type breadcrumb when str(exc) is empty
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'bridge/src/pmd3_bridge/services.py''s three `lockdown ...` warning sites (`lockdown unpaired`, `lockdown failed`, anywhere else `err=%s` is logged from a caught exception) format the exception as `repr(exc)` or `type(exc).__name__: <str>` rather than bare `str(exc)`. When `str(exc)` is empty, the log retains a meaningful breadcrumb (e.g. `err=DeviceNotFoundError()` or `err=DeviceNotFoundError: <empty>`), not the current `err=` artefact.'
+    - An audit-style grep across `bridge/src/` confirms no remaining `err=%s ... str(exc)` patterns where the exception class produces an empty string.
+    context: |-
+      Observed in /opt/homebrew/var/log/spyder.log on 2026-04-26 with both Jevons (00008130-...) and Minicades Test iPhone (00008110-...): the bridge emits
+
+        WARNING pmd3_bridge.services lockdown failed udid=00008130-0009702E1110001C elapsed_ms=1 err=
+
+      every 2 seconds (autoawake polling) with `err=` empty. `str(exc)` from pymobiledevice3 exceptions is sometimes empty (the exception class is typed but carries no message), and the bridge's logging discards the type. Result: "lockdown failed err=" with no actionable breadcrumb.
+
+      Fix is one-line per site: change `%s` formatting from `exc` to `exc!r` (or `f"{type(exc).__name__}: {exc}"`). Doesn't change behaviour, only diagnosability.
+
+      Filed during 🎯T41/🎯T42 investigation — without this, every future investigation of iOS 17+ lockdown problems hits the same dead end.
+    tags:
+    - bridge
+    - logging
+    - diagnosability
+    - low-effort
+    origin: forked-from 🎯T42 investigation 2026-04-26
+    discovered: 2026-04-26
+    achieved: 2026-04-26
+  T44:
+    name: pmd3-bridge subprocess dies with the daemon under every exit path, including panic
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - When `spyder serve` exits — clean SIGINT/SIGTERM, panic, fatal log, OOM, SIGKILL, anything — the pmd3-bridge subprocess it spawned terminates within 100ms via the stdin-EOF channel. No orphaned `pmd3-bridge` processes remain after the parent's death.
+    - 'The child does the killing itself. **stdin-EOF mechanism (reuses existing fd 0, no new pipe slot)**: in `internal/pmd3bridge/supervisor.go:launch`, set `cmd.Stdin = readEnd` where `(readEnd, writeEnd) = os.Pipe()`. Keep `writeEnd` open in the parent for the supervisor''s lifetime; never write to it. On the Python side, `bridge/src/pmd3_bridge/app.py` runs a daemon thread doing `os.read(0, 1)`; that read blocks forever while the parent is alive and returns `b''''` (EOF) the instant the kernel closes the parent''s copy of the write end. On EOF, the thread calls `os._exit(0)`. Zero polling, zero race window, works identically on macOS/Linux/BSD, regardless of how the parent died. Reuses the canonical Unix daemon convention ''a server with no interactive input has its stdin wired to a liveness probe'' — no new fd slot, no `cmd.ExtraFiles` plumbing, no fd 3 to document.'
+    - '**Symmetric path is not needed.** Parent-detects-child-death is already handled by the supervisor''s `cmd.Wait()` goroutine via `waitpid()`. Single direction (parent→child via stdin) is sufficient.'
+    - 'When the bridge is launched **without** the parent-piped stdin (e.g. someone runs `pmd3-bridge` manually for debugging from a terminal), stdin is a tty or `/dev/null`. The daemon thread''s `os.read(0, 1)` either blocks forever (tty waits for keystroke) or returns EOF immediately (/dev/null — fine, exits cleanly). The interactive-tty case is acceptable: the operator''s shell death sends SIGHUP which kills the bridge anyway.'
+    - '**No startup reaper, no pidfile, no PID scanning needed.** EOF on a closed pipe is a kernel guarantee: every parent death pairs with exactly one child EOF and exit. There''s no failure mode where the parent dies but the child keeps running, so there''s nothing to clean up at the next spyder boot.'
+    - Verified by an integration test (env-gated, e.g. SPYDER_LIFECYCLE=1) that starts `spyder serve`, sends SIGKILL to the parent, and asserts within 1s that the bridge subprocess from that run is gone. A second test exercises the panic path via a fault-injection hook and asserts the same.
+    - 'Documented in STABILITY.md under the bridge supervisor section so the lifecycle invariant is part of the public contract: "the bridge subprocess does not outlive its spyder parent under any exit path; the parent''s stdin pipe is the liveness channel and guarantees this without any polling."'
+    context: |-
+      Surfaced 2026-04-26 ~23:05 local in the jevons MCP session: the user reported "Kill them all" referring to orphaned pmd3-bridge processes accumulated across multiple spyder daemon panics. The user manually cleaned them up.
+
+      Background. The bridge supervisor (internal/pmd3bridge/supervisor.go) spawns a `pmd3-bridge` subprocess and tracks its lifecycle. Clean shutdown paths (SIGINT/SIGTERM via signal.NotifyContext) call the supervisor's Stop() which sends SIGTERM to the child and waits for exit. **Panic paths bypass this entirely.** The 🎯T41 panic path was a representative example: `c.fire(err)` → `panic(err)` → goroutine unwinds → process exits → launchd respawns the daemon — and the prior `pmd3-bridge` child is now orphaned (its parent PID becomes 1). It keeps running, holds its listener port, holds whatever fd's it had open against tunneld, and the next daemon's supervisor spawns a fresh one. Across multiple panic cycles, you accumulate zombie children. Each holds a few thousand fd's via pmd3, and the user-visible symptom is degraded performance plus port collisions.
+
+      The fix has two halves:
+
+      1. **Lifecycle binding** so the child dies with the parent under any exit path:
+         - Top-level `recover()` in `main()` that runs cleanup before re-panicking. Cheap, idiomatic Go, covers the panic class but not OOM-kill.
+         - **Or** spawn the bridge in a new process group (`Setsid` / `Setpgid`) and arrange for the child to receive SIGTERM when the group leader dies. Robust on macOS.
+         - **Or** the simplest robust mechanism: bridge subprocess polls `os.getppid()` periodically and self-exits when it returns 1. That covers panic, OOM-kill, SIGKILL of the parent, everything. Adds ~5 lines to bridge/src/pmd3_bridge/app.py. macOS has no `PR_SET_PDEATHSIG` so this is the portable answer.
+
+      2. **Stale-bridge reaper** in `spyder serve` startup, for cases where the previous parent died before its cleanup mechanism fired. Read a pidfile (or scan for `pmd3-bridge` processes whose parent PID is 1) and SIGTERM them before binding. Avoids port collisions on launchd respawn.
+
+      Pairs with 🎯T41 — the panic-on-transport-error fix stops the daemon from dying needlessly, but doesn't help when a real bug DOES make it panic. 🎯T44 makes panics survivable in the operational sense: no leftover state to confuse the next spyder run.
+
+      Note: `pymobiledevice3 remote tunneld` is run separately (manually, as root, by the user) and is NOT spyder's child. It does not need to die with spyder. The "Spyder should manage tunneld itself" question raised in the jevons session is a separate architectural concern that should get its own target if pursued.
+    tags:
+    - bridge
+    - supervisor
+    - lifecycle
+    - panic-recovery
+    - v0.20-candidate
+    - high-priority
+    origin: forked-from user-reported orphaned pmd3 processes 2026-04-26 (jevons session 11191d31)
+    discovered: 2026-04-26
+    achieved: 2026-04-26
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved

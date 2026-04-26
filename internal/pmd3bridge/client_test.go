@@ -392,11 +392,14 @@ func TestClient_SendsAuthHeader(t *testing.T) {
 	}
 }
 
-// TestClient_TransportErrorCallsFatal verifies that a dial failure
-// (bridge not listening on the advertised port) invokes the fatal hook
-// rather than returning an error. Under the 🎯T26.2 model, transport
-// failures are bugs.
-func TestClient_TransportErrorCallsFatal(t *testing.T) {
+// TestClient_TransportErrorReturnsWithoutPanic verifies that a dial
+// failure (bridge not listening on the advertised port) returns the
+// error to the caller WITHOUT invoking the fatal hook. Under 🎯T41,
+// transport faults are recoverable: the supervisor restarts the bridge
+// subprocess transparently and the next call succeeds. Panicking the
+// daemon on every transient was the v0.18/v0.19 bug that kicked
+// connected MCP clients every ~30 minutes.
+func TestClient_TransportErrorReturnsWithoutPanic(t *testing.T) {
 	// A bound-then-closed TCP port gives us a guaranteed dial-refused URL.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	deadURL := srv.URL
@@ -406,18 +409,24 @@ func TestClient_TransportErrorCallsFatal(t *testing.T) {
 	var captured error
 	c.fatal = func(err error) { captured = err }
 
-	_, _ = c.ListDevices(context.Background())
-	if captured == nil {
-		t.Fatal("fatal hook was not called on dial failure")
+	_, err := c.ListDevices(context.Background())
+	if err == nil {
+		t.Fatal("ListDevices returned nil error against a dead URL")
 	}
-	if !strings.Contains(captured.Error(), "transport error") {
-		t.Errorf("unexpected fatal message: %v", captured)
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("expected dial-refused error, got: %v", err)
+	}
+	if captured != nil {
+		t.Errorf("fatal hook should NOT have fired for transport error; got %v", captured)
 	}
 }
 
-// TestClient_DeadlineExceededCallsFatal verifies that the per-endpoint
-// deadline expiring treats the call as a bug (unresponsive bridge).
-func TestClient_DeadlineExceededCallsFatal(t *testing.T) {
+// TestClient_DeadlineExceededReturnsWithoutPanic verifies that a
+// per-endpoint deadline expiry returns the error to the caller WITHOUT
+// invoking the fatal hook. Same rationale as
+// TestClient_TransportErrorReturnsWithoutPanic — a wedged bridge should
+// not take the daemon down.
+func TestClient_DeadlineExceededReturnsWithoutPanic(t *testing.T) {
 	// Handler that blocks past the client's endpoint timeout. We use a
 	// short custom client to avoid waiting 10s for the real timeout.
 	mux := http.NewServeMux()
@@ -432,12 +441,41 @@ func TestClient_DeadlineExceededCallsFatal(t *testing.T) {
 	c.fatal = func(err error) { captured = err }
 
 	// Use post() directly with a 100ms timeout to exercise deadline path.
-	_ = c.post(context.Background(), "/v1/ping", 100*time.Millisecond,
+	err := c.post(context.Background(), "/v1/ping", 100*time.Millisecond,
+		map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("post returned nil error after deadline expiry")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected context.DeadlineExceeded, got: %v", err)
+	}
+	if captured != nil {
+		t.Errorf("fatal hook should NOT have fired for deadline expiry; got %v", captured)
+	}
+}
+
+// TestClient_UnstructuredErrorResponseStillCallsFatal preserves the
+// other half of 🎯T41's split: a 5xx with a non-JSON body is a bridge
+// protocol bug (the bridge contract says all errors are JSON), and
+// those still surface immediately via the fatal hook so they don't get
+// silently swallowed.
+func TestClient_UnstructuredErrorResponseStillCallsFatal(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/ping", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		_, _ = w.Write([]byte("not-json garbage from a misbehaving bridge"))
+	})
+	_, c := unixTestServer(t, mux)
+
+	var captured error
+	c.fatal = func(err error) { captured = err }
+
+	_ = c.post(context.Background(), "/v1/ping", 1*time.Second,
 		map[string]any{}, nil)
 	if captured == nil {
-		t.Fatal("fatal hook was not called on deadline expiry")
+		t.Fatal("fatal hook should have fired for unstructured error response")
 	}
-	if !strings.Contains(captured.Error(), "transport error") {
+	if !strings.Contains(captured.Error(), "unstructured error response") {
 		t.Errorf("unexpected fatal message: %v", captured)
 	}
 }

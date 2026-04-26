@@ -51,15 +51,120 @@ class BridgeError(Exception):
         self.message = message
 
 
+# ── Service-provider context manager (🎯T42) ─────────────────────────────────
+#
+# ``_service_provider_ctx`` replaces the old USBMux-only ``_lockdown_ctx``.
+# It returns whatever pmd3 calls a ``LockdownServiceProvider`` — either an
+# RSD from tunneld (iOS 17+ path) or a classic usbmux lockdown client
+# (iOS <17 / tunneld-unavailable fallback).
+#
+# Why can we pass the RSD directly to every pmd3 service?
+# ``RemoteServiceDiscoveryService`` is a subclass of
+# ``LockdownServiceProvider``, which is the declared parameter type for all
+# service constructors (DiagnosticsService, InstallationProxyService,
+# CrashReportsManager, DvtProvider, etc.).  Service implementations that
+# care about the connection type use ``isinstance(provider,
+# RemoteServiceDiscoveryService)`` internally to select the right service
+# name (e.g. ``RSD_SERVICE_NAME`` vs ``SERVICE_NAME``).  So passing an RSD
+# directly is both type-safe and functionally correct.
+#
+# Error taxonomy:
+#   tunneld_unavailable — tunneld process not running at all; we fall
+#                         through to USBMux because this device may be iOS <17.
+#   device_not_paired   — tunneld is running but doesn't know this UDID;
+#                         we still try USBMux in case it's a freshly-attached
+#                         iOS 17+ device that tunneld hasn't picked up yet.
+#                         If USBMux also fails, we re-raise the original
+#                         tunneld-side error (device_not_paired), because
+#                         tunneld is the more authoritative source for
+#                         iOS 17+ devices.
+
+@asynccontextmanager
+async def _service_provider_ctx(udid: str):
+    """Yield a pmd3 LockdownServiceProvider for *udid*, then close it.
+
+    Priority:
+    1. tunneld RSD (iOS 17+ reliable path).
+    2. USBMux lockdown (iOS <17 / tunneld-unavailable fallback).
+
+    The caller should treat the yielded object as an opaque
+    LockdownServiceProvider — it may be a RemoteServiceDiscoveryService
+    (tunneld path) or a RemoteLockdownClient/LockdownClient (USBMux path).
+    """
+    rsd_exc: Optional[BridgeError] = None
+    provider = None
+
+    # 1) Try tunneld RSD.
+    try:
+        provider = await _tunneld_rsd_for(udid)
+    except BridgeError as exc:
+        if exc.code not in ("tunneld_unavailable", "device_not_paired"):
+            raise  # unexpected error code — propagate immediately
+        rsd_exc = exc
+        log.debug(
+            "service_provider RSD unavailable (code=%s), trying USBMux: %s",
+            exc.code, exc.message,
+        )
+
+    if provider is not None:
+        try:
+            yield provider
+        finally:
+            try:
+                await provider.close()
+            except Exception:
+                log.warning("rsd close failed udid=%s", udid)
+        return
+
+    # 2) Tunneld unavailable or device not yet in registry — fall through to USBMux.
+    try:
+        from pymobiledevice3.lockdown import create_using_usbmux
+        started = time.monotonic()
+        lc = await create_using_usbmux(serial=udid)
+        log.debug(
+            "service_provider USBMux fallback udid=%s elapsed_ms=%d",
+            udid, int((time.monotonic() - started) * 1000),
+        )
+    except Exception as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)  # type: ignore[possibly-undefined]
+        msg = str(exc).lower()
+        if "pair" in msg or "trust" in msg:
+            log.warning("lockdown unpaired udid=%s elapsed_ms=%d err=%r",
+                        udid, elapsed_ms, exc)
+            raise BridgeError(
+                "device_not_paired",
+                f"Device {udid} is not paired: {exc}",
+            ) from exc
+        log.warning("lockdown failed udid=%s elapsed_ms=%d err=%r",
+                    udid, elapsed_ms, exc)
+        # If tunneld was running but didn't know the device, that error is
+        # more authoritative than a USBMux failure — re-raise it.
+        if rsd_exc is not None and rsd_exc.code == "device_not_paired":
+            raise rsd_exc
+        raise BridgeError(
+            "pmd3_error",
+            f"Failed to connect to device {udid}: {exc}",
+        ) from exc
+
+    try:
+        yield lc
+    finally:
+        try:
+            await lc.close()
+        except Exception:
+            log.warning("lockdown close failed udid=%s", udid)
+
+
+# Legacy aliases used in list_devices() for the USBMux-only enrichment path.
+# list_devices() calls the old _lockdown / _lockdown_ctx directly because it
+# has its own multi-source logic that predates the unified provider abstraction.
+
 @asynccontextmanager
 async def _lockdown_ctx(udid: str):
-    """Open a lockdown client scoped to an ``async with`` block.
+    """Open a USBMux lockdown client scoped to an ``async with`` block.
 
-    The underlying pymobiledevice3 lockdown client holds a usbmux socket
-    that must be explicitly closed, or it leaks. Without the close,
-    EMFILE (`Too many open files`) hits within minutes under autoawake's
-    2 s device-poll cadence. Use this helper in every service function
-    that needs a lockdown client.
+    Used internally by ``list_devices`` for the USBMux-only enrichment pass.
+    All other callers should use ``_service_provider_ctx`` instead.
     """
     lc = await _lockdown(udid)
     try:
@@ -72,7 +177,7 @@ async def _lockdown_ctx(udid: str):
 
 
 async def _lockdown(udid: str):  # type: ignore[return]
-    """Open a lockdown client for the given UDID.
+    """Open a USBMux lockdown client for the given UDID.
 
     Raises BridgeError if the device is not paired or not reachable.
     Prefer ``_lockdown_ctx`` in callers so the socket is closed on the
@@ -89,13 +194,13 @@ async def _lockdown(udid: str):  # type: ignore[return]
         elapsed_ms = int((time.monotonic() - started) * 1000)
         msg = str(exc).lower()
         if "pair" in msg or "trust" in msg:
-            log.warning("lockdown unpaired udid=%s elapsed_ms=%d err=%s",
+            log.warning("lockdown unpaired udid=%s elapsed_ms=%d err=%r",
                         udid, elapsed_ms, exc)
             raise BridgeError(
                 "device_not_paired",
                 f"Device {udid} is not paired: {exc}",
             ) from exc
-        log.warning("lockdown failed udid=%s elapsed_ms=%d err=%s",
+        log.warning("lockdown failed udid=%s elapsed_ms=%d err=%r",
                     udid, elapsed_ms, exc)
         raise BridgeError(
             "pmd3_error",
@@ -230,13 +335,13 @@ async def list_devices() -> list[DeviceInfo]:
 
 async def list_apps(udid: str) -> list[AppInfo]:
     """Return installed apps for the device."""
-    async with _lockdown_ctx(udid) as lc:
+    async with _service_provider_ctx(udid) as provider:
         try:
             from pymobiledevice3.services.installation_proxy import (
                 InstallationProxyService,
             )
             # "Any" covers User + System in pmd3's installation-proxy API.
-            svc = InstallationProxyService(lockdown=lc)
+            svc = InstallationProxyService(lockdown=provider)
             apps_raw = await svc.get_apps(application_type="Any")
         except BridgeError:
             raise
@@ -260,15 +365,15 @@ async def list_apps(udid: str) -> list[AppInfo]:
 
 async def launch_app(udid: str, bundle_id: str) -> int:
     """Launch an app and return its PID."""
-    async with _lockdown_ctx(udid) as lc:
+    async with _service_provider_ctx(udid) as provider:
         try:
-            from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
-                DvtSecureSocketProxyService,
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+                DvtProvider,
             )
             from pymobiledevice3.services.dvt.instruments.process_control import (
                 ProcessControl,
             )
-            async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
+            async with DvtProvider(provider) as dvt:
                 pc = ProcessControl(dvt)
                 pid = await pc.launch(bundle_id=bundle_id)
                 return pid
@@ -289,10 +394,10 @@ async def launch_app(udid: str, bundle_id: str) -> int:
 
 async def kill_app(udid: str, bundle_id: str) -> None:
     """Kill any running instance of the app with the given bundle id."""
-    async with _lockdown_ctx(udid) as lc:
+    async with _service_provider_ctx(udid) as provider:
         try:
-            from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
-                DvtSecureSocketProxyService,
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+                DvtProvider,
             )
             from pymobiledevice3.services.dvt.instruments.device_info import (
                 DeviceInfo as DvtDeviceInfo,
@@ -300,7 +405,7 @@ async def kill_app(udid: str, bundle_id: str) -> None:
             from pymobiledevice3.services.dvt.instruments.process_control import (
                 ProcessControl,
             )
-            async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
+            async with DvtProvider(provider) as dvt:
                 di = DvtDeviceInfo(dvt)
                 processes = await di.proclist()
                 target_pid: Optional[int] = None
@@ -322,15 +427,15 @@ async def kill_app(udid: str, bundle_id: str) -> None:
 
 async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
     """Return PID for a running bundle, or None if not running."""
-    async with _lockdown_ctx(udid) as lc:
+    async with _service_provider_ctx(udid) as provider:
         try:
-            from pymobiledevice3.services.dvt.dvt_secure_socket_proxy import (
-                DvtSecureSocketProxyService,
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+                DvtProvider,
             )
             from pymobiledevice3.services.dvt.instruments.device_info import (
                 DeviceInfo as DvtDeviceInfo,
             )
-            async with DvtSecureSocketProxyService(lockdown=lc) as dvt:
+            async with DvtProvider(provider) as dvt:
                 di = DvtDeviceInfo(dvt)
                 processes = await di.proclist()
                 for proc in processes:
@@ -347,10 +452,10 @@ async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
 
 async def battery(udid: str) -> BatteryResponse:
     """Return battery level and charging state."""
-    async with _lockdown_ctx(udid) as lc:
+    async with _service_provider_ctx(udid) as provider:
         try:
             from pymobiledevice3.services.diagnostics import DiagnosticsService
-            svc = DiagnosticsService(lockdown=lc)
+            svc = DiagnosticsService(lockdown=provider)
             info = await svc.get_battery()
         except BridgeError:
             raise
@@ -668,10 +773,10 @@ async def crash_reports_list(
             ) from exc
 
     started = time.monotonic()
-    async with _lockdown_ctx(udid) as lc:
+    async with _service_provider_ctx(udid) as provider:
         try:
             from pymobiledevice3.services.crash_reports import CrashReportsManager
-            mgr = CrashReportsManager(lockdown=lc)
+            mgr = CrashReportsManager(lockdown=provider)
             names = await mgr.ls(path="/", depth=1)
         except BridgeError:
             raise
@@ -740,9 +845,9 @@ async def crash_reports_pull(udid: str, name: str) -> AsyncIterator[bytes]:
     # completes (or is garbage-collected).
     tmp = tempfile.mkdtemp(prefix="pmd3-crash-")
     try:
-        async with _lockdown_ctx(udid) as lc:
+        async with _service_provider_ctx(udid) as provider:
             from pymobiledevice3.services.crash_reports import CrashReportsManager
-            mgr = CrashReportsManager(lockdown=lc)
+            mgr = CrashReportsManager(lockdown=provider)
             await mgr.pull(out=tmp, entry=name, progress_bar=False)
             path = os.path.join(tmp, name)
             if not os.path.exists(path):
