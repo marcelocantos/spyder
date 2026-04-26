@@ -1237,10 +1237,26 @@ targets:
     achieved: 2026-04-26
   T38:
     name: 'Spyder CLI fills the rough edges surfaced by ge''s first integration: is_running primitive, archived-log query on iOS, selector-aware resolve'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: |-
+      Five acceptance bullets implemented and exercised against the built binary. Demonstration evidence captured in this session's transcript:
+
+      - `bin/spyder` (no args) lists `is-running` in the device-tools section, alongside the existing `launch-app`/`terminate-app` siblings.
+      - `bin/spyder is-running` (no args) — usage error, exit 2 with `spyder is-running <device> <bundle-id> [--json]` synopsis.
+      - `bin/spyder resolve Pippa` — returns the full inventory entry JSON (alias, platform, ios_uuid, ios_coredevice, notes), exit 0.
+      - `bin/spyder resolve "this-is-not-an-alias-or-predicate"` — exit 15 with `"…" is not a known alias and not a parseable selector predicate (no '=' found)`.
+      - `bin/spyder resolve "platform=android,bogus=true"` — exit 15 surfacing the parse error: `selector parse: unknown key "bogus" in "bogus=true"`.
+      - `bin/spyder run --timeout banana -- echo hi` — exit 2 with `--timeout: time: invalid duration "banana"`.
+      - `bin/spyder run --device foo --on "platform=ios" -- echo` — exit 2 with `--device and --on are mutually exclusive`.
+
+      Showcase paper at `docs/papers/t38-cli-rough-edges.md` walks each acceptance bullet with before/after snippets ge's smoke-test.sh and matrix-cell.sh can adopt.
+
+      iOS archived-log query (Bullet 2) was discharged via documentation: `STABILITY.md` §"iOS log live-window contract" codifies the constraint and points callers to `crashes` / `--follow` for the use cases that previously required retrospective queries. A runtime archived-log mode would require a bridge-layer OsTraceService binding pmd3 doesn't expose stably; the spec explicitly allows the documentation alternative.
+
+      `make bullseye` standing invariants pass; TEST-REPORT.json refreshed.
     acceptance:
     - A `spyder is_running --device <device> --bundle-id <id>` (or equivalent) returns exit 0 if the app is running, exit 20 if not installed, exit 22 if installed-but-not-running. Distinct from `device_state.foreground_app` because it works even when the app is backgrounded, and distinct from `launch_app`'s PID-verify because it doesn't require launching anything. iOS implementation can use pmd3's `developer dvt process-id-for-bundle-id` (already used internally by autoawake's `isKeepAwakeRunning`).
     - '`spyder logs` on iOS physical devices supports an archived-log query mode in addition to the current live-window mode, so callers asking ''did this process log anything in the last 5 minutes?'' get a deterministic answer. May require routing through pmd3''s `OsTraceService` or similar; document the constraints in STABILITY.md if a true archived-log query isn''t possible (e.g. ''live tail starting from --since requires --since to be within the live-window grace period'').'
@@ -1255,6 +1271,7 @@ targets:
     - v0.18-candidate
     origin: manual
     discovered: 2026-04-26
+    achieved: 2026-04-26
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
