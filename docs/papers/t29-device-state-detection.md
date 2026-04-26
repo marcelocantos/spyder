@@ -4,7 +4,10 @@
 for "device is currently asleep/awake" queryable from pmd3-bridge.
 
 **Date:** 2026-04-26
-**Status:** Prototype implemented (ScreenshotService path); HIL run env-gated and ready to execute.
+**Status:** Prototype implemented (ScreenshotService path); mechanical
+acceptance test abandoned. Stay-awake correctness is trusted via the
+foreground-KeepAwake guarantee plus operator observation; revisit only
+if a regression surfaces in production use.
 
 ---
 
@@ -165,38 +168,32 @@ Rationale:
 - Degrades gracefully: tunneld_unavailable → `"unknown"` rather than
   error; developer_mode_disabled → `"unknown"` with actionable message.
 
-**What remains for HIL verification:**
+**Why no mechanical acceptance test:**
 
-- Test against Pippa (00008103-000D39301A6A201E) with screen on/off.
-- Document the exact pmd3 exception string that surfaces when display is off.
-- Tighten the exception heuristic matchers from `"unknown"` to `"asleep"` or
-  `"display_off"` once real exception shapes are known.
+A 2026-04-26 attempt at `TestDevice_StaysAwake_Mechanical` revealed
+that the test was conflating two unrelated mechanisms:
 
-**HIL run protocol (one command after device prep):**
+- `AcquirePowerAssertion` is a *host-side* power assertion — it keeps
+  the Mac awake, not the iPad. Wrong system to exercise.
+- `DevicePowerState` (the screenshot probe in this paper) is the only
+  available oracle for "is the iPad awake?", but the screenshot path
+  itself goes through tunneld RSD and is not trusted as an
+  observation-free signal in practice.
 
-1. On Pippa: Settings → Display & Brightness → Auto-Lock → 30 seconds.
-   Confirm Developer Mode on, paired, and reachable via `pymobiledevice3
-   remote tunneld` (check `curl http://127.0.0.1:49151/`).
-2. Lay Pippa flat, screen visible, undisturbed for ~2 minutes.
-3. Run:
+The actual stay-awake guarantee is iOS-level: a foregrounded app with
+idle-disable keeps the screen on. Spyder relies on the
+`autoawake.Supervisor` to keep KeepAwake foregrounded; if that
+foreground-state probe (`ios.KeepAwakeRunning`) returns true, iOS
+guarantees the rest. The probe is already exercised in production
+every poll cycle.
 
-   ```bash
-   SPYDER_DEVICES=1 SPYDER_T29_HIL=1 \
-     SPYDER_TEST_UDID=00008103-000D39301A6A201E \
-     go test -tags=device -v \
-     -run TestDevice_StaysAwake_Mechanical \
-     ./internal/pmd3bridge/
-   ```
-
-   Phase 1 expects `"awake"` after 60 s with the assertion held. Phase 2
-   expects `"display_off"` or `"asleep"` after 60 s with the assertion
-   released.
-
-The `SPYDER_T29_HIL=1` gate keeps the test off the default device-tier
-run so it doesn't fire accidentally without the auto-lock prep.
-`SPYDER_TEST_UDID` pins the device when multiple are tunneled —
-`firstIOSDevice` otherwise picks the first one with non-empty UDID,
-which on a multi-device host may not be Pippa.
+A behavioural test that exercises `autoawake.Supervisor` end-to-end
+against a real device is feasible but expensive to set up and
+maintain. The HIL flow used during the v0.8.0 release (operator
+observes Pippa, agent asks, operator reports) is sufficient for the
+foreseeable future. Revisit if production usage surfaces a regression
+that the existing fd-leak guard (🎯T27) and foreground-state probe
+don't already catch.
 
 ---
 

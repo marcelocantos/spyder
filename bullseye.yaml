@@ -918,9 +918,10 @@ targets:
     achieved: 2026-04-22
   T29:
     name: 'Automated device-state detection: mechanical signal for "device is currently asleep/awake" queryable from pmd3-bridge'
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: Parked. Investigation produced the prototype `/v1/device_power_state` endpoint (shipped in v0.17.0) and a design paper enumerating candidates, but the third acceptance criterion — a mechanical `TestDevice_StaysAwake_Mechanical` — was abandoned 2026-04-26. The test was conflating a host-side power assertion with the iPad's actual stay-awake mechanism (foregrounded KeepAwake app), and DevicePowerState is not a trustworthy oracle. Production stay-awake correctness is covered by the `autoawake.Supervisor` keeping KeepAwake foregrounded (iOS guarantees screen-on from there) plus the fd-leak guard in 🎯T27 plus operator observation. Revisit only if production usage surfaces a regression those don't catch. See `docs/papers/t29-device-state-detection.md` for the full disposition note.
     acceptance:
     - 'A bridge endpoint (e.g. `/v1/device_power_state`) returns a structured state for a given udid: awake / display-off / asleep / locked / unknown, derived from whatever pmd3 surface is authoritative for the distinction'
     - 'The state is observable without the act of observation changing it — i.e. querying the state does not itself count as user activity and reset the device''s idle timer. Current IOPMrootDomain queries via DiagnosticsService fail this criterion (they reported IOPMUserIsActive: true even against a confirmed-asleep device), so this target rules out that path'
@@ -1234,6 +1235,23 @@ targets:
     origin: manual
     discovered: 2026-04-26
     achieved: 2026-04-26
+  T38:
+    name: 'Spyder CLI fills the rough edges surfaced by ge''s first integration: is_running primitive, archived-log query on iOS, selector-aware resolve'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A `spyder is_running --device <device> --bundle-id <id>` (or equivalent) returns exit 0 if the app is running, exit 20 if not installed, exit 22 if installed-but-not-running. Distinct from `device_state.foreground_app` because it works even when the app is backgrounded, and distinct from `launch_app`'s PID-verify because it doesn't require launching anything. iOS implementation can use pmd3's `developer dvt process-id-for-bundle-id` (already used internally by autoawake's `isKeepAwakeRunning`).
+    - '`spyder logs` on iOS physical devices supports an archived-log query mode in addition to the current live-window mode, so callers asking ''did this process log anything in the last 5 minutes?'' get a deterministic answer. May require routing through pmd3''s `OsTraceService` or similar; document the constraints in STABILITY.md if a true archived-log query isn''t possible (e.g. ''live tail starting from --since requires --since to be within the live-window grace period'').'
+    - '`spyder resolve <name-or-predicate>` either accepts the same selector grammar as `spyder reserve --on PREDICATE` (returning the first matching device) OR returns a distinct exit code (e.g. 15 selector-not-supported) so callers can distinguish ''this isn''t a known alias and isn''t a parseable selector either'' from ''alias known but device offline.'' Today both fail with exit 1 (generic), making error reporting from scripts ambiguous.'
+    context: 'Surfaced 2026-04-26 by ge''s 🎯T33.1 implementation work (the smoke-test.sh → spyder CLI migration that landed as ge PR #39). The migration succeeded but the implementing agent flagged three rough edges where the script had to fall back to platform-specific tooling or live with a less-precise error path:\n\n1. **No ''is app running'' primitive.** The script wants to passively verify ''the app is installed and currently running'' without forcing a launch. `device_state.foreground_app` is iOS-pending per STABILITY.md. The fallback today is to skip the check or use foreground-app heuristic (which only catches the foreground app, not backgrounded ones).\n\n2. **`spyder logs` iOS is live-window-only.** For crash detection at smoke-test time (''did anything log an error in the last 5 minutes?''), the live-window model can miss the relevant window. The current ge fallback is to scan `~/Library/Logs/DiagnosticReports/` directly for crash files. Works but bypasses spyder.\n\n3. **`spyder resolve` exits 1 generic for non-alias inputs.** When the input is a selector predicate (e.g. `platform=ios-sim,os>=17`) instead of an alias, resolve fails with the same exit code as ''alias not found.'' The script can''t distinguish ''this is a selector, not an alias — try the downstream tools'' from ''this alias is genuinely unknown.''\n\nNone of these block ge''s adoption — the migration shipped with workarounds — but each is a small future-quality improvement to the spyder CLI surface. Filing here so they don''t get lost.'
+    tags:
+    - cli
+    - rough-edges
+    - ge-feedback
+    - v0.18-candidate
+    origin: manual
+    discovered: 2026-04-26
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
