@@ -75,35 +75,35 @@ func TestMapDaemonError(t *testing.T) {
 			name:         "errorCode tunneld_unavailable beats prose",
 			statusCode:   500,
 			errorCode:    "tunneld_unavailable",
-			errorMessage: "device not connected",   // would be ExitDeviceNotConnected by prose
+			errorMessage: "device not connected", // would be ExitDeviceNotConnected by prose
 			want:         cliexit.ExitDaemonUnreachable,
 		},
 		{
 			name:         "errorCode device_not_paired beats prose",
 			statusCode:   422,
 			errorCode:    "device_not_paired",
-			errorMessage: "device not found",       // would be ExitDeviceNotFound by prose
+			errorMessage: "device not found", // would be ExitDeviceNotFound by prose
 			want:         cliexit.ExitDeviceNotConnected,
 		},
 		{
 			name:         "errorCode bundle_not_installed beats prose",
 			statusCode:   422,
 			errorCode:    "bundle_not_installed",
-			errorMessage: "device is locked",       // would be ExitDeviceLocked by prose
+			errorMessage: "device is locked", // would be ExitDeviceLocked by prose
 			want:         cliexit.ExitAppNotInstalled,
 		},
 		{
 			name:         "errorCode developer_mode_disabled beats prose",
 			statusCode:   422,
 			errorCode:    "developer_mode_disabled",
-			errorMessage: "trust not granted",      // would be ExitTrustNotGranted by prose
+			errorMessage: "trust not granted", // would be ExitTrustNotGranted by prose
 			want:         cliexit.ExitDeveloperModeDisabled,
 		},
 		{
 			name:         "errorCode pmd3_error is generic regardless of prose",
 			statusCode:   500,
 			errorCode:    "pmd3_error",
-			errorMessage: "device not found",       // would be ExitDeviceNotFound by prose
+			errorMessage: "device not found", // would be ExitDeviceNotFound by prose
 			want:         cliexit.ExitGeneric,
 		},
 
