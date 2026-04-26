@@ -19,7 +19,7 @@ Breaking changes to any of these after 1.0 require a major version bump (or,
 per the project's policy, a fork into a new product). The pre-1.0 period
 exists to get these right.
 
-Snapshot as of `v0.16.0`.
+Snapshot as of `v0.17.0`.
 
 ## Interaction surface catalogue
 
@@ -395,7 +395,10 @@ builds. **Stable.**
   supervise tunneld itself. Pre-iOS-17 devices that are not in the tunneld
   registry will fail screenshot with `device_not_paired`; a legacy
   `com.apple.mobile.screenshotr` fallback for pre-17 devices is deferred
-  (no test target on currently-paired hardware).
+  (no test target on currently-paired hardware). The bridge transparently
+  retries transient `EHOSTUNREACH` from the tunneld probe (3 attempts, 0.5
+  s backoff) so a brewservices-supervised daemon survives loopback hiccups
+  during tunneld restart (🎯T36, v0.17.0).
 - **macOS-only host enforcement.** Spyder runs on Linux but iOS operations
   will fail noisily there. Either restrict the binary to Darwin or
   gracefully degrade iOS-related tools with a clear "host does not support
