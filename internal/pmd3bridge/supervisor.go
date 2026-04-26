@@ -56,6 +56,13 @@ func withFatal(f func(error)) Option {
 // exits before Stop is called, that is a bug — the supervisor panics via
 // its fatal hook and lets the external process supervisor restart the
 // whole daemon.
+//
+// Liveness pipe (🎯T44): the supervisor passes the read end of an os.Pipe()
+// as the bridge's stdin (fd 0) and keeps the write end open for its own
+// lifetime. When the parent process exits — clean shutdown, panic, SIGKILL,
+// OOM — the kernel closes the write end and the child's read on fd 0 returns
+// EOF. The bridge's _watch_parent_via_stdin thread calls os._exit(0) on
+// that EOF, preventing orphaned processes.
 type Supervisor struct {
 	binaryPath string
 
@@ -64,11 +71,12 @@ type Supervisor struct {
 	readyTimeout    time.Duration
 	fatal           func(error)
 
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	port    int    // bridge's listening port, set during launch
-	token   string // bridge's bearer token, set during launch
-	stopped bool   // true once Stop has been called
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	port         int      // bridge's listening port, set during launch
+	token        string   // bridge's bearer token, set during launch
+	stopped      bool     // true once Stop has been called
+	livenessPipe *os.File // write end of the stdin-EOF liveness pipe (🎯T44)
 
 	// stopCh is closed by Stop to signal the watchdog goroutine to exit.
 	stopCh chan struct{}
@@ -219,14 +227,35 @@ func (s *Supervisor) launch(ctx context.Context) error {
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
+	// Liveness pipe (🎯T44): create a pipe whose read end becomes the
+	// bridge's stdin (fd 0). We keep the write end open for our lifetime
+	// and never write to it. When the parent process exits for any reason
+	// — clean shutdown, panic, SIGKILL, OOM — the kernel closes our copy
+	// of the write end and the bridge's blocking read on fd 0 returns EOF,
+	// triggering its _watch_parent_via_stdin thread to call os._exit(0).
+	livenessReadEnd, livenessWriteEnd, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("pmd3bridge supervisor: liveness pipe: %w", err)
+	}
+	cmd.Stdin = livenessReadEnd
+
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		livenessReadEnd.Close()
+		livenessWriteEnd.Close()
 		return fmt.Errorf("pmd3bridge supervisor: stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
+		livenessReadEnd.Close()
+		livenessWriteEnd.Close()
 		return fmt.Errorf("pmd3bridge supervisor: start %q: %w", s.binaryPath, err)
 	}
+	// The child now has its own copy of the read end via fork+exec.
+	// Close the parent's copy so only the child holds it — this ensures
+	// the child sees EOF when we close our write end, not when it closes
+	// its own read end.
+	livenessReadEnd.Close()
 
 	type readyResult struct {
 		port  int
@@ -260,15 +289,18 @@ func (s *Supervisor) launch(ctx context.Context) error {
 		if result.err != nil {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
+			livenessWriteEnd.Close()
 			return fmt.Errorf("pmd3bridge supervisor: %w", result.err)
 		}
 	case <-timer.C:
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		livenessWriteEnd.Close()
 		return fmt.Errorf("pmd3bridge supervisor: timed out waiting for bridge ready signal after %s", s.readyTimeout)
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		livenessWriteEnd.Close()
 		return ctx.Err()
 	}
 
@@ -276,6 +308,7 @@ func (s *Supervisor) launch(ctx context.Context) error {
 	s.cmd = cmd
 	s.port = result.port
 	s.token = result.token
+	s.livenessPipe = livenessWriteEnd
 	s.mu.Unlock()
 	return nil
 }
@@ -345,7 +378,16 @@ func (s *Supervisor) watchdog() {
 
 	s.mu.Lock()
 	cmd := s.cmd
+	pipe := s.livenessPipe
 	s.mu.Unlock()
+	// Close the liveness write end on shutdown so the child sees EOF promptly
+	// even during a clean Stop (SIGTERM path). This is hygiene: the child exits
+	// via SIGTERM anyway, but closing the pipe removes the fd from the parent.
+	defer func() {
+		if pipe != nil {
+			pipe.Close()
+		}
+	}()
 
 	exitCh := make(chan error, 1)
 	go func() { exitCh <- cmd.Wait() }()

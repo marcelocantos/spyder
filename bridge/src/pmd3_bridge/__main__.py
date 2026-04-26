@@ -30,6 +30,7 @@ import secrets
 import signal
 import socket
 import sys
+import threading
 
 
 def _configure_logging() -> str:
@@ -66,9 +67,45 @@ def _bind_ephemeral_loopback() -> tuple[socket.socket, int]:
     return s, port
 
 
+def _watch_parent_via_stdin() -> None:
+    """Watch fd 0 for EOF; when the parent's write end closes, exit immediately.
+
+    🎯T44: the spyder Go-side supervisor passes the read end of an os.Pipe()
+    as our stdin (fd 0) and holds the write end open for its lifetime.
+    Whenever the parent process exits — clean shutdown, panic, SIGKILL,
+    OOM, anything — the kernel closes its copy of the write end, our
+    read returns EOF, and we self-exit. This is the kernel-guaranteed
+    parent-liveness signal that prevents orphaned pmd3-bridge processes
+    after a parent panic. See 🎯T44 in bullseye.yaml.
+
+    When stdin is /dev/null (e.g. someone runs pmd3-bridge directly
+    without the supervisor), os.read(0, 1) returns b'' immediately and
+    we exit cleanly — fine for that debug case. When stdin is a tty
+    (interactive shell), the read blocks until the operator types or
+    closes their shell (which sends SIGHUP); also fine.
+    """
+    try:
+        os.read(0, 1)
+    except OSError:
+        # EBADF or similar — stdin not available. Don't kill the process
+        # over diagnostic plumbing.
+        return
+    # EOF or one byte read — either way the parent is gone or stdin was
+    # not a long-lived pipe. Exit immediately; bypass atexit handlers
+    # since the parent is already dead and any cleanup involving it
+    # (e.g. RPC to spyder) would just hang.
+    os._exit(0)
+
+
 def main() -> None:
     log_level = _configure_logging()
     log = logging.getLogger("pmd3_bridge")
+
+    # Start the parent-liveness watcher before anything else. If the parent
+    # (spyder daemon) dies for any reason, stdin-EOF fires _exit(0) here.
+    # daemon=True so this thread does not keep the process alive on its own.
+    watcher = threading.Thread(target=_watch_parent_via_stdin, daemon=True, name="stdin-eof-watcher")
+    watcher.start()
 
     listener, port = _bind_ephemeral_loopback()
     token = secrets.token_urlsafe(32)
