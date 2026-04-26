@@ -395,7 +395,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-26 — /release v0.17.0 (post-v0.16.0 device + bridge cleanup bundle)
 
-- **Commit**: `pending`
+- **Commit**: `b824918`
 - **Outcome**: Five-target bundle resolving the post-v0.11.0–v0.16.0
   iOS/bridge follow-ups discovered during HIL verification, fanned
   out as parallel worktree-isolated agents and cherry-picked into
