@@ -1477,7 +1477,7 @@ targets:
     achieved: 2026-04-26
   T45:
     name: spyder release ships macOS arm64 only — drop Linux build matrix
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1503,6 +1503,7 @@ targets:
     - low-effort
     origin: forked-from v0.20.0 release observation 2026-04-26
     discovered: 2026-04-27
+    achieved: 2026-04-27
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
