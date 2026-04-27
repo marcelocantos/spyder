@@ -86,6 +86,16 @@ type pidForBundleResponse struct {
 	PID *int `json:"pid"`
 }
 
+type appStateRequest struct {
+	UDID     string `json:"udid"`
+	BundleID string `json:"bundle_id"`
+}
+
+type appStateResponse struct {
+	State       string `json:"state"`
+	Description string `json:"description"`
+}
+
 type batteryRequest struct {
 	UDID string `json:"udid"`
 }

@@ -333,6 +333,31 @@ func (c *Client) PIDForBundle(ctx context.Context, udid, bundleID string) (*int,
 	return resp.PID, nil
 }
 
+// AppState constants returned by AppState. The bridge collapses iOS's
+// fine-grained BackBoard taxonomy (Running, Suspended, Background-Running,
+// Background-Task-Suspended, ...) onto three values that capture the only
+// distinction autoawake cares about: is the app foregrounded, is it
+// somewhere in the background, or has iOS reaped it entirely.
+const (
+	AppStateRunning      = "running"
+	AppStateBackgrounded = "backgrounded"
+	AppStateTerminated   = "terminated"
+)
+
+// AppState reports the lifecycle state of one app on the device — used
+// by autoawake to detect a user-initiated swipe-away from KeepAwake
+// (Running → backgrounded, observed across two ticks) and treat it as
+// an opt-out signal. See bridge/src/pmd3_bridge/services.py::app_state
+// for the BackBoard mapping and the detection caveats.
+func (c *Client) AppState(ctx context.Context, udid, bundleID string) (string, string, error) {
+	var resp appStateResponse
+	if err := c.post(ctx, "/v1/app_state", timeoutAppState,
+		appStateRequest{UDID: udid, BundleID: bundleID}, &resp); err != nil {
+		return "", "", err
+	}
+	return resp.State, resp.Description, nil
+}
+
 // Battery returns the battery state for the device identified by udid.
 func (c *Client) Battery(ctx context.Context, udid string) (Battery, error) {
 	var resp Battery

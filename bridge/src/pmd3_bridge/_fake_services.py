@@ -57,6 +57,13 @@ async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
     return None
 
 
+async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
+    _check_udid(udid)
+    if bundle_id == FAKE_BUNDLE:
+        return ("running", "Running")
+    return ("terminated", "")
+
+
 async def battery(udid: str) -> BatteryResponse:
     _check_udid(udid)
     return BatteryResponse(level=0.77, charging=True)

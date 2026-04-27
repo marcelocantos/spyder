@@ -451,6 +451,98 @@ async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
             ) from exc
 
 
+async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
+    """Query the lifecycle state of one app on a device.
+
+    Subscribes to the DVT mobile-notifications service for ~0.5 s,
+    drains the initial state-enumeration burst BackBoard emits on
+    connection, finds the entry for ``bundle_id`` (matched against
+    ``execName``'s bundle path), and disconnects.
+
+    Returns ``(state, description)`` where state ∈ {"running",
+    "backgrounded", "terminated"}.
+
+      * BKS state_description == "Running"        → "running"
+      * other recognised state_descriptions       → "backgrounded"
+      * app not present in the enumeration burst  → "terminated"
+
+    Note: BKS reports SpringBoard specially (not in the enumeration);
+    a query for SpringBoard always returns "terminated". Also note
+    that "Running" is the BKS ForegroundRunning state — it does not
+    distinguish a foregrounded app from a background-running one
+    (e.g. an audio-mode app), but for autoawake's purposes that's
+    fine: KeepAwake never uses background modes, so its "Running"
+    state is unambiguously foreground.
+    """
+    async with _service_provider_ctx(udid) as provider:
+        try:
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+                DvtProvider,
+            )
+            from pymobiledevice3.services.dvt.instruments.notifications import (
+                Notifications,
+            )
+            async with DvtProvider(provider) as dvt:
+                async with Notifications(dvt) as notif:
+                    # Silence the pmd3 channel close-callback that calls
+                    # shutdown_queue on a stdlib asyncio.Queue, which lacks
+                    # .shutdown() prior to Python 3.13. Our bridge runs on
+                    # 3.11; without this monkey-patch every state probe
+                    # logs a (cosmetic) ERROR with a TypeError traceback,
+                    # which would flood the daemon log at the autoawake
+                    # convergence cadence. We've already drained what we
+                    # need by the time on_closed fires, so skipping it
+                    # outright is safe.
+                    notif.service.on_closed = lambda *_args, **_kwargs: None
+                    # BackBoard dumps current state of every "managed" app
+                    # on connect, then streams transitions. We drain the
+                    # dump (events stop arriving when the burst ends) and
+                    # ignore everything after.
+                    found_state = ""
+                    while True:
+                        try:
+                            ev = await asyncio.wait_for(
+                                notif.service.events.get(), timeout=0.5
+                            )
+                        except asyncio.TimeoutError:
+                            break
+                        sel, args = ev
+                        if sel != "applicationStateNotification:":
+                            continue
+                        payload = args[0] if args and isinstance(args[0], list) else [args[0]] if args else []
+                        for entry in payload:
+                            exec_name = entry.get("execName", "") or ""
+                            # execName looks like
+                            # "/private/var/containers/Bundle/Application/<UUID>/<App>.app"
+                            # or "/Applications/<App>.app". Match by the
+                            # ".app" path segment against the App-installed
+                            # bundle's known structure.
+                            # Match the .app directory name against the
+                            # bundle id's last segment. iOS bundle ids
+                            # produced from Xcode templates use the target
+                            # name as the last segment AND the .app folder
+                            # name, so this is reliable for any third-party
+                            # app — including KeepAwake. Case-insensitive
+                            # to tolerate Apple system apps where casing
+                            # diverges (e.g. com.apple.camera → Camera.app).
+                            wanted = f"/{bundle_id.split('.')[-1]}.app"
+                            if wanted.lower() in exec_name.lower():
+                                found_state = entry.get("state_description", "") or ""
+        except BridgeError:
+            raise
+        except Exception as exc:
+            raise BridgeError(
+                "pmd3_error",
+                f"Failed to query app state on {udid}: {exc}",
+            ) from exc
+
+    if not found_state:
+        return ("terminated", "")
+    if found_state.lower() == "running":
+        return ("running", found_state)
+    return ("backgrounded", found_state)
+
+
 async def battery(udid: str) -> BatteryResponse:
     """Return battery level and charging state."""
     async with _service_provider_ctx(udid) as provider:

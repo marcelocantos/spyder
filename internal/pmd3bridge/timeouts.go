@@ -22,6 +22,7 @@ const (
 	timeoutListApps       = 30 * time.Second
 	timeoutLaunchKillApp  = 30 * time.Second
 	timeoutPidForBundle   = 30 * time.Second
+	timeoutAppState       = 30 * time.Second
 	timeoutBattery        = 30 * time.Second
 	timeoutScreenshot     = 30 * time.Second
 	timeoutDeviceState    = 35 * time.Second // screenshot + classification overhead (🎯T29)

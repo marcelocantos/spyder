@@ -32,6 +32,11 @@ class PidForBundleRequest(BaseModel):
     bundle_id: str
 
 
+class AppStateRequest(BaseModel):
+    udid: str
+    bundle_id: str
+
+
 class BatteryRequest(BaseModel):
     udid: str
 
@@ -117,6 +122,25 @@ class KillAppResponse(BaseModel):
 
 class PidForBundleResponse(BaseModel):
     pid: Optional[int] = None
+
+
+class AppStateResponse(BaseModel):
+    """Lifecycle state of one app on the device.
+
+    state is one of:
+      - "running":      the app is foregrounded (BKS state_description = Running).
+      - "backgrounded": the app exists but is suspended or in background mode
+                        (state_description ∈ {Suspended, Background, ...}).
+      - "terminated":   the app is not in the BackBoard state list — either
+                        never launched in this boot, or iOS has fully reaped it.
+
+    Used by autoawake to detect user-initiated opt-out: a Running →
+    backgrounded transition for KeepAwake means the user swiped away
+    (or launched another app), and autoawake should stay passive.
+    """
+
+    state: str
+    description: str = ""  # raw state_description from BKS, for debugging
 
 
 class BatteryResponse(BaseModel):
