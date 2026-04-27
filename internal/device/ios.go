@@ -65,22 +65,28 @@ var keepAwakeLaunchTrustPattern = regexp.MustCompile(
 var keepAwakeLaunchNoProviderPattern = regexp.MustCompile(
 	`(?i)no provider was found|CoreDeviceError.*[Cc]ode=?1002|error 1002`)
 
-// KeepAwakeInstalled reports whether the KeepAwake bundle is currently
-// installed on the device. Implemented as a `xcrun devicectl device info
-// apps` JSON query filtered for KeepAwakeBundleID. Used by autoawake's
-// convergence loop (🎯T32) to decide between install and launch each
-// tick rather than latching install state.
-//
-// Returns (false, nil) on a successful query that doesn't list the app
-// (the canonical "not installed" answer); (false, error) on a devicectl
-// failure (caller can treat that as "unknown" and skip).
-func (a *IOSAdapter) KeepAwakeInstalled(id string) (bool, error) {
+// keepAwakeAppRecord is the subset of the `xcrun devicectl device info
+// apps` JSON entry that autoawake cares about. The query covers two
+// concerns — "is it installed" and "what version is installed" — and
+// both share one devicectl invocation via inspectKeepAwakeApp.
+type keepAwakeAppRecord struct {
+	installed bool
+	// version is CFBundleShortVersionString as reported by devicectl
+	// (the JSON field is named `version`). Empty when not installed.
+	version string
+}
+
+// inspectKeepAwakeApp runs one `xcrun devicectl device info apps`
+// query and extracts the KeepAwake entry, if present. Single source
+// of truth for KeepAwakeInstalled and KeepAwakeInstalledVersion so
+// autoawake's per-tick cost stays at one devicectl call.
+func (a *IOSAdapter) inspectKeepAwakeApp(id string) (keepAwakeAppRecord, error) {
 	if id == "" {
-		return false, errors.New("device identifier is empty")
+		return keepAwakeAppRecord{}, errors.New("device identifier is empty")
 	}
 	tmp, err := os.MkdirTemp("", "spyder-devctl-apps-*")
 	if err != nil {
-		return false, fmt.Errorf("mkdir temp: %w", err)
+		return keepAwakeAppRecord{}, fmt.Errorf("mkdir temp: %w", err)
 	}
 	defer os.RemoveAll(tmp)
 	jsonPath := filepath.Join(tmp, "apps.json")
@@ -90,29 +96,58 @@ func (a *IOSAdapter) KeepAwakeInstalled(id string) (bool, error) {
 		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "info", "apps",
 		"--device", id, "--quiet", "--json-output", jsonPath)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("devicectl device info apps: %w\n%s",
-			err, truncate(string(out), 200))
+		return keepAwakeAppRecord{}, fmt.Errorf(
+			"devicectl device info apps: %w\n%s", err, truncate(string(out), 200))
 	}
 	data, err := os.ReadFile(jsonPath)
 	if err != nil {
-		return false, fmt.Errorf("read devicectl apps JSON: %w", err)
+		return keepAwakeAppRecord{}, fmt.Errorf("read devicectl apps JSON: %w", err)
 	}
 	var doc struct {
 		Result struct {
 			Apps []struct {
 				BundleIdentifier string `json:"bundleIdentifier"`
+				Version          string `json:"version"`
 			} `json:"apps"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return false, fmt.Errorf("decode devicectl apps JSON: %w", err)
+		return keepAwakeAppRecord{}, fmt.Errorf("decode devicectl apps JSON: %w", err)
 	}
 	for _, app := range doc.Result.Apps {
 		if app.BundleIdentifier == KeepAwakeBundleID {
-			return true, nil
+			return keepAwakeAppRecord{installed: true, version: app.Version}, nil
 		}
 	}
-	return false, nil
+	return keepAwakeAppRecord{installed: false}, nil
+}
+
+// KeepAwakeInstalled reports whether the KeepAwake bundle is currently
+// installed on the device. Returns (false, nil) on a successful query
+// that doesn't list the app; (false, error) on a devicectl failure
+// (caller can treat that as "unknown" and skip).
+func (a *IOSAdapter) KeepAwakeInstalled(id string) (bool, error) {
+	rec, err := a.inspectKeepAwakeApp(id)
+	if err != nil {
+		return false, err
+	}
+	return rec.installed, nil
+}
+
+// KeepAwakeInstalledVersion returns the CFBundleShortVersionString of
+// the KeepAwake bundle currently installed on the device, or "" when
+// it isn't installed. Used by autoawake's staleness check (🎯T47): the
+// supervisor compares this value against device.ExpectedKeepAwakeVersion()
+// (parsed from the bundled pbxproj's MARKETING_VERSION) and triggers an
+// uninstall + rebuild + reinstall cycle on mismatch. Versions are
+// compared as opaque strings — pre-release suffixes like "-rc1" or
+// arbitrary version schemes are honoured verbatim.
+func (a *IOSAdapter) KeepAwakeInstalledVersion(id string) (string, error) {
+	rec, err := a.inspectKeepAwakeApp(id)
+	if err != nil {
+		return "", err
+	}
+	return rec.version, nil
 }
 
 // KeepAwakeState reports KeepAwake's lifecycle state on the device:

@@ -188,6 +188,83 @@ func ResetKeepAwakeBuild() {
 	globalKeepAwakeBuild = keepAwakeBuild{}
 }
 
+// marketingVersionPattern extracts whatever follows `MARKETING_VERSION =`
+// up to the terminating semicolon in a pbxproj buildSettings block. The
+// captured value is trimmed of surrounding whitespace and surrounding
+// double-quotes (Xcode quotes values containing whitespace or special
+// chars; bare values are unquoted). We deliberately don't constrain the
+// payload's shape — CFBundleShortVersionString accepts arbitrary strings
+// (`0.2.0`, `0.2.0-rc1`, `2026.04.27`, etc.) and the staleness check is
+// a literal string compare against whatever devicectl reports back.
+var marketingVersionPattern = regexp.MustCompile(
+	`MARKETING_VERSION\s*=\s*([^;]+?)\s*;`)
+
+// expectedKeepAwakeVersion memoises the parsed MARKETING_VERSION so we
+// don't re-read the bundled pbxproj on every convergence tick. The
+// source tree is read-only at runtime — for production installs the
+// pbxproj lives under libexec/spyder-source/ios/KeepAwake/ and never
+// changes; for dev runs it's the working tree, which is fine to re-
+// resolve once per daemon lifetime.
+var expectedKeepAwakeVersion struct {
+	once    sync.Once
+	version string
+	err     error
+}
+
+// ExpectedKeepAwakeVersion returns the MARKETING_VERSION baked into
+// ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj — the version the
+// autoawake supervisor expects KeepAwake to report on-device. Used by
+// the staleness check (autoawake convergence): when the installed
+// bundle's CFBundleShortVersionString differs from this value, the
+// supervisor uninstalls + rebuilds + reinstalls so the device picks up
+// the source change.
+//
+// Versioning convention: bump the pbxproj's MARKETING_VERSION (in both
+// Debug and Release buildSettings blocks) when ios/KeepAwake/Sources/
+// changes in a way that should be propagated to existing installs.
+// PATCH for behaviour-preserving tweaks; MINOR for behavioural changes.
+//
+// Returns ("", error) when the pbxproj can't be located or parsed —
+// caller (autoawake) treats that as "unknown expected version" and
+// skips the staleness check rather than triggering a spurious
+// reinstall.
+func ExpectedKeepAwakeVersion() (string, error) {
+	expectedKeepAwakeVersion.once.Do(func() {
+		expectedKeepAwakeVersion.version, expectedKeepAwakeVersion.err = readExpectedKeepAwakeVersion()
+	})
+	return expectedKeepAwakeVersion.version, expectedKeepAwakeVersion.err
+}
+
+func readExpectedKeepAwakeVersion() (string, error) {
+	repoRoot, err := findRepoRoot()
+	if err != nil {
+		return "", fmt.Errorf("locate spyder source: %w", err)
+	}
+	pbxproj := filepath.Join(repoRoot, "ios", "KeepAwake",
+		"KeepAwake.xcodeproj", "project.pbxproj")
+	data, err := os.ReadFile(pbxproj)
+	if err != nil {
+		return "", fmt.Errorf("read %s: %w", pbxproj, err)
+	}
+	// pbxproj has one MARKETING_VERSION entry per build configuration
+	// (Debug + Release). They must agree; if they don't, the project
+	// is misconfigured and we return an error rather than guess.
+	matches := marketingVersionPattern.FindAllStringSubmatch(string(data), -1)
+	if len(matches) == 0 {
+		return "", fmt.Errorf("MARKETING_VERSION not found in %s", pbxproj)
+	}
+	first := strings.Trim(matches[0][1], `"`)
+	for _, m := range matches[1:] {
+		v := strings.Trim(m[1], `"`)
+		if v != first {
+			return "", fmt.Errorf(
+				"MARKETING_VERSION mismatch in %s: %q vs %q (Debug and Release configs must agree)",
+				pbxproj, first, v)
+		}
+	}
+	return first, nil
+}
+
 func buildKeepAwakeNow(teamID string) (string, error) {
 	repoRoot, err := findRepoRoot()
 	if err != nil {
@@ -273,13 +350,23 @@ func findRepoRoot() (string, error) {
 		}
 	}
 
-	// 3. CWD-relative.
+	// 3. CWD-relative, walking up. Catches `go test ./internal/...`
+	// (cwd = the test package dir) as well as `go run .` from the
+	// repo root.
 	if cwd, err := os.Getwd(); err == nil {
-		if _, err := os.Stat(filepath.Join(cwd, "ios", "KeepAwake", "KeepAwake.xcodeproj")); err == nil {
-			return cwd, nil
+		dir := cwd
+		for range 8 {
+			if _, err := os.Stat(filepath.Join(dir, "ios", "KeepAwake", "KeepAwake.xcodeproj")); err == nil {
+				return dir, nil
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
 		}
 	}
-	return "", errors.New("ios/KeepAwake/KeepAwake.xcodeproj not found in libexec/spyder-source, relative to executable, or in cwd")
+	return "", errors.New("ios/KeepAwake/KeepAwake.xcodeproj not found in libexec/spyder-source, relative to executable, or by walking up from cwd")
 }
 
 // ── Install ──────────────────────────────────────────────────────────────────

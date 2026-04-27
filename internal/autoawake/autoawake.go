@@ -100,6 +100,7 @@ const (
 	classNeedsXcodeSignin
 	classNotInstalled
 	classStaleInstall
+	classStaleBuild
 	classOther
 )
 
@@ -121,6 +122,8 @@ func (c errorClass) String() string {
 		return "not-installed"
 	case classStaleInstall:
 		return "stale-install"
+	case classStaleBuild:
+		return "stale-build"
 	case classOther:
 		return "other"
 	default:
@@ -169,6 +172,7 @@ type iosAdapter interface {
 	List() ([]device.Info, error)
 	KeepAwakeState(id string) (string, error)
 	KeepAwakeInstalled(id string) (bool, error)
+	KeepAwakeInstalledVersion(id string) (string, error)
 	LaunchKeepAwake(id string) error
 	UninstallApp(id, bundleID string) error
 }
@@ -355,29 +359,43 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 	}
 	optedOut := s.recordKAState(udid, state)
 
-	// 2) Decide based on (state, optedOut):
-	//    - running        → converged.
-	//    - backgrounded   → user-opt-out (stay passive).
-	//    - terminated:
-	//      - if optedOut  → user-opt-out (stay passive).
-	//      - else         → install (if needed) + launch.
-	switch state {
-	case device.AppStateRunning:
-		s.advance(udid, alias, classConverged, nil)
-		return
-	case device.AppStateBackgrounded:
-		s.advance(udid, alias, classUserOptOut, nil)
-		return
-	}
-	// state == AppStateTerminated.
-	if optedOut {
+	// 2) Stay passive when the user has expressed they don't want
+	// KeepAwake fighting them — backgrounded (live opt-out) or
+	// terminated-while-opted-out (their backgrounded KeepAwake later
+	// got reaped by iOS; we still respect the original signal).
+	if state == device.AppStateBackgrounded ||
+		(state == device.AppStateTerminated && optedOut) {
 		s.advance(udid, alias, classUserOptOut, nil)
 		return
 	}
 
-	// 3) KeepAwake not present and user hasn't opted out — install if
-	// needed, then launch. attemptInstall handles its own classification
-	// on failure; on success we fall through to launch.
+	// 3) Staleness check (🎯T47): when the installed bundle's
+	// CFBundleShortVersionString differs from the source-of-truth
+	// MARKETING_VERSION baked into the bundled pbxproj, uninstall,
+	// rebuild, reinstall, and relaunch — this is how a manual version
+	// bump rolls out to existing devices. Only fires when the user
+	// hasn't opted out (gated above), so a deliberate background-state
+	// is never overridden by maintenance.
+	if expected, verr := device.ExpectedKeepAwakeVersion(); verr == nil && expected != "" {
+		if installed, ierr := s.ios.KeepAwakeInstalledVersion(udid); ierr == nil &&
+			installed != "" && installed != expected {
+			slog.Info("autoawake: KeepAwake version drift; uninstalling to redeploy",
+				"udid", udid, "alias", alias,
+				"installed", installed, "expected", expected)
+			s.attemptReinstall(ctx, udid, alias, classStaleBuild)
+			return
+		}
+	}
+
+	// 4) Version-current paths.
+	if state == device.AppStateRunning {
+		s.advance(udid, alias, classConverged, nil)
+		return
+	}
+
+	// state == AppStateTerminated, !optedOut, version current.
+	// Install if needed, then launch. attemptInstall handles its own
+	// classification on failure; on success we fall through to launch.
 	installed, err := s.ios.KeepAwakeInstalled(udid)
 	if err != nil {
 		slog.Debug("autoawake: KeepAwakeInstalled probe failed; assuming installed",
@@ -390,7 +408,7 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 		}
 	}
 
-	// 4) Installed but not running — try to launch. Classify on error.
+	// 5) Installed but not running — try to launch. Classify on error.
 	launchErr := s.ios.LaunchKeepAwake(udid)
 	if launchErr == nil {
 		s.advance(udid, alias, classConverged, nil)
@@ -408,7 +426,7 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 	case errors.Is(launchErr, device.ErrNoProviderFound):
 		// Stale provisioning profile: uninstall the corrupt copy so the
 		// next tick's install-probe triggers a fresh install + launch.
-		s.attemptReinstall(ctx, udid, alias)
+		s.attemptReinstall(ctx, udid, alias, classStaleInstall)
 	default:
 		s.advance(udid, alias, classOther, launchErr)
 	}
@@ -497,25 +515,27 @@ func (s *Supervisor) attemptInstall(ctx context.Context, udid, alias string) boo
 	return true
 }
 
-// attemptReinstall handles the ErrNoProviderFound recovery path (🎯T34).
-// The installed KeepAwake copy has a stale provisioning profile (e.g. a
-// free Personal Team profile expired after 7 days). We:
-//  1. Uninstall the stale copy.
-//  2. Reset the build cache so the next BuildKeepAwake call fetches a
-//     fresh profile via xcodebuild -allowProvisioningUpdates.
-//  3. Run the normal attemptInstall + launch cycle.
+// attemptReinstall drives the uninstall → rebuild → reinstall → launch
+// cycle for two recovery paths:
 //
-// Transitions to classStaleInstall on entry so the loop body emits exactly
-// one log line per error session. On repeated failure (e.g. uninstall or
-// rebuild also fail) we fall through to classOther, which is also
-// idempotent.
-func (s *Supervisor) attemptReinstall(ctx context.Context, udid, alias string) {
-	// Transition to classStaleInstall so advance() emits exactly one log
-	// line for this error session regardless of how many ticks we spend here.
-	s.advance(udid, alias, classStaleInstall, nil)
+//   - **classStaleInstall** (🎯T34): the installed KeepAwake copy has a
+//     stale provisioning profile (e.g. a free Personal Team profile
+//     expired after 7 days). LaunchKeepAwake returned ErrNoProviderFound.
+//   - **classStaleBuild** (🎯T47): the installed bundle's CFBundleShort-
+//     VersionString differs from the source pbxproj's MARKETING_VERSION,
+//     so a manual version bump should propagate to existing devices.
+//
+// Both paths share the same recovery sequence; only the entry log line
+// and observation class differ. The reason argument names which case
+// fired so advance() emits exactly one log line per error session
+// regardless of how many ticks we spend here. On repeated failure
+// (e.g. uninstall or rebuild also fail) we fall through to classOther,
+// which is also idempotent.
+func (s *Supervisor) attemptReinstall(ctx context.Context, udid, alias string, reason errorClass) {
+	s.advance(udid, alias, reason, nil)
 
-	slog.Info("autoawake: uninstalling stale KeepAwake (stale provisioning profile)",
-		"udid", udid, "alias", alias)
+	slog.Info("autoawake: uninstalling KeepAwake to redeploy",
+		"udid", udid, "alias", alias, "reason", reason.String())
 	if err := s.ios.UninstallApp(udid, device.KeepAwakeBundleID); err != nil {
 		slog.Warn("autoawake: uninstall stale KeepAwake failed",
 			"udid", udid, "alias", alias, "error", summariseErr(err))
@@ -603,6 +623,10 @@ func (s *Supervisor) advance(udid, alias string, class errorClass, err error) {
 		s.dismissAlerts(udid)
 	case classStaleInstall:
 		slog.Warn("autoawake: KeepAwake has stale provisioning profile; uninstalling and reinstalling",
+			"udid", udid, "alias", alias)
+		s.dismissAlerts(udid)
+	case classStaleBuild:
+		slog.Info("autoawake: KeepAwake source-version drift; uninstalling and reinstalling to redeploy",
 			"udid", udid, "alias", alias)
 		s.dismissAlerts(udid)
 	case classOther:
