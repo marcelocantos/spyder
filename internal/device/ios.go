@@ -36,6 +36,16 @@ var ErrLocked = errors.New("device is locked")
 // context for the investigation.
 const KeepAwakeBundleID = "com.marcelocantos.spyder.KeepAwake"
 
+// AppState* are the values returned by KeepAwakeState (and by the
+// underlying bridge AppState endpoint). The bridge collapses iOS's
+// fine-grained BackBoard taxonomy onto these three buckets — enough
+// for autoawake to decide between converged / opt-out / launch.
+const (
+	AppStateRunning      = "running"
+	AppStateBackgrounded = "backgrounded"
+	AppStateTerminated   = "terminated"
+)
+
 // keepAwakeLaunchLockedPattern matches devicectl output indicating the
 // device is locked / passcode-protected. The exact message varies across
 // iOS / macOS versions; we keep the matcher generous.
@@ -105,61 +115,35 @@ func (a *IOSAdapter) KeepAwakeInstalled(id string) (bool, error) {
 	return false, nil
 }
 
-// KeepAwakeRunning reports whether a KeepAwake process is currently
-// running on the device. Implemented as a `xcrun devicectl device info
-// processes` JSON query filtered for an executableUrl ending in
-// `/KeepAwake.app/KeepAwake`. Used by autoawake's convergence loop
-// (🎯T32) to short-circuit launch when the app is already foregrounded.
+// KeepAwakeState reports KeepAwake's lifecycle state on the device:
+// "running" (foregrounded), "backgrounded" (suspended or background-
+// running), or "terminated" (not present in the BackBoard state list).
+// Routes through the pmd3 bridge's /v1/app_state endpoint, which
+// subscribes to the DVT mobile-notifications service, drains the
+// initial state-enumeration burst, and returns the matching entry's
+// state_description.
 //
-// Note: this asserts the process is *running*, not that the app is
-// foregrounded. KeepAwake is a single-purpose app — the only reason
-// to launch it is to foreground it, and once running it's the foreground
-// app until the user task-switches. Foreground detection per-process
-// would require DVT instruments which we deliberately avoid in autoawake.
+// Used by autoawake's convergence loop to detect user-initiated
+// opt-out: a Running → backgrounded transition for KeepAwake (observed
+// across two ticks) means the user swiped away from KeepAwake or
+// launched another app; either way, autoawake should stay passive
+// until the user explicitly re-foregrounds KeepAwake.
 //
-// Returns (false, nil) on a successful query that finds no matching
-// process; (false, error) on a devicectl failure (caller can treat as
-// "unknown" and proceed to launch).
-func (a *IOSAdapter) KeepAwakeRunning(id string) (bool, error) {
+// Returns ("", error) when the bridge is unavailable; callers can
+// treat that as "unknown" and skip the convergence step rather than
+// triggering a relaunch on partial information.
+func (a *IOSAdapter) KeepAwakeState(id string) (string, error) {
 	if id == "" {
-		return false, errors.New("device identifier is empty")
+		return "", errors.New("device identifier is empty")
 	}
-	tmp, err := os.MkdirTemp("", "spyder-devctl-procs-*")
+	if a.bridge == nil {
+		return "", errNoBridge
+	}
+	state, _, err := a.bridge.AppState(context.Background(), id, KeepAwakeBundleID)
 	if err != nil {
-		return false, fmt.Errorf("mkdir temp: %w", err)
+		return "", fmt.Errorf("app_state on %s: %w", id, err)
 	}
-	defer os.RemoveAll(tmp)
-	jsonPath := filepath.Join(tmp, "procs.json")
-	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "--timeout",
-		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "info", "processes",
-		"--device", id, "--quiet", "--json-output", jsonPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return false, fmt.Errorf("devicectl device info processes: %w\n%s",
-			err, truncate(string(out), 200))
-	}
-	data, err := os.ReadFile(jsonPath)
-	if err != nil {
-		return false, fmt.Errorf("read devicectl processes JSON: %w", err)
-	}
-	var doc struct {
-		Result struct {
-			RunningProcesses []struct {
-				ExecutableURL string `json:"executableUrl"`
-			} `json:"runningProcesses"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return false, fmt.Errorf("decode devicectl processes JSON: %w", err)
-	}
-	const keepAwakeExecSuffix = "/KeepAwake.app/KeepAwake"
-	for _, p := range doc.Result.RunningProcesses {
-		if strings.HasSuffix(p.ExecutableURL, keepAwakeExecSuffix) {
-			return true, nil
-		}
-	}
-	return false, nil
+	return state, nil
 }
 
 // LaunchKeepAwake foregrounds the KeepAwake companion app on the device via

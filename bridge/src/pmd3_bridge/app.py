@@ -40,6 +40,8 @@ from .schemas import (
     ListAppsRequest,
     ListAppsResponse,
     ListDevicesResponse,
+    AppStateRequest,
+    AppStateResponse,
     PidForBundleRequest,
     PidForBundleResponse,
     RefreshPowerAssertionRequest,
@@ -209,6 +211,18 @@ async def pid_for_bundle(body: PidForBundleRequest) -> Any:
         return PidForBundleResponse(pid=pid)
     except BridgeError as exc:
         log.warning("pid_for_bundle udid=%s bundle=%s failed code=%s message=%s",
+                    body.udid, body.bundle_id, exc.code, exc.message)
+        return _classify(exc)
+
+
+@app.post("/v1/app_state", response_model=AppStateResponse)
+async def app_state(body: AppStateRequest) -> Any:
+    log.debug("app_state udid=%s bundle=%s", body.udid, body.bundle_id)
+    try:
+        state, desc = await _services.app_state(body.udid, body.bundle_id)
+        return AppStateResponse(state=state, description=desc)
+    except BridgeError as exc:
+        log.warning("app_state udid=%s bundle=%s failed code=%s message=%s",
                     body.udid, body.bundle_id, exc.code, exc.message)
         return _classify(exc)
 

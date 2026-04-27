@@ -29,7 +29,7 @@ principle, but `adb` itself is cross-platform; spyder doesn't add value to
 adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.22.0`.
+Snapshot as of `v0.23.0`.
 
 ## Interaction surface catalogue
 
@@ -430,11 +430,18 @@ builds. **Stable.**
   SwiftUI app sets `UIApplication.isIdleTimerDisabled = true` while
   foregrounded and exits on `batteryState == .unplugged` so iOS reclaims
   the slot when the cable is pulled. Autoawake runs a convergence loop
-  (🎯T32): every 15 s it observes whether KeepAwake is running on each
-  connected device, installs (xcodebuild + devicectl) when absent,
-  launches when not running, and re-tests human-gate states (locked,
-  needs-trust, needs-developer-mode) each tick so user-side resolutions
-  are detected without re-plugging. The "connected" filter is wired-only
+  (🎯T32): every 15 s it queries KeepAwake's BackBoard lifecycle state
+  via the bridge's `app_state` endpoint (DVT mobile-notifications under
+  the hood), installs (xcodebuild + devicectl) when absent, launches
+  when terminated, and re-tests human-gate states (locked, needs-trust,
+  needs-developer-mode) each tick so user-side resolutions are detected
+  without re-plugging. **User opt-out semantics (v0.23.0):** a `Running
+  → backgrounded` transition for KeepAwake — caused either by swiping
+  to home or by launching another app — is treated as the user
+  expressing they don't want autoawake to fight; the supervisor
+  transitions to `classUserOptOut` and stays passive (even if iOS later
+  reaps the suspended KeepAwake) until the user re-foregrounds
+  KeepAwake or unplugs the device. The "connected" filter is wired-only
   (`devicectl transportType=wired`); Wi-Fi-reachable devices are
   excluded so they don't fight KeepAwake's unplugged self-exit in a
   relaunch loop. Per-developer signing identity required (free-tier

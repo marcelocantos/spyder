@@ -2,30 +2,39 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package autoawake keeps attached iOS devices awake by ensuring the
-// KeepAwake companion app is running on each one. The supervisor runs
-// a convergence loop (🎯T32, redesigned 2026-04-25): rather than
-// latching gate states on first sight and only re-checking on re-plug,
-// each tick observes the *current* state of every connected device and
-// drives toward the desired state ("KeepAwake foregrounded").
+// home screen is never the active surface. The supervisor runs a
+// convergence loop (🎯T32; redesigned 2026-04-27 to honour user
+// opt-out): each tick observes KeepAwake's lifecycle state on every
+// connected device and drives toward the desired state — either
+// "KeepAwake foregrounded" or "user has explicitly opted out by
+// backgrounding KeepAwake" (a swipe to home or a deliberate launch of
+// another app are both treated as opt-out). KeepAwake is just the
+// default strategy when the user hasn't expressed a preference.
 //
 // Loop:
 //
 //  1. Every pollInterval, enumerate connected iOS devices via
 //     IOSAdapter.List. New devices kick off an immediate convergence
 //     step in a goroutine; departed devices have their alerts dismissed
-//     and observation state pruned.
+//     and observation state pruned (which clears any opt-out — replug
+//     is a fresh slate).
 //  2. Every convergeInterval, run convergence on every still-present
-//     device. This is what catches user-side resolutions of human
-//     gates (the user trusted the developer cert, unlocked the device,
-//     toggled Developer Mode, etc.) — observations are re-tested, the
-//     resolved gate is no longer in effect, and we proceed.
+//     device. This catches user-side resolutions of human gates AND
+//     user-driven app-state transitions (re-opening KeepAwake clears
+//     opt-out, swiping away from KeepAwake sets it).
 //
 // Convergence per device:
 //
-//  1. Is KeepAwake running? (devicectl process query) → done.
-//  2. Is KeepAwake installed? (devicectl apps query) → if no, attempt
-//     install (xcodebuild + devicectl install), then proceed.
-//  3. Try to launch via devicectl. Errors classify into:
+//  1. Query KeepAwake's BackBoard state via the bridge.
+//  2. Apply the transition rule (see deviceObs.userOptOut docs):
+//     prev=Running, curr=Backgrounded → set userOptOut.
+//     prev=Backgrounded, curr=Running → clear userOptOut.
+//  3. Decide:
+//     - state=running                 → classConverged.
+//     - state=backgrounded            → classUserOptOut (don't fight).
+//     - state=terminated, !userOptOut → install + launch (existing path).
+//     - state=terminated, userOptOut  → classUserOptOut.
+//  4. Errors during launch classify into the existing error tree:
 //     - locked: fire idempotent macOS alert; convergence next tick may
 //     succeed once the user unlocks.
 //     - needs-trust: fire idempotent macOS alert; once the user trusts
@@ -84,6 +93,7 @@ type errorClass int
 const (
 	classUnknown errorClass = iota
 	classConverged
+	classUserOptOut
 	classLocked
 	classNeedsTrust
 	classNeedsDeveloperMode
@@ -97,6 +107,8 @@ func (c errorClass) String() string {
 	switch c {
 	case classConverged:
 		return "converged"
+	case classUserOptOut:
+		return "user-opt-out"
 	case classLocked:
 		return "locked"
 	case classNeedsTrust:
@@ -125,6 +137,23 @@ type deviceObs struct {
 	// when the class changes.
 	lastClass errorClass
 
+	// lastKAState is KeepAwake's BackBoard state observed on the
+	// previous tick — one of "running", "backgrounded", "terminated",
+	// or "" before the first observation. Used to detect transitions:
+	// only the prev=running → curr=backgrounded transition counts as
+	// the user's opt-out signal (a steady backgrounded reading on
+	// fresh attach is ambiguous and left alone).
+	lastKAState string
+
+	// userOptOut is set when the user has expressed they don't want
+	// autoawake to fight: by swiping away from KeepAwake or launching
+	// another app (both surface as a Running → backgrounded transition
+	// in KeepAwake's lifecycle). Cleared on a backgrounded → running
+	// transition (user re-foregrounded KeepAwake) or on device
+	// departure. While set, autoawake observes but does not act —
+	// it stays passive even if iOS later kills KeepAwake outright.
+	userOptOut bool
+
 	// lockAlertGroup non-empty when a macOS lock alert is currently
 	// displayed for this device. Cleared when the alert is dismissed.
 	lockAlertGroup string
@@ -138,7 +167,7 @@ type deviceObs struct {
 // starting real devicectl processes.
 type iosAdapter interface {
 	List() ([]device.Info, error)
-	KeepAwakeRunning(id string) (bool, error)
+	KeepAwakeState(id string) (string, error)
 	KeepAwakeInstalled(id string) (bool, error)
 	LaunchKeepAwake(id string) error
 	UninstallApp(id, bundleID string) error
@@ -291,9 +320,10 @@ func (s *Supervisor) convergeAll(ctx context.Context) {
 }
 
 // converge observes the current state of one device and drives toward
-// the desired state (KeepAwake foregrounded). Errors classify into
-// errorClass values; transitions between classes emit log/alert
-// side-effects via advance().
+// the desired state (any user app foregrounded — KeepAwake is just the
+// default strategy when nothing else is up, and the user can opt out
+// by backgrounding KeepAwake). Errors classify into errorClass values;
+// transitions between classes emit log/alert side-effects via advance().
 func (s *Supervisor) converge(ctx context.Context, udid string) {
 	if ctx.Err() != nil {
 		return
@@ -313,15 +343,41 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 		}
 	}
 
-	// 1) Fast path: if KeepAwake is already running, we're converged.
-	if running, err := s.ios.KeepAwakeRunning(udid); err == nil && running {
+	// 1) Observe KeepAwake's lifecycle state and update the per-device
+	// transition record. updateKAState applies the opt-out/clear rules
+	// based on the prev/curr pair and returns the freshly-observed
+	// state plus the in-effect userOptOut flag.
+	state, err := s.ios.KeepAwakeState(udid)
+	if err != nil {
+		slog.Debug("autoawake: KeepAwakeState probe failed; skipping tick",
+			"udid", udid, "alias", alias, "error", summariseErr(err))
+		return
+	}
+	optedOut := s.recordKAState(udid, state)
+
+	// 2) Decide based on (state, optedOut):
+	//    - running        → converged.
+	//    - backgrounded   → user-opt-out (stay passive).
+	//    - terminated:
+	//      - if optedOut  → user-opt-out (stay passive).
+	//      - else         → install (if needed) + launch.
+	switch state {
+	case device.AppStateRunning:
 		s.advance(udid, alias, classConverged, nil)
+		return
+	case device.AppStateBackgrounded:
+		s.advance(udid, alias, classUserOptOut, nil)
+		return
+	}
+	// state == AppStateTerminated.
+	if optedOut {
+		s.advance(udid, alias, classUserOptOut, nil)
 		return
 	}
 
-	// 2) If KeepAwake isn't installed, run the transparent install
-	// cycle. attemptInstall handles its own classification on failure;
-	// on success we fall through to step 3.
+	// 3) KeepAwake not present and user hasn't opted out — install if
+	// needed, then launch. attemptInstall handles its own classification
+	// on failure; on success we fall through to launch.
 	installed, err := s.ios.KeepAwakeInstalled(udid)
 	if err != nil {
 		slog.Debug("autoawake: KeepAwakeInstalled probe failed; assuming installed",
@@ -334,7 +390,7 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 		}
 	}
 
-	// 3) Installed but not running — try to launch. Classify on error.
+	// 4) Installed but not running — try to launch. Classify on error.
 	launchErr := s.ios.LaunchKeepAwake(udid)
 	if launchErr == nil {
 		s.advance(udid, alias, classConverged, nil)
@@ -356,6 +412,45 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 	default:
 		s.advance(udid, alias, classOther, launchErr)
 	}
+}
+
+// recordKAState updates the per-device KeepAwake-state record and
+// applies the opt-out transition rules. Returns the in-effect
+// userOptOut flag for use by the caller.
+//
+// Transitions:
+//
+//	running       → backgrounded   set userOptOut (user swiped away or
+//	                                launched another app).
+//	backgrounded  → running        clear userOptOut (user re-foregrounded
+//	                                KeepAwake — a clear "I want this back"
+//	                                signal).
+//	any           → running        also clear userOptOut (defensive: we
+//	                                may have missed the backgrounded tick).
+//	terminated    → terminated     no change (ambiguous — could be a
+//	                                fresh attach or iOS reaping a long-
+//	                                opted-out KeepAwake).
+//	any           → terminated     no change (preserve opt-out across
+//	                                eventual iOS reap of suspended KA).
+//
+// Steady-state observations (curr == prev) are silent — only edges
+// flip the flag.
+func (s *Supervisor) recordKAState(udid, curr string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	obs, ok := s.obs[udid]
+	if !ok {
+		return false
+	}
+	prev := obs.lastKAState
+	obs.lastKAState = curr
+	switch {
+	case prev == device.AppStateRunning && curr == device.AppStateBackgrounded:
+		obs.userOptOut = true
+	case curr == device.AppStateRunning:
+		obs.userOptOut = false
+	}
+	return obs.userOptOut
 }
 
 // attemptInstall runs the transparent install cycle (🎯T32) for a
@@ -479,6 +574,10 @@ func (s *Supervisor) advance(udid, alias string, class errorClass, err error) {
 	switch class {
 	case classConverged:
 		slog.Info("autoawake: KeepAwake foregrounded", "udid", udid, "alias", alias)
+		s.dismissAlerts(udid)
+	case classUserOptOut:
+		slog.Info("autoawake: user dismissed KeepAwake — staying passive until they re-foreground it (or the device is unplugged)",
+			"udid", udid, "alias", alias)
 		s.dismissAlerts(udid)
 	case classLocked:
 		s.ensureLockAlert(udid, alias)
