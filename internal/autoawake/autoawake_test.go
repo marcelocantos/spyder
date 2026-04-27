@@ -72,16 +72,18 @@ func TestSupervisorNilBridge_RunExitsImmediately(t *testing.T) {
 // Fields are set per-scenario; zero values give sane defaults
 // (state="terminated", not installed, launch returns nil).
 type fakeIOSAdapter struct {
-	listDevices  []device.Info
-	listErr      error
-	kaState      string // returned by KeepAwakeState; "" means terminated
-	kaStateErr   error
-	installed    bool
-	installedErr error
-	launchErr    error // returned by LaunchKeepAwake
-	launchErrN   int32 // counts LaunchKeepAwake calls (atomic)
-	uninstallErr error
-	uninstallN   int32 // counts UninstallApp calls (atomic)
+	listDevices     []device.Info
+	listErr         error
+	kaState         string // returned by KeepAwakeState; "" means terminated
+	kaStateErr      error
+	installed       bool
+	installedErr    error
+	installedVer    string // returned by KeepAwakeInstalledVersion
+	installedVerErr error
+	launchErr       error // returned by LaunchKeepAwake
+	launchErrN      int32 // counts LaunchKeepAwake calls (atomic)
+	uninstallErr    error
+	uninstallN      int32 // counts UninstallApp calls (atomic)
 }
 
 func (f *fakeIOSAdapter) List() ([]device.Info, error) {
@@ -98,6 +100,9 @@ func (f *fakeIOSAdapter) KeepAwakeState(_ string) (string, error) {
 }
 func (f *fakeIOSAdapter) KeepAwakeInstalled(_ string) (bool, error) {
 	return f.installed, f.installedErr
+}
+func (f *fakeIOSAdapter) KeepAwakeInstalledVersion(_ string) (string, error) {
+	return f.installedVer, f.installedVerErr
 }
 func (f *fakeIOSAdapter) LaunchKeepAwake(_ string) error {
 	atomic.AddInt32(&f.launchErrN, 1)
@@ -405,6 +410,118 @@ func TestConverge_StateProbeError_SkipsTick(t *testing.T) {
 	s.mu.Unlock()
 	if obs.lastClass != classUnknown {
 		t.Errorf("class = %s; want classUnknown (no advance on probe failure)", obs.lastClass)
+	}
+}
+
+// TestConverge_StaleBuild_TriggersReinstall: when the installed
+// CFBundleShortVersionString doesn't match the source-pbxproj
+// MARKETING_VERSION, autoawake must uninstall + advance to
+// classStaleBuild before falling through to the install/launch path.
+// This is how a manual MARKETING_VERSION bump propagates to existing
+// devices.
+func TestConverge_StaleBuild_TriggersReinstall(t *testing.T) {
+	// expected version comes from the bundled pbxproj — read it once
+	// so the test is self-checking against whatever version is current.
+	expected, err := device.ExpectedKeepAwakeVersion()
+	if err != nil || expected == "" {
+		t.Fatalf("ExpectedKeepAwakeVersion() = %q, err=%v; want a parseable value", expected, err)
+	}
+
+	fake := &fakeIOSAdapter{
+		kaState:      device.AppStateRunning,
+		installed:    true,
+		installedVer: expected + "-stale", // guaranteed mismatch
+	}
+	s := newSupervisorWithObs(t, fake, "U-stale")
+
+	s.converge(context.Background(), "U-stale")
+
+	if n := atomic.LoadInt32(&fake.uninstallN); n != 1 {
+		t.Errorf("UninstallApp called %d times; want 1 on stale-build", n)
+	}
+	s.mu.Lock()
+	obs := s.obs["U-stale"]
+	s.mu.Unlock()
+	if obs.lastClass == classConverged {
+		t.Errorf("class = converged; staleness check should have fired before converged decision")
+	}
+}
+
+// TestConverge_FreshBuild_NoReinstall: when installed version matches
+// source MARKETING_VERSION, the staleness check is silent — no
+// uninstall, the normal converged path runs.
+func TestConverge_FreshBuild_NoReinstall(t *testing.T) {
+	expected, err := device.ExpectedKeepAwakeVersion()
+	if err != nil || expected == "" {
+		t.Fatalf("ExpectedKeepAwakeVersion() = %q, err=%v; want a parseable value", expected, err)
+	}
+
+	fake := &fakeIOSAdapter{
+		kaState:      device.AppStateRunning,
+		installed:    true,
+		installedVer: expected,
+	}
+	s := newSupervisorWithObs(t, fake, "U-fresh")
+
+	s.converge(context.Background(), "U-fresh")
+
+	if n := atomic.LoadInt32(&fake.uninstallN); n != 0 {
+		t.Errorf("UninstallApp called %d times; want 0 on fresh build", n)
+	}
+	s.mu.Lock()
+	obs := s.obs["U-fresh"]
+	s.mu.Unlock()
+	if obs.lastClass != classConverged {
+		t.Errorf("class = %s; want classConverged", obs.lastClass)
+	}
+}
+
+// TestConverge_StaleBuildButOptedOut_RespectsOptOut: opt-out wins
+// over staleness. A user who deliberately backgrounded KeepAwake
+// shouldn't have it forcibly redeployed underneath them — the
+// reinstall would kick a foreground app off.
+func TestConverge_StaleBuildButOptedOut_RespectsOptOut(t *testing.T) {
+	expected, err := device.ExpectedKeepAwakeVersion()
+	if err != nil || expected == "" {
+		t.Fatalf("ExpectedKeepAwakeVersion() = %q, err=%v; want a parseable value", expected, err)
+	}
+
+	fake := &fakeIOSAdapter{
+		kaState:      device.AppStateRunning,
+		installed:    true,
+		installedVer: expected + "-stale",
+	}
+	s := newSupervisorWithObs(t, fake, "U-optout-stale")
+
+	// Tick 1: observe Running, version matches at start of test isn't
+	// stale yet — we rig this differently. Drive the opt-out transition
+	// directly by manipulating obs, then mutate kaState.
+	s.converge(context.Background(), "U-optout-stale") // state=Running, but installedVer is stale → reinstall fires
+	// On second thought: this scenario requires opt-out THEN stale.
+	// Reset for the proper sequence:
+	atomic.StoreInt32(&fake.uninstallN, 0)
+	s.mu.Lock()
+	s.obs["U-optout-stale"] = &deviceObs{
+		lastClass:   classUnknown,
+		lastKAState: device.AppStateRunning,
+		userOptOut:  false,
+	}
+	s.mu.Unlock()
+	fake.kaState = device.AppStateBackgrounded // user just swiped away
+
+	s.converge(context.Background(), "U-optout-stale")
+
+	s.mu.Lock()
+	obs := s.obs["U-optout-stale"]
+	s.mu.Unlock()
+	if !obs.userOptOut {
+		t.Error("userOptOut not set after Running→backgrounded")
+	}
+	if obs.lastClass != classUserOptOut {
+		t.Errorf("class = %s; want classUserOptOut", obs.lastClass)
+	}
+	if n := atomic.LoadInt32(&fake.uninstallN); n != 0 {
+		t.Errorf("UninstallApp called %d; opt-out must beat staleness", n)
 	}
 }
 

@@ -29,7 +29,7 @@ principle, but `adb` itself is cross-platform; spyder doesn't add value to
 adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.23.0`.
+Snapshot as of `v0.24.0`.
 
 ## Interaction surface catalogue
 
@@ -447,7 +447,18 @@ builds. **Stable.**
   relaunch loop. Per-developer signing identity required (free-tier
   Apple ID suffices). pmd3's `PowerAssertionService` was attempted as a
   drop-in replacement in v0.6.0–v0.8.0 but is a no-op for display sleep
-  on iOS; reverted in v0.9.0 (🎯T31).
+  on iOS; reverted in v0.9.0 (🎯T31). **Build-version drift detection
+  (v0.24.0):** every convergence tick compares the on-device bundle's
+  `CFBundleShortVersionString` (via `devicectl info apps`) to the
+  source-of-truth `MARKETING_VERSION` parsed from the bundled
+  `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`; on mismatch
+  (and provided the user hasn't opted out) autoawake uninstalls,
+  rebuilds, and reinstalls so a manual version bump propagates to
+  existing devices. Versioning is manual: bump `MARKETING_VERSION` in
+  both Debug and Release buildSettings blocks of the pbxproj whenever
+  `ios/KeepAwake/Sources/` changes in a way that should be
+  redeployed. The string is opaque — semver, semver-with-suffix
+  (`0.2.0-rc1`), date-based (`2026.04.27`), all work.
 - **Tunneld lifecycle.** iOS 17+ screenshot and any future
   DVT-instrument operations need an active RSD tunnel for the device.
   spyder's bridge expects an externally-managed `pymobiledevice3 remote
