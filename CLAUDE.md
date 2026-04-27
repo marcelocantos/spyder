@@ -74,6 +74,24 @@ JSON array at `~/.spyder/inventory.json`:
 - Tool names are unprefixed (`devices`, not `spyder_devices`); MCP clients
   add the server-name prefix at their end.
 
+## KeepAwake versioning
+
+**Whenever `ios/KeepAwake/Sources/` changes, bump
+`MARKETING_VERSION` in `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`
+in BOTH the Debug and Release `buildSettings` blocks.** This is
+the only signal autoawake has to detect that the on-device build
+is stale and trigger a redeploy (uninstall → rebuild → reinstall →
+relaunch on the next convergence tick). Without a bump, source
+changes sit in the repo with no path out to existing devices.
+
+- PATCH bump for behaviour-preserving tweaks (drift speed, colours).
+- MINOR bump for behavioural changes (new lifecycle hook, new
+  exit condition).
+- Independent of spyder's release version — the iOS app's version
+  is its own.
+- The string is opaque to spyder: semver, semver-with-suffix
+  (`0.2.0-rc1`), date-based (`2026.04.27`) all work.
+
 ## TODO
 
 See [docs/TODO.md](docs/TODO.md).
