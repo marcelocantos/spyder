@@ -44,12 +44,14 @@ git cat-file -e "$report_sha" 2>/dev/null \
 
 # Source paths that invalidate the report when they differ between the
 # recorded SHA and HEAD. docs/, README.md, CLAUDE.md, targets.md are
-# intentionally not in the list.
+# intentionally not in the list. Top-level *.go is globbed so adding a
+# new top-level Go file (cli_visual.go, hermeticity_test.go, etc.) is
+# covered automatically without needing to amend this list (🎯T39).
 source_paths=(
   internal/
   bridge/src/
   bridge/tests/
-  main.go
+  ./*.go
   Makefile
   go.mod
   go.sum

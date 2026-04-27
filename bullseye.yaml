@@ -921,7 +921,41 @@ targets:
     status: set_aside
     value: 0.0
     cost: 0.0
-    set_aside_reason: Parked. Investigation produced the prototype `/v1/device_power_state` endpoint (shipped in v0.17.0) and a design paper enumerating candidates, but the third acceptance criterion — a mechanical `TestDevice_StaysAwake_Mechanical` — was abandoned 2026-04-26. The test was conflating a host-side power assertion with the iPad's actual stay-awake mechanism (foregrounded KeepAwake app), and DevicePowerState is not a trustworthy oracle. Production stay-awake correctness is covered by the `autoawake.Supervisor` keeping KeepAwake foregrounded (iOS guarantees screen-on from there) plus the fd-leak guard in 🎯T27 plus operator observation. Revisit only if production usage surfaces a regression those don't catch. See `docs/papers/t29-device-state-detection.md` for the full disposition note.
+    set_aside_reason: |-
+      Won't fix. Reclassified 2026-04-27 from parked to wont-fix on
+      reflection: T29 was speculative test coverage searching for an
+      unknown failure mode, not a known invariant in need of a guard.
+      The thing it was trying to catch — "iPad sleeps when spyder
+      thinks it's awake" — is already covered by three independent
+      existing mechanisms:
+
+      1. `autoawake.Supervisor` keeps KeepAwake foregrounded; iOS
+         guarantees screen-on while a foregrounded app holds it. The
+         load-bearing invariant.
+      2. The supervisor's `isKeepAwakeRunning` check (pmd3
+         `process-id-for-bundle-id`) catches the silently-exited-
+         KeepAwake case; the supervisor relaunches.
+      3. 🎯T27's fd-leak regression test guards the specific regression
+         that motivated stay-awake monitoring in the first place.
+
+      For T29 to catch something those miss would require a new failure
+      mode no one has predicted — at which point the right action is a
+      fresh target scoped to that specific bug, not this speculative
+      one. Tests cover known invariants; they don't fish for unknowns.
+
+      The investigation that produced `/v1/device_power_state` and
+      `docs/papers/t29-device-state-detection.md` still has standalone
+      value (the endpoint is shipped in v0.17.0 and may be useful for
+      other purposes), so this is wont-fix on the *test* aspect, not a
+      rollback of the prototype work.
+
+      Earlier disposition (2026-04-26, parked): the third acceptance
+      criterion — a mechanical `TestDevice_StaysAwake_Mechanical` — was
+      abandoned because it was conflating a host-side power assertion
+      with the iPad's actual stay-awake mechanism (the foregrounded
+      KeepAwake app), and DevicePowerState turned out not to be a
+      trustworthy oracle. See `docs/papers/t29-device-state-detection.md`
+      for the full disposition note.
     acceptance:
     - 'A bridge endpoint (e.g. `/v1/device_power_state`) returns a structured state for a given udid: awake / display-off / asleep / locked / unknown, derived from whatever pmd3 surface is authoritative for the distinction'
     - 'The state is observable without the act of observation changing it — i.e. querying the state does not itself count as user activity and reset the device''s idle timer. Current IOPMrootDomain queries via DiagnosticsService fail this criterion (they reported IOPMUserIsActive: true even against a confirmed-asleep device), so this target rules out that path'
@@ -1274,10 +1308,9 @@ targets:
     achieved: 2026-04-26
   T39:
     name: test-report freshness watch list covers all top-level Go sources, not just main.go
-    status: set_aside
+    status: achieved
     value: 0.0
     cost: 0.0
-    set_aside_reason: Parked — script-hygiene tweak with no fanout. The watch list gap won't bite until the next time someone makes a cli.go-only change AND wants the test-report freshness gate to catch it. Fold into a future maintenance pass when it's a natural sweep rather than warranting its own showcase. 2026-04-27 disposition.
     acceptance:
     - '`scripts/check-test-report-fresh.sh`''s `source_paths` list covers `cli.go`, `cli_visual.go`, and any other top-level `*.go` file alongside `main.go` — either by enumerating them or by switching to a glob (e.g. `*.go` / `./*.go`). After the change, modifying `cli.go` between commits should cause `make bullseye` to flag TEST-REPORT.json as stale (same way `main.go` does today).'
     - 'A regression test or shell snippet in the script (or a sibling test) confirms the watch list catches changes to `cli.go`. Optional but recommended: a unit-style assertion in CI so future top-level `.go` additions don''t quietly fall outside coverage.'
@@ -1294,6 +1327,7 @@ targets:
     - scripts
     origin: forked-from 🎯T38 retirement (2026-04-26)
     discovered: 2026-04-26
+    achieved: 2026-04-27
   T4:
     name: Test-run orchestration auto-restores KeepAwake after xcodebuild test completes
     status: achieved
