@@ -1274,9 +1274,10 @@ targets:
     achieved: 2026-04-26
   T39:
     name: test-report freshness watch list covers all top-level Go sources, not just main.go
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: Parked — script-hygiene tweak with no fanout. The watch list gap won't bite until the next time someone makes a cli.go-only change AND wants the test-report freshness gate to catch it. Fold into a future maintenance pass when it's a natural sweep rather than warranting its own showcase. 2026-04-27 disposition.
     acceptance:
     - '`scripts/check-test-report-fresh.sh`''s `source_paths` list covers `cli.go`, `cli_visual.go`, and any other top-level `*.go` file alongside `main.go` — either by enumerating them or by switching to a glob (e.g. `*.go` / `./*.go`). After the change, modifying `cli.go` between commits should cause `make bullseye` to flag TEST-REPORT.json as stale (same way `main.go` does today).'
     - 'A regression test or shell snippet in the script (or a sibling test) confirms the watch list catches changes to `cli.go`. Optional but recommended: a unit-style assertion in CI so future top-level `.go` additions don''t quietly fall outside coverage.'
