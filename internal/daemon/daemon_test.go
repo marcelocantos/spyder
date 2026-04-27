@@ -24,7 +24,7 @@ import (
 func mcpTestServer(t *testing.T) (base string, teardown func()) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	handler, _, _ := Build(Config{
+	handler, _, _, _ := Build(Config{
 		Version: "test",
 	})
 	ts := httptest.NewServer(handler)

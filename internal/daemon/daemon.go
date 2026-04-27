@@ -64,7 +64,7 @@ func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version,
 		"disable_autoawake", cfg.DisableAutoAwake)
-	handler, resvStore, bridgeSup := Build(cfg)
+	handler, resvStore, bridgeSup, mcpHandler := Build(cfg)
 
 	// bridgeBaseURL / bridgeToken are populated after a successful Start.
 	// autoawake and the liveness probe each construct their own client from
@@ -98,7 +98,13 @@ func Run(ctx context.Context, cfg Config) error {
 		if bridgeSup != nil {
 			awakeBridge = pmd3bridge.NewClient(bridgeBaseURL, bridgeToken)
 		}
-		go autoawake.New(awakeBridge, awakeOpts...).Run(ctx)
+		sv := autoawake.New(awakeBridge, awakeOpts...)
+		// Plumb the supervisor back to the MCP handler so launch_app /
+		// deploy_app can flag spyder-initiated foreground-launches and
+		// suppress the opt-out edge that would otherwise misfire when
+		// the launch backgrounds KeepAwake (🎯T48).
+		mcpHandler.SetAutoawakeNotifier(sv)
+		go sv.Run(ctx)
 	}
 
 	slog.Info("spyder listening",
@@ -141,7 +147,7 @@ func Run(ctx context.Context, cfg Config) error {
 // The returned Supervisor is non-nil when the bridge binary was found and
 // should be started by the caller; it is nil when the bridge is unavailable
 // (graceful degradation).
-func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Supervisor) {
+func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Supervisor, *spydermcp.Handler) {
 	srv := server.NewMCPServer(
 		"spyder",
 		cfg.Version,
@@ -253,7 +259,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv,
 		server.WithHeartbeatInterval(30*time.Second)))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
-	return mux, resvStore, bridgeSup
+	return mux, resvStore, bridgeSup, handler
 }
 
 // resolveBridgeBinary returns the path to the pmd3-bridge binary.

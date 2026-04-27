@@ -44,6 +44,17 @@ type PoolManager interface {
 	PoolDrain(template string) error
 }
 
+// AutoawakeNotifier is the subset of *autoawake.Supervisor used by the
+// MCP launch handlers to inform the convergence loop that spyder
+// itself just foregrounded a non-KeepAwake bundle. autoawake uses the
+// signal to suppress the Running → backgrounded opt-out edge that
+// would otherwise fire when the launch pushes KeepAwake out of the
+// foreground. Defined as an interface so the mcp package doesn't
+// import autoawake (and tests can pass a fake).
+type AutoawakeNotifier interface {
+	NoteAppLaunched(udid, bundleID string)
+}
+
 // Handler implements the spyder tool handler.
 type Handler struct {
 	mu           sync.Mutex
@@ -58,6 +69,7 @@ type Handler struct {
 	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
 	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
 	bridge       *pmd3bridge.Client    // optional hook for 🎯T25 pmd3-bridge
+	awake        AutoawakeNotifier     // optional hook for 🎯T48 autoawake opt-out gate
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -115,6 +127,29 @@ func WithPoolResolver(p selector.PoolResolver) HandlerOption {
 // configured" error.
 func WithPoolManager(pm PoolManager) HandlerOption {
 	return func(h *Handler) { h.poolMgr = pm }
+}
+
+// WithAutoawakeNotifier injects the autoawake supervisor (typed
+// against the AutoawakeNotifier interface) so launch_app /
+// deploy_app handlers can flag a spyder-initiated foreground-launch
+// of a non-KeepAwake bundle. The convergence loop reads the marker
+// to suppress the Running → backgrounded opt-out edge for
+// orchestration-driven backgroundings. Optional — when omitted,
+// autoawake's opt-out behaviour reverts to the v0.23/v0.24 semantics
+// (any backgrounding looks like opt-out).
+func WithAutoawakeNotifier(a AutoawakeNotifier) HandlerOption {
+	return func(h *Handler) { h.awake = a }
+}
+
+// SetAutoawakeNotifier is the post-construction equivalent of
+// WithAutoawakeNotifier. The daemon uses it to bind the MCP handler
+// to the autoawake supervisor only after the bridge has started and
+// the supervisor's pmd3bridge.Client could be constructed — both of
+// which happen after Build() returns.
+func (h *Handler) SetAutoawakeNotifier(a AutoawakeNotifier) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.awake = a
 }
 
 // WithPMD3Bridge injects the pmd3-bridge client (🎯T25). The iOS adapter is

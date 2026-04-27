@@ -29,7 +29,7 @@ principle, but `adb` itself is cross-platform; spyder doesn't add value to
 adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.24.0`.
+Snapshot as of `v0.25.0`.
 
 ## Interaction surface catalogue
 
@@ -435,13 +435,20 @@ builds. **Stable.**
   the hood), installs (xcodebuild + devicectl) when absent, launches
   when terminated, and re-tests human-gate states (locked, needs-trust,
   needs-developer-mode) each tick so user-side resolutions are detected
-  without re-plugging. **User opt-out semantics (v0.23.0):** a `Running
-  → backgrounded` transition for KeepAwake — caused either by swiping
-  to home or by launching another app — is treated as the user
-  expressing they don't want autoawake to fight; the supervisor
-  transitions to `classUserOptOut` and stays passive (even if iOS later
-  reaps the suspended KeepAwake) until the user re-foregrounds
-  KeepAwake or unplugs the device. The "connected" filter is wired-only
+  without re-plugging. **User opt-out semantics (v0.23.0, refined v0.25.0):** a
+  `Running → backgrounded` transition for KeepAwake is treated as
+  the user expressing they don't want autoawake to fight (e.g. they
+  swiped KeepAwake to the home screen); the supervisor transitions
+  to `classUserOptOut` and stays passive (even if iOS later reaps
+  the suspended KeepAwake) until the user re-foregrounds KeepAwake
+  or unplugs the device. **Spyder-initiated launches don't count
+  as opt-out (v0.25.0):** when the MCP `launch_app` / `deploy_app`
+  handlers foreground a non-KeepAwake bundle on the user's behalf,
+  they call `Supervisor.NoteAppLaunched(udid, bundleID)`; the next
+  Running → backgrounded transition observed within
+  `recentLaunchWindow` (30 s) is suppressed, so legitimate
+  orchestration (running a test app, deploying a bundle, etc.)
+  doesn't disable autoawake. The "connected" filter is wired-only
   (`devicectl transportType=wired`); Wi-Fi-reachable devices are
   excluded so they don't fight KeepAwake's unplugged self-exit in a
   relaunch loop. Per-developer signing identity required (free-tier
