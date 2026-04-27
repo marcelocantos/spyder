@@ -347,6 +347,13 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 	if err := adapter.LaunchApp(id, bundleID); err != nil {
 		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
 	}
+	if h.awake != nil {
+		// Tell autoawake's convergence loop that spyder itself just
+		// foregrounded another bundle on this device. Without this, the
+		// next tick's KeepAwake state probe would see Running → background-
+		// ed and misread it as user opt-out (🎯T48).
+		h.awake.NoteAppLaunched(id, bundleID)
+	}
 	return toolText(fmt.Sprintf("launched %s on %s", bundleID, dev))
 }
 
@@ -1349,6 +1356,10 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 	// Step 3: launch.
 	if err := adapter.LaunchApp(id, bundleID); err != nil {
 		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
+	}
+	if h.awake != nil {
+		// Same opt-out-suppression hook as handleLaunchApp (🎯T48).
+		h.awake.NoteAppLaunched(id, bundleID)
 	}
 
 	// Step 4: verify new PID.

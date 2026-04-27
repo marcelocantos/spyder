@@ -82,6 +82,17 @@ const (
 	// gates. A 15 s ceiling on user-perceived latency is fine: trust
 	// the cert, wait < 15 s, KeepAwake foregrounds.
 	convergeInterval = 15 * time.Second
+
+	// recentLaunchWindow is how long after a spyder-initiated
+	// foreground-launch of a non-KeepAwake bundle we suppress the
+	// Running → backgrounded opt-out edge. The window must comfortably
+	// exceed BackBoard's app-state propagation latency (observed ~1-2s
+	// between devicectl process launch and the corresponding state-
+	// description transition surfaced by the mobilenotifications DVT
+	// service) AND a full convergeInterval so a launch that fires
+	// just before a tick still suppresses opt-out on the tick after
+	// next. 30 s is comfortable.
+	recentLaunchWindow = 30 * time.Second
 )
 
 // errorClass is the post-classification observation we record per
@@ -149,13 +160,28 @@ type deviceObs struct {
 	lastKAState string
 
 	// userOptOut is set when the user has expressed they don't want
-	// autoawake to fight: by swiping away from KeepAwake or launching
-	// another app (both surface as a Running → backgrounded transition
-	// in KeepAwake's lifecycle). Cleared on a backgrounded → running
-	// transition (user re-foregrounded KeepAwake) or on device
-	// departure. While set, autoawake observes but does not act —
-	// it stays passive even if iOS later kills KeepAwake outright.
+	// autoawake to fight: by swiping away from KeepAwake. Cleared on
+	// a backgrounded → running transition (user re-foregrounded
+	// KeepAwake) or on device departure. While set, autoawake observes
+	// but does not act — it stays passive even if iOS later kills
+	// KeepAwake outright.
+	//
+	// A Running → backgrounded transition that occurs within
+	// recentLaunchWindow of a recordSpyderLaunch call is **not**
+	// treated as opt-out: spyder caused the backgrounding itself by
+	// foregrounding another app on the user's behalf (handleLaunchApp
+	// / handleDeployApp), and reading that as user dismissal would
+	// punish legitimate orchestration. The window has to be wider than
+	// BackBoard's state-propagation latency (observed ~1-2s) so the
+	// next convergence tick reliably catches the launch within it.
 	userOptOut bool
+
+	// spyderLaunchedAt records the wall-clock time of the most recent
+	// non-KeepAwake launch_app / deploy_app call routed through the
+	// MCP/REST handlers for this device. The recordKAState transition
+	// rule consults this marker to suppress the opt-out edge for
+	// spyder-initiated backgroundings.
+	spyderLaunchedAt time.Time
 
 	// lockAlertGroup non-empty when a macOS lock alert is currently
 	// displayed for this device. Cleared when the alert is dismissed.
@@ -438,8 +464,14 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 //
 // Transitions:
 //
-//	running       → backgrounded   set userOptOut (user swiped away or
-//	                                launched another app).
+//	running       → backgrounded   set userOptOut (user swiped to home
+//	                                or task-switched to another app on
+//	                                the device itself) — UNLESS spyder
+//	                                itself just initiated a launch_app /
+//	                                deploy_app for a non-KeepAwake bundle
+//	                                within recentLaunchWindow, in which
+//	                                case the backgrounding is spyder-
+//	                                caused and not user intent.
 //	backgrounded  → running        clear userOptOut (user re-foregrounded
 //	                                KeepAwake — a clear "I want this back"
 //	                                signal).
@@ -464,11 +496,51 @@ func (s *Supervisor) recordKAState(udid, curr string) bool {
 	obs.lastKAState = curr
 	switch {
 	case prev == device.AppStateRunning && curr == device.AppStateBackgrounded:
+		// Suppress opt-out when the backgrounding was caused by a
+		// spyder-mediated launch of another bundle; that's
+		// orchestration on the user's behalf, not dismissal.
+		if !obs.spyderLaunchedAt.IsZero() &&
+			time.Since(obs.spyderLaunchedAt) < recentLaunchWindow {
+			// Consume the marker so a subsequent unrelated
+			// backgrounding (e.g. user genuinely swipes home later)
+			// is interpreted correctly.
+			obs.spyderLaunchedAt = time.Time{}
+			break
+		}
 		obs.userOptOut = true
 	case curr == device.AppStateRunning:
 		obs.userOptOut = false
 	}
 	return obs.userOptOut
+}
+
+// NoteAppLaunched records that spyder has just foregrounded a non-
+// KeepAwake bundle on the device. The autoawake convergence loop uses
+// this to distinguish two indistinguishable-from-iOS state transitions
+// for KeepAwake: a user swipe-to-home (genuine opt-out) vs. spyder's
+// own launch_app / deploy_app pushing KeepAwake out of the foreground
+// (orchestration the user asked for, NOT opt-out). The MCP launch_app
+// and deploy_app handlers call this immediately after a successful
+// launch for any bundle other than KeepAwake itself; the next
+// convergence tick consults the marker when it observes Running →
+// backgrounded.
+//
+// No-op when the device isn't currently observed (prevents creating
+// orphan obs entries for devices the supervisor doesn't track yet).
+// No-op when bundleID equals KeepAwakeBundleID — KeepAwake's own
+// foreground transitions are observed directly via state, not via
+// this hook.
+func (s *Supervisor) NoteAppLaunched(udid, bundleID string) {
+	if bundleID == device.KeepAwakeBundleID {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	obs, ok := s.obs[udid]
+	if !ok {
+		return
+	}
+	obs.spyderLaunchedAt = time.Now()
 }
 
 // attemptInstall runs the transparent install cycle (🎯T32) for a

@@ -525,6 +525,93 @@ func TestConverge_StaleBuildButOptedOut_RespectsOptOut(t *testing.T) {
 	}
 }
 
+// TestNoteAppLaunched_SuppressesOptOut: a Running → backgrounded
+// transition that follows a NoteAppLaunched call within
+// recentLaunchWindow must NOT set userOptOut — that backgrounding
+// was caused by spyder itself foregrounding another app on the
+// user's behalf, not user dismissal of KeepAwake.
+func TestNoteAppLaunched_SuppressesOptOut(t *testing.T) {
+	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
+	s := newSupervisorWithObs(t, fake, "U-launch")
+
+	s.converge(context.Background(), "U-launch") // tick 1: observe Running, baseline state
+
+	// Spyder routes a launch_app for another bundle through the MCP
+	// handler, which forwards via NoteAppLaunched.
+	s.NoteAppLaunched("U-launch", "com.example.app-under-test")
+
+	// Convergence tick observes KeepAwake now backgrounded (iOS pushed
+	// it out of foreground in response to the new app coming up).
+	fake.kaState = device.AppStateBackgrounded
+	s.converge(context.Background(), "U-launch")
+
+	s.mu.Lock()
+	obs := s.obs["U-launch"]
+	s.mu.Unlock()
+	if obs.userOptOut {
+		t.Error("userOptOut set after a spyder-mediated launch caused the backgrounding; should be suppressed")
+	}
+}
+
+// TestNoteAppLaunched_StaleMarkerAllowsOptOut: if recentLaunchWindow
+// has passed since the most recent NoteAppLaunched call, the next
+// Running → backgrounded transition is genuine user intent and must
+// set userOptOut.
+func TestNoteAppLaunched_StaleMarkerAllowsOptOut(t *testing.T) {
+	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
+	s := newSupervisorWithObs(t, fake, "U-launch-stale")
+
+	s.converge(context.Background(), "U-launch-stale")
+
+	// Old launch — well outside the window.
+	s.mu.Lock()
+	s.obs["U-launch-stale"].spyderLaunchedAt = time.Now().Add(-2 * recentLaunchWindow)
+	s.mu.Unlock()
+
+	fake.kaState = device.AppStateBackgrounded
+	s.converge(context.Background(), "U-launch-stale")
+
+	s.mu.Lock()
+	obs := s.obs["U-launch-stale"]
+	s.mu.Unlock()
+	if !obs.userOptOut {
+		t.Error("userOptOut not set despite stale launch marker; genuine swipe-to-home should be honoured")
+	}
+}
+
+// TestNoteAppLaunched_KeepAwakeBundleIsNoOp: NoteAppLaunched for
+// KeepAwake itself must not record a marker — that path is
+// orchestration-internal (autoawake foregrounding KeepAwake) and
+// shouldn't change the suppression behaviour for unrelated future
+// transitions.
+func TestNoteAppLaunched_KeepAwakeBundleIsNoOp(t *testing.T) {
+	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
+	s := newSupervisorWithObs(t, fake, "U-noop")
+
+	before := s.obs["U-noop"].spyderLaunchedAt
+	s.NoteAppLaunched("U-noop", device.KeepAwakeBundleID)
+	after := s.obs["U-noop"].spyderLaunchedAt
+	if !before.Equal(after) {
+		t.Error("NoteAppLaunched(KeepAwakeBundleID) mutated marker; should be a no-op")
+	}
+}
+
+// TestNoteAppLaunched_UnknownDeviceIsNoOp: NoteAppLaunched for a
+// device the supervisor doesn't track must not create an orphan obs
+// entry — that would interfere with the per-device convergence
+// state model.
+func TestNoteAppLaunched_UnknownDeviceIsNoOp(t *testing.T) {
+	fake := &fakeIOSAdapter{}
+	s := New(nil, withIOSAdapter(fake))
+	s.NoteAppLaunched("UNKNOWN", "com.example.app")
+	s.mu.Lock()
+	_, ok := s.obs["UNKNOWN"]
+	s.mu.Unlock()
+	if ok {
+		t.Error("NoteAppLaunched created obs entry for unknown device")
+	}
+}
+
 // TestStatus_ProjectsUserOptOut: Status() must surface the new class
 // so external introspection can distinguish opt-out from converged.
 func TestStatus_ProjectsUserOptOut(t *testing.T) {
