@@ -537,5 +537,5 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 ## 2026-04-27 — /release v0.22.0
 
-- **Commit**: `pending`
+- **Commit**: `f269b43`
 - **Outcome**: Released v0.22.0. Two unrelated changes bundled in PR #67. KeepAwake companion app gains a slow triangle-wave drift (~0.5/0.35 pt/s, 1 Hz tick, `.position()`-based, static bolt) so its content traces a path across the iPad screen over a couple of hours — barely perceptible at seconds-scale, mitigates burn-in on long-lived sessions without being visually distracting. Build invariants split: `make bullseye` (the `/cv` convergence gate) drops the `TEST-REPORT.json` freshness check that was demanding a refresh-and-commit dance on every dev cycle just to see the next frontier target; the freshness check moves to a new `make pre-release` target wired to the existing pre-push hook, where it functions as the CI-substitute the project already relied on. `make bullseye` now reflects the dev-loop invariants (fmt, vet, build, tests, clean tree). No CLI / MCP / REST / config surface changes — STABILITY.md catalogue snapshot bumped to v0.22.0 with no entry edits. Published for darwin-arm64, linux-amd64, linux-arm64.
