@@ -29,7 +29,7 @@ principle, but `adb` itself is cross-platform; spyder doesn't add value to
 adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.20.0`.
+Snapshot as of `v0.21.0`.
 
 ## Interaction surface catalogue
 
@@ -85,10 +85,10 @@ can match on these phrases.
 #### iOS log live-window contract (🎯T38.2)
 
 `logs` and `log_stream` on iOS physical devices are **live-window only**:
-they shell out to `pymobiledevice3 syslog live`, which streams lines as
-they arrive on the device. There is no archived-log query mode — pmd3
-does not expose `OsTraceService` or equivalent through a stable CLI
-surface that spyder can consume reliably.
+they route through the bundled `pmd3-bridge` subprocess, which wraps
+pmd3's `OsTraceService.syslog` and streams entries to the daemon as
+NDJSON over loopback HTTP (🎯T46). There is no archived-log query
+mode — `OsTraceService` exposes a live tail, not a backfill.
 
 The hard rule callers can rely on:
 
@@ -96,7 +96,8 @@ The hard rule callers can rely on:
   to the device** will silently miss lines that occurred before the
   subscription started.
 - The live-tail subscription begins when the spyder daemon receives the
-  `logs` request and pmd3's syslog reader connects (typically <1s).
+  `logs` request and the bridge's `OsTraceService` reader connects
+  (typically <1s).
 - The collector caps the wait at 30s (or `until - now`, whichever is
   smaller) to bound query latency.
 
@@ -113,8 +114,8 @@ iOS simulators and Android devices do not share this constraint —
 simulators read from the host's unified-log store via `xcrun simctl
 spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 
-This contract may relax post-1.0 if pmd3 stabilises an OsTraceService
-binding that spyder can wrap.
+This contract may relax post-1.0 if pmd3 grows a stable archived-log
+query surface that the bridge can wrap.
 
 ### CLI subcommands
 
@@ -419,8 +420,12 @@ builds. **Stable.**
   🎯T26.2; NDJSON/octet-stream streaming with inter-packet deadline,
   🎯T26.3). The bridge binary ships at `libexec/pmd3-bridge/pmd3-bridge` in
   the Homebrew formula. Battery, list_apps, launch/kill_app, crash-report,
-  screenshot (legacy path) surfaces flow through the bridge. Internal to
-  the daemon and not part of the 1.0 stability contract.
+  screenshot, device_power_state, and syslog (🎯T46) surfaces flow
+  through the bridge — every iOS operation that needs `pymobiledevice3`
+  is routed via the bridge so spyder no longer depends on
+  `pymobiledevice3` being on `PATH` at runtime (a real failure mode under
+  launchd-supervised daemons). Internal to the daemon and not part of
+  the 1.0 stability contract.
 - **iOS keep-awake via on-device companion app.** The `ios/KeepAwake/`
   SwiftUI app sets `UIApplication.isIdleTimerDisabled = true` while
   foregrounded and exits on `batteryState == .unplugged` so iOS reclaims

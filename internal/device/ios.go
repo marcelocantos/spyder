@@ -4,7 +4,6 @@
 package device
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -999,33 +998,47 @@ func parseIOSSyslogTimestamp(s string) time.Time {
 	return time.Time{}
 }
 
-// LogRange returns log lines from `pymobiledevice3 syslog live` between
-// since and until. Because pymobiledevice3 does not support archived-log
-// timestamp queries in a stable CLI way, we run the live stream briefly,
-// collecting lines within the window. For bounded historic queries, callers
-// should provide a reasonable since/until window; this implementation
-// falls back to returning the recent live output.
+// syslogEntryToLogLine converts the bridge's structured SyslogEntry into the
+// adapter's LogLine shape. Falls back to time.Now() if the bridge timestamp
+// fails to parse — better to surface the message than to drop it.
+func syslogEntryToLogLine(e pmd3bridge.SyslogEntry) LogLine {
+	ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
+	if err != nil {
+		ts, _ = time.Parse(time.RFC3339, e.Timestamp)
+	}
+	return LogLine{
+		Timestamp: ts,
+		Process:   e.Process,
+		Level:     e.Level,
+		Message:   e.Message,
+	}
+}
+
+// LogRange returns syslog lines from the device between since and until,
+// streamed through the pmd3 bridge. pmd3 does not expose a stable CLI for
+// archived-log timestamp queries, so this drains the live stream and keeps
+// entries inside the window. Callers should provide a reasonable upper
+// bound; absent one we cap at 5 s to bound the call.
 //
-// Filter fields: Process (--procname), Subsystem (--subsystem), Regex
-// (applied client-side to Message).
+// Filter fields: Process (matched against image_name), Subsystem (matched
+// against label.subsystem), Regex (applied client-side to Message).
 func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if _, err := exec.LookPath("pymobiledevice3"); err != nil {
-		return nil, fmt.Errorf("pymobiledevice3 not found: %w", err)
+	if a.bridge == nil {
+		return nil, errNoBridge
 	}
 
-	args := []string{"syslog", "live", "--udid", id}
-	if filter.Process != "" {
-		args = append(args, "--procname", filter.Process)
-	}
-	if filter.Subsystem != "" {
-		args = append(args, "--subsystem", filter.Subsystem)
+	var regexFilter *regexp.Regexp
+	if filter.Regex != "" {
+		var err error
+		regexFilter, err = regexp.Compile(filter.Regex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex: %w", err)
+		}
 	}
 
-	// For range queries we need to drain until `until` passes. Cap at 30s
-	// to avoid hanging forever when until is zero (no upper bound).
 	deadline := until
 	if deadline.IsZero() || deadline.After(time.Now().Add(30*time.Second)) {
 		deadline = time.Now().Add(5 * time.Second)
@@ -1033,66 +1046,44 @@ func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Tim
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "pymobiledevice3", args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start syslog live: %w", err)
-	}
-
-	var regexFilter *regexp.Regexp
-	if filter.Regex != "" {
-		regexFilter, err = regexp.Compile(filter.Regex)
-		if err != nil {
-			_ = cmd.Process.Kill()
-			return nil, fmt.Errorf("invalid regex: %w", err)
-		}
+	bf := pmd3bridge.SyslogFilter{
+		PID:         -1,
+		ProcessName: filter.Process,
+		Subsystem:   filter.Subsystem,
 	}
 
 	var lines []LogLine
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		ll, ok := ParseIOSSyslogLine(line)
-		if !ok {
-			continue
-		}
+	err := a.bridge.Syslog(ctx, id, bf, func(e pmd3bridge.SyslogEntry) bool {
+		ll := syslogEntryToLogLine(e)
 		if !since.IsZero() && ll.Timestamp.Before(since) {
-			continue
+			return true
 		}
 		if !until.IsZero() && ll.Timestamp.After(until) {
-			continue
+			return true
 		}
 		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			continue
+			return true
 		}
 		lines = append(lines, ll)
+		return true
+	})
+	// Deadline-based cancellation is expected.
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
+		return lines, err
 	}
-
-	// Deadline-based cancellation is expected; suppress context errors.
-	_ = cmd.Wait()
 	return lines, nil
 }
 
-// LogStream pumps live syslog lines from the device into out until ctx is
-// cancelled. Uses `pymobiledevice3 syslog live`. Filter fields are applied
-// server-side (pymobiledevice3 flags) and client-side (Regex).
+// LogStream pumps live syslog lines from the device through the pmd3 bridge
+// into out until ctx is cancelled. Filter.Process matches image_name,
+// Filter.Subsystem matches label.subsystem (both server-side); Filter.Regex
+// is applied client-side to Message.
 func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
-	if _, err := exec.LookPath("pymobiledevice3"); err != nil {
-		return fmt.Errorf("pymobiledevice3 not found: %w", err)
-	}
-
-	args := []string{"syslog", "live", "--udid", id}
-	if filter.Process != "" {
-		args = append(args, "--procname", filter.Process)
-	}
-	if filter.Subsystem != "" {
-		args = append(args, "--subsystem", filter.Subsystem)
+	if a.bridge == nil {
+		return errNoBridge
 	}
 
 	var regexFilter *regexp.Regexp
@@ -1104,33 +1095,27 @@ func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter,
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "pymobiledevice3", args...)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("pipe: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start syslog live: %w", err)
+	bf := pmd3bridge.SyslogFilter{
+		PID:         -1,
+		ProcessName: filter.Process,
+		Subsystem:   filter.Subsystem,
 	}
 
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		ll, ok := ParseIOSSyslogLine(scanner.Text())
-		if !ok {
-			continue
-		}
+	err := a.bridge.Syslog(ctx, id, bf, func(e pmd3bridge.SyslogEntry) bool {
+		ll := syslogEntryToLogLine(e)
 		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			continue
+			return true
 		}
 		select {
 		case out <- ll:
+			return true
 		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
-			return nil
+			return false
 		}
+	})
+	if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+		return err
 	}
-	_ = cmd.Wait()
 	return nil
 }
 

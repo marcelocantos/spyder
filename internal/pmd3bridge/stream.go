@@ -125,14 +125,23 @@ func (s *stallReader) Close() error {
 // stallReader so streaming callers get inter-packet deadline detection for
 // free. On structured BridgeError, returns the error without committing to
 // streaming. On transport error, fires the fatal hook.
-func (c *Client) postStream(ctx context.Context, path string, reqBody any,
+//
+// endToEnd is the outer safety-net deadline. Pass 0 to use the caller's
+// ctx as-is (for follow-style streams like syslog that may run for hours).
+func (c *Client) postStream(ctx context.Context, path string, endToEnd time.Duration, reqBody any,
 ) (*http.Response, io.ReadCloser, error) {
 	started := time.Now()
 	slog.Debug("bridge stream call", "endpoint", path,
-		"end_to_end_timeout_ms", timeoutStreamEndToEnd.Milliseconds(),
+		"end_to_end_timeout_ms", endToEnd.Milliseconds(),
 		"inter_packet_deadline_ms", interPacketDeadline.Milliseconds())
 
-	callCtx, cancel := context.WithTimeout(ctx, timeoutStreamEndToEnd)
+	var callCtx context.Context
+	var cancel context.CancelFunc
+	if endToEnd > 0 {
+		callCtx, cancel = context.WithTimeout(ctx, endToEnd)
+	} else {
+		callCtx, cancel = context.WithCancel(ctx)
+	}
 
 	body, err := json.Marshal(reqBody)
 	if err != nil {

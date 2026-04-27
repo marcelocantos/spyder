@@ -37,6 +37,7 @@ from .schemas import (
     CrashReportEntry,
     DeviceInfo,
     DevicePowerStateResponse,
+    SyslogEntry,
 )
 
 log = logging.getLogger("pmd3_bridge.services")
@@ -897,3 +898,90 @@ def _rmtree_quiet(path: str) -> None:
         shutil.rmtree(path, ignore_errors=True)
     except Exception:  # pragma: no cover
         pass
+
+
+# ── Syslog (🎯T46) ────────────────────────────────────────────────────────────
+#
+# Wraps pmd3's OsTraceService.syslog generator, applying optional process_name
+# and subsystem filters server-side and emitting structured SyslogEntry records.
+# The endpoint streams forever until the client closes the connection (or
+# context cancellation propagates from the Uvicorn worker).
+#
+# pid/process_name semantics: pmd3 supports server-side pid filtering only
+# (via the StartActivity request). process_name is matched client-side here
+# against image_name; subsystem is matched against label.subsystem.
+
+async def syslog(
+    udid: str,
+    pid: int = -1,
+    process_name: Optional[str] = None,
+    subsystem: Optional[str] = None,
+) -> AsyncIterator[SyslogEntry]:
+    """Stream syslog entries from the device, optionally filtered.
+
+    Synchronous setup (provider open, OsTraceService connect, StartActivity
+    request) happens before the async generator yields its first entry, so
+    failures surface as BridgeError → 4xx rather than as a 200 stream that
+    ends mid-body.
+    """
+    # Eagerly open the provider + service so connect failures raise before we
+    # commit to a streaming response.
+    provider_cm = _service_provider_ctx(udid)
+    provider = await provider_cm.__aenter__()
+    try:
+        from pymobiledevice3.services.os_trace import OsTraceService
+        svc = OsTraceService(lockdown=provider)
+        # syslog() awaits connect() internally before yielding.
+        gen = svc.syslog(pid=pid)
+    except BridgeError:
+        await provider_cm.__aexit__(None, None, None)
+        raise
+    except Exception as exc:
+        await provider_cm.__aexit__(None, None, None)
+        raise BridgeError(
+            "pmd3_error",
+            f"Failed to open syslog stream on {udid}: {exc}",
+        ) from exc
+
+    return _syslog_stream(provider_cm, svc, gen, process_name, subsystem)
+
+
+async def _syslog_stream(
+    provider_cm,
+    svc,
+    gen,
+    process_name: Optional[str],
+    subsystem: Optional[str],
+) -> AsyncIterator[SyslogEntry]:
+    started = time.monotonic()
+    emitted = 0
+    try:
+        async for entry in gen:
+            if process_name and entry.image_name != process_name:
+                continue
+            if subsystem:
+                if entry.label is None or entry.label.subsystem != subsystem:
+                    continue
+            yield SyslogEntry(
+                pid=entry.pid,
+                timestamp=entry.timestamp.isoformat(),
+                level=entry.level.name,
+                process=entry.image_name,
+                subsystem=(entry.label.subsystem if entry.label else ""),
+                category=(entry.label.category if entry.label else ""),
+                message=entry.message,
+            )
+            emitted += 1
+    finally:
+        try:
+            await svc.close()
+        except Exception:
+            log.debug("syslog svc close failed", exc_info=True)
+        try:
+            await provider_cm.__aexit__(None, None, None)
+        except Exception:
+            log.debug("syslog provider close failed", exc_info=True)
+        log.info(
+            "syslog stream closed emitted=%d elapsed_ms=%d",
+            emitted, int((time.monotonic() - started) * 1000),
+        )

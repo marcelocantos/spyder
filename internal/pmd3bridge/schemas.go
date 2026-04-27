@@ -31,6 +31,30 @@ type CrashReport struct {
 	Timestamp string `json:"timestamp"`
 }
 
+// SyslogEntry is one parsed syslog line from /v1/syslog (🎯T46).
+//
+// Timestamp is RFC3339 with the device-local timezone preserved.
+// Level is the upper-case pmd3 SyslogLogLevel name (NOTICE, INFO,
+// DEBUG, USER_ACTION, ERROR, FAULT). Subsystem and Category are
+// flattened from pmd3's SyslogLabel; both empty when no label.
+type SyslogEntry struct {
+	PID       int    `json:"pid"`
+	Timestamp string `json:"timestamp"`
+	Level     string `json:"level"`
+	Process   string `json:"process"`
+	Subsystem string `json:"subsystem,omitempty"`
+	Category  string `json:"category,omitempty"`
+	Message   string `json:"message"`
+}
+
+// SyslogFilter restricts the entries streamed by /v1/syslog. Empty
+// fields are treated as "no filter".
+type SyslogFilter struct {
+	PID         int    // -1 for all processes
+	ProcessName string // matched against image_name
+	Subsystem   string // matched against label.subsystem
+}
+
 // --- request types (internal; used by Client methods) ---
 
 type listDevicesRequest struct{}
@@ -130,6 +154,13 @@ type DevicePowerState struct {
 
 type devicePowerStateRequest struct {
 	UDID string `json:"udid"`
+}
+
+type syslogRequest struct {
+	UDID        string `json:"udid"`
+	PID         int    `json:"pid"`
+	ProcessName string `json:"process_name,omitempty"`
+	Subsystem   string `json:"subsystem,omitempty"`
 }
 
 // listDevicesResponse wraps the devices array from the bridge.

@@ -1539,6 +1539,20 @@ targets:
     origin: forked-from v0.20.0 release observation 2026-04-26
     discovered: 2026-04-27
     achieved: 2026-04-27
+  T46:
+    name: iOS log streaming routes through the pmd3 bridge, not external pymobiledevice3
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - IOSAdapter.LogRange and IOSAdapter.LogStream call a bridge endpoint (e.g. /v1/syslog) instead of exec.LookPath/exec.Command("pymobiledevice3", ...).
+    - The pmd3 bridge exposes a syslog endpoint that streams parsed lines (process, subsystem, message, timestamp) and accepts procname/subsystem filters.
+    - spyder logs works when spyder serve is launched under launchd (no PATH dependency on pymobiledevice3 in the inherited environment).
+    - errNoBridge is returned when the bridge is unavailable, matching the pattern used by State/Screenshot/Launch.
+    context: spyder's iOS surface routes nearly every operation through the long-lived pmd3 bridge (screenshot, state, launch, battery, etc.), which owns the pymobiledevice3 lifecycle and PATH. The two log methods (LogRange at internal/device/ios.go:1011, LogStream at :1082) are the lone exception — they exec.LookPath("pymobiledevice3") then exec.Command it directly. Under launchd-launched spyder serve the inherited PATH does not include the venv where pymobiledevice3 lives, so logs fails with "pymobiledevice3 not found" while bridge-backed ops keep working. Routing through the bridge (option 1) is the architecturally consistent fix; patching PATH discovery (option 2) would leave logs as the lone external-CLI shell-out and re-expose the same class of drift.
+    origin: manual
+    discovered: 2026-04-27
+    achieved: 2026-04-27
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
