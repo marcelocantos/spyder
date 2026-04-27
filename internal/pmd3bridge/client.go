@@ -393,7 +393,7 @@ func (c *Client) CrashReportsList(ctx context.Context, udid string, since time.T
 	}
 
 	const endpoint = "/v1/crash_reports_list"
-	_, body, err := c.postStream(ctx, endpoint, req)
+	_, body, err := c.postStream(ctx, endpoint, timeoutStreamEndToEnd, req)
 	if err != nil {
 		return nil, err
 	}
@@ -418,7 +418,7 @@ func (c *Client) CrashReportsList(ctx context.Context, udid string, since time.T
 // fatal hook.
 func (c *Client) CrashReportsPull(ctx context.Context, udid, name string) (string, error) {
 	const endpoint = "/v1/crash_reports_pull"
-	_, body, err := c.postStream(ctx, endpoint,
+	_, body, err := c.postStream(ctx, endpoint, timeoutStreamEndToEnd,
 		crashReportsPullRequest{UDID: udid, Name: name})
 	if err != nil {
 		return "", err
@@ -430,6 +430,38 @@ func (c *Client) CrashReportsPull(ctx context.Context, udid, name string) (strin
 		return "", err
 	}
 	return string(buf), nil
+}
+
+// Syslog streams syslog entries from the device, invoking onEntry for each
+// parsed line. The stream runs until ctx is cancelled, the bridge closes
+// the connection, or onEntry returns false. PID -1 means all processes;
+// empty filter fields impose no filter (🎯T46).
+//
+// Transport: NDJSON over chunked HTTP, mirroring crash_reports_list. No
+// outer end-to-end deadline is imposed — the caller's ctx is the only
+// stop signal — but the inter-packet stall watchdog still applies.
+func (c *Client) Syslog(ctx context.Context, udid string, filter SyslogFilter,
+	onEntry func(SyslogEntry) bool,
+) error {
+	pid := filter.PID
+	if pid == 0 {
+		pid = -1
+	}
+	req := syslogRequest{
+		UDID:        udid,
+		PID:         pid,
+		ProcessName: filter.ProcessName,
+		Subsystem:   filter.Subsystem,
+	}
+	const endpoint = "/v1/syslog"
+	_, body, err := c.postStream(ctx, endpoint, 0, req)
+	if err != nil {
+		return err
+	}
+	defer body.Close()
+
+	scanErr := scanNDJSON(body, onEntry)
+	return c.drainErr(endpoint, scanErr)
 }
 
 // AcquirePowerAssertion acquires a power assertion on the device and returns

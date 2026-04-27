@@ -46,6 +46,22 @@ class CrashReportsListRequest(BaseModel):
     process: Optional[str] = None
 
 
+class SyslogRequest(BaseModel):
+    """Streaming syslog watch request.
+
+    pid:           filter to a single process id (-1 = all).
+    process_name:  filter by image_name (case-sensitive exact match).
+                   Empty = no filter.
+    subsystem:     filter by SyslogLabel.subsystem (case-sensitive exact
+                   match). Empty = no filter.
+    """
+
+    udid: str
+    pid: int = -1
+    process_name: Optional[str] = None
+    subsystem: Optional[str] = None
+
+
 class CrashReportsPullRequest(BaseModel):
     udid: str
     name: str
@@ -116,6 +132,27 @@ class CrashReportEntry(BaseModel):
     name: str
     process: str
     timestamp: str
+
+
+class SyslogEntry(BaseModel):
+    """One emitted syslog line, structured.
+
+    timestamp is RFC3339 with the device-local timezone preserved (pmd3
+    surfaces a tz-aware datetime; we keep that).
+    process is the image_name (executable basename) reported by pmd3.
+    level is the SyslogLogLevel enum name (NOTICE, INFO, DEBUG,
+    USER_ACTION, ERROR, FAULT) — not lower-cased; clients normalise.
+    subsystem and category are flattened from SyslogLabel for
+    convenience; both empty when label is None.
+    """
+
+    pid: int
+    timestamp: str
+    level: str
+    process: str
+    subsystem: str = ""
+    category: str = ""
+    message: str
 
 
 class CrashReportsListResponse(BaseModel):

@@ -26,6 +26,7 @@ from pmd3_bridge.schemas import (
     CrashReportEntry,
     DeviceInfo,
     DevicePowerStateResponse,
+    SyslogEntry,
 )
 from pmd3_bridge.services import BridgeError
 
@@ -106,10 +107,35 @@ def _make_fake_services(
     async def device_power_state(udid: str) -> DevicePowerStateResponse:
         return DevicePowerStateResponse(state="awake")
 
+    async def syslog(
+        udid: str,
+        pid: int = -1,
+        process_name: Optional[str] = None,
+        subsystem: Optional[str] = None,
+    ):
+        async def _stream():
+            yield SyslogEntry(
+                pid=42,
+                timestamp="2026-01-01T00:00:00+00:00",
+                level="INFO",
+                process="MyApp",
+                subsystem="com.example.sub",
+                category="ui",
+                message="hello",
+            )
+            yield SyslogEntry(
+                pid=43,
+                timestamp="2026-01-01T00:00:01+00:00",
+                level="ERROR",
+                process="OtherApp",
+                message="boom",
+            )
+        return _stream()
+
     for fn in [
         list_devices, list_apps, launch_app, kill_app, pid_for_bundle,
         battery, screenshot, crash_reports_list, crash_reports_pull,
-        device_power_state,
+        device_power_state, syslog,
     ]:
         setattr(svc, fn.__name__, fn)
 
@@ -254,6 +280,35 @@ async def test_crash_reports_pull_happy(client: AsyncClient) -> None:
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/octet-stream")
     assert r.content == b"crash report content"
+
+
+# ── syslog (🎯T46) ─────────────────────────────────────────────────────────────
+
+async def test_syslog_happy(client: AsyncClient) -> None:
+    r = await client.post("/v1/syslog", json={"udid": FAKE_UDID})
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/x-ndjson")
+    lines = [json.loads(line) for line in r.text.strip().split("\n") if line]
+    assert len(lines) == 2
+    assert lines[0]["process"] == "MyApp"
+    assert lines[0]["level"] == "INFO"
+    assert lines[0]["subsystem"] == "com.example.sub"
+    assert lines[1]["process"] == "OtherApp"
+    assert lines[1]["level"] == "ERROR"
+
+
+async def test_syslog_setup_error_is_4xx(client: AsyncClient) -> None:
+    """Synchronous BridgeError before stream open → 409, not a 200 stream."""
+    async def _fail(udid, pid=-1, process_name=None, subsystem=None):
+        raise BridgeError("device_not_paired", "nope")
+
+    svc = _make_fake_services()
+    svc.syslog = _fail  # type: ignore[attr-defined]
+    _set_services(svc)
+
+    r = await client.post("/v1/syslog", json={"udid": FAKE_UDID})
+    assert r.status_code == 409
+    assert r.json()["error"] == "device_not_paired"
 
 
 # ── device_power_state (🎯T29) ─────────────────────────────────────────────────

@@ -366,7 +366,7 @@ Via MCP, the same operations are:
 | `record_start` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | `{device, owner?}`. iOS simulators only — physical devices return an immediate error. Only one recording per device at a time. Reservation-gated. |
 | `record_stop` | Stop the active recording and return the local mp4 path. | `{device, owner?}`. Waits for the recorder to flush. On Android, pulls the file from the device. |
 | `network` | Apply or clear network condition shaping. | `{device, owner, profile?}` or `{device, owner, clear:true}`. Android emulators only — see gotchas below. |
-| `logs` | Fetch log lines between two timestamps. | Read-only. iOS uses `pymobiledevice3 syslog live`; Android uses `adb logcat`. For live tailing use REST SSE (see below). |
+| `logs` | Fetch log lines between two timestamps. | Read-only. iOS routes through the bundled pmd3 bridge (`OsTraceService.syslog`); Android uses `adb logcat`. For live tailing use REST SSE (see below). |
 
 ### Log queries — range vs. live
 
@@ -377,8 +377,8 @@ accepts:
 - `since` / `until` — RFC3339 timestamps (e.g. `2026-04-19T14:00:00Z`). Both
   optional. When `since` is omitted, iOS collects from a short live window
   (≤5 s); Android uses `-d` (dump buffer then exit).
-- `process` — filter by process name (iOS: `--procname`; Android: tag match).
-- `subsystem` — iOS only (`--subsystem com.apple.foo`). Ignored on Android.
+- `process` — filter by process name (iOS: matched against `image_name` server-side; Android: tag match).
+- `subsystem` — iOS only (matched against `SyslogLabel.subsystem` server-side, e.g. `com.apple.network`). Ignored on Android.
 - `tag` — Android logcat tag (e.g. `MyApp`). Ignored on iOS.
 - `regex` — regex applied to the message body (both platforms, client-side).
 
@@ -403,13 +403,14 @@ spyder log Pippa --regex "crash|panic"             # regex on message
 
 **Platform quirks:**
 
-- **iOS range queries** run `pymobiledevice3 syslog live` for up to 5 seconds
-  and collect lines in the window. This is adequate for post-hoc debugging but
-  is not a true archived-log query. For long-span queries run multiple short
+- **iOS range queries** subscribe to the live syslog stream via the pmd3
+  bridge (`OsTraceService.syslog`) for up to 5 seconds and collect lines
+  in the window. This is adequate for post-hoc debugging but is not a
+  true archived-log query. For long-span queries run multiple short
   windows or use `--follow` and let the stream run while reproducing.
-- **iOS timestamp precision** — pymobiledevice3's syslog output omits the year;
-  spyder assumes the current year. Lines near midnight on New Year's may be
-  misclassified by one year.
+- **iOS timestamps** are device-local RFC3339 (with timezone preserved)
+  produced by pmd3's `SyslogEntry.timestamp` and forwarded verbatim
+  through the bridge.
 - **Android tag filter** — logcat `-s <tag>:V *:S` suppresses all other tags.
   Combining tag + regex is the most targeted approach.
 - **Android process filter** — there is no direct process-name filter in logcat;

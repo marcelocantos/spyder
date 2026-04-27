@@ -48,6 +48,7 @@ from .schemas import (
     ReleasePowerAssertionResponse,
     ScreenshotRequest,
     ScreenshotResponse,
+    SyslogRequest,
 )
 from .services import BridgeError
 
@@ -306,6 +307,42 @@ async def crash_reports_pull(body: CrashReportsPullRequest) -> Any:
                  body.udid, body.name, total)
 
     return StreamingResponse(_iter(), media_type="application/octet-stream")
+
+
+@app.post("/v1/syslog")
+async def syslog(body: SyslogRequest) -> Any:
+    """Stream syslog entries as NDJSON (🎯T46).
+
+    One JSON object per line. The Go client reads line-by-line with an
+    inter-packet deadline matching crash_reports_list. The stream stays
+    open until the client closes the connection.
+    """
+    log.info(
+        "syslog udid=%s pid=%d process_name=%s subsystem=%s",
+        body.udid, body.pid, body.process_name, body.subsystem,
+    )
+    try:
+        gen = await _services.syslog(
+            body.udid, body.pid, body.process_name, body.subsystem,
+        )
+    except BridgeError as exc:
+        log.warning("syslog udid=%s failed code=%s message=%s",
+                    body.udid, exc.code, exc.message)
+        return _classify(exc)
+
+    async def _iter() -> Any:
+        count = 0
+        try:
+            async for entry in gen:
+                count += 1
+                yield (_json.dumps(entry.model_dump()) + "\n").encode("utf-8")
+        except BridgeError as exc:
+            log.warning("syslog udid=%s mid-stream error code=%s message=%s",
+                        body.udid, exc.code, exc.message)
+            yield (_json.dumps({"error": exc.code, "message": exc.message}) + "\n").encode("utf-8")
+        log.info("syslog udid=%s streamed %d entries", body.udid, count)
+
+    return StreamingResponse(_iter(), media_type="application/x-ndjson")
 
 
 @app.post("/v1/device_power_state", response_model=DevicePowerStateResponse)
