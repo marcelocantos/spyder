@@ -29,7 +29,7 @@ principle, but `adb` itself is cross-platform; spyder doesn't add value to
 adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.21.0`.
+Snapshot as of `v0.22.0`.
 
 ## Interaction surface catalogue
 

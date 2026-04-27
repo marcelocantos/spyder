@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "commit": "9dad3e5297e483aa0235f805a2a8b020dadd3671",
-  "generated_at": "2026-04-27T04:42:53Z",
+  "commit": "3ae387871cfdc2216897b1deee4a668d203ba36c",
+  "generated_at": "2026-04-27T05:36:15Z",
   "host": "colossus",
   "suites": [
     {
@@ -13,7 +13,7 @@
     {
       "name": "bridge-python-unit",
       "cmd": "cd bridge && uv run --project . --extra dev pytest tests/",
-      "duration_s": 1,
+      "duration_s": 2,
       "status": "pass"
     },
     {
