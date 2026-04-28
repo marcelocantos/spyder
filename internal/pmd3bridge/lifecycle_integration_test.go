@@ -58,7 +58,7 @@ func TestLifecycle_LivenessPipePresent(t *testing.T) {
 	}
 
 	sup.mu.Lock()
-	pipe := sup.livenessPipe
+	pipe := sup.gen.livenessPipe
 	sup.mu.Unlock()
 
 	if pipe == nil {
@@ -113,8 +113,8 @@ func TestLifecycle_LivenessPipeCloseStopsHelperWithStdinWatcher(t *testing.T) {
 	}
 
 	sup.mu.Lock()
-	pipe := sup.livenessPipe
-	pid := sup.cmd.Process.Pid
+	pipe := sup.gen.livenessPipe
+	pid := sup.gen.cmd.Process.Pid
 	sup.mu.Unlock()
 
 	if pipe == nil {
@@ -130,7 +130,8 @@ func TestLifecycle_LivenessPipeCloseStopsHelperWithStdinWatcher(t *testing.T) {
 	}
 	// Null out the stored pipe so watchdog's defer doesn't double-close.
 	sup.mu.Lock()
-	sup.livenessPipe = nil
+	sup.gen.livenessPipe = nil
+	doneCh := sup.gen.doneCh
 	sup.mu.Unlock()
 
 	// Poll for the process to have exited. We use os.FindProcess + Signal(0)
@@ -155,7 +156,7 @@ func TestLifecycle_LivenessPipeCloseStopsHelperWithStdinWatcher(t *testing.T) {
 done:
 	// Wait for the watchdog to detect the unexpected exit; doneCh is closed.
 	select {
-	case <-sup.doneCh:
+	case <-doneCh:
 		t.Log("watchdog goroutine exited cleanly")
 	case <-time.After(3 * time.Second):
 		t.Fatal("watchdog goroutine did not exit within 3s")
