@@ -374,8 +374,7 @@ async def launch_app(udid: str, bundle_id: str) -> int:
             from pymobiledevice3.services.dvt.instruments.process_control import (
                 ProcessControl,
             )
-            async with DvtProvider(provider) as dvt:
-                pc = ProcessControl(dvt)
+            async with DvtProvider(provider) as dvt, ProcessControl(dvt) as pc:
                 pid = await pc.launch(bundle_id=bundle_id)
                 return pid
         except BridgeError:
@@ -406,8 +405,7 @@ async def kill_app(udid: str, bundle_id: str) -> None:
             from pymobiledevice3.services.dvt.instruments.process_control import (
                 ProcessControl,
             )
-            async with DvtProvider(provider) as dvt:
-                di = DvtDeviceInfo(dvt)
+            async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
                 processes = await di.proclist()
                 target_pid: Optional[int] = None
                 for proc in processes:
@@ -415,8 +413,8 @@ async def kill_app(udid: str, bundle_id: str) -> None:
                         target_pid = proc.get("pid")
                         break
                 if target_pid is not None:
-                    pc = ProcessControl(dvt)
-                    await pc.kill(target_pid)
+                    async with ProcessControl(dvt) as pc:
+                        await pc.kill(target_pid)
         except BridgeError:
             raise
         except Exception as exc:
@@ -436,8 +434,7 @@ async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
             from pymobiledevice3.services.dvt.instruments.device_info import (
                 DeviceInfo as DvtDeviceInfo,
             )
-            async with DvtProvider(provider) as dvt:
-                di = DvtDeviceInfo(dvt)
+            async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
                 processes = await di.proclist()
                 for proc in processes:
                     if proc.get("bundleIdentifier") == bundle_id:
