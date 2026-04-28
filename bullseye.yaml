@@ -1617,6 +1617,23 @@ targets:
     origin: manual
     discovered: 2026-04-17
     achieved: 2026-04-18
+  T50:
+    name: 'pmd3-bridge resilience: every handler is a bulkhead'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - No exception escapes a FastAPI route handler — an outer FastAPI exception handler maps any uncaught Exception to a structured pmd3_error 500 response (type-name + message in body, full traceback in logs). The bridge never returns an unstructured 5xx and never propagates an exception out to uvicorn.
+    - 'Every external await is bounded by an asyncio.timeout(): get_tunneld_devices ≤ 5 s, RSD connect/close ≤ 3 s, DTX connect ≤ 10 s, DTX RPC calls ≤ 15 s. On expiry, raise BridgeError("pmd3_timeout", …) with operation name and elapsed time. No external await can hang the bridge indefinitely.'
+    - Every services.py function releases its RSD / DTX / lockdown / file-descriptor handles on success, BridgeError, timeout, and unexpected-exception paths. A failing close() is logged and swallowed — never masks the original error or stalls the next request. (Verified by audit pass + targeted tests for the error paths.)
+    - No call site in handler code invokes os._exit() or otherwise terminates the bridge process. Per-call failure never escalates to per-process failure. (The stdin-EOF watcher remains the only os._exit caller — that path stays as-is for parent-liveness.)
+    - Per-device-per-DTX-operation concurrency is bounded by an asyncio.Semaphore (default 4, configurable). When the semaphore is full, excess requests fail fast with BridgeError("pmd3_busy", …) → HTTP 503. A stuck or slow handler cannot starve unrelated handlers (e.g. /v1/list_devices stays responsive while a launch_app is hung).
+    - 'A dedicated /v1/health endpoint returns immediately with {ok: true, uptime_s, …} and touches no device state. The Go LivenessProbe routes through this endpoint so liveness checks are decoupled from device-state correctness — wedged device paths surface as structured BridgeError on the relevant endpoint, not as a transport timeout on a probe.'
+    - 'Connection lifecycle stays per-call: each handler opens, uses, and closes its own RSD/DTX. No shared mutable state across calls; one handler''s failure cannot corrupt another''s connection. (Verified by the existing _service_provider_ctx contract — codified as a no-regress test.)'
+    - 'Regression tests cover every resilience point above: outer exception handler, per-handler timeouts, cleanup on error paths, semaphore-induced 503, /v1/health independence from a wedged device path.'
+    context: 'Reframing of T47 from "supervisor catches the wedge" to "the bridge does not wedge in the first place — and when it inevitably does fail in some new way, it fails per-call with structured context, never per-process". The supervisor''s restart capability (T47) is the second layer of defense, but the first layer is that no single bug, no environmental glitch, and no unexpected exception should be able to take down the bridge or leave it half-broken. Driven by the v0.24.0 wedge incident: a single misbehaving handler (T48: launch_app raising an unexpected pmd3 RuntimeError) silently leaked DTX/RSD state on every retry and contributed to the eventual full-process unresponsiveness. The policy: every handler is a bulkhead — bounded timeouts, bounded concurrency, structured errors, isolated connection lifecycle, dedicated liveness endpoint, no path from one bad call to a stuck process. T47''s supervisor restart and T50''s resilience policy are complementary: T50 prevents most wedges, T47 contains the residual ones.'
+    origin: forked from T47 + 2026-04-28 wedge incident discussion
+    discovered: 2026-04-28
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved
