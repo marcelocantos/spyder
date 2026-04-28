@@ -1058,9 +1058,20 @@ func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Tim
 		}
 	}
 
+	// Deadline: respect an explicit `until` up to a reasonable cap so a
+	// caller asking for "the next two minutes of logs" gets the next two
+	// minutes, not five seconds. When `until` is zero (caller didn't
+	// specify) or unreasonably far in the future, fall back to a short
+	// default so a bug doesn't leak a long-lived stream. (🎯T49.)
+	const (
+		defaultLogWait = 5 * time.Second
+		maxLogWait     = 5 * time.Minute
+	)
 	deadline := until
-	if deadline.IsZero() || deadline.After(time.Now().Add(30*time.Second)) {
-		deadline = time.Now().Add(5 * time.Second)
+	if deadline.IsZero() {
+		deadline = time.Now().Add(defaultLogWait)
+	} else if cap := time.Now().Add(maxLogWait); deadline.After(cap) {
+		deadline = cap
 	}
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
