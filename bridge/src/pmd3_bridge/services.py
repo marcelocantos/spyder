@@ -31,6 +31,13 @@ from typing import AsyncIterator, Optional
 _TUNNELD_MAX_ATTEMPTS = 3
 _TUNNELD_RETRY_DELAY_S = 0.5
 
+# Per-attempt timeout for the tunneld HTTP probe (🎯T50). When tunneld is
+# itself wedged — its HTTP listener accepts but never responds —
+# get_tunneld_devices() would otherwise hang forever. The bounded await
+# converts that into a structured tunneld_unavailable error so the
+# bridge's per-handler bulkhead invariant holds.
+_TUNNELD_ATTEMPT_TIMEOUT_S = 5.0
+
 from .schemas import (
     AppInfo,
     BatteryResponse,
@@ -374,8 +381,7 @@ async def launch_app(udid: str, bundle_id: str) -> int:
             from pymobiledevice3.services.dvt.instruments.process_control import (
                 ProcessControl,
             )
-            async with DvtProvider(provider) as dvt:
-                pc = ProcessControl(dvt)
+            async with DvtProvider(provider) as dvt, ProcessControl(dvt) as pc:
                 pid = await pc.launch(bundle_id=bundle_id)
                 return pid
         except BridgeError:
@@ -406,8 +412,7 @@ async def kill_app(udid: str, bundle_id: str) -> None:
             from pymobiledevice3.services.dvt.instruments.process_control import (
                 ProcessControl,
             )
-            async with DvtProvider(provider) as dvt:
-                di = DvtDeviceInfo(dvt)
+            async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
                 processes = await di.proclist()
                 target_pid: Optional[int] = None
                 for proc in processes:
@@ -415,8 +420,8 @@ async def kill_app(udid: str, bundle_id: str) -> None:
                         target_pid = proc.get("pid")
                         break
                 if target_pid is not None:
-                    pc = ProcessControl(dvt)
-                    await pc.kill(target_pid)
+                    async with ProcessControl(dvt) as pc:
+                        await pc.kill(target_pid)
         except BridgeError:
             raise
         except Exception as exc:
@@ -436,8 +441,7 @@ async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
             from pymobiledevice3.services.dvt.instruments.device_info import (
                 DeviceInfo as DvtDeviceInfo,
             )
-            async with DvtProvider(provider) as dvt:
-                di = DvtDeviceInfo(dvt)
+            async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
                 processes = await di.proclist()
                 for proc in processes:
                     if proc.get("bundleIdentifier") == bundle_id:
@@ -659,8 +663,19 @@ async def _tunneld_rsd_for(udid: str):  # type: ignore[no-untyped-def]
             await asyncio.sleep(_TUNNELD_RETRY_DELAY_S)
             log.debug("tunneld_rsd_for: retry attempt=%d udid=%s", attempt, udid)
         try:
-            rsds = await get_tunneld_devices(TUNNELD_DEFAULT_ADDRESS)
+            # 🎯T50: bound the HTTP probe so a wedged tunneld can't hang
+            # the bridge handler indefinitely. asyncio.TimeoutError is
+            # caught and treated as a transient transport failure (counts
+            # toward the retry budget).
+            async with asyncio.timeout(_TUNNELD_ATTEMPT_TIMEOUT_S):
+                rsds = await get_tunneld_devices(TUNNELD_DEFAULT_ADDRESS)
             break  # success — fall through to UDID search
+        except asyncio.TimeoutError as exc:
+            last_exc = exc
+            log.warning(
+                "tunneld_rsd_for: attempt=%d timed out after %.1fs",
+                attempt, _TUNNELD_ATTEMPT_TIMEOUT_S,
+            )
         except Exception as exc:
             last_exc = exc
             log.debug(
@@ -1054,9 +1069,21 @@ async def _syslog_stream(
             if subsystem:
                 if entry.label is None or entry.label.subsystem != subsystem:
                     continue
+            # 🎯T49: pmd3 produces naive datetimes (no tzinfo) via
+            # datetime.fromtimestamp(); a bare .isoformat() emits a
+            # timezone-less string that Go's RFC3339Nano parser rejects,
+            # turning every entry into a zero-time on the Go side and
+            # causing the since/until filter to drop them all.
+            # astimezone() with no argument promotes the naive datetime
+            # to an aware one in the system local timezone, preserving
+            # the absolute instant; the resulting isoformat string
+            # ("…+10:00" / "…-05:00") parses cleanly with RFC3339Nano.
+            ts = entry.timestamp
+            if ts.tzinfo is None:
+                ts = ts.astimezone()
             yield SyslogEntry(
                 pid=entry.pid,
-                timestamp=entry.timestamp.isoformat(),
+                timestamp=ts.isoformat(),
                 level=entry.level.name,
                 process=entry.image_name,
                 subsystem=(entry.label.subsystem if entry.label else ""),

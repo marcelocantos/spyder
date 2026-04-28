@@ -71,20 +71,34 @@ type Supervisor struct {
 	readyTimeout    time.Duration
 	fatal           func(error)
 
-	mu           sync.Mutex
-	cmd          *exec.Cmd
-	port         int      // bridge's listening port, set during launch
-	token        string   // bridge's bearer token, set during launch
-	stopped      bool     // true once Stop has been called
-	livenessPipe *os.File // write end of the stdin-EOF liveness pipe (🎯T44)
+	mu      sync.Mutex
+	gen     *generation // current generation; replaced on Restart
+	stopped bool        // true once Stop has been called
+}
 
-	// stopCh is closed by Stop to signal the watchdog goroutine to exit.
+// generation owns the runtime state of one bridge subprocess incarnation.
+// Restart (🎯T47) creates a new generation so the watchdog channels and
+// process handle from the wedged subprocess can be retired cleanly while
+// the next subprocess starts fresh. BaseURL and Token always reflect the
+// current generation under the supervisor's mu, so an in-flight Client
+// call that retries after a transport error will land on the new bridge.
+type generation struct {
+	cmd          *exec.Cmd
+	port         int
+	token        string
+	livenessPipe *os.File
+
+	// stopCh is closed by Stop or Restart to signal the watchdog to
+	// terminate this subprocess.
 	stopCh chan struct{}
-	// killCh is closed by Stop (after stopCh) if the shutdown timeout fires;
-	// the watchdog responds by sending SIGKILL.
+	// killCh is closed when the shutdown timeout fires (or immediately
+	// during a wedge-restart) so the watchdog escalates to SIGKILL.
 	killCh chan struct{}
 	// doneCh is closed when the watchdog goroutine exits.
 	doneCh chan struct{}
+	// restarting is set by Restart before signalling stopCh; the watchdog
+	// reads it to suppress the unexpected-exit panic for a planned restart.
+	restarting bool
 }
 
 // NewSupervisor creates a new Supervisor. Call Start to launch the bridge.
@@ -95,9 +109,6 @@ func NewSupervisor(binaryPath string, opts ...Option) *Supervisor {
 		shutdownTimeout: 5 * time.Second,
 		readyTimeout:    timeoutReadyHandshake,
 		fatal:           func(err error) { panic(err) },
-		stopCh:          make(chan struct{}),
-		killCh:          make(chan struct{}),
-		doneCh:          make(chan struct{}),
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -105,23 +116,38 @@ func NewSupervisor(binaryPath string, opts ...Option) *Supervisor {
 	return s
 }
 
+// newGeneration constructs the channel set for a fresh subprocess
+// generation. Called by launch() before exec.
+func newGeneration() *generation {
+	return &generation{
+		stopCh: make(chan struct{}),
+		killCh: make(chan struct{}),
+		doneCh: make(chan struct{}),
+	}
+}
+
 // BaseURL returns the http://127.0.0.1:NNNN base URL of the running bridge.
-// Valid after Start has returned nil; empty otherwise.
+// Valid after Start has returned nil; empty otherwise. After Restart it
+// reflects the new bridge's port.
 func (s *Supervisor) BaseURL() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.port == 0 {
+	if s.gen == nil || s.gen.port == 0 {
 		return ""
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d", s.port)
+	return fmt.Sprintf("http://127.0.0.1:%d", s.gen.port)
 }
 
 // Token returns the bearer token the bridge accepts. Valid after Start has
-// returned nil; empty otherwise.
+// returned nil; empty otherwise. After Restart it reflects the new bridge's
+// token.
 func (s *Supervisor) Token() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.token
+	if s.gen == nil {
+		return ""
+	}
+	return s.gen.token
 }
 
 // Stopped reports whether Stop has been called on this supervisor. Used
@@ -154,15 +180,70 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	s.log.Info("bridge supervisor: launching",
 		"binary", s.binaryPath,
 		"ready_timeout", s.readyTimeout)
-	if err := s.launch(ctx); err != nil {
-		close(s.doneCh)
+	gen, err := s.launch(ctx)
+	if err != nil {
 		s.log.Error("bridge supervisor: launch failed", "error", err)
 		return err
 	}
+	s.mu.Lock()
+	s.gen = gen
+	s.mu.Unlock()
 	s.log.Info("bridge supervisor: ready",
 		"binary", s.binaryPath,
-		"port", s.port, "pid", s.cmd.Process.Pid)
-	go s.watchdog()
+		"port", gen.port, "pid", gen.cmd.Process.Pid)
+	go s.watchdog(gen)
+	return nil
+}
+
+// Restart kills the current bridge subprocess (SIGKILL — it's wedged) and
+// launches a fresh one (🎯T47). On success the supervisor's BaseURL/Token
+// reflect the new bridge atomically; in-flight Client calls that retry
+// after a transport error will land on the new bridge transparently.
+//
+// It is an error to call Restart before Start, or after Stop. Concurrent
+// Restart calls are serialised via the supervisor mu and the second
+// caller observes the new generation.
+func (s *Supervisor) Restart(ctx context.Context) error {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return fmt.Errorf("pmd3bridge: Restart called after Stop")
+	}
+	prev := s.gen
+	if prev == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("pmd3bridge: Restart called before Start")
+	}
+	prev.restarting = true
+	s.mu.Unlock()
+
+	if prev.cmd != nil && prev.cmd.Process != nil {
+		s.log.Warn("bridge supervisor: SIGKILLing wedged subprocess",
+			"pid", prev.cmd.Process.Pid)
+		_ = syscall.Kill(-prev.cmd.Process.Pid, syscall.SIGKILL)
+	}
+	// Cue the watchdog to wind up: closing stopCh tells it the exit is
+	// expected, killCh tells it to escalate immediately if the SIGKILL
+	// above raced with a planned SIGTERM path.
+	close(prev.stopCh)
+	select {
+	case <-prev.killCh:
+	default:
+		close(prev.killCh)
+	}
+	<-prev.doneCh
+
+	gen, err := s.launch(ctx)
+	if err != nil {
+		s.log.Error("bridge supervisor: restart launch failed", "error", err)
+		return err
+	}
+	s.mu.Lock()
+	s.gen = gen
+	s.mu.Unlock()
+	s.log.Info("bridge supervisor: restart ready",
+		"port", gen.port, "pid", gen.cmd.Process.Pid)
+	go s.watchdog(gen)
 	return nil
 }
 
@@ -172,18 +253,25 @@ func (s *Supervisor) Start(ctx context.Context) error {
 func (s *Supervisor) Stop(shutdownCtx context.Context) error {
 	s.mu.Lock()
 	if s.stopped {
+		gen := s.gen
 		s.mu.Unlock()
-		<-s.doneCh
+		if gen != nil {
+			<-gen.doneCh
+		}
 		return nil
 	}
 	s.stopped = true
+	gen := s.gen
 	s.mu.Unlock()
+	if gen == nil {
+		return nil
+	}
 
 	s.log.Info("bridge supervisor: stopping", "shutdown_timeout", s.shutdownTimeout)
 
 	// Signal the watchdog to stop. The watchdog will SIGTERM the process
 	// and close doneCh when it exits.
-	close(s.stopCh)
+	close(gen.stopCh)
 
 	// Arm a timer to close killCh after the shutdown timeout, which tells
 	// the watchdog to SIGKILL.
@@ -192,32 +280,35 @@ func (s *Supervisor) Stop(shutdownCtx context.Context) error {
 		defer timer.Stop()
 		select {
 		case <-timer.C:
-			close(s.killCh)
-		case <-s.doneCh:
+			close(gen.killCh)
+		case <-gen.doneCh:
 			// process already exited; no need to kill
 		}
 	}()
 
 	// Block until the watchdog goroutine finishes.
 	select {
-	case <-s.doneCh:
+	case <-gen.doneCh:
 	case <-shutdownCtx.Done():
 		// shutdownCtx itself timed out; close killCh to force a SIGKILL and
 		// wait for the watchdog regardless (we don't abandon the goroutine).
 		select {
-		case <-s.killCh:
+		case <-gen.killCh:
 		default:
-			close(s.killCh)
+			close(gen.killCh)
 		}
-		<-s.doneCh
+		<-gen.doneCh
 	}
 	return nil
 }
 
 // launch starts the bridge process and waits for the structured
-// `ready port=NNNN token=XXXX` line on stdout. It does NOT start the
-// watchdog goroutine.
-func (s *Supervisor) launch(ctx context.Context) error {
+// `ready port=NNNN token=XXXX` line on stdout. Returns a fresh
+// generation populated with cmd/port/token/livenessPipe and unsignalled
+// channels; the caller is responsible for storing it on the supervisor
+// and starting the watchdog goroutine.
+func (s *Supervisor) launch(ctx context.Context) (*generation, error) {
+	gen := newGeneration()
 	// Use a plain exec.Cmd so the watchdog — not Go's exec framework — owns
 	// the process lifetime. Setpgid = true puts the bridge in its own
 	// process group so signalling the group tears down any child uv/python
@@ -235,7 +326,7 @@ func (s *Supervisor) launch(ctx context.Context) error {
 	// triggering its _watch_parent_via_stdin thread to call os._exit(0).
 	livenessReadEnd, livenessWriteEnd, err := os.Pipe()
 	if err != nil {
-		return fmt.Errorf("pmd3bridge supervisor: liveness pipe: %w", err)
+		return nil, fmt.Errorf("pmd3bridge supervisor: liveness pipe: %w", err)
 	}
 	cmd.Stdin = livenessReadEnd
 
@@ -243,13 +334,13 @@ func (s *Supervisor) launch(ctx context.Context) error {
 	if err != nil {
 		livenessReadEnd.Close()
 		livenessWriteEnd.Close()
-		return fmt.Errorf("pmd3bridge supervisor: stdout pipe: %w", err)
+		return nil, fmt.Errorf("pmd3bridge supervisor: stdout pipe: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
 		livenessReadEnd.Close()
 		livenessWriteEnd.Close()
-		return fmt.Errorf("pmd3bridge supervisor: start %q: %w", s.binaryPath, err)
+		return nil, fmt.Errorf("pmd3bridge supervisor: start %q: %w", s.binaryPath, err)
 	}
 	// The child now has its own copy of the read end via fork+exec.
 	// Close the parent's copy so only the child holds it — this ensures
@@ -290,27 +381,25 @@ func (s *Supervisor) launch(ctx context.Context) error {
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			livenessWriteEnd.Close()
-			return fmt.Errorf("pmd3bridge supervisor: %w", result.err)
+			return nil, fmt.Errorf("pmd3bridge supervisor: %w", result.err)
 		}
 	case <-timer.C:
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		livenessWriteEnd.Close()
-		return fmt.Errorf("pmd3bridge supervisor: timed out waiting for bridge ready signal after %s", s.readyTimeout)
+		return nil, fmt.Errorf("pmd3bridge supervisor: timed out waiting for bridge ready signal after %s", s.readyTimeout)
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		livenessWriteEnd.Close()
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
 
-	s.mu.Lock()
-	s.cmd = cmd
-	s.port = result.port
-	s.token = result.token
-	s.livenessPipe = livenessWriteEnd
-	s.mu.Unlock()
-	return nil
+	gen.cmd = cmd
+	gen.port = result.port
+	gen.token = result.token
+	gen.livenessPipe = livenessWriteEnd
+	return gen, nil
 }
 
 // parseReadyLine parses a `ready port=NNNN token=XXXX` line from the bridge's
@@ -364,22 +453,22 @@ func parseUint(s string) (int, error) {
 	return n, nil
 }
 
-// watchdog waits for the subprocess to exit. If Stop has not been called,
-// subprocess exit is a bug: the supervisor invokes fatal to crash the
-// daemon, which the external process supervisor restarts.
+// watchdog waits for the subprocess to exit. If neither Stop nor Restart
+// is in progress, subprocess exit is a bug: the supervisor invokes fatal
+// to crash the daemon, which the external process supervisor restarts.
 //
-// Unlike the older restart-on-crash design, we do NOT attempt to recover
-// in-process. A crashed bridge indicates a bug somewhere — in the bridge
-// itself, in the transport, or in our use of it — and the only sound
-// recovery is to surface the crash (stack trace + bridge stderr, already
-// inherited on os.Stderr) and restart the whole daemon cleanly.
-func (s *Supervisor) watchdog() {
-	defer close(s.doneCh)
+// We do not attempt restart-on-crash in this layer. A crashed bridge
+// indicates a bug somewhere — in the bridge itself, in the transport,
+// or in our use of it — and the only sound recovery for an unexpected
+// crash is to surface it and let the external supervisor restart the
+// whole daemon. The Restart() path (🎯T47) is for the orthogonal case
+// of "process listening but unresponsive": the parent decides to kill,
+// and the watchdog must not panic on the resulting exit.
+func (s *Supervisor) watchdog(gen *generation) {
+	defer close(gen.doneCh)
 
-	s.mu.Lock()
-	cmd := s.cmd
-	pipe := s.livenessPipe
-	s.mu.Unlock()
+	cmd := gen.cmd
+	pipe := gen.livenessPipe
 	// Close the liveness write end on shutdown so the child sees EOF promptly
 	// even during a clean Stop (SIGTERM path). This is hygiene: the child exits
 	// via SIGTERM anyway, but closing the pipe removes the fd from the parent.
@@ -393,10 +482,10 @@ func (s *Supervisor) watchdog() {
 	go func() { exitCh <- cmd.Wait() }()
 
 	select {
-	case <-s.stopCh:
-		// Graceful shutdown requested. Signal the whole process group
-		// (negative PID) so child uv/python processes from the dev
-		// wrapper are included in the SIGTERM.
+	case <-gen.stopCh:
+		// Graceful shutdown or planned restart requested. Signal the whole
+		// process group (negative PID) so child uv/python processes from
+		// the dev wrapper are included in the SIGTERM.
 		if cmd.Process != nil {
 			s.log.Info("bridge supervisor: sending SIGTERM", "pid", cmd.Process.Pid)
 			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
@@ -404,7 +493,7 @@ func (s *Supervisor) watchdog() {
 		select {
 		case err := <-exitCh:
 			s.log.Info("bridge supervisor: subprocess exited cleanly", "error", err)
-		case <-s.killCh:
+		case <-gen.killCh:
 			if cmd.Process != nil {
 				s.log.Warn("bridge supervisor: shutdown timeout fired, sending SIGKILL",
 					"pid", cmd.Process.Pid)
@@ -414,13 +503,21 @@ func (s *Supervisor) watchdog() {
 		}
 
 	case err := <-exitCh:
-		// Subprocess exited without Stop being called.
-		// Check once more (race with Stop) — if Stop closed stopCh
-		// between cmd.Wait() returning and us selecting, honour that.
+		// Subprocess exited without Stop or Restart being called.
+		// Check once more (race with Stop / Restart) — if either closed
+		// stopCh between cmd.Wait() returning and us selecting, honour
+		// that.
 		select {
-		case <-s.stopCh:
+		case <-gen.stopCh:
 			return
 		default:
+		}
+		s.mu.Lock()
+		stopped := s.stopped
+		restarting := gen.restarting
+		s.mu.Unlock()
+		if stopped || restarting {
+			return
 		}
 		s.log.Error("bridge supervisor: subprocess exited unexpectedly",
 			"wait_error", err, "pid", cmd.Process.Pid)
@@ -428,52 +525,96 @@ func (s *Supervisor) watchdog() {
 	}
 }
 
-// LivenessProbe runs in a background goroutine and panics the daemon if the
-// bridge becomes unresponsive. It calls client.ListDevices every
-// intervalLivenessProbe (30 s); on any non-BridgeError failure, the client
-// itself panics via its fatal hook. Returns when ctx is cancelled.
+// LivenessProbeInterval reports the cadence of LivenessProbe checks. Exported
+// for tests; production paths just call LivenessProbe.
+func LivenessProbeInterval() time.Duration { return intervalLivenessProbe }
+
+// LivenessProbe runs in a background goroutine and triggers a supervisor
+// restart if the bridge becomes unresponsive. It calls client.Health every
+// intervalLivenessProbe (30 s) — a no-op endpoint that touches no device
+// state (🎯T50), so a wedged device path does not look like a wedged
+// bridge. Returns when ctx is cancelled.
+//
+// Wedge detection (🎯T47): if Health fails with a transport error
+// livenessWedgeThreshold consecutive times, the bridge is presumed wedged
+// (process listening but not answering) and the supervisor's Restart() is
+// invoked, which SIGKILLs the wedged subprocess and respawns a fresh one.
+// In-flight callers see one or two transport errors during the restart
+// window; subsequent calls connect to the new bridge transparently.
 //
 // This complements watchdog()'s exit-detection: watchdog catches "process
 // died", LivenessProbe catches "process alive but not answering" (the Uvicorn
-// wedge observed on 2026-04-22).
+// wedge observed on 2026-04-22 and again on 2026-04-28).
 //
 // Logging (🎯T26.5): emits an INFO `bridge liveness: started` on entry, a
 // periodic INFO heartbeat every livenessHeartbeatEvery ticks (≈1 h at the
 // 30 s cadence) including consecutive-ok count and last-call duration, and
-// a WARN per structured BridgeError (rare in practice — list_devices does
-// not return device-scoped errors).
+// a WARN per failure with the running consecutive-failure count.
 func LivenessProbe(ctx context.Context, client *Client) {
+	livenessProbe(ctx, client, client.sup)
+}
+
+// livenessProbe is the testable core. The exported LivenessProbe wires in
+// the Client's Supervisor at the production interval; tests pass a custom
+// restarter and a shorter interval to assert wedge-detection without
+// spawning a real subprocess or waiting tens of seconds per tick.
+func livenessProbe(ctx context.Context, client *Client, restarter livenessRestarter) {
+	livenessProbeAt(ctx, client, restarter, intervalLivenessProbe)
+}
+
+// livenessProbeAt is the test-only entry point; it accepts an interval
+// override so tests can drive the loop at millisecond cadence.
+func livenessProbeAt(ctx context.Context, client *Client, restarter livenessRestarter,
+	interval time.Duration,
+) {
 	slog.Info("bridge liveness: started",
-		"interval", intervalLivenessProbe,
-		"heartbeat_every", livenessHeartbeatEvery)
-	ticker := time.NewTicker(intervalLivenessProbe)
+		"interval", interval,
+		"heartbeat_every", livenessHeartbeatEvery,
+		"wedge_threshold", livenessWedgeThreshold)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	var consecutiveOk int
+	var consecutiveFail int
 	var lastDuration time.Duration
 
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("bridge liveness: stopped",
-				"consecutive_ok", consecutiveOk)
+				"consecutive_ok", consecutiveOk,
+				"consecutive_fail", consecutiveFail)
 			return
 		case <-ticker.C:
 			started := time.Now()
-			_, err := client.ListDevices(ctx)
+			_, err := client.Health(ctx)
 			lastDuration = time.Since(started)
 
 			if err != nil {
-				// BridgeError or context.Canceled only; transport
-				// errors already panicked inside client.post.
-				if !errors.Is(err, context.Canceled) {
-					slog.Warn("bridge liveness: structured error",
-						"error", err,
-						"consecutive_ok_before", consecutiveOk)
+				if errors.Is(err, context.Canceled) {
+					continue
 				}
 				consecutiveOk = 0
+				consecutiveFail++
+				slog.Warn("bridge liveness: probe failed",
+					"error", err,
+					"consecutive_fail", consecutiveFail,
+					"wedge_threshold", livenessWedgeThreshold,
+					"last_duration_ms", lastDuration.Milliseconds())
+				if consecutiveFail >= livenessWedgeThreshold && restarter != nil {
+					slog.Error("bridge liveness: wedge detected — restarting bridge",
+						"consecutive_fail", consecutiveFail)
+					if rerr := restarter.Restart(ctx); rerr != nil {
+						slog.Error("bridge liveness: restart failed",
+							"error", rerr)
+					} else {
+						slog.Info("bridge liveness: restart complete")
+						consecutiveFail = 0
+					}
+				}
 				continue
 			}
+			consecutiveFail = 0
 			consecutiveOk++
 			if consecutiveOk%livenessHeartbeatEvery == 0 {
 				slog.Info("bridge liveness: healthy",
@@ -484,6 +625,20 @@ func LivenessProbe(ctx context.Context, client *Client) {
 	}
 }
 
+// livenessRestarter is the subset of Supervisor that LivenessProbe uses.
+// Extracted so tests can inject a fake without spinning up a real bridge.
+type livenessRestarter interface {
+	Restart(ctx context.Context) error
+}
+
 // livenessHeartbeatEvery is the number of consecutive successful probes
 // between INFO heartbeat logs. With intervalLivenessProbe=30s, 120 ≈ 1 h.
 const livenessHeartbeatEvery = 120
+
+// livenessWedgeThreshold is the number of consecutive Health-probe
+// failures that triggers a SIGKILL+respawn of the bridge subprocess
+// (🎯T47). At intervalLivenessProbe=30 s, 3 = ~90 s of unresponsiveness
+// before recovery — long enough to ride out a transient network blip
+// or a tunneld restart, short enough that an MCP user does not give
+// up before the bridge comes back.
+const livenessWedgeThreshold = 3

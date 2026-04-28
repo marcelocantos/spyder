@@ -285,6 +285,25 @@ func isRecoverableTransportError(err error) bool {
 	return false
 }
 
+// HealthResponse is the shape of /v1/health.
+type HealthResponse struct {
+	OK      bool    `json:"ok"`
+	UptimeS float64 `json:"uptime_s"`
+}
+
+// Health probes the bridge's liveness endpoint (🎯T50). It touches no
+// device state and is the canonical "is the bridge responsive?" check —
+// the LivenessProbe and the supervisor's wedge-detection logic both go
+// through this rather than ListDevices, so a wedged device path doesn't
+// look like a wedged bridge.
+func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
+	var resp HealthResponse
+	if err := c.post(ctx, "/v1/health", timeoutHealth, struct{}{}, &resp); err != nil {
+		return HealthResponse{}, err
+	}
+	return resp, nil
+}
+
 // ListDevices returns the connected iOS devices visible to the bridge.
 func (c *Client) ListDevices(ctx context.Context) ([]DeviceInfo, error) {
 	var resp listDevicesResponse

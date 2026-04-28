@@ -1553,6 +1553,47 @@ targets:
     origin: manual
     discovered: 2026-04-27
     achieved: 2026-04-27
+  T47:
+    name: bridge supervisor restarts a wedged pmd3-bridge instead of repeatedly logging "supervisor will recover"
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - When pmd3-bridge stops accepting TCP connections on its bound port (process listening but unresponsive), the supervisor SIGKILLs the wedged process and respawns it within a bounded number of consecutive failures (e.g. 3)
+    - spyder.log no longer grows by 8 'WARN bridge call transport error' lines per minute indefinitely while every MCP tool that touches the bridge times out
+    - After supervisor recovery, mcp__spyder__launch_app / device_state / logs work without the user having to manually pkill the bridge or restart spyder serve
+    context: 'Observed on spyder 0.24.0. After a normal session, the pmd3-bridge process binds its TCP port and stays alive but stops responding to /v1/* POSTs (curl hangs, dial: operation timed out). spyder.log fills with ''WARN bridge call transport error - daemon stays up, supervisor will recover'' but the supervisor never actually kills+respawns the bridge. Workaround during this session was `kill -9 <pmd3-bridge-pid>`; spyder serve then auto-spawned a fresh bridge that worked. Bug seems to be in internal/pmd3bridge supervisor''s recovery code path: it logs the failure but doesn''t trigger restart.'
+    origin: manual
+    discovered: 2026-04-28
+  T48:
+    name: launch_app and terminate_app correctly enter the RSD context manager (regression on 🎯T42)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - mcp__spyder__launch_app on a Wi-Fi-only iOS 17+ device foregrounds the requested bundle without errors
+    - mcp__spyder__terminate_app kills the running PID without errors
+    - 'Neither call returns the current `pmd3_error (500): not connected — use ''async with'' or await connect()` message'
+    - A regression test pins the launch/kill DVT context-manager usage so this doesn't regress a third time
+    context: 'Observed on spyder 0.24.0 against a Wi-Fi-only iPad mini (Jevons, iOS 26.4.1) during a jevons T14.1 smoke. mcp__spyder__launch_app and terminate_app return: `bridge error pmd3_error (500): Failed to launch com.marcelocantos.jevon on 00008130-0009702E1110001C: not connected — use ''async with'' or await connect()`. The screenshot tool works on the same device (also via tunneld DVT), so the tunnel itself is fine and 🎯T42 (iOS 17+ ops route through tunneld RSD) is partially in effect — the bug is the bridge''s launch/kill code path failing to enter the RSD context manager (`async with` or `await rsd.connect()`) before invoking dvt instruments. xcrun devicectl works as a workaround. See bridge/src/pmd3_bridge/services.py for the launch/kill handlers and contrast with the screenshot handler that wraps in `async with DvtProvider(rsd) as dvt`.'
+    depends_on:
+    - T42
+    origin: manual
+    discovered: 2026-04-28
+  T49:
+    name: iOS logs MCP call returns syslog entries for the requested window (regression on 🎯T46)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - mcp__spyder__logs against an iOS 17+ device returns at least the os_log lines emitted during the call's since/until window when an active app is logging
+    - Calls with `until` more than 5 s in the future actually wait until that deadline (or until the bridge ends the stream), instead of returning [] immediately
+    - A regression test against a real or synthesised syslog stream pins the path
+    context: Observed on spyder 0.24.0 against a Wi-Fi-only iPad mini (Jevons, iOS 26.4.1). 🎯T46 ("iOS log streaming routes through the pmd3 bridge, not external pymobiledevice3") shipped, but mcp__spyder__logs returns `[]` immediately for any since/until window — including ones overlapping a fresh app launch with known os_log activity. internal/device/ios.go:1009 LogRange drains /v1/syslog until the deadline; expected behaviour is that lines for the window arrive. Either the bridge's syslog endpoint closes the stream prematurely, the SyslogEntry callback never fires, or the bridge's wedge state (see 🎯T47 sibling) blocks the call. Made the jevons T14.1 iOS-side smoke un-debuggable from spyder.
+    depends_on:
+    - T46
+    origin: manual
+    discovered: 2026-04-28
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
@@ -1576,6 +1617,23 @@ targets:
     origin: manual
     discovered: 2026-04-17
     achieved: 2026-04-18
+  T50:
+    name: 'pmd3-bridge resilience: every handler is a bulkhead'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - No exception escapes a FastAPI route handler — an outer FastAPI exception handler maps any uncaught Exception to a structured pmd3_error 500 response (type-name + message in body, full traceback in logs). The bridge never returns an unstructured 5xx and never propagates an exception out to uvicorn.
+    - 'Every external await is bounded by an asyncio.timeout(): get_tunneld_devices ≤ 5 s, RSD connect/close ≤ 3 s, DTX connect ≤ 10 s, DTX RPC calls ≤ 15 s. On expiry, raise BridgeError("pmd3_timeout", …) with operation name and elapsed time. No external await can hang the bridge indefinitely.'
+    - Every services.py function releases its RSD / DTX / lockdown / file-descriptor handles on success, BridgeError, timeout, and unexpected-exception paths. A failing close() is logged and swallowed — never masks the original error or stalls the next request. (Verified by audit pass + targeted tests for the error paths.)
+    - No call site in handler code invokes os._exit() or otherwise terminates the bridge process. Per-call failure never escalates to per-process failure. (The stdin-EOF watcher remains the only os._exit caller — that path stays as-is for parent-liveness.)
+    - Per-device-per-DTX-operation concurrency is bounded by an asyncio.Semaphore (default 4, configurable). When the semaphore is full, excess requests fail fast with BridgeError("pmd3_busy", …) → HTTP 503. A stuck or slow handler cannot starve unrelated handlers (e.g. /v1/list_devices stays responsive while a launch_app is hung).
+    - 'A dedicated /v1/health endpoint returns immediately with {ok: true, uptime_s, …} and touches no device state. The Go LivenessProbe routes through this endpoint so liveness checks are decoupled from device-state correctness — wedged device paths surface as structured BridgeError on the relevant endpoint, not as a transport timeout on a probe.'
+    - 'Connection lifecycle stays per-call: each handler opens, uses, and closes its own RSD/DTX. No shared mutable state across calls; one handler''s failure cannot corrupt another''s connection. (Verified by the existing _service_provider_ctx contract — codified as a no-regress test.)'
+    - 'Regression tests cover every resilience point above: outer exception handler, per-handler timeouts, cleanup on error paths, semaphore-induced 503, /v1/health independence from a wedged device path.'
+    context: 'Reframing of T47 from "supervisor catches the wedge" to "the bridge does not wedge in the first place — and when it inevitably does fail in some new way, it fails per-call with structured context, never per-process". The supervisor''s restart capability (T47) is the second layer of defense, but the first layer is that no single bug, no environmental glitch, and no unexpected exception should be able to take down the bridge or leave it half-broken. Driven by the v0.24.0 wedge incident: a single misbehaving handler (T48: launch_app raising an unexpected pmd3 RuntimeError) silently leaked DTX/RSD state on every retry and contributed to the eventual full-process unresponsiveness. The policy: every handler is a bulkhead — bounded timeouts, bounded concurrency, structured errors, isolated connection lifecycle, dedicated liveness endpoint, no path from one bad call to a stuck process. T47''s supervisor restart and T50''s resilience policy are complementary: T50 prevents most wedges, T47 contains the residual ones.'
+    origin: forked from T47 + 2026-04-28 wedge incident discussion
+    discovered: 2026-04-28
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved

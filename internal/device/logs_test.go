@@ -6,7 +6,65 @@ package device
 import (
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
+
+// 🎯T49: pmd3 produces naive datetimes via datetime.fromtimestamp(). The
+// bridge must promote them to timezone-aware before isoformat() so the
+// Go side can parse them with RFC3339Nano. Without that, Timestamp on
+// every entry is the zero value and the since/until filter in LogRange
+// drops them all — the v0.24.0 "logs returns []" regression. This test
+// pins the parser path.
+
+func TestSyslogEntryToLogLine_RFC3339NanoWithOffset(t *testing.T) {
+	// Shape produced by `entry.timestamp.astimezone().isoformat()` on
+	// a host whose local tz is +10:00 (e.g. Sydney during AEST).
+	e := pmd3bridge.SyslogEntry{
+		PID:       1234,
+		Timestamp: "2026-04-28T17:30:00.123456+10:00",
+		Level:     "INFO",
+		Process:   "MyApp",
+		Subsystem: "com.example",
+		Category:  "ui",
+		Message:   "hello",
+	}
+	ll := syslogEntryToLogLine(e)
+	if ll.Timestamp.IsZero() {
+		t.Fatalf("Timestamp parsed as zero — RFC3339Nano with offset must be accepted (got input %q)", e.Timestamp)
+	}
+	want := time.Date(2026, 4, 28, 17, 30, 0, 123456000, time.FixedZone("+1000", 10*60*60))
+	if !ll.Timestamp.Equal(want) {
+		t.Errorf("Timestamp = %v; want %v", ll.Timestamp, want)
+	}
+}
+
+func TestSyslogEntryToLogLine_RFC3339NanoUTC(t *testing.T) {
+	e := pmd3bridge.SyslogEntry{
+		Timestamp: "2026-04-28T07:30:00.500000Z",
+	}
+	ll := syslogEntryToLogLine(e)
+	if ll.Timestamp.IsZero() {
+		t.Fatalf("Timestamp parsed as zero for valid UTC RFC3339Nano %q", e.Timestamp)
+	}
+	if ll.Timestamp.UTC().Hour() != 7 {
+		t.Errorf("hour = %d; want 7", ll.Timestamp.UTC().Hour())
+	}
+}
+
+func TestSyslogEntryToLogLine_TimezonelessIsZero(t *testing.T) {
+	// Documents the failure mode that 🎯T49 fixes on the bridge side:
+	// a naive isoformat() string parses as zero, so the test pins the
+	// contract — bridge must NOT emit this shape.
+	e := pmd3bridge.SyslogEntry{
+		Timestamp: "2026-04-28T17:30:00.123456",
+	}
+	ll := syslogEntryToLogLine(e)
+	if !ll.Timestamp.IsZero() {
+		t.Errorf("expected zero timestamp for timezone-less input %q (so the bridge knows it must emit tz-aware ISO strings); got %v",
+			e.Timestamp, ll.Timestamp)
+	}
+}
 
 // --- iOS syslog parser -----------------------------------------------
 

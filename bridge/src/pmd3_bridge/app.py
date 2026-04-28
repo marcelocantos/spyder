@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import time
+import traceback
+import uuid
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -74,6 +76,10 @@ def _classify(exc: BridgeError) -> JSONResponse:
     return _err(exc.code, exc.message, status)
 
 
+# Process startup time, used by /v1/health to report uptime.
+_started_at: float = time.monotonic()
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
     log.info("bridge app startup complete")
@@ -84,6 +90,41 @@ async def _lifespan(app: FastAPI):  # type: ignore[type-arg]
 
 
 app = FastAPI(title="pmd3-bridge", lifespan=_lifespan)
+
+
+def _make_unhandled_exception_response(request: Request, exc: Exception) -> JSONResponse:
+    """Convert an uncaught handler exception into a structured 500 response.
+    Used by both the FastAPI exception_handler hook and the request-logging
+    middleware (BaseHTTPMiddleware-raised exceptions don't always reach the
+    exception_handler chain in older Starlette/FastAPI combinations, so we
+    cover both paths)."""
+    correlation_id = uuid.uuid4().hex[:12]
+    log.error(
+        "unhandled exception in handler path=%s correlation_id=%s exc_type=%s message=%s\n%s",
+        request.url.path,
+        correlation_id,
+        type(exc).__name__,
+        str(exc),
+        traceback.format_exc(),
+    )
+    return JSONResponse(
+        {
+            "error": "pmd3_error",
+            "message": f"unhandled {type(exc).__name__}: {exc}",
+            "correlation_id": correlation_id,
+        },
+        status_code=500,
+    )
+
+
+# Outer catch-all (🎯T50): no exception is ever allowed to escape a route
+# handler. Any uncaught Exception becomes a structured pmd3_error 500
+# response with a correlation ID; the full traceback is logged so the
+# Go-side post-mortem has it. This is the bulkhead that keeps the bridge
+# alive when a handler hits a code path no-one anticipated.
+@app.exception_handler(Exception)
+async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    return _make_unhandled_exception_response(request, exc)
 
 
 # Auth token installed by __main__.py at startup. None → no auth required
@@ -124,6 +165,14 @@ async def _check_auth(request: Request, call_next: Any) -> Response:
 
 # Middleware that logs every request at pmd3 level with duration + outcome,
 # complementing Uvicorn's access log with the per-handler view.
+#
+# Doubles as the bulkhead path for unhandled exceptions (🎯T50): if a route
+# raises something not caught by route-level `except BridgeError`, this
+# middleware converts it into the structured pmd3_error 500 response. The
+# FastAPI @app.exception_handler(Exception) sibling above also handles
+# these, but Starlette's BaseHTTPMiddleware sometimes intercepts the
+# exception before the handler chain can — covering both paths means a
+# bug never escapes as a transport-level crash.
 @app.middleware("http")
 async def _log_requests(request: Request, call_next: Any) -> Response:
     started = time.monotonic()
@@ -134,7 +183,7 @@ async def _log_requests(request: Request, call_next: Any) -> Response:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         log.exception("handler raised %s elapsed_ms=%d path=%s",
                       type(exc).__name__, elapsed_ms, path)
-        raise
+        return _make_unhandled_exception_response(request, exc)
     elapsed_ms = int((time.monotonic() - started) * 1000)
     log.info("handler %s %s %d elapsed_ms=%d",
              request.method, path, response.status_code, elapsed_ms)
@@ -152,6 +201,22 @@ def _set_services(svc: Any) -> None:  # noqa: ANN401  (intentional escape hatch)
 
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
+
+@app.get("/v1/health")
+@app.post("/v1/health")
+async def health() -> Any:
+    """Liveness probe (🎯T50). Returns immediately, touches no device state.
+
+    The Go LivenessProbe routes through this endpoint so liveness checks
+    are decoupled from device-state correctness — wedged device paths
+    surface as structured BridgeError on the relevant endpoint, not as
+    a transport timeout on a probe.
+    """
+    return {
+        "ok": True,
+        "uptime_s": round(time.monotonic() - _started_at, 3),
+    }
+
 
 @app.post("/v1/list_devices", response_model=ListDevicesResponse)
 async def list_devices(_req: Request) -> Any:

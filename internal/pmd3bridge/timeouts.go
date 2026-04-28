@@ -17,6 +17,11 @@ import "time"
 // Do not tune these down to "tight enough to be useful as a SLO" — they are
 // assertion thresholds, not SLOs.
 const (
+	// timeoutHealth bounds the /v1/health probe (🎯T50). The endpoint
+	// touches no device state and should return immediately; the budget
+	// is generous so that a healthy bridge never trips a false alarm
+	// even under heavy concurrent load.
+	timeoutHealth         = 5 * time.Second
 	timeoutListDevices    = 10 * time.Second
 	timeoutPowerAssertion = 10 * time.Second
 	timeoutListApps       = 30 * time.Second
