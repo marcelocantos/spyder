@@ -1553,6 +1553,47 @@ targets:
     origin: manual
     discovered: 2026-04-27
     achieved: 2026-04-27
+  T47:
+    name: bridge supervisor restarts a wedged pmd3-bridge instead of repeatedly logging "supervisor will recover"
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - When pmd3-bridge stops accepting TCP connections on its bound port (process listening but unresponsive), the supervisor SIGKILLs the wedged process and respawns it within a bounded number of consecutive failures (e.g. 3)
+    - spyder.log no longer grows by 8 'WARN bridge call transport error' lines per minute indefinitely while every MCP tool that touches the bridge times out
+    - After supervisor recovery, mcp__spyder__launch_app / device_state / logs work without the user having to manually pkill the bridge or restart spyder serve
+    context: 'Observed on spyder 0.24.0. After a normal session, the pmd3-bridge process binds its TCP port and stays alive but stops responding to /v1/* POSTs (curl hangs, dial: operation timed out). spyder.log fills with ''WARN bridge call transport error - daemon stays up, supervisor will recover'' but the supervisor never actually kills+respawns the bridge. Workaround during this session was `kill -9 <pmd3-bridge-pid>`; spyder serve then auto-spawned a fresh bridge that worked. Bug seems to be in internal/pmd3bridge supervisor''s recovery code path: it logs the failure but doesn''t trigger restart.'
+    origin: manual
+    discovered: 2026-04-28
+  T48:
+    name: launch_app and terminate_app correctly enter the RSD context manager (regression on 🎯T42)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - mcp__spyder__launch_app on a Wi-Fi-only iOS 17+ device foregrounds the requested bundle without errors
+    - mcp__spyder__terminate_app kills the running PID without errors
+    - 'Neither call returns the current `pmd3_error (500): not connected — use ''async with'' or await connect()` message'
+    - A regression test pins the launch/kill DVT context-manager usage so this doesn't regress a third time
+    context: 'Observed on spyder 0.24.0 against a Wi-Fi-only iPad mini (Jevons, iOS 26.4.1) during a jevons T14.1 smoke. mcp__spyder__launch_app and terminate_app return: `bridge error pmd3_error (500): Failed to launch com.marcelocantos.jevon on 00008130-0009702E1110001C: not connected — use ''async with'' or await connect()`. The screenshot tool works on the same device (also via tunneld DVT), so the tunnel itself is fine and 🎯T42 (iOS 17+ ops route through tunneld RSD) is partially in effect — the bug is the bridge''s launch/kill code path failing to enter the RSD context manager (`async with` or `await rsd.connect()`) before invoking dvt instruments. xcrun devicectl works as a workaround. See bridge/src/pmd3_bridge/services.py for the launch/kill handlers and contrast with the screenshot handler that wraps in `async with DvtProvider(rsd) as dvt`.'
+    depends_on:
+    - T42
+    origin: manual
+    discovered: 2026-04-28
+  T49:
+    name: iOS logs MCP call returns syslog entries for the requested window (regression on 🎯T46)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - mcp__spyder__logs against an iOS 17+ device returns at least the os_log lines emitted during the call's since/until window when an active app is logging
+    - Calls with `until` more than 5 s in the future actually wait until that deadline (or until the bridge ends the stream), instead of returning [] immediately
+    - A regression test against a real or synthesised syslog stream pins the path
+    context: Observed on spyder 0.24.0 against a Wi-Fi-only iPad mini (Jevons, iOS 26.4.1). 🎯T46 ("iOS log streaming routes through the pmd3 bridge, not external pymobiledevice3") shipped, but mcp__spyder__logs returns `[]` immediately for any since/until window — including ones overlapping a fresh app launch with known os_log activity. internal/device/ios.go:1009 LogRange drains /v1/syslog until the deadline; expected behaviour is that lines for the window arrive. Either the bridge's syslog endpoint closes the stream prematurely, the SyslogEntry callback never fires, or the bridge's wedge state (see 🎯T47 sibling) blocks the call. Made the jevons T14.1 iOS-side smoke un-debuggable from spyder.
+    depends_on:
+    - T46
+    origin: manual
+    discovered: 2026-04-28
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
