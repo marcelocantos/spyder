@@ -416,8 +416,8 @@ func TestStateCache_ReturnsWithinTTL(t *testing.T) {
 func TestLogRange_WaitsForDeadline(t *testing.T) {
 	now := time.Now()
 	const (
-		entryCount  = 5
-		entrySpacing = 20 * time.Millisecond
+		entryCount     = 5
+		entrySpacing   = 20 * time.Millisecond
 		windowDuration = 200 * time.Millisecond
 	)
 
