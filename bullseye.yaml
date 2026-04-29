@@ -1558,6 +1558,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
+    showcase: true
     acceptance:
     - When pmd3-bridge stops accepting TCP connections on its bound port (process listening but unresponsive), the supervisor SIGKILLs the wedged process and respawns it within a bounded number of consecutive failures (e.g. 3)
     - spyder.log no longer grows by 8 'WARN bridge call transport error' lines per minute indefinitely while every MCP tool that touches the bridge times out
@@ -1570,6 +1571,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
+    showcase: true
     acceptance:
     - mcp__spyder__launch_app on a Wi-Fi-only iOS 17+ device foregrounds the requested bundle without errors
     - mcp__spyder__terminate_app kills the running PID without errors
@@ -1585,6 +1587,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
+    showcase: true
     acceptance:
     - mcp__spyder__logs against an iOS 17+ device returns at least the os_log lines emitted during the call's since/until window when an active app is logging
     - Calls with `until` more than 5 s in the future actually wait until that deadline (or until the bridge ends the stream), instead of returning [] immediately
@@ -1622,6 +1625,7 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
+    showcase: true
     acceptance:
     - No exception escapes a FastAPI route handler — an outer FastAPI exception handler maps any uncaught Exception to a structured pmd3_error 500 response (type-name + message in body, full traceback in logs). The bridge never returns an unstructured 5xx and never propagates an exception out to uvicorn.
     - 'Every external await is bounded by an asyncio.timeout(): get_tunneld_devices ≤ 5 s, RSD connect/close ≤ 3 s, DTX connect ≤ 10 s, DTX RPC calls ≤ 15 s. On expiry, raise BridgeError("pmd3_timeout", …) with operation name and elapsed time. No external await can hang the bridge indefinitely.'
