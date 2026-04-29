@@ -12,6 +12,11 @@ Pins the high-value bulkhead invariants:
   3. ``get_tunneld_devices`` is bounded by an asyncio.timeout — a
      tunneld that accepts but never responds becomes
      BridgeError("tunneld_unavailable") rather than a hang.
+  4. Per-device DTX concurrency semaphore — when _DTX_MAX_CONCURRENCY slots
+     are all held, the next request gets BridgeError("pmd3_busy") → HTTP 503
+     immediately rather than queuing behind a wedged handler.
+  5. _bounded() converts asyncio.TimeoutError to BridgeError("pmd3_timeout")
+     so the handler returns a structured 504 rather than an unhandled exception.
 """
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ from httpx import ASGITransport, AsyncClient
 
 from pmd3_bridge import services
 from pmd3_bridge.app import _set_services, app
-from pmd3_bridge.services import BridgeError
+from pmd3_bridge.services import BridgeError, _dtx_semaphores
 
 
 @pytest_asyncio.fixture
@@ -159,3 +164,107 @@ async def test_tunneld_hang_becomes_tunneld_unavailable() -> None:
     # 3 attempts × (0.1s timeout + 0.01s retry delay) ≈ 0.33s; bound
     # generously to absorb scheduler jitter on CI.
     assert elapsed < 5.0, f"tunneld_rsd_for hung for {elapsed:.2f}s — timeout did not fire"
+
+
+# ── DTX concurrency semaphore (🎯T50 AC5) ────────────────────────────────────
+
+
+async def test_dtx_slot_fails_fast_when_full() -> None:
+    """🎯T50 AC5: _dtx_slot raises pmd3_busy immediately when all slots are held.
+
+    With _DTX_MAX_CONCURRENCY=1, holding the semaphore and calling _dtx_slot
+    again must raise BridgeError("pmd3_busy") without blocking.
+    """
+    udid = "00000000-SEMAPHORE-TEST"
+    with patch.object(services, "_DTX_MAX_CONCURRENCY", 1):
+        # Clear any cached semaphore for this UDID so the patch takes effect.
+        _dtx_semaphores.pop(udid, None)
+        sem = await services._get_dtx_semaphore(udid)
+        # Manually acquire the only slot.
+        await sem.acquire()
+        try:
+            with pytest.raises(BridgeError) as exc_info:
+                async with services._dtx_slot(udid):
+                    pass  # should not be reached
+        finally:
+            sem.release()
+            _dtx_semaphores.pop(udid, None)
+
+    assert exc_info.value.code == "pmd3_busy"
+    assert "concurrency limit" in exc_info.value.message.lower()
+
+
+async def test_dtx_slot_via_http_returns_503(client: AsyncClient) -> None:  # type: ignore[name-defined]
+    """🎯T50 AC5: a pmd3_busy error from a service function surfaces as HTTP 503."""
+    busy_svc = types.SimpleNamespace()
+
+    async def _busy_launch(udid: str, bundle_id: str) -> int:
+        raise BridgeError("pmd3_busy", "DTX concurrency limit reached for this test")
+
+    async def _noop(*_args, **_kwargs):
+        return []
+
+    for name in (
+        "list_devices", "list_apps", "kill_app", "pid_for_bundle",
+        "battery", "screenshot", "crash_reports_list", "crash_reports_pull",
+        "device_power_state", "syslog", "app_state",
+    ):
+        setattr(busy_svc, name, _noop)
+    busy_svc.launch_app = _busy_launch
+    _set_services(busy_svc)
+    try:
+        r = await client.post("/v1/launch_app",
+                              json={"udid": "00000000-000000000000", "bundle_id": "com.example.app"})
+        assert r.status_code == 503
+        body = r.json()
+        assert body.get("error") == "pmd3_busy"
+    finally:
+        from pmd3_bridge.app import _services as _svc_mod  # type: ignore
+        _set_services(_svc_mod)
+
+
+# ── _bounded() DTX RPC timeout (🎯T50 AC2) ───────────────────────────────────
+
+
+async def test_bounded_converts_timeout_to_bridge_error() -> None:
+    """🎯T50 AC2: _bounded() converts asyncio.TimeoutError to BridgeError("pmd3_timeout")."""
+    async def _slow():
+        await asyncio.sleep(60)
+
+    started = time.monotonic()
+    with pytest.raises(BridgeError) as exc_info:
+        await services._bounded(_slow(), timeout_s=0.05, operation="test_op")
+    elapsed = time.monotonic() - started
+
+    assert exc_info.value.code == "pmd3_timeout"
+    assert "test_op" in exc_info.value.message
+    assert elapsed < 2.0, f"_bounded hung for {elapsed:.2f}s — timeout did not fire"
+
+
+async def test_bounded_timeout_via_http_returns_504(client: AsyncClient) -> None:  # type: ignore[name-defined]
+    """🎯T50 AC2: pmd3_timeout from a service function surfaces as HTTP 504."""
+    timeout_svc = types.SimpleNamespace()
+
+    async def _timeout_screenshot(udid: str) -> str:
+        raise BridgeError("pmd3_timeout", "screenshot.get_screenshot timed out after 15.01s (limit 15.0s)")
+
+    async def _noop(*_args, **_kwargs):
+        return []
+
+    for name in (
+        "list_devices", "list_apps", "launch_app", "kill_app", "pid_for_bundle",
+        "battery", "crash_reports_list", "crash_reports_pull",
+        "device_power_state", "syslog", "app_state",
+    ):
+        setattr(timeout_svc, name, _noop)
+    timeout_svc.screenshot = _timeout_screenshot
+    _set_services(timeout_svc)
+    try:
+        r = await client.post("/v1/screenshot",
+                              json={"udid": "00000000-000000000000"})
+        assert r.status_code == 504
+        body = r.json()
+        assert body.get("error") == "pmd3_timeout"
+    finally:
+        from pmd3_bridge.app import _services as _svc_mod  # type: ignore
+        _set_services(_svc_mod)
