@@ -1555,10 +1555,11 @@ targets:
     achieved: 2026-04-27
   T47:
     name: bridge supervisor restarts a wedged pmd3-bridge instead of repeatedly logging "supervisor will recover"
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    achieved: 2026-04-29
     acceptance:
     - When pmd3-bridge stops accepting TCP connections on its bound port (process listening but unresponsive), the supervisor SIGKILLs the wedged process and respawns it within a bounded number of consecutive failures (e.g. 3)
     - spyder.log no longer grows by 8 'WARN bridge call transport error' lines per minute indefinitely while every MCP tool that touches the bridge times out
@@ -1568,10 +1569,11 @@ targets:
     discovered: 2026-04-28
   T48:
     name: launch_app and terminate_app correctly enter the RSD context manager (regression on 🎯T42)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    achieved: 2026-04-29
     acceptance:
     - mcp__spyder__launch_app on a Wi-Fi-only iOS 17+ device foregrounds the requested bundle without errors
     - mcp__spyder__terminate_app kills the running PID without errors
@@ -1584,10 +1586,11 @@ targets:
     discovered: 2026-04-28
   T49:
     name: iOS logs MCP call returns syslog entries for the requested window (regression on 🎯T46)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    achieved: 2026-04-29
     acceptance:
     - mcp__spyder__logs against an iOS 17+ device returns at least the os_log lines emitted during the call's since/until window when an active app is logging
     - Calls with `until` more than 5 s in the future actually wait until that deadline (or until the bridge ends the stream), instead of returning [] immediately
@@ -1622,7 +1625,7 @@ targets:
     achieved: 2026-04-18
   T50:
     name: 'pmd3-bridge resilience: every handler is a bulkhead'
-    status: identified
+    status: converging
     value: 0.0
     cost: 0.0
     showcase: true

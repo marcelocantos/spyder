@@ -426,7 +426,7 @@ func TestLogRange_WaitsForDeadline(t *testing.T) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.WriteHeader(http.StatusOK)
 		flusher, canFlush := w.(http.Flusher)
-		for i := 0; i < entryCount; i++ {
+		for i := range entryCount {
 			// Emit an entry with a timestamp squarely inside the window.
 			ts := now.Add(time.Duration(i+1) * entrySpacing)
 			entry := map[string]any{
