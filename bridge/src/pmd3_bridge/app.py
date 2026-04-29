@@ -71,6 +71,8 @@ def _classify(exc: BridgeError) -> JSONResponse:
         "bundle_not_installed": 422,
         "developer_mode_disabled": 412,
         "tunneld_unavailable": 503,
+        "pmd3_busy": 503,      # 🎯T50 AC5: concurrency limit reached — retry later
+        "pmd3_timeout": 504,   # 🎯T50 AC2: external await timed out
         "pmd3_error": 500,
     }.get(exc.code, 500)
     return _err(exc.code, exc.message, status)
