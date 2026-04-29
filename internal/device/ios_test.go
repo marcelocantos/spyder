@@ -400,6 +400,121 @@ func TestStateCache_ReturnsWithinTTL(t *testing.T) {
 	}
 }
 
+// --- LogRange deadline / window tests (🎯T49) ---------------------------------
+
+// TestLogRange_WaitsForDeadline verifies that LogRange actually waits until the
+// `until` deadline and collects entries emitted during the window. This pins
+// the regression reported in 🎯T49: LogRange was returning [] immediately on
+// any `since/until` window — the root cause was that the bridge emitted
+// timezone-naive timestamps which Go's RFC3339Nano parser discarded as
+// zero-time, causing all entries to fail the since/until filter.
+//
+// The test uses a fake /v1/syslog server that emits 5 entries spaced 20 ms
+// apart (total span ~100 ms). LogRange is called with a 200 ms window
+// (since=now, until=now+200ms). All 5 entries have timestamps within the
+// window, so the call must both wait and accumulate them.
+func TestLogRange_WaitsForDeadline(t *testing.T) {
+	now := time.Now()
+	const (
+		entryCount  = 5
+		entrySpacing = 20 * time.Millisecond
+		windowDuration = 200 * time.Millisecond
+	)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/syslog", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		flusher, canFlush := w.(http.Flusher)
+		for i := 0; i < entryCount; i++ {
+			// Emit an entry with a timestamp squarely inside the window.
+			ts := now.Add(time.Duration(i+1) * entrySpacing)
+			entry := map[string]any{
+				"pid":       i + 1,
+				"timestamp": ts.Format(time.RFC3339Nano),
+				"level":     "INFO",
+				"process":   "TestApp",
+				"message":   "log line",
+			}
+			b, _ := json.Marshal(entry)
+			_, _ = w.Write(b)
+			_, _ = w.Write([]byte{'\n'})
+			if canFlush {
+				flusher.Flush()
+			}
+			time.Sleep(entrySpacing)
+		}
+		// Close body — the Go client's context deadline fires first or we
+		// exhaust entries here; either way the call ends cleanly.
+	})
+
+	baseURL := newTestServer(t, mux)
+	a := NewIOSAdapter(pmd3bridge.NewClient(baseURL, "test-token"))
+
+	since := now
+	until := now.Add(windowDuration)
+	started := time.Now()
+	lines, err := a.LogRange("UDID", LogFilter{}, since, until)
+	elapsed := time.Since(started)
+
+	if err != nil {
+		t.Fatalf("LogRange returned error: %v", err)
+	}
+
+	// Must have waited at least half the window — proves the deadline math
+	// is not returning immediately.
+	const minWait = windowDuration / 2
+	if elapsed < minWait {
+		t.Errorf("LogRange returned too quickly (elapsed=%v; want >=%v) — deadline math is wrong", elapsed, minWait)
+	}
+
+	// Must have captured entries — proves the since/until filter and
+	// timestamp parsing are working (timezone-aware RFC3339Nano shapes).
+	if len(lines) == 0 {
+		t.Error("LogRange returned [] — since/until filter dropped all entries (timezone or parse bug?)")
+	}
+}
+
+// TestLogRange_PastWindowReturnsQuickly verifies that when `until` is already
+// in the past, LogRange does not hang — the deadline fires immediately and the
+// call returns.
+func TestLogRange_PastWindowReturnsQuickly(t *testing.T) {
+	// Server that blocks forever (simulates a live stream).
+	released := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/syslog", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		w.WriteHeader(http.StatusOK)
+		<-released // block until test releases (or request context is cancelled)
+	})
+	t.Cleanup(func() { close(released) })
+
+	baseURL := newTestServer(t, mux)
+	a := NewIOSAdapter(pmd3bridge.NewClient(baseURL, "test-token"))
+
+	// Both since and until are 1 s in the past — the deadline has already
+	// passed, so the context is cancelled immediately and LogRange returns.
+	pastSince := time.Now().Add(-2 * time.Second)
+	pastUntil := time.Now().Add(-1 * time.Second)
+
+	started := time.Now()
+	lines, err := a.LogRange("UDID", LogFilter{}, pastSince, pastUntil)
+	elapsed := time.Since(started)
+
+	if err != nil {
+		t.Fatalf("LogRange returned error: %v", err)
+	}
+	// No entries — the device hasn't emitted anything in the past window.
+	if len(lines) != 0 {
+		t.Errorf("LogRange returned %d lines for a past window; want 0", len(lines))
+	}
+	// Must return promptly — within 500 ms.
+	const maxWait = 500 * time.Millisecond
+	if elapsed > maxWait {
+		t.Errorf("LogRange took too long for a past window (elapsed=%v; want <%v)", elapsed, maxWait)
+	}
+}
+
 // TestStateCache_MissDialsBridge verifies that an expired cache entry causes
 // the adapter to attempt to call the bridge. Under 🎯T26.2, structured
 // BridgeError responses (e.g. pmd3_error) are captured in Notes rather than
