@@ -38,6 +38,23 @@ _TUNNELD_RETRY_DELAY_S = 0.5
 # bridge's per-handler bulkhead invariant holds.
 _TUNNELD_ATTEMPT_TIMEOUT_S = 5.0
 
+# Per-call DTX RPC timeout (🎯T50 AC2). Any single DVT instrument call that
+# doesn't return within this window is converted to BridgeError("pmd3_timeout")
+# by _bounded() rather than hanging the handler indefinitely.
+_TIMEOUT_DTX_RPC_S = 15.0
+
+# Per-device DTX concurrency limit (🎯T50 AC5). Prevents a pile-up of wedged
+# handlers when DVT/DTX connections are slow to be cleaned up on a device.
+# Configurable via SPYDER_BRIDGE_DTX_CONCURRENCY for testing / hot adjustment.
+try:
+    _DTX_MAX_CONCURRENCY: int = int(os.environ.get("SPYDER_BRIDGE_DTX_CONCURRENCY", "4"))
+except ValueError:
+    _DTX_MAX_CONCURRENCY = 4
+
+# Per-device BoundedSemaphores, created lazily on first use.
+_dtx_semaphores: dict[str, asyncio.BoundedSemaphore] = {}
+_dtx_semaphores_lock = asyncio.Lock()
+
 from .schemas import (
     AppInfo,
     BatteryResponse,
@@ -57,6 +74,59 @@ class BridgeError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+# ── DTX concurrency helpers (🎯T50 AC5, AC2) ────────────────────────────────
+
+
+async def _get_dtx_semaphore(udid: str) -> asyncio.BoundedSemaphore:
+    """Return the per-device DTX semaphore, creating it lazily if needed."""
+    if udid in _dtx_semaphores:
+        return _dtx_semaphores[udid]
+    async with _dtx_semaphores_lock:
+        if udid not in _dtx_semaphores:
+            _dtx_semaphores[udid] = asyncio.BoundedSemaphore(_DTX_MAX_CONCURRENCY)
+        return _dtx_semaphores[udid]
+
+
+@asynccontextmanager
+async def _dtx_slot(udid: str):
+    """Acquire a per-device DTX concurrency slot; fail fast if none available.
+
+    Raises BridgeError("pmd3_busy") immediately (without queuing) when all
+    _DTX_MAX_CONCURRENCY slots are held, so callers receive a 503 instead of
+    blocking behind a wedged handler.
+    """
+    sem = await _get_dtx_semaphore(udid)
+    if not sem._value:  # type: ignore[attr-defined]
+        raise BridgeError(
+            "pmd3_busy",
+            f"DTX concurrency limit ({_DTX_MAX_CONCURRENCY}) reached for device {udid}; "
+            "try again when an existing call completes",
+        )
+    await sem.acquire()
+    try:
+        yield
+    finally:
+        sem.release()
+
+
+async def _bounded(coro, *, timeout_s: float, operation: str):
+    """Await *coro* with a timeout; convert asyncio.TimeoutError → BridgeError.
+
+    Raised as BridgeError("pmd3_timeout") so the handler returns a structured
+    504 rather than propagating an unhandled asyncio.TimeoutError.
+    """
+    started = time.monotonic()
+    try:
+        async with asyncio.timeout(timeout_s):
+            return await coro
+    except asyncio.TimeoutError as exc:
+        elapsed = time.monotonic() - started
+        raise BridgeError(
+            "pmd3_timeout",
+            f"{operation} timed out after {elapsed:.2f}s (limit {timeout_s}s)",
+        ) from exc
 
 
 # ── Service-provider context manager (🎯T42) ─────────────────────────────────
@@ -373,86 +443,107 @@ async def list_apps(udid: str) -> list[AppInfo]:
 
 async def launch_app(udid: str, bundle_id: str) -> int:
     """Launch an app and return its PID."""
-    async with _service_provider_ctx(udid) as provider:
-        try:
-            from pymobiledevice3.services.dvt.instruments.dvt_provider import (
-                DvtProvider,
-            )
-            from pymobiledevice3.services.dvt.instruments.process_control import (
-                ProcessControl,
-            )
-            async with DvtProvider(provider) as dvt, ProcessControl(dvt) as pc:
-                pid = await pc.launch(bundle_id=bundle_id)
-                return pid
-        except BridgeError:
-            raise
-        except Exception as exc:
-            msg = str(exc).lower()
-            if "not installed" in msg or "could not find" in msg:
+    async with _dtx_slot(udid):
+        async with _service_provider_ctx(udid) as provider:
+            try:
+                from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+                    DvtProvider,
+                )
+                from pymobiledevice3.services.dvt.instruments.process_control import (
+                    ProcessControl,
+                )
+                async with DvtProvider(provider) as dvt, ProcessControl(dvt) as pc:
+                    pid = await _bounded(
+                        pc.launch(bundle_id=bundle_id),
+                        timeout_s=_TIMEOUT_DTX_RPC_S,
+                        operation="launch_app.launch",
+                    )
+                    return pid
+            except BridgeError:
+                raise
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "not installed" in msg or "could not find" in msg:
+                    raise BridgeError(
+                        "bundle_not_installed",
+                        f"Bundle {bundle_id} not installed on {udid}",
+                    ) from exc
                 raise BridgeError(
-                    "bundle_not_installed",
-                    f"Bundle {bundle_id} not installed on {udid}",
+                    "pmd3_error",
+                    f"Failed to launch {bundle_id} on {udid}: {exc}",
                 ) from exc
-            raise BridgeError(
-                "pmd3_error",
-                f"Failed to launch {bundle_id} on {udid}: {exc}",
-            ) from exc
 
 
 async def kill_app(udid: str, bundle_id: str) -> None:
     """Kill any running instance of the app with the given bundle id."""
-    async with _service_provider_ctx(udid) as provider:
-        try:
-            from pymobiledevice3.services.dvt.instruments.dvt_provider import (
-                DvtProvider,
-            )
-            from pymobiledevice3.services.dvt.instruments.device_info import (
-                DeviceInfo as DvtDeviceInfo,
-            )
-            from pymobiledevice3.services.dvt.instruments.process_control import (
-                ProcessControl,
-            )
-            async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
-                processes = await di.proclist()
-                target_pid: Optional[int] = None
-                for proc in processes:
-                    if proc.get("bundleIdentifier") == bundle_id:
-                        target_pid = proc.get("pid")
-                        break
-                if target_pid is not None:
-                    async with ProcessControl(dvt) as pc:
-                        await pc.kill(target_pid)
-        except BridgeError:
-            raise
-        except Exception as exc:
-            raise BridgeError(
-                "pmd3_error",
-                f"Failed to kill {bundle_id} on {udid}: {exc}",
-            ) from exc
+    async with _dtx_slot(udid):
+        async with _service_provider_ctx(udid) as provider:
+            try:
+                from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+                    DvtProvider,
+                )
+                from pymobiledevice3.services.dvt.instruments.device_info import (
+                    DeviceInfo as DvtDeviceInfo,
+                )
+                from pymobiledevice3.services.dvt.instruments.process_control import (
+                    ProcessControl,
+                )
+                async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
+                    processes = await _bounded(
+                        di.proclist(),
+                        timeout_s=_TIMEOUT_DTX_RPC_S,
+                        operation="kill_app.proclist",
+                    )
+                    target_pid: Optional[int] = None
+                    for proc in processes:
+                        if proc.get("bundleIdentifier") == bundle_id:
+                            target_pid = proc.get("pid")
+                            break
+                    if target_pid is not None:
+                        async with ProcessControl(dvt) as pc:
+                            await _bounded(
+                                pc.kill(target_pid),
+                                timeout_s=_TIMEOUT_DTX_RPC_S,
+                                operation="kill_app.kill",
+                            )
+            except BridgeError:
+                raise
+            except Exception as exc:
+                raise BridgeError(
+                    "pmd3_error",
+                    f"Failed to kill {bundle_id} on {udid}: {exc}",
+                ) from exc
 
 
 async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
     """Return PID for a running bundle, or None if not running."""
-    async with _service_provider_ctx(udid) as provider:
-        try:
-            from pymobiledevice3.services.dvt.instruments.dvt_provider import (
-                DvtProvider,
-            )
-            from pymobiledevice3.services.dvt.instruments.device_info import (
-                DeviceInfo as DvtDeviceInfo,
-            )
-            async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
-                processes = await di.proclist()
-                for proc in processes:
-                    if proc.get("bundleIdentifier") == bundle_id:
-                        pid = proc.get("pid")
-                        return int(pid) if pid is not None else None
-                return None
-        except Exception as exc:
-            raise BridgeError(
-                "pmd3_error",
-                f"Failed to query process list on {udid}: {exc}",
-            ) from exc
+    async with _dtx_slot(udid):
+        async with _service_provider_ctx(udid) as provider:
+            try:
+                from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+                    DvtProvider,
+                )
+                from pymobiledevice3.services.dvt.instruments.device_info import (
+                    DeviceInfo as DvtDeviceInfo,
+                )
+                async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
+                    processes = await _bounded(
+                        di.proclist(),
+                        timeout_s=_TIMEOUT_DTX_RPC_S,
+                        operation="pid_for_bundle.proclist",
+                    )
+                    for proc in processes:
+                        if proc.get("bundleIdentifier") == bundle_id:
+                            pid = proc.get("pid")
+                            return int(pid) if pid is not None else None
+                    return None
+            except BridgeError:
+                raise
+            except Exception as exc:
+                raise BridgeError(
+                    "pmd3_error",
+                    f"Failed to query process list on {udid}: {exc}",
+                ) from exc
 
 
 async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
@@ -478,67 +569,68 @@ async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
     fine: KeepAwake never uses background modes, so its "Running"
     state is unambiguously foreground.
     """
-    async with _service_provider_ctx(udid) as provider:
-        try:
-            from pymobiledevice3.services.dvt.instruments.dvt_provider import (
-                DvtProvider,
-            )
-            from pymobiledevice3.services.dvt.instruments.notifications import (
-                Notifications,
-            )
-            async with DvtProvider(provider) as dvt:
-                async with Notifications(dvt) as notif:
-                    # Silence the pmd3 channel close-callback that calls
-                    # shutdown_queue on a stdlib asyncio.Queue, which lacks
-                    # .shutdown() prior to Python 3.13. Our bridge runs on
-                    # 3.11; without this monkey-patch every state probe
-                    # logs a (cosmetic) ERROR with a TypeError traceback,
-                    # which would flood the daemon log at the autoawake
-                    # convergence cadence. We've already drained what we
-                    # need by the time on_closed fires, so skipping it
-                    # outright is safe.
-                    notif.service.on_closed = lambda *_args, **_kwargs: None
-                    # BackBoard dumps current state of every "managed" app
-                    # on connect, then streams transitions. We drain the
-                    # dump (events stop arriving when the burst ends) and
-                    # ignore everything after.
-                    found_state = ""
-                    while True:
-                        try:
-                            ev = await asyncio.wait_for(
-                                notif.service.events.get(), timeout=0.5
-                            )
-                        except asyncio.TimeoutError:
-                            break
-                        sel, args = ev
-                        if sel != "applicationStateNotification:":
-                            continue
-                        payload = args[0] if args and isinstance(args[0], list) else [args[0]] if args else []
-                        for entry in payload:
-                            exec_name = entry.get("execName", "") or ""
-                            # execName looks like
-                            # "/private/var/containers/Bundle/Application/<UUID>/<App>.app"
-                            # or "/Applications/<App>.app". Match by the
-                            # ".app" path segment against the App-installed
-                            # bundle's known structure.
-                            # Match the .app directory name against the
-                            # bundle id's last segment. iOS bundle ids
-                            # produced from Xcode templates use the target
-                            # name as the last segment AND the .app folder
-                            # name, so this is reliable for any third-party
-                            # app — including KeepAwake. Case-insensitive
-                            # to tolerate Apple system apps where casing
-                            # diverges (e.g. com.apple.camera → Camera.app).
-                            wanted = f"/{bundle_id.split('.')[-1]}.app"
-                            if wanted.lower() in exec_name.lower():
-                                found_state = entry.get("state_description", "") or ""
-        except BridgeError:
-            raise
-        except Exception as exc:
-            raise BridgeError(
-                "pmd3_error",
-                f"Failed to query app state on {udid}: {exc}",
-            ) from exc
+    async with _dtx_slot(udid):
+        async with _service_provider_ctx(udid) as provider:
+            try:
+                from pymobiledevice3.services.dvt.instruments.dvt_provider import (
+                    DvtProvider,
+                )
+                from pymobiledevice3.services.dvt.instruments.notifications import (
+                    Notifications,
+                )
+                async with DvtProvider(provider) as dvt:
+                    async with Notifications(dvt) as notif:
+                        # Silence the pmd3 channel close-callback that calls
+                        # shutdown_queue on a stdlib asyncio.Queue, which lacks
+                        # .shutdown() prior to Python 3.13. Our bridge runs on
+                        # 3.11; without this monkey-patch every state probe
+                        # logs a (cosmetic) ERROR with a TypeError traceback,
+                        # which would flood the daemon log at the autoawake
+                        # convergence cadence. We've already drained what we
+                        # need by the time on_closed fires, so skipping it
+                        # outright is safe.
+                        notif.service.on_closed = lambda *_args, **_kwargs: None
+                        # BackBoard dumps current state of every "managed" app
+                        # on connect, then streams transitions. We drain the
+                        # dump (events stop arriving when the burst ends) and
+                        # ignore everything after.
+                        found_state = ""
+                        while True:
+                            try:
+                                ev = await asyncio.wait_for(
+                                    notif.service.events.get(), timeout=0.5
+                                )
+                            except asyncio.TimeoutError:
+                                break
+                            sel, args = ev
+                            if sel != "applicationStateNotification:":
+                                continue
+                            payload = args[0] if args and isinstance(args[0], list) else [args[0]] if args else []
+                            for entry in payload:
+                                exec_name = entry.get("execName", "") or ""
+                                # execName looks like
+                                # "/private/var/containers/Bundle/Application/<UUID>/<App>.app"
+                                # or "/Applications/<App>.app". Match by the
+                                # ".app" path segment against the App-installed
+                                # bundle's known structure.
+                                # Match the .app directory name against the
+                                # bundle id's last segment. iOS bundle ids
+                                # produced from Xcode templates use the target
+                                # name as the last segment AND the .app folder
+                                # name, so this is reliable for any third-party
+                                # app — including KeepAwake. Case-insensitive
+                                # to tolerate Apple system apps where casing
+                                # diverges (e.g. com.apple.camera → Camera.app).
+                                wanted = f"/{bundle_id.split('.')[-1]}.app"
+                                if wanted.lower() in exec_name.lower():
+                                    found_state = entry.get("state_description", "") or ""
+            except BridgeError:
+                raise
+            except Exception as exc:
+                raise BridgeError(
+                    "pmd3_error",
+                    f"Failed to query app state on {udid}: {exc}",
+                ) from exc
 
     if not found_state:
         return ("terminated", "")
@@ -594,45 +686,50 @@ async def screenshot(udid: str) -> str:
     ``device_not_paired``.
     """
     started = time.monotonic()
-    rsd = await _tunneld_rsd_for(udid)
-    try:
-        from pymobiledevice3.exceptions import (
-            DeveloperModeError,
-            DeveloperModeIsNotEnabledError,
-        )
-        from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
-        from pymobiledevice3.services.dvt.instruments.screenshot import Screenshot
+    async with _dtx_slot(udid):
+        rsd = await _tunneld_rsd_for(udid)
         try:
-            async with DvtProvider(rsd) as dvt, Screenshot(dvt) as shot:
-                png_bytes = await shot.get_screenshot()
-        except BridgeError:
-            raise
-        except (DeveloperModeIsNotEnabledError, DeveloperModeError) as exc:
-            raise BridgeError(
-                "developer_mode_disabled",
-                f"Developer Mode is not enabled on {udid}: enable at "
-                f"Settings → Privacy & Security → Developer Mode (device will reboot)",
-            ) from exc
-        except Exception as exc:
-            # Pattern-match on the message too — pmd3 sometimes raises a
-            # generic Exception when DDI services need DeveloperMode but
-            # the failure surfaces from a deeper layer.
-            if "developer mode" in str(exc).lower():
+            from pymobiledevice3.exceptions import (
+                DeveloperModeError,
+                DeveloperModeIsNotEnabledError,
+            )
+            from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+            from pymobiledevice3.services.dvt.instruments.screenshot import Screenshot
+            try:
+                async with DvtProvider(rsd) as dvt, Screenshot(dvt) as shot:
+                    png_bytes = await _bounded(
+                        shot.get_screenshot(),
+                        timeout_s=_TIMEOUT_DTX_RPC_S,
+                        operation="screenshot.get_screenshot",
+                    )
+            except BridgeError:
+                raise
+            except (DeveloperModeIsNotEnabledError, DeveloperModeError) as exc:
                 raise BridgeError(
                     "developer_mode_disabled",
                     f"Developer Mode is not enabled on {udid}: enable at "
-                    f"Settings → Privacy & Security → Developer Mode "
-                    f"(device will reboot). Underlying error: {exc}",
+                    f"Settings → Privacy & Security → Developer Mode (device will reboot)",
                 ) from exc
-            raise BridgeError(
-                "pmd3_error",
-                f"Failed to take screenshot on {udid}: {exc}",
-            ) from exc
-    finally:
-        try:
-            await rsd.close()
-        except Exception:
-            log.warning("rsd close failed udid=%s", udid)
+            except Exception as exc:
+                # Pattern-match on the message too — pmd3 sometimes raises a
+                # generic Exception when DDI services need DeveloperMode but
+                # the failure surfaces from a deeper layer.
+                if "developer mode" in str(exc).lower():
+                    raise BridgeError(
+                        "developer_mode_disabled",
+                        f"Developer Mode is not enabled on {udid}: enable at "
+                        f"Settings → Privacy & Security → Developer Mode "
+                        f"(device will reboot). Underlying error: {exc}",
+                    ) from exc
+                raise BridgeError(
+                    "pmd3_error",
+                    f"Failed to take screenshot on {udid}: {exc}",
+                ) from exc
+        finally:
+            try:
+                await rsd.close()
+            except Exception:
+                log.warning("rsd close failed udid=%s", udid)
     log.info("screenshot captured udid=%s bytes=%d elapsed_ms=%d",
              udid, len(png_bytes), int((time.monotonic() - started) * 1000))
     return base64.b64encode(png_bytes).decode()
@@ -774,10 +871,10 @@ async def device_power_state(udid: str) -> DevicePowerStateResponse:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         detail = exc.message
 
-        # Prerequisites missing — cannot determine state.
-        if exc.code in ("tunneld_unavailable",):
-            log.info("device_power_state udid=%s state=unknown (tunneld) elapsed_ms=%d",
-                     udid, elapsed_ms)
+        # Prerequisites missing or transient limit — cannot determine state.
+        if exc.code in ("tunneld_unavailable", "pmd3_busy", "pmd3_timeout"):
+            log.info("device_power_state udid=%s state=unknown (%s) elapsed_ms=%d",
+                     udid, exc.code, elapsed_ms)
             return DevicePowerStateResponse(state="unknown", detail=detail)
 
         if exc.code == "developer_mode_disabled":
