@@ -1582,7 +1582,7 @@ targets:
     discovered: 2026-04-28
   T49:
     name: iOS logs MCP call returns syslog entries for the requested window (regression on 🎯T46)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1594,6 +1594,7 @@ targets:
     - T46
     origin: manual
     discovered: 2026-04-28
+    achieved: 2026-04-29
   T5:
     name: iOS adapter reports live device state (battery, thermal, charging, foreground app)
     status: achieved
