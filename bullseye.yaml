@@ -1555,16 +1555,17 @@ targets:
     achieved: 2026-04-27
   T47:
     name: bridge supervisor restarts a wedged pmd3-bridge instead of repeatedly logging "supervisor will recover"
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
     - When pmd3-bridge stops accepting TCP connections on its bound port (process listening but unresponsive), the supervisor SIGKILLs the wedged process and respawns it within a bounded number of consecutive failures (e.g. 3)
     - spyder.log no longer grows by 8 'WARN bridge call transport error' lines per minute indefinitely while every MCP tool that touches the bridge times out
     - After supervisor recovery, mcp__spyder__launch_app / device_state / logs work without the user having to manually pkill the bridge or restart spyder serve
-    context: 'Observed on spyder 0.24.0. After a normal session, the pmd3-bridge process binds its TCP port and stays alive but stops responding to /v1/* POSTs (curl hangs, dial: operation timed out). spyder.log fills with ''WARN bridge call transport error - daemon stays up, supervisor will recover'' but the supervisor never actually kills+respawns the bridge. Workaround during this session was `kill -9 <pmd3-bridge-pid>`; spyder serve then auto-spawned a fresh bridge that worked. Bug seems to be in internal/pmd3bridge supervisor''s recovery code path: it logs the failure but doesn''t trigger restart.'
+    context: Implemented in commit 3b676d3 (merged as v0.26.0). Supervisor.Restart() SIGKILLs the wedged process-group and respawns; LivenessProbe drives it after livenessWedgeThreshold=3 consecutive Health failures at intervalLivenessProbe=30s cadence. generation struct with restarting flag prevents the watchdog from panic-firing on a planned kill. All acceptance criteria verified by TestSupervisor_Restart_KillsAndRespawns and TestLivenessProbe_TriggersRestartAfterThreshold; go test ./... is green.
     origin: manual
     discovered: 2026-04-28
+    achieved: 2026-04-29
   T48:
     name: launch_app and terminate_app correctly enter the RSD context manager (regression on 🎯T42)
     status: identified
