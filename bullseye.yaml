@@ -1622,7 +1622,7 @@ targets:
     achieved: 2026-04-18
   T50:
     name: 'pmd3-bridge resilience: every handler is a bulkhead'
-    status: identified
+    status: converging
     value: 0.0
     cost: 0.0
     showcase: true
@@ -1635,7 +1635,7 @@ targets:
     - 'A dedicated /v1/health endpoint returns immediately with {ok: true, uptime_s, …} and touches no device state. The Go LivenessProbe routes through this endpoint so liveness checks are decoupled from device-state correctness — wedged device paths surface as structured BridgeError on the relevant endpoint, not as a transport timeout on a probe.'
     - 'Connection lifecycle stays per-call: each handler opens, uses, and closes its own RSD/DTX. No shared mutable state across calls; one handler''s failure cannot corrupt another''s connection. (Verified by the existing _service_provider_ctx contract — codified as a no-regress test.)'
     - 'Regression tests cover every resilience point above: outer exception handler, per-handler timeouts, cleanup on error paths, semaphore-induced 503, /v1/health independence from a wedged device path.'
-    context: 'Reframing of T47 from "supervisor catches the wedge" to "the bridge does not wedge in the first place — and when it inevitably does fail in some new way, it fails per-call with structured context, never per-process". The supervisor''s restart capability (T47) is the second layer of defense, but the first layer is that no single bug, no environmental glitch, and no unexpected exception should be able to take down the bridge or leave it half-broken. Driven by the v0.24.0 wedge incident: a single misbehaving handler (T48: launch_app raising an unexpected pmd3 RuntimeError) silently leaked DTX/RSD state on every retry and contributed to the eventual full-process unresponsiveness. The policy: every handler is a bulkhead — bounded timeouts, bounded concurrency, structured errors, isolated connection lifecycle, dedicated liveness endpoint, no path from one bad call to a stuck process. T47''s supervisor restart and T50''s resilience policy are complementary: T50 prevents most wedges, T47 contains the residual ones.'
+    context: 'Implementation complete on branch t50-bridge-bulkhead (commit 4339431). All 8 ACs are satisfied: AC1 (outer exception handler), AC2 (_bounded() + asyncio.timeout on all DTX RPCs), AC3 (cleanup on all paths via _service_provider_ctx), AC4 (no os._exit in handler code), AC5 (_dtx_slot semaphore + pmd3_busy → 503), AC6 (/v1/health, no device state), AC7 (per-call connection lifecycle via _service_provider_ctx), AC8 (11 regression tests in test_resilience.py). Bridge pytest: 45 passed, 4 skipped. make bullseye: all green. Awaiting PR + squash-merge.'
     origin: forked from T47 + 2026-04-28 wedge incident discussion
     discovered: 2026-04-28
   T6:
