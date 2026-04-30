@@ -102,6 +102,50 @@ See [docs/TODO.md](docs/TODO.md).
 go test ./...
 ```
 
+**Tests run on the laptop, not in CI.** spyder's value surface (real
+iOS/Android devices via `pymobiledevice3`/`devicectl`/`adb`, tunneld
+RSD, KeepAwake xcodebuild, on-device DVT) can't be reproduced in any
+hosted CI runner. The only GitHub Actions workflow is `release.yml`,
+which builds + packages on tag push; there is no per-PR CI.
+
+Instead, the laptop is the test runner and `TEST-REPORT.json` at the
+repo root is the attestation:
+
+- `scripts/test-report.sh` (invoked via `make test-report`) runs every
+  tier on a clean tree, records per-suite pass/fail/skip with the
+  HEAD commit SHA, and writes `TEST-REPORT.json`. Tiers:
+  1. `go-unit` — `go test ./...`
+  2. `bridge-python-unit` — `cd bridge && uv run pytest tests/`
+  3. `integration` — `go test -tags=integration ./internal/pmd3bridge/...` (gated on `SPYDER_INTEGRATION=1`)
+  4. `device` — `go test -tags=device ./internal/pmd3bridge/...` (gated on `SPYDER_DEVICES=1`, requires a paired device)
+- After running, `git commit --amend --no-edit TEST-REPORT.json` folds
+  the report into the commit it vouches for. Workflow:
+  `commit → make test-report → git commit --amend`.
+- `scripts/check-test-report-fresh.sh` verifies the report exists,
+  references a known commit, has `overall ∈ {pass, partial}`, and that
+  no source path under `internal/`, `bridge/src/`, `bridge/tests/`,
+  `*.go`, `Makefile`, `go.mod`, `go.sum`, `bridge/pyproject.toml`,
+  `bridge/uv.lock`, or `scripts/` has changed between the report's
+  recorded SHA and HEAD. Wired into the pre-push hook and the
+  `test-report-fresh` bullseye invariant — local enforcement only.
+- HIL tiers (`integration`, `device`) skip routinely; `overall:
+  partial` is acceptable for routine pushes and the freshness check
+  surfaces what was skipped.
+
+**Known gap: there is no PR-time CI that runs
+`check-test-report-fresh.sh`.** The local pre-push hook is the only
+gate; if it's bypassed or uninstalled, a stale or missing
+`TEST-REPORT.json` reaches master unnoticed. A lightweight
+ubuntu-latest workflow on `pull_request` that runs
+`scripts/check-test-report-fresh.sh` (which only needs `git` + `jq`,
+no devices, no toolchain) would close this loop. Tracked as a
+target.
+
+When evaluating a PR's mergeability: empty `statusCheckRollup` is
+expected today (no PR CI), but `TEST-REPORT.json` should reference a
+recent SHA on the PR branch with `overall ∈ {pass, partial}`. If it
+doesn't, that's a gate violation, not a "CI is missing" non-event.
+
 ## Delivery
 
 Merged to master via squash PR. Squash-only merges configured on the repo.
