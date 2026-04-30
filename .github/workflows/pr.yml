@@ -1,0 +1,31 @@
+name: pr
+
+on:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  test-report-fresh:
+    name: TEST-REPORT.json fresh + pass/partial
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The freshness check needs git history to compare TEST-REPORT.json's
+          # recorded SHA against HEAD.
+          fetch-depth: 0
+
+      - name: Install jq
+        # ubuntu-latest already has jq; this is a belt-and-braces step.
+        run: |
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq jq
+          fi
+          jq --version
+
+      - name: Verify TEST-REPORT.json freshness
+        run: ./scripts/check-test-report-fresh.sh

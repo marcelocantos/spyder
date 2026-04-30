@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
-  "commit": "ec429bb520a7089ec0579b282a183ab330237aad",
-  "generated_at": "2026-04-30T11:11:47Z",
+  "commit": "be23a64936da0b3d110bdc96db0277cace23bb7b",
+  "generated_at": "2026-04-30T11:53:28Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "go test ./...",
-      "duration_s": 10,
+      "duration_s": 1,
       "status": "pass"
     },
     {
