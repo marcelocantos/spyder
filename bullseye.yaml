@@ -1625,7 +1625,8 @@ targets:
     achieved: 2026-04-18
   T50:
     name: 'pmd3-bridge resilience: every handler is a bulkhead'
-    status: converging
+    status: achieved
+    achieved: 2026-04-30
     value: 0.0
     cost: 0.0
     showcase: true

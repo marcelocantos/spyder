@@ -94,7 +94,7 @@ def _watch_parent_via_stdin() -> None:
     # not a long-lived pipe. Exit immediately; bypass atexit handlers
     # since the parent is already dead and any cleanup involving it
     # (e.g. RPC to spyder) would just hang.
-    os._exit(0)
+    os._exit(0)  # AC4: only os._exit caller — stdin-EOF parent-liveness watcher
 
 
 def main() -> None:

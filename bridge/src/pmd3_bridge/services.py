@@ -9,6 +9,23 @@ handlers — `await` these directly.
 
 All functions raise BridgeError on classifiable failure conditions;
 app.py translates BridgeError into the corresponding HTTP status.
+
+# 🎯T50 AC3 — Cleanup audit (one line per public handler function)
+#
+# list_devices        — lockdown clients closed via _lockdown_ctx (async with).
+# list_apps           — provider closed via _service_provider_ctx (async with).
+# launch_app          — provider + DvtProvider + ProcessControl via async with.
+# kill_app            — provider + DvtProvider + DvtDeviceInfo + ProcessControl via async with.
+# pid_for_bundle      — provider + DvtProvider + DvtDeviceInfo via async with.
+# app_state           — provider + DvtProvider + Notifications via async with.
+# battery             — provider closed via _service_provider_ctx (async with).
+# screenshot          — rsd acquired via _tunneld_rsd_for, closed in finally with _bounded.
+#                       DvtProvider + Screenshot via _dtx_provider (async with).
+# crash_reports_list  — provider closed via _service_provider_ctx (async with).
+# crash_reports_pull  — provider closed via _service_provider_ctx (async with);
+#                       tmpdir cleaned via _rmtree_quiet in finally.
+# syslog              — svc closed in _syslog_stream finally; provider_cm closed in finally.
+# device_power_state  — delegates to screenshot(); cleanup is screenshot's responsibility.
 """
 from __future__ import annotations
 
@@ -31,17 +48,40 @@ from typing import AsyncIterator, Optional
 _TUNNELD_MAX_ATTEMPTS = 3
 _TUNNELD_RETRY_DELAY_S = 0.5
 
-# Per-attempt timeout for the tunneld HTTP probe (🎯T50). When tunneld is
+# Per-attempt timeout for the tunneld HTTP probe (🎯T50 AC2). When tunneld is
 # itself wedged — its HTTP listener accepts but never responds —
 # get_tunneld_devices() would otherwise hang forever. The bounded await
 # converts that into a structured tunneld_unavailable error so the
 # bridge's per-handler bulkhead invariant holds.
-_TUNNELD_ATTEMPT_TIMEOUT_S = 5.0
+# Configurable via SPYDER_BRIDGE_TUNNELD_TIMEOUT_S.
+try:
+    _TUNNELD_ATTEMPT_TIMEOUT_S: float = float(
+        os.environ.get("SPYDER_BRIDGE_TUNNELD_TIMEOUT_S", "5.0")
+    )
+except ValueError:
+    _TUNNELD_ATTEMPT_TIMEOUT_S = 5.0
 
 # Per-call DTX RPC timeout (🎯T50 AC2). Any single DVT instrument call that
 # doesn't return within this window is converted to BridgeError("pmd3_timeout")
 # by _bounded() rather than hanging the handler indefinitely.
 _TIMEOUT_DTX_RPC_S = 15.0
+
+# RSD connect/close timeout (🎯T50 AC2). Wraps RemoteServiceDiscoveryService
+# connect() and close() calls. Configurable via SPYDER_BRIDGE_RSD_TIMEOUT_S.
+try:
+    _TIMEOUT_RSD_S: float = float(os.environ.get("SPYDER_BRIDGE_RSD_TIMEOUT_S", "3.0"))
+except ValueError:
+    _TIMEOUT_RSD_S = 3.0
+
+# DTX provider connect timeout (🎯T50 AC2). Wraps DvtProvider/ProcessControl/
+# Screenshot etc. __aenter__ calls. Configurable via
+# SPYDER_BRIDGE_DTX_CONNECT_TIMEOUT_S.
+try:
+    _TIMEOUT_DTX_CONNECT_S: float = float(
+        os.environ.get("SPYDER_BRIDGE_DTX_CONNECT_TIMEOUT_S", "10.0")
+    )
+except ValueError:
+    _TIMEOUT_DTX_CONNECT_S = 10.0
 
 # Per-device DTX concurrency limit (🎯T50 AC5). Prevents a pile-up of wedged
 # handlers when DVT/DTX connections are slow to be cleaned up on a device.
@@ -129,6 +169,30 @@ async def _bounded(coro, *, timeout_s: float, operation: str):
         ) from exc
 
 
+@asynccontextmanager
+async def _dtx_provider(provider_or_dvt, cls, *, operation: str):
+    """Enter a DVT instrument context manager with a bounded connect timeout.
+
+    Wraps the ``__aenter__`` call of ``cls(provider_or_dvt)`` in
+    ``_TIMEOUT_DTX_CONNECT_S`` (🎯T50 AC2). On timeout, raises
+    BridgeError("pmd3_timeout") via ``_bounded`` before the instrument
+    has been established, so no resource is left open.
+
+    Usage (replaces bare ``async with DvtProvider(rsd) as dvt``):
+        async with _dtx_provider(rsd, DvtProvider, operation="dtx_connect") as dvt:
+            ...
+    """
+    cm = cls(provider_or_dvt)
+    obj = await _bounded(cm.__aenter__(), timeout_s=_TIMEOUT_DTX_CONNECT_S, operation=operation)
+    try:
+        yield obj
+    except BaseException as exc:
+        await cm.__aexit__(type(exc), exc, exc.__traceback__)
+        raise
+    else:
+        await cm.__aexit__(None, None, None)
+
+
 # ── Service-provider context manager (🎯T42) ─────────────────────────────────
 #
 # ``_service_provider_ctx`` replaces the old USBMux-only ``_lockdown_ctx``.
@@ -189,7 +253,13 @@ async def _service_provider_ctx(udid: str):
             yield provider
         finally:
             try:
-                await provider.close()
+                await _bounded(
+                    provider.close(),
+                    timeout_s=_TIMEOUT_RSD_S,
+                    operation="rsd_close",
+                )
+            except BridgeError:
+                log.warning("rsd close timed out udid=%s", udid)
             except Exception:
                 log.warning("rsd close failed udid=%s", udid)
         return
@@ -452,7 +522,8 @@ async def launch_app(udid: str, bundle_id: str) -> int:
                 from pymobiledevice3.services.dvt.instruments.process_control import (
                     ProcessControl,
                 )
-                async with DvtProvider(provider) as dvt, ProcessControl(dvt) as pc:
+                async with _dtx_provider(provider, DvtProvider, operation="dtx_connect.launch_app") as dvt, \
+                        _dtx_provider(dvt, ProcessControl, operation="dtx_connect.process_control") as pc:
                     pid = await _bounded(
                         pc.launch(bundle_id=bundle_id),
                         timeout_s=_TIMEOUT_DTX_RPC_S,
@@ -488,7 +559,8 @@ async def kill_app(udid: str, bundle_id: str) -> None:
                 from pymobiledevice3.services.dvt.instruments.process_control import (
                     ProcessControl,
                 )
-                async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
+                async with _dtx_provider(provider, DvtProvider, operation="dtx_connect.kill_app") as dvt, \
+                        _dtx_provider(dvt, DvtDeviceInfo, operation="dtx_connect.device_info") as di:
                     processes = await _bounded(
                         di.proclist(),
                         timeout_s=_TIMEOUT_DTX_RPC_S,
@@ -500,7 +572,7 @@ async def kill_app(udid: str, bundle_id: str) -> None:
                             target_pid = proc.get("pid")
                             break
                     if target_pid is not None:
-                        async with ProcessControl(dvt) as pc:
+                        async with _dtx_provider(dvt, ProcessControl, operation="dtx_connect.process_control") as pc:
                             await _bounded(
                                 pc.kill(target_pid),
                                 timeout_s=_TIMEOUT_DTX_RPC_S,
@@ -526,7 +598,8 @@ async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
                 from pymobiledevice3.services.dvt.instruments.device_info import (
                     DeviceInfo as DvtDeviceInfo,
                 )
-                async with DvtProvider(provider) as dvt, DvtDeviceInfo(dvt) as di:
+                async with _dtx_provider(provider, DvtProvider, operation="dtx_connect.pid_for_bundle") as dvt, \
+                        _dtx_provider(dvt, DvtDeviceInfo, operation="dtx_connect.device_info") as di:
                     processes = await _bounded(
                         di.proclist(),
                         timeout_s=_TIMEOUT_DTX_RPC_S,
@@ -578,8 +651,8 @@ async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
                 from pymobiledevice3.services.dvt.instruments.notifications import (
                     Notifications,
                 )
-                async with DvtProvider(provider) as dvt:
-                    async with Notifications(dvt) as notif:
+                async with _dtx_provider(provider, DvtProvider, operation="dtx_connect.app_state") as dvt:
+                    async with _dtx_provider(dvt, Notifications, operation="dtx_connect.notifications") as notif:
                         # Silence the pmd3 channel close-callback that calls
                         # shutdown_queue on a stdlib asyncio.Queue, which lacks
                         # .shutdown() prior to Python 3.13. Our bridge runs on
@@ -696,7 +769,8 @@ async def screenshot(udid: str) -> str:
             from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
             from pymobiledevice3.services.dvt.instruments.screenshot import Screenshot
             try:
-                async with DvtProvider(rsd) as dvt, Screenshot(dvt) as shot:
+                async with _dtx_provider(rsd, DvtProvider, operation="dtx_connect.screenshot") as dvt, \
+                        _dtx_provider(dvt, Screenshot, operation="dtx_connect.screenshot_instrument") as shot:
                     png_bytes = await _bounded(
                         shot.get_screenshot(),
                         timeout_s=_TIMEOUT_DTX_RPC_S,
@@ -727,7 +801,13 @@ async def screenshot(udid: str) -> str:
                 ) from exc
         finally:
             try:
-                await rsd.close()
+                await _bounded(
+                    rsd.close(),
+                    timeout_s=_TIMEOUT_RSD_S,
+                    operation="rsd_close",
+                )
+            except BridgeError:
+                log.warning("rsd close timed out udid=%s", udid)
             except Exception:
                 log.warning("rsd close failed udid=%s", udid)
     log.info("screenshot captured udid=%s bytes=%d elapsed_ms=%d",
