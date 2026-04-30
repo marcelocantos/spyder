@@ -5,8 +5,18 @@
 # Generate TEST-REPORT.json by running every test tier on the current
 # (clean-tree) HEAD and recording per-suite outcomes (🎯T26.4).
 #
-# Workflow: commit → make test-report → `git commit --amend --no-edit
-# TEST-REPORT.json` to fold the report into the commit it vouches for.
+# Workflow: commit → make test-report → `git commit -m "TEST-REPORT.json
+# @ <sha>" TEST-REPORT.json` to add the report as a separate commit on
+# top of the one it vouches for.
+#
+# Don't `git commit --amend` to fold it in: the amend creates a new
+# parent SHA, but TEST-REPORT.json's recorded `commit` field still
+# points at the pre-amend SHA, which is orphaned and unreachable on
+# the remote. Local pre-push works (orphan is in the reflog) but CI
+# (which clones fresh) fails the freshness check with "references
+# unknown commit". A separate commit keeps the recorded SHA reachable
+# from the branch tip and the source-path diff between SHA and HEAD
+# stays empty (only TEST-REPORT.json changed).
 
 set -euo pipefail
 
@@ -120,4 +130,4 @@ jq -n \
   }' > TEST-REPORT.json
 
 echo "── test-report: overall=$overall → TEST-REPORT.json ──"
-echo "Next: git commit --amend --no-edit TEST-REPORT.json"
+echo "Next: git commit -m \"TEST-REPORT.json @ ${commit:0:7}\" TEST-REPORT.json"

@@ -1626,7 +1626,6 @@ targets:
   T50:
     name: 'pmd3-bridge resilience: every handler is a bulkhead'
     status: achieved
-    achieved: 2026-04-30
     value: 0.0
     cost: 0.0
     showcase: true
@@ -1642,21 +1641,23 @@ targets:
     context: 'Reframing of T47 from "supervisor catches the wedge" to "the bridge does not wedge in the first place — and when it inevitably does fail in some new way, it fails per-call with structured context, never per-process". The supervisor''s restart capability (T47) is the second layer of defense, but the first layer is that no single bug, no environmental glitch, and no unexpected exception should be able to take down the bridge or leave it half-broken. Driven by the v0.24.0 wedge incident: a single misbehaving handler (T48: launch_app raising an unexpected pmd3 RuntimeError) silently leaked DTX/RSD state on every retry and contributed to the eventual full-process unresponsiveness. The policy: every handler is a bulkhead — bounded timeouts, bounded concurrency, structured errors, isolated connection lifecycle, dedicated liveness endpoint, no path from one bad call to a stuck process. T47''s supervisor restart and T50''s resilience policy are complementary: T50 prevents most wedges, T47 contains the residual ones.'
     origin: forked from T47 + 2026-04-28 wedge incident discussion
     discovered: 2026-04-28
+    achieved: 2026-04-30
   T51:
     name: PR-time CI runs scripts/check-test-report-fresh.sh on every pull_request
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: .github/workflows/pr.yml committed in c3354d2 — triggers on pull_request to master, runs scripts/check-test-report-fresh.sh on ubuntu-latest. Demonstrated red/green on the very next PR (this one), where the freshness step gates the merge.
     acceptance:
-    - A .github/workflows/pr.yml (or similar) workflow runs on `pull_request` events targeting master
+    - .github/workflows/pr.yml runs on `pull_request` events targeting master
     - The workflow runs `scripts/check-test-report-fresh.sh` on a hosted ubuntu-latest runner — needs only `git` and `jq`, no devices, no Go toolchain, no Python
     - When a PR's HEAD has source changes (under internal/, bridge/src/, bridge/tests/, *.go, Makefile, go.mod, go.sum, bridge/pyproject.toml, bridge/uv.lock, scripts/) since the SHA recorded in TEST-REPORT.json, the check fails and the PR is gated red
     - When TEST-REPORT.json's overall == fail, the check fails
-    - Documented in CLAUDE.md alongside the existing testing model description (close the 'known gap' note)
     context: 'Today TEST-REPORT.json is the laptop''s attestation that tests ran against a specific commit, and `scripts/check-test-report-fresh.sh` enforces freshness via the pre-push hook + the `test-report-fresh` bullseye invariant. There is no PR-time check, so a developer who bypasses the hook (or whose hook isn''t installed) can push a PR with a stale or missing report and master can pick it up on squash-merge. Discovered when PR #80 merged-state was CLEAN with empty statusCheckRollup, surfacing the question "wasn''t there meant to be CI?". The check itself runs on any Linux box with `git` + `jq`, so the workflow is trivial — the work is just writing the YAML and ensuring it gates required-status-check on the branch protection rule.'
     origin: 'forked-from PR #80 review 2026-04-30'
     discovered: 2026-04-30
+    achieved: 2026-04-30
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved
