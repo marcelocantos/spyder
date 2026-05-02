@@ -3,20 +3,12 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Generate TEST-REPORT.json by running every test tier on the current
-# (clean-tree) HEAD and recording per-suite outcomes (🎯T26.4).
+# tree and recording per-suite outcomes (🎯T26.4).
 #
-# Workflow: commit → make test-report → `git commit -m "TEST-REPORT.json
-# @ <sha>" TEST-REPORT.json` to add the report as a separate commit on
-# top of the one it vouches for.
-#
-# Don't `git commit --amend` to fold it in: the amend creates a new
-# parent SHA, but TEST-REPORT.json's recorded `commit` field still
-# points at the pre-amend SHA, which is orphaned and unreachable on
-# the remote. Local pre-push works (orphan is in the reflog) but CI
-# (which clones fresh) fails the freshness check with "references
-# unknown commit". A separate commit keeps the recorded SHA reachable
-# from the branch tip and the source-path diff between SHA and HEAD
-# stays empty (only TEST-REPORT.json changed).
+# The report is an attestation: "the engineer ran these tests, here is
+# how each tier went." Keeping the report up to date relative to the
+# code is the engineer's responsibility; nothing in this script or the
+# pre-push hook checks freshness against git history.
 
 set -euo pipefail
 
@@ -27,15 +19,14 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 1
 fi
 
-# Refuse to run on a dirty tree. The report's meaning is "these tests ran
-# against this exact commit"; a dirty tree makes that claim incoherent.
+# Refuse to run on a dirty tree. The report's meaning is "these tests
+# ran against this exact tree"; a dirty tree makes that claim incoherent.
 if [[ -n "$(git status --porcelain)" ]]; then
   echo "test-report: refusing to run on a dirty tree. Commit or stash first:" >&2
   git status --short >&2
   exit 1
 fi
 
-commit=$(git rev-parse HEAD)
 host=$(hostname -s)
 generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
@@ -114,15 +105,13 @@ else
 fi
 
 jq -n \
-  --arg schema_version 1 \
-  --arg commit "$commit" \
+  --arg schema_version 2 \
   --arg generated_at "$generated_at" \
   --arg host "$host" \
   --argjson suites "$suites_json" \
   --arg overall "$overall" \
   '{
     schema_version: ($schema_version | tonumber),
-    commit: $commit,
     generated_at: $generated_at,
     host: $host,
     suites: $suites,
@@ -130,4 +119,3 @@ jq -n \
   }' > TEST-REPORT.json
 
 echo "── test-report: overall=$overall → TEST-REPORT.json ──"
-echo "Next: git commit -m \"TEST-REPORT.json @ ${commit:0:7}\" TEST-REPORT.json"

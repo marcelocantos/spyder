@@ -112,48 +112,22 @@ Instead, the laptop is the test runner and `TEST-REPORT.json` at the
 repo root is the attestation:
 
 - `scripts/test-report.sh` (invoked via `make test-report`) runs every
-  tier on a clean tree, records per-suite pass/fail/skip with the
-  HEAD commit SHA, and writes `TEST-REPORT.json`. Tiers:
+  tier on a clean tree and writes `TEST-REPORT.json`. Tiers:
   1. `go-unit` — `go test ./...`
   2. `bridge-python-unit` — `cd bridge && uv run pytest tests/`
   3. `integration` — `go test -tags=integration ./internal/pmd3bridge/...` (gated on `SPYDER_INTEGRATION=1`)
   4. `device` — `go test -tags=device ./internal/pmd3bridge/...` (gated on `SPYDER_DEVICES=1`, requires a paired device)
-- After running, commit `TEST-REPORT.json` as a **separate** commit
-  on top of the source commit it vouches for:
-  `git commit -m "TEST-REPORT.json @ <sha>" TEST-REPORT.json`.
-  Workflow: `commit → make test-report → git commit (separate)`.
-  Do **not** `git commit --amend` — the amend creates a new parent
-  SHA, but the report's recorded `commit` field still points at the
-  pre-amend SHA, which is orphaned and unreachable on the remote.
-  Local pre-push works (orphan is in the reflog) but PR CI clones
-  fresh and fails the freshness check with "references unknown
-  commit". A separate commit keeps the recorded SHA reachable from
-  the branch tip and the source-path diff between SHA and HEAD stays
-  empty (only `TEST-REPORT.json` changed).
-- `scripts/check-test-report-fresh.sh` verifies the report exists,
-  references a known commit, has `overall ∈ {pass, partial}`, and that
-  no source path under `internal/`, `bridge/src/`, `bridge/tests/`,
-  `*.go`, `Makefile`, `go.mod`, `go.sum`, `bridge/pyproject.toml`,
-  `bridge/uv.lock`, or `scripts/` has changed between the report's
-  recorded SHA and HEAD. Wired into the pre-push hook and the
-  `test-report-fresh` bullseye invariant — local enforcement only.
+- The report is an attestation — *the engineer ran these tests, here
+  are the per-tier outcomes*. Keeping it up to date relative to the
+  code is the engineer's responsibility. There is no automated
+  freshness check (the previous SHA-based one was removed because it
+  fought squash-merge; a better mechanism is TBD).
 - HIL tiers (`integration`, `device`) skip routinely; `overall:
-  partial` is acceptable for routine pushes and the freshness check
-  surfaces what was skipped.
+  partial` is acceptable.
 
-**Known gap: there is no PR-time CI that runs
-`check-test-report-fresh.sh`.** The local pre-push hook is the only
-gate; if it's bypassed or uninstalled, a stale or missing
-`TEST-REPORT.json` reaches master unnoticed. A lightweight
-ubuntu-latest workflow on `pull_request` that runs
-`scripts/check-test-report-fresh.sh` (which only needs `git` + `jq`,
-no devices, no toolchain) would close this loop. Tracked as a
-target.
-
-When evaluating a PR's mergeability: empty `statusCheckRollup` is
-expected today (no PR CI), but `TEST-REPORT.json` should reference a
-recent SHA on the PR branch with `overall ∈ {pass, partial}`. If it
-doesn't, that's a gate violation, not a "CI is missing" non-event.
+When evaluating a PR's mergeability: `TEST-REPORT.json` should
+reflect a recent run with `overall ∈ {pass, partial}`. If it
+doesn't, the engineer hasn't done their job; reject on that basis.
 
 ## Delivery
 
