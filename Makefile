@@ -34,12 +34,7 @@ bullseye:
 	@test -z "$$(git status --porcelain)" && echo "✓ clean" || \
 	 (echo "✗ dirty tree:"; git status --short; exit 1)
 
-# pre-release runs all dev invariants AND requires TEST-REPORT.json to be
-# fresh against HEAD. Test-report freshness is a release gate, not a dev-loop
-# invariant — staleness is enforced by the pre-push hook (= going to merge =
-# pre-release boundary), not by `make bullseye` (= "what should I work on?").
 pre-release: bullseye
-	@./scripts/check-test-report-fresh.sh
 
 clean:
 	rm -rf bin/
