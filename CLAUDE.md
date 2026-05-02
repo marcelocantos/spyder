@@ -118,9 +118,18 @@ repo root is the attestation:
   2. `bridge-python-unit` — `cd bridge && uv run pytest tests/`
   3. `integration` — `go test -tags=integration ./internal/pmd3bridge/...` (gated on `SPYDER_INTEGRATION=1`)
   4. `device` — `go test -tags=device ./internal/pmd3bridge/...` (gated on `SPYDER_DEVICES=1`, requires a paired device)
-- After running, `git commit --amend --no-edit TEST-REPORT.json` folds
-  the report into the commit it vouches for. Workflow:
-  `commit → make test-report → git commit --amend`.
+- After running, commit `TEST-REPORT.json` as a **separate** commit
+  on top of the source commit it vouches for:
+  `git commit -m "TEST-REPORT.json @ <sha>" TEST-REPORT.json`.
+  Workflow: `commit → make test-report → git commit (separate)`.
+  Do **not** `git commit --amend` — the amend creates a new parent
+  SHA, but the report's recorded `commit` field still points at the
+  pre-amend SHA, which is orphaned and unreachable on the remote.
+  Local pre-push works (orphan is in the reflog) but PR CI clones
+  fresh and fails the freshness check with "references unknown
+  commit". A separate commit keeps the recorded SHA reachable from
+  the branch tip and the source-path diff between SHA and HEAD stays
+  empty (only `TEST-REPORT.json` changed).
 - `scripts/check-test-report-fresh.sh` verifies the report exists,
   references a known commit, has `overall ∈ {pass, partial}`, and that
   no source path under `internal/`, `bridge/src/`, `bridge/tests/`,

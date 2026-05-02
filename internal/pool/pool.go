@@ -7,11 +7,20 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/marcelocantos/spyder/internal/poolstore"
 )
+
+// PoolNamePrefix marks sims/AVDs as spyder-pool-owned. The suffix is
+// the first 8 chars of the instance UUID; nothing parses it — the
+// prefix is purely an ownership predicate ("is this mine?") used at
+// adoption and GC time.
+const PoolNamePrefix = "spyder-pool-"
 
 // Tier indicates which readiness tier an instance occupies.
 type Tier string
@@ -33,7 +42,9 @@ type Instance struct {
 	Tier          Tier      `json:"tier"`
 	DeviceID      string    `json:"device_id"`        // UDID (iOS) or AVD name (Android)
 	Serial        string    `json:"serial,omitempty"` // emulator-5554 when booted (Android)
+	Holder        string    `json:"holder,omitempty"` // populated when Tier == Reserved
 	CreatedAt     time.Time `json:"created_at"`
+	AcquiredAt    time.Time `json:"acquired_at,omitempty"`
 	LastReleaseAt time.Time `json:"last_release_at,omitempty"`
 }
 
@@ -111,27 +122,239 @@ type Pool struct {
 	cfg       *Config
 	exec      Executor
 	clk       Clock
+	store     *poolstore.Store     // optional persistent hold ledger
 	instances map[string]*Instance // keyed by instance.ID
 	// lingerTimers tracks active linger timers by instance ID.
 	lingerTimers map[string]Timer
 }
 
+// Option configures a Pool at construction.
+type Option func(*Pool)
+
+// WithStore wires a persistent hold ledger so reservations survive
+// daemon restarts. If nil (the default), holds are in-memory only.
+func WithStore(s *poolstore.Store) Option {
+	return func(p *Pool) { p.store = s }
+}
+
 // New creates a Pool with the given config and the real executors.
-// Call Reconcile(ctx) once the daemon is ready to bring the pool to
-// desired state.
-func New(cfg *Config, exec Executor) *Pool {
-	return newWithClock(cfg, exec, realClock{})
+// Call Adopt(ctx) then Reconcile(ctx) once the daemon is ready to
+// bring the pool to desired state.
+func New(cfg *Config, exec Executor, opts ...Option) *Pool {
+	return newWithClock(cfg, exec, realClock{}, opts...)
 }
 
 // newWithClock creates a Pool with an injectable clock (for tests).
-func newWithClock(cfg *Config, exec Executor, clk Clock) *Pool {
-	return &Pool{
+func newWithClock(cfg *Config, exec Executor, clk Clock, opts ...Option) *Pool {
+	p := &Pool{
 		cfg:          cfg,
 		exec:         exec,
 		clk:          clk,
 		instances:    map[string]*Instance{},
 		lingerTimers: map[string]Timer{},
 	}
+	for _, o := range opts {
+		o(p)
+	}
+	return p
+}
+
+// Adopt rebuilds the in-memory inventory from live simctl/avdmanager
+// state plus the persisted hold ledger. Must be called before
+// Reconcile on daemon startup; safe to call exactly once. Live sims
+// or AVDs whose name starts with PoolNamePrefix are claimed; anything
+// else is left alone.
+//
+// Adoption rules:
+//
+//   - Live + in ledger → TierReserved, holder restored from ledger.
+//   - Live + booted, not in ledger → TierRunning (linger timer armed).
+//   - Live + shutdown, not in ledger → TierAvailable.
+//   - In ledger but not live → ledger row deleted (user removed the sim).
+//
+// Sims found in live state but whose template no longer exists in
+// the config are left alone (they'd be GC candidates if the user runs
+// pool_gc).
+func (p *Pool) Adopt(_ context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	holdsByDevice := map[string]poolstore.Hold{}
+	if p.store != nil {
+		holds, err := p.store.List()
+		if err != nil {
+			return fmt.Errorf("pool adopt: list holds: %w", err)
+		}
+		for _, h := range holds {
+			holdsByDevice[h.DeviceID] = h
+		}
+	}
+
+	// Build a set of live spyder-pool device IDs so we can prune
+	// stale ledger rows for sims the user deleted.
+	liveDevices := map[string]bool{}
+
+	// iOS sims.
+	sims, err := p.exec.SimList()
+	if err != nil {
+		slog.Warn("pool adopt: SimList failed; skipping iOS adoption", "error", err)
+	} else {
+		for _, s := range sims {
+			if !strings.HasPrefix(s.Name, PoolNamePrefix) {
+				continue
+			}
+			liveDevices[s.UDID] = true
+			tmpl := p.findTemplateForDevice("ios", holdsByDevice)
+			if tmpl == "" {
+				slog.Info("pool adopt: orphaned ios sim (no matching template) — leaving on disk; run pool_gc to delete",
+					"udid", s.UDID, "name", s.Name)
+				continue
+			}
+			p.adoptInstance(adoptInput{
+				platform:  "ios",
+				deviceID:  s.UDID,
+				template:  tmpl,
+				booted:    s.State == "Booted",
+				holdsByID: holdsByDevice,
+			})
+		}
+	}
+
+	// Android AVDs.
+	avds, err := p.exec.AVDList()
+	if err != nil {
+		slog.Warn("pool adopt: AVDList failed; skipping Android adoption", "error", err)
+	} else {
+		for _, a := range avds {
+			if !strings.HasPrefix(a.Name, PoolNamePrefix) {
+				continue
+			}
+			liveDevices[a.Name] = true
+			tmpl := p.findTemplateForDevice("android", holdsByDevice)
+			if tmpl == "" {
+				slog.Info("pool adopt: orphaned android AVD (no matching template) — leaving on disk; run pool_gc to delete",
+					"name", a.Name)
+				continue
+			}
+			// AVDList doesn't surface boot state — we conservatively
+			// treat unheld AVDs as available; if they're actually
+			// booted, the next AVDBoot returns the existing serial.
+			p.adoptInstance(adoptInput{
+				platform:  "android",
+				deviceID:  a.Name,
+				template:  tmpl,
+				booted:    false,
+				holdsByID: holdsByDevice,
+			})
+		}
+	}
+
+	// Prune ledger rows whose device is gone.
+	if p.store != nil {
+		for devID, h := range holdsByDevice {
+			if !liveDevices[devID] {
+				slog.Warn("pool adopt: holder's device vanished — releasing hold",
+					"instance_id", h.InstanceID, "device_id", devID,
+					"holder", h.Holder, "template", h.Template)
+				if err := p.store.DeleteByDevice(devID); err != nil {
+					slog.Warn("pool adopt: failed to delete stale hold",
+						"device_id", devID, "error", err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// adoptInput bundles arguments for adoptInstance to keep the loop
+// bodies tidy. Caller must hold p.mu.
+type adoptInput struct {
+	platform  string
+	deviceID  string
+	template  string
+	booted    bool
+	holdsByID map[string]poolstore.Hold
+}
+
+func (p *Pool) adoptInstance(in adoptInput) {
+	tmpl := p.findTemplate(in.template)
+	if tmpl == nil {
+		return
+	}
+	hold, held := in.holdsByID[in.deviceID]
+
+	tier := TierAvailable
+	if held {
+		tier = TierReserved
+	} else if in.booted {
+		tier = TierRunning
+	}
+
+	id := uuid.New().String()
+	if held {
+		id = hold.InstanceID
+	}
+	inst := &Instance{
+		ID:        id,
+		Template:  in.template,
+		Platform:  in.platform,
+		Tier:      tier,
+		DeviceID:  in.deviceID,
+		CreatedAt: p.clk.Now(),
+	}
+	if held {
+		inst.Holder = hold.Holder
+		inst.AcquiredAt = hold.AcquiredAt
+	}
+	p.instances[inst.ID] = inst
+
+	switch tier {
+	case TierReserved:
+		slog.Info("pool adopt: restored reserved instance",
+			"id", inst.ID, "device_id", inst.DeviceID,
+			"holder", inst.Holder, "template", inst.Template)
+	case TierRunning:
+		// Arm linger so it doesn't sit booted forever after adoption.
+		linger := tmpl.LingerDuration()
+		instanceID := inst.ID
+		inst.LastReleaseAt = p.clk.Now()
+		p.lingerTimers[inst.ID] = p.clk.AfterFunc(linger, func() {
+			p.onLingerExpired(instanceID)
+		})
+		slog.Info("pool adopt: restored running instance (linger armed)",
+			"id", inst.ID, "device_id", inst.DeviceID,
+			"template", inst.Template, "linger", linger)
+	case TierAvailable:
+		slog.Info("pool adopt: restored available instance",
+			"id", inst.ID, "device_id", inst.DeviceID, "template", inst.Template)
+	}
+}
+
+// findTemplateForDevice returns the template name to associate with a
+// live device. The device's name (spyder-pool-<8hex>) doesn't encode
+// the template, so we recover it via two routes: (a) if the device is
+// in the ledger, the ledger's template wins; (b) otherwise, if
+// exactly one configured template matches the platform, pick it. With
+// zero or multiple platform matches and no ledger entry, return ""
+// and the caller leaves the device alone (it'll appear as a GC
+// candidate later).
+func (p *Pool) findTemplateForDevice(platform string, holdsByDevice map[string]poolstore.Hold) string {
+	var matches []string
+	for _, t := range p.cfg.Templates {
+		if t.Platform == platform {
+			matches = append(matches, t.Name)
+		}
+	}
+	if len(matches) == 1 {
+		return matches[0]
+	}
+	// Otherwise, only the ledger can disambiguate.
+	for _, h := range holdsByDevice {
+		if h.Platform == platform {
+			return h.Template
+		}
+	}
+	return ""
 }
 
 // Reconcile walks the catalogue and brings the pool to desired state.
@@ -154,11 +377,13 @@ func (p *Pool) Reconcile(ctx context.Context) {
 // reconcileTemplate brings one template's pool to desired state. Must be
 // called with p.mu held.
 func (p *Pool) reconcileTemplate(_ context.Context, tmpl *TemplateConfig) error {
-	available, running, _ := p.countsByTemplate(tmpl.Name)
-	total := available + running
+	available, running, reserved := p.countsByTemplate(tmpl.Name)
+	// Reserved instances will eventually return to running/available, so
+	// they count toward the floor — otherwise an active reservation would
+	// cause Reconcile to mint extra sims and the pool would overshoot
+	// AvailableMin permanently.
+	total := available + running + reserved
 
-	// Create instances until we reach AvailableMin (not counting running ones,
-	// which are already "more available" than available).
 	needed := tmpl.AvailableMin - total
 	for i := 0; i < needed; i++ {
 		inst, err := p.mintInstance(tmpl)
@@ -192,12 +417,18 @@ func (p *Pool) reconcileTemplate(_ context.Context, tmpl *TemplateConfig) error 
 	return nil
 }
 
-// Acquire reserves an instance for the named template. It prefers a running
-// instance (near-instant), then boots an available one, then mints+boots a
-// new one.
-func (p *Pool) Acquire(templateName string) (*Instance, error) {
+// Acquire reserves an instance for the named template on behalf of
+// holder. It prefers a running instance (near-instant), then boots an
+// available one, then mints+boots a new one. The holder identity is
+// persisted in the ledger so the reservation survives daemon
+// restarts.
+func (p *Pool) Acquire(templateName, holder string) (*Instance, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if holder == "" {
+		return nil, fmt.Errorf("pool: holder is required")
+	}
 
 	tmpl := p.findTemplate(templateName)
 	if tmpl == nil {
@@ -208,9 +439,9 @@ func (p *Pool) Acquire(templateName string) (*Instance, error) {
 	// Prefer running tier first.
 	if inst := p.pickRunning(templateName); inst != nil {
 		p.cancelLinger(inst.ID)
-		inst.Tier = TierReserved
+		p.markReserved(inst, holder)
 		slog.Info("pool: acquired from running tier",
-			"id", inst.ID, "template", templateName)
+			"id", inst.ID, "template", templateName, "holder", holder)
 		return inst, nil
 	}
 
@@ -219,9 +450,9 @@ func (p *Pool) Acquire(templateName string) (*Instance, error) {
 		if err := p.bootInstance(inst); err != nil {
 			return nil, fmt.Errorf("pool: boot for acquire: %w", err)
 		}
-		inst.Tier = TierReserved
+		p.markReserved(inst, holder)
 		slog.Info("pool: acquired from available tier (booted)",
-			"id", inst.ID, "template", templateName)
+			"id", inst.ID, "template", templateName, "holder", holder)
 		return inst, nil
 	}
 
@@ -233,10 +464,33 @@ func (p *Pool) Acquire(templateName string) (*Instance, error) {
 	if err := p.bootInstance(inst); err != nil {
 		return nil, fmt.Errorf("pool: boot for acquire: %w", err)
 	}
-	inst.Tier = TierReserved
+	p.markReserved(inst, holder)
 	slog.Info("pool: acquired freshly-minted instance",
-		"id", inst.ID, "template", templateName)
+		"id", inst.ID, "template", templateName, "holder", holder)
 	return inst, nil
+}
+
+// markReserved transitions inst to TierReserved, stamps holder/acquired,
+// and persists the hold to the ledger if one is configured. Must be
+// called with p.mu held.
+func (p *Pool) markReserved(inst *Instance, holder string) {
+	inst.Tier = TierReserved
+	inst.Holder = holder
+	inst.AcquiredAt = p.clk.Now()
+	if p.store != nil {
+		err := p.store.Put(poolstore.Hold{
+			InstanceID: inst.ID,
+			DeviceID:   inst.DeviceID,
+			Template:   inst.Template,
+			Platform:   inst.Platform,
+			Holder:     holder,
+			AcquiredAt: inst.AcquiredAt,
+		})
+		if err != nil {
+			slog.Warn("pool: persist hold failed (in-memory state still consistent)",
+				"id", inst.ID, "error", err)
+		}
+	}
 }
 
 // Release returns an instance to the pool and starts the linger timer. The
@@ -253,7 +507,15 @@ func (p *Pool) Release(instanceID string) error {
 		return fmt.Errorf("pool: instance %q is not reserved (tier=%s)", instanceID, inst.Tier)
 	}
 	inst.Tier = TierRunning
+	inst.Holder = ""
+	inst.AcquiredAt = time.Time{}
 	inst.LastReleaseAt = p.clk.Now()
+	if p.store != nil {
+		if err := p.store.Delete(instanceID); err != nil {
+			slog.Warn("pool: delete hold failed (in-memory state still consistent)",
+				"id", instanceID, "error", err)
+		}
+	}
 
 	tmpl := p.findTemplate(inst.Template)
 	if tmpl == nil {
@@ -392,6 +654,86 @@ func (p *Pool) PoolWarm(template string, n int) error {
 // PoolDrain implements the mcp.PoolManager interface.
 func (p *Pool) PoolDrain(template string) error {
 	return p.ForceShutdown(template)
+}
+
+// PoolGC implements the mcp.PoolManager interface.
+func (p *Pool) PoolGC() any { return p.GC() }
+
+// GCResult reports what a GC pass deleted (or skipped, for booted
+// devices outside the in-memory inventory).
+type GCResult struct {
+	DeletedSims []string `json:"deleted_sims"`
+	DeletedAVDs []string `json:"deleted_avds"`
+	// SkippedBooted lists names that match the spyder-pool-* prefix
+	// and aren't in the in-memory inventory but are currently Booted —
+	// not deleted because they may be in active use by another tool
+	// or daemon. Re-run GC after shutting them down.
+	SkippedBooted []string `json:"skipped_booted"`
+	Errors        []string `json:"errors,omitempty"`
+}
+
+// GC deletes orphaned spyder-pool-* sims and AVDs that aren't in the
+// in-memory inventory. A sim/AVD is considered orphaned when its name
+// has the PoolNamePrefix and its device ID is not tracked by the
+// pool. Booted orphans are skipped — the user (or a `pool_gc --force`
+// follow-up, not implemented) is expected to verify before deleting
+// something potentially in active use.
+func (p *Pool) GC() GCResult {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	tracked := map[string]bool{}
+	for _, inst := range p.instances {
+		tracked[inst.DeviceID] = true
+	}
+
+	res := GCResult{}
+
+	if sims, err := p.exec.SimList(); err != nil {
+		res.Errors = append(res.Errors, fmt.Sprintf("SimList: %v", err))
+	} else {
+		for _, s := range sims {
+			if !strings.HasPrefix(s.Name, PoolNamePrefix) {
+				continue
+			}
+			if tracked[s.UDID] {
+				continue
+			}
+			if s.State == "Booted" {
+				res.SkippedBooted = append(res.SkippedBooted, s.Name)
+				slog.Info("pool gc: skipping booted orphan (may be in active use)",
+					"udid", s.UDID, "name", s.Name)
+				continue
+			}
+			if err := p.exec.SimDelete(s.UDID); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("SimDelete %s: %v", s.UDID, err))
+				continue
+			}
+			res.DeletedSims = append(res.DeletedSims, s.Name)
+			slog.Info("pool gc: deleted orphan sim", "udid", s.UDID, "name", s.Name)
+		}
+	}
+
+	if avds, err := p.exec.AVDList(); err != nil {
+		res.Errors = append(res.Errors, fmt.Sprintf("AVDList: %v", err))
+	} else {
+		for _, a := range avds {
+			if !strings.HasPrefix(a.Name, PoolNamePrefix) {
+				continue
+			}
+			if tracked[a.Name] {
+				continue
+			}
+			if err := p.exec.AVDDelete(a.Name); err != nil {
+				res.Errors = append(res.Errors, fmt.Sprintf("AVDDelete %s: %v", a.Name, err))
+				continue
+			}
+			res.DeletedAVDs = append(res.DeletedAVDs, a.Name)
+			slog.Info("pool gc: deleted orphan AVD", "name", a.Name)
+		}
+	}
+
+	return res
 }
 
 // Status returns a snapshot of all templates and their instance counts.
@@ -635,6 +977,9 @@ func (p *Pool) destroyInstance(inst *Instance) error {
 		err = p.exec.AVDDelete(inst.DeviceID)
 	}
 	delete(p.instances, inst.ID)
+	if p.store != nil {
+		_ = p.store.Delete(inst.ID)
+	}
 	if err != nil {
 		slog.Warn("pool: destroyed with deletion error",
 			"id", inst.ID, "device", inst.DeviceID, "error", err)

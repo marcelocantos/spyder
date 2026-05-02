@@ -1496,3 +1496,10 @@ func (h *Handler) handlePoolDrain(args map[string]any) (*mcpgo.CallToolResult, e
 	}
 	return toolText(fmt.Sprintf("drained all idle instances for template %q", tmpl))
 }
+
+func (h *Handler) handlePoolGC(_ map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.poolMgr == nil {
+		return toolErr("pool not configured — create ~/.spyder/pool.yaml and restart the daemon")
+	}
+	return toolJSON(h.poolMgr.PoolGC())
+}

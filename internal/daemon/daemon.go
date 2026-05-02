@@ -28,6 +28,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 	"github.com/marcelocantos/spyder/internal/pool"
+	"github.com/marcelocantos/spyder/internal/poolstore"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
@@ -196,7 +197,22 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 	var poolInst *pool.Pool
 	poolCfgPath := paths.PoolConfigPath()
 	if poolCfg, poolErr := pool.LoadConfig(poolCfgPath); poolErr == nil {
-		poolInst = pool.New(poolCfg, pool.RealExecutor{})
+		// Open the SQLite hold ledger. Failure to open is logged but
+		// non-fatal — the pool degrades to in-memory holds (which means
+		// reservations are lost across restarts, just like before this
+		// landed).
+		var poolStore *poolstore.Store
+		if s, err := poolstore.Open(filepath.Join(paths.Base(), "pool.db")); err != nil {
+			slog.Warn("pool ledger unavailable — reservations will not survive restart",
+				"path", filepath.Join(paths.Base(), "pool.db"), "error", err)
+		} else {
+			poolStore = s
+		}
+		opts := []pool.Option{}
+		if poolStore != nil {
+			opts = append(opts, pool.WithStore(poolStore))
+		}
+		poolInst = pool.New(poolCfg, pool.RealExecutor{}, opts...)
 		slog.Info("pool configured", "templates", len(poolCfg.Templates), "path", poolCfgPath)
 	} else if !errors.Is(poolErr, os.ErrNotExist) {
 		slog.Warn("pool config invalid — pool disabled",
@@ -234,10 +250,16 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 
 	handler := spydermcp.NewHandler(handlerOpts...)
 
-	// Kick off pool reconciliation in the background so startup latency
-	// stays low even when creating/booting sims takes tens of seconds.
+	// Kick off pool adoption + reconciliation in the background so
+	// startup latency stays low even when creating/booting sims takes
+	// tens of seconds. Adoption rebuilds inventory from live
+	// simctl/avdmanager state plus the persisted hold ledger;
+	// Reconcile then tops the available tier up to AvailableMin.
 	if poolInst != nil {
 		go func() {
+			if err := poolInst.Adopt(context.Background()); err != nil {
+				slog.Warn("pool: adopt failed; proceeding with empty inventory", "error", err)
+			}
 			poolInst.Reconcile(context.Background())
 			slog.Info("pool: initial reconcile complete")
 		}()
