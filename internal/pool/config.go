@@ -48,18 +48,12 @@ type TemplateConfig struct {
 	// Tags is an optional set of labels for fuzzy selector matching (T23).
 	Tags []string `yaml:"tags,omitempty"`
 
-	// AvailableMin is the floor for the available tier: Reconcile will
-	// create new instances until at least this many exist (not booted).
-	AvailableMin int `yaml:"available_min"`
-
 	// AvailableMax is the cap for the available tier: when a running
-	// instance transitions to available after linger expires, and the
-	// available tier is already at cap, the instance is deleted instead.
+	// instance's linger timer expires and the available tier is already
+	// at cap, the oldest available instance is deleted (LRU eviction)
+	// before this one is shut down. Zero means "no cap" (sims accumulate
+	// up to whatever has been used).
 	AvailableMax int `yaml:"available_max"`
-
-	// RunningWarm is the number of instances Reconcile will pre-boot.
-	// Keeping a small warm pool enables near-instant acquisition.
-	RunningWarm int `yaml:"running_warm"`
 
 	// LingerSeconds overrides the global SPYDER_POOL_LINGER_SECONDS for
 	// this template. Zero means "use the global value".
@@ -122,9 +116,8 @@ func (c *Config) validate() error {
 		if t.RuntimeOrSystemImage == "" {
 			return fmt.Errorf("template %q: runtime_or_system_image is required", t.Name)
 		}
-		if t.AvailableMax < t.AvailableMin {
-			return fmt.Errorf("template %q: available_max (%d) must be >= available_min (%d)",
-				t.Name, t.AvailableMax, t.AvailableMin)
+		if t.AvailableMax < 0 {
+			return fmt.Errorf("template %q: available_max (%d) must be >= 0", t.Name, t.AvailableMax)
 		}
 	}
 	return nil

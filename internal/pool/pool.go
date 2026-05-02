@@ -357,65 +357,6 @@ func (p *Pool) findTemplateForDevice(platform string, holdsByDevice map[string]p
 	return ""
 }
 
-// Reconcile walks the catalogue and brings the pool to desired state.
-// It creates missing instances and optionally pre-boots up to RunningWarm.
-// Should be called on daemon startup and can be called again after any
-// release to refill.
-func (p *Pool) Reconcile(ctx context.Context) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	for i := range p.cfg.Templates {
-		tmpl := &p.cfg.Templates[i]
-		if err := p.reconcileTemplate(ctx, tmpl); err != nil {
-			slog.Warn("pool: reconcile template failed",
-				"template", tmpl.Name, "error", err)
-		}
-	}
-}
-
-// reconcileTemplate brings one template's pool to desired state. Must be
-// called with p.mu held.
-func (p *Pool) reconcileTemplate(_ context.Context, tmpl *TemplateConfig) error {
-	available, running, reserved := p.countsByTemplate(tmpl.Name)
-	// Reserved instances will eventually return to running/available, so
-	// they count toward the floor — otherwise an active reservation would
-	// cause Reconcile to mint extra sims and the pool would overshoot
-	// AvailableMin permanently.
-	total := available + running + reserved
-
-	needed := tmpl.AvailableMin - total
-	for i := 0; i < needed; i++ {
-		inst, err := p.mintInstance(tmpl)
-		if err != nil {
-			slog.Warn("pool: mint failed during reconcile",
-				"template", tmpl.Name, "error", err)
-			break
-		}
-		slog.Info("pool: minted instance",
-			"template", tmpl.Name, "id", inst.ID, "device_id", inst.DeviceID)
-	}
-
-	// Re-count after minting.
-	available, running, _ = p.countsByTemplate(tmpl.Name)
-
-	// Pre-boot up to RunningWarm instances from the available tier.
-	toWarm := tmpl.RunningWarm - running
-	if toWarm > available {
-		toWarm = available
-	}
-	for i := 0; i < toWarm; i++ {
-		inst := p.pickAvailable(tmpl.Name)
-		if inst == nil {
-			break
-		}
-		if err := p.bootInstance(inst); err != nil {
-			slog.Warn("pool: pre-boot failed during reconcile",
-				"template", tmpl.Name, "id", inst.ID, "error", err)
-		}
-	}
-	return nil
-}
 
 // Acquire reserves an instance for the named template on behalf of
 // holder. It prefers a running instance (near-instant), then boots an
@@ -556,14 +497,30 @@ func (p *Pool) onLingerExpired(instanceID string) {
 		return
 	}
 
-	_, available, _ := p.countAvailableByTemplate(inst.Template)
-	if available >= tmpl.AvailableMax {
-		// Cap reached — delete.
-		slog.Info("pool: linger expired, available cap reached — deleting",
-			"id", instanceID, "template", inst.Template,
-			"available", available, "max", tmpl.AvailableMax)
-		_ = p.destroyInstance(inst)
-		return
+	// Cap-driven LRU eviction. If shutting this sim down would push the
+	// available-tier population over AvailableMax, delete the oldest
+	// available sim for this template first (LRU by LastReleaseAt, then
+	// CreatedAt). AvailableMax == 0 means "no cap".
+	if tmpl.AvailableMax > 0 {
+		_, available, _ := p.countAvailableByTemplate(inst.Template)
+		if available+1 > tmpl.AvailableMax {
+			if victim := p.pickOldestAvailable(inst.Template); victim != nil {
+				slog.Info("pool: linger expired, evicting oldest available (LRU)",
+					"evicted_id", victim.ID, "evicted_device", victim.DeviceID,
+					"new_id", inst.ID, "template", inst.Template,
+					"available_max", tmpl.AvailableMax)
+				_ = p.destroyInstance(victim)
+			} else {
+				// No available sim to evict (everything is reserved or
+				// running); deleting this one is the only way to honour
+				// the cap.
+				slog.Info("pool: linger expired, no available sim to evict — deleting just-released sim",
+					"id", instanceID, "template", inst.Template,
+					"available_max", tmpl.AvailableMax)
+				_ = p.destroyInstance(inst)
+				return
+			}
+		}
 	}
 
 	// Shutdown but keep on disk.
@@ -575,6 +532,31 @@ func (p *Pool) onLingerExpired(instanceID string) {
 	}
 	slog.Info("pool: linger expired, transitioned to available",
 		"id", instanceID, "template", inst.Template)
+}
+
+// pickOldestAvailable returns the Available instance for a template
+// with the oldest LastReleaseAt (or CreatedAt if never released).
+// Used for LRU eviction at the cap. Must be called with p.mu held.
+func (p *Pool) pickOldestAvailable(name string) *Instance {
+	var oldest *Instance
+	for _, inst := range p.instances {
+		if inst.Template != name || inst.Tier != TierAvailable {
+			continue
+		}
+		if oldest == nil || lastTouch(inst).Before(lastTouch(oldest)) {
+			oldest = inst
+		}
+	}
+	return oldest
+}
+
+// lastTouch returns the most recent timestamp associated with the
+// instance: LastReleaseAt if set, else CreatedAt.
+func lastTouch(inst *Instance) time.Time {
+	if !inst.LastReleaseAt.IsZero() {
+		return inst.LastReleaseAt
+	}
+	return inst.CreatedAt
 }
 
 // ForceShutdown shuts down all running+reserved instances for a template
@@ -815,26 +797,8 @@ func (p *Pool) findTemplate(name string) *TemplateConfig {
 	return nil
 }
 
-// countsByTemplate returns (available, running, reserved) for template.
-func (p *Pool) countsByTemplate(name string) (available, running, reserved int) {
-	for _, inst := range p.instances {
-		if inst.Template != name {
-			continue
-		}
-		switch inst.Tier {
-		case TierAvailable:
-			available++
-		case TierRunning:
-			running++
-		case TierReserved:
-			reserved++
-		}
-	}
-	return
-}
-
-// countAvailableByTemplate is like countsByTemplate but returns
-// (running+reserved, available, total) — useful for cap checks.
+// countAvailableByTemplate returns (non-available, available, total)
+// for a template — useful for cap checks.
 func (p *Pool) countAvailableByTemplate(name string) (nonAvail, avail, total int) {
 	for _, inst := range p.instances {
 		if inst.Template != name {

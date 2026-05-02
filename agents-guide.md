@@ -153,9 +153,7 @@ templates:
     device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
     runtime_or_system_image: com.apple.CoreSimulator.SimRuntime.iOS-18-3
     tags: [ci, ios, iphone]
-    available_min: 2      # always keep ≥ 2 created on disk
-    available_max: 4      # never keep > 4 shutdown instances
-    running_warm: 1       # keep 1 pre-booted and idle
+    available_max: 4      # cap on idle (Available) sims; LRU evict beyond it
     linger_seconds: 120   # keep running for 2 min after release
 
   - name: pixel9
@@ -164,14 +162,22 @@ templates:
     device_type: Pixel9_API35_template
     runtime_or_system_image: "system-images;android-35;google_apis;arm64-v8a"
     tags: [ci, android, phone]
-    available_min: 1
     available_max: 3
-    running_warm: 0
     linger_seconds: 60
 ```
 
+The pool is **purely demand-driven**: sims are only created in
+response to `Acquire`. There is no startup pre-warming, no
+`available_min` floor, no `running_warm` pre-boot. After `Release`,
+linger keeps the sim booted briefly for instant re-acquire; on linger
+expiry it transitions to Available (shut down on disk). When a release
+would push Available over `available_max`, the oldest Available sim is
+evicted first (LRU). `available_max: 0` means no cap (sims accumulate
+up to whatever has actually been used).
+
 Restart the daemon after creating or modifying `pool.yaml`. The daemon
-reconciles on startup (background goroutine; startup is non-blocking).
+adopts existing `spyder-pool-*` sims on startup (background goroutine;
+startup is non-blocking).
 
 **Global linger override**: set `SPYDER_POOL_LINGER_SECONDS` in the
 environment to override the default (120 s) for all templates that don't
