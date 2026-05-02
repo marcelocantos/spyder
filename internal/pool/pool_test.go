@@ -7,10 +7,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/poolstore"
 )
 
 // --------------------------------------------------------------------------
@@ -18,20 +21,22 @@ import (
 // --------------------------------------------------------------------------
 
 type fakeExec struct {
-	mu      sync.Mutex
-	sims    map[string]string // udid -> state ("Shutdown"|"Booted")
-	avds    map[string]string // name -> path
-	booted  map[string]string // avd name -> serial
-	counter int
-	errs    map[string]error // method -> error to inject
+	mu       sync.Mutex
+	sims     map[string]string // udid -> state ("Shutdown"|"Booted")
+	simNames map[string]string // udid -> sim name (for adoption/GC tests)
+	avds     map[string]string // name -> path
+	booted   map[string]string // avd name -> serial
+	counter  int
+	errs     map[string]error // method -> error to inject
 }
 
 func newFakeExec() *fakeExec {
 	return &fakeExec{
-		sims:   map[string]string{},
-		avds:   map[string]string{},
-		booted: map[string]string{},
-		errs:   map[string]error{},
+		sims:     map[string]string{},
+		simNames: map[string]string{},
+		avds:     map[string]string{},
+		booted:   map[string]string{},
+		errs:     map[string]error{},
 	}
 }
 
@@ -44,6 +49,7 @@ func (f *fakeExec) SimCreate(name, _, _ string) (string, error) {
 	f.counter++
 	udid := fmt.Sprintf("SIM-%04d", f.counter)
 	f.sims[udid] = "Shutdown"
+	f.simNames[udid] = name
 	return udid, nil
 }
 
@@ -82,7 +88,7 @@ func (f *fakeExec) SimList() ([]SimInfo, error) {
 	defer f.mu.Unlock()
 	var out []SimInfo
 	for udid, state := range f.sims {
-		out = append(out, SimInfo{UDID: udid, Name: "sim-" + udid, State: state})
+		out = append(out, SimInfo{UDID: udid, Name: f.simNames[udid], State: state})
 	}
 	return out, nil
 }
@@ -381,7 +387,7 @@ func TestAcquireRunningTierFirst(t *testing.T) {
 	p := newWithClock(cfg, exec, clk)
 	p.Reconcile(context.Background())
 
-	inst, err := p.Acquire("t1")
+	inst, err := p.Acquire("t1", "test")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -408,7 +414,7 @@ func TestLingerKeepsRunningTierUntilExpiry(t *testing.T) {
 	p := newWithClock(cfg, exec, clk)
 	p.Reconcile(context.Background())
 
-	inst, err := p.Acquire("t1")
+	inst, err := p.Acquire("t1", "test")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -444,11 +450,11 @@ func TestLingerReacquireBeforeExpiry(t *testing.T) {
 	p := newWithClock(cfg, exec, clk)
 	p.Reconcile(context.Background())
 
-	inst, _ := p.Acquire("t1")
+	inst, _ := p.Acquire("t1", "test")
 	_ = p.Release(inst.ID)
 
 	// Re-acquire before linger expires — should get the same running instance.
-	inst2, err := p.Acquire("t1")
+	inst2, err := p.Acquire("t1", "test")
 	if err != nil {
 		t.Fatalf("second Acquire: %v", err)
 	}
@@ -476,7 +482,7 @@ func TestPoolCapEnforcementDeletesOnRelease(t *testing.T) {
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
 
-	inst, err := p.Acquire("t1")
+	inst, err := p.Acquire("t1", "test")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -577,7 +583,7 @@ func TestForSelectorFiltering(t *testing.T) {
 func TestAcquireUnknownTemplate(t *testing.T) {
 	cfg := &Config{Templates: []TemplateConfig{iOSTemplate("t1")}}
 	p := newWithClock(cfg, newFakeExec(), newFakeClock(time.Now()))
-	_, err := p.Acquire("nonexistent")
+	_, err := p.Acquire("nonexistent", "test")
 	if err == nil {
 		t.Fatal("expected error for unknown template")
 	}
@@ -593,7 +599,7 @@ func TestAndroidAcquireReleaseCycle(t *testing.T) {
 	p := newWithClock(cfg, exec, clk)
 	p.Reconcile(context.Background()) // creates 1 available
 
-	inst, err := p.Acquire("pixel")
+	inst, err := p.Acquire("pixel", "test")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
@@ -615,6 +621,169 @@ func TestAndroidAcquireReleaseCycle(t *testing.T) {
 	st = p.Status()
 	if st[0].Available != 1 {
 		t.Errorf("available after linger = %d, want 1", st[0].Available)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Adoption / GC / reserved-counting tests
+// --------------------------------------------------------------------------
+
+func TestReserveCountsTowardFloor(t *testing.T) {
+	tmpl := iOSTemplate("t1")
+	tmpl.AvailableMin = 2
+	tmpl.RunningWarm = 0
+	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	exec := newFakeExec()
+	clk := newFakeClock(time.Now())
+	p := newWithClock(cfg, exec, clk)
+	p.Reconcile(context.Background()) // creates 2 available
+
+	// Acquire one — now (avail=1, running=0, reserved=1).
+	if _, err := p.Acquire("t1", "alice"); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	// Reconcile again. Without reserved-counting fix this would
+	// mint a third sim to bring avail back to 2. With the fix,
+	// total = avail+running+reserved = 2 already, so nothing happens.
+	p.Reconcile(context.Background())
+
+	st := p.Status()
+	total := st[0].Available + st[0].Running + st[0].Reserved
+	if total != 2 {
+		t.Errorf("total instances = %d, want 2 (no overshoot during reservation)", total)
+	}
+}
+
+func TestHoldPersistsAcrossRestart(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "pool.db")
+	store, err := poolstore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	tmpl := iOSTemplate("t1")
+	tmpl.AvailableMin = 1
+	tmpl.RunningWarm = 0
+	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	exec := newFakeExec()
+	clk := newFakeClock(time.Now())
+
+	// First "daemon": acquire and leave the hold pending.
+	p1 := newWithClock(cfg, exec, clk, WithStore(store))
+	p1.Reconcile(context.Background())
+	inst1, err := p1.Acquire("t1", "alice")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	deviceID := inst1.DeviceID
+
+	// Simulate restart: brand-new Pool with the same exec and store.
+	p2 := newWithClock(cfg, exec, clk, WithStore(store))
+	if err := p2.Adopt(context.Background()); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	st := p2.Status()
+	if st[0].Reserved != 1 {
+		t.Fatalf("reserved after adopt = %d, want 1", st[0].Reserved)
+	}
+	if st[0].Instances[0].DeviceID != deviceID {
+		t.Errorf("adopted device_id = %q, want %q", st[0].Instances[0].DeviceID, deviceID)
+	}
+	if st[0].Instances[0].Holder != "alice" {
+		t.Errorf("adopted holder = %q, want alice", st[0].Instances[0].Holder)
+	}
+}
+
+func TestAdoptDropsHoldForVanishedDevice(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "pool.db")
+	store, err := poolstore.Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	tmpl := iOSTemplate("t1")
+	tmpl.AvailableMin = 1
+	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	exec := newFakeExec()
+	clk := newFakeClock(time.Now())
+
+	p1 := newWithClock(cfg, exec, clk, WithStore(store))
+	p1.Reconcile(context.Background())
+	inst1, err := p1.Acquire("t1", "alice")
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	// User manually deletes the sim out from under us.
+	if err := exec.SimDelete(inst1.DeviceID); err != nil {
+		t.Fatalf("SimDelete: %v", err)
+	}
+
+	p2 := newWithClock(cfg, exec, clk, WithStore(store))
+	if err := p2.Adopt(context.Background()); err != nil {
+		t.Fatalf("Adopt: %v", err)
+	}
+	st := p2.Status()
+	if st[0].Reserved != 0 {
+		t.Errorf("reserved after vanished-device adopt = %d, want 0", st[0].Reserved)
+	}
+}
+
+func TestGCDeletesOrphanSims(t *testing.T) {
+	cfg := &Config{Templates: []TemplateConfig{iOSTemplate("t1")}}
+	exec := newFakeExec()
+	clk := newFakeClock(time.Now())
+	p := newWithClock(cfg, exec, clk)
+
+	// Pre-seed the executor with two leaked spyder-pool sims (a
+	// shutdown one and a booted one) plus an unrelated user sim.
+	exec.sims["LEAK-1"] = "Shutdown"
+	exec.sims["LEAK-2"] = "Booted"
+	exec.sims["USER-1"] = "Shutdown"
+	// Override SimList to surface names. Build a small adapter.
+	exec.simNames["LEAK-1"] = "spyder-pool-aaaaaaaa"
+	exec.simNames["LEAK-2"] = "spyder-pool-bbbbbbbb"
+	exec.simNames["USER-1"] = "my-test-iphone"
+
+	res := p.GC()
+	if len(res.DeletedSims) != 1 || res.DeletedSims[0] != "spyder-pool-aaaaaaaa" {
+		t.Errorf("DeletedSims = %v, want [spyder-pool-aaaaaaaa]", res.DeletedSims)
+	}
+	if len(res.SkippedBooted) != 1 || res.SkippedBooted[0] != "spyder-pool-bbbbbbbb" {
+		t.Errorf("SkippedBooted = %v, want [spyder-pool-bbbbbbbb]", res.SkippedBooted)
+	}
+	if _, ok := exec.sims["LEAK-1"]; ok {
+		t.Errorf("LEAK-1 should have been deleted")
+	}
+	if _, ok := exec.sims["LEAK-2"]; !ok {
+		t.Errorf("LEAK-2 should have been left alone (booted)")
+	}
+	if _, ok := exec.sims["USER-1"]; !ok {
+		t.Errorf("USER-1 should not have been touched (no spyder-pool prefix)")
+	}
+}
+
+func TestGCSparesTrackedInstances(t *testing.T) {
+	tmpl := iOSTemplate("t1")
+	tmpl.AvailableMin = 1
+	tmpl.RunningWarm = 0
+	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	exec := newFakeExec()
+	clk := newFakeClock(time.Now())
+	p := newWithClock(cfg, exec, clk)
+	p.Reconcile(context.Background()) // creates 1 sim, fakeExec doesn't set a name
+
+	// fakeExec.SimCreate doesn't record the name, so reach in and set
+	// it to mimic SimCreate giving the sim a spyder-pool-* name.
+	for udid := range exec.sims {
+		exec.simNames[udid] = "spyder-pool-tracked"
+	}
+
+	res := p.GC()
+	if len(res.DeletedSims) != 0 {
+		t.Errorf("DeletedSims = %v, want [] (the only sim is tracked)", res.DeletedSims)
 	}
 }
 

@@ -42,6 +42,9 @@ type PoolManager interface {
 	PoolStatus() any
 	PoolWarm(template string, n int) error
 	PoolDrain(template string) error
+	// PoolGC deletes orphaned spyder-pool-* sims/AVDs not in the
+	// in-memory inventory. Returns a JSON-serialisable result.
+	PoolGC() any
 }
 
 // AutoawakeNotifier is the subset of *autoawake.Supervisor used by the
@@ -321,6 +324,8 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handlePoolWarm(args)
 	case "pool_drain":
 		return h.handlePoolDrain(args)
+	case "pool_gc":
+		return h.handlePoolGC(args)
 	default:
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
@@ -764,6 +769,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 				mcpgo.Required(),
 				mcpgo.Description("Pool template name as declared in ~/.spyder/pool.yaml"),
 			),
+		),
+
+		mcpgo.NewTool("pool_gc",
+			mcpgo.WithDescription("Delete orphaned spyder-pool-* simulators and AVDs that the daemon no longer tracks (typically left over from prior daemon runs that crashed or restarted before this version). Booted orphans are skipped on the assumption they may be in active use; shut them down and re-run if you want them gone too. Returns the list of deleted and skipped names."),
 		),
 	}
 }
