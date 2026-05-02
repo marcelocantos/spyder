@@ -1794,3 +1794,21 @@ targets:
     origin: research-derived (pymobiledevice3 8.x study 2026-04-18)
     discovered: 2026-04-18
     achieved: 2026-04-18
+  T52:
+    name: Tunneld health is observable from spyder, with actionable errors when it is down
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Background health probe in the daemon hits 127.0.0.1:49151 (or --tunneld-addr) with a bounded 5s timeout and exposes one of three states via slog: healthy, unreachable, wedged.'
+    - MCP tool tunneld_status returns structured JSON with state, address, last_probe_at, last_healthy_at. Read-only; not subject to reservations.
+    - Any tool whose code path requires tunneld (deploy_app, screenshot, launch_app on iOS 17+) checks the cached state before invoking pymobiledevice3 or devicectl. If unhealthy, the tool fails immediately with a structured tunneld_unavailable error carrying address and state plus a one-line remediation hint. No silent hangs.
+    - 'Error message is precise enough for an agent to act on without grepping the README. Example: tunneld is wedged at 127.0.0.1:49151. Restart with: sudo launchctl kickstart -k system/com.marcelocantos.pmd3-tunneld (or restart your manually-started instance).'
+    - agents-guide.md gains a Tunneld health subsection under Common gotchas documenting the new tunneld_status tool and the structured error contract.
+    context: 'Spyder does not manage tunneld lifecycle today (privilege boundary — tunneld needs root for TUN/TAP, spyder runs as user under brew services). The agents-guide already tracks bridge-supervised tunneld as a 1.0 prerequisite and that is the right long-term target. This target is the smaller near-term improvement that gets most of the ergonomic value without crossing the privilege boundary: when tunneld is unreachable or wedged, spyder tools should fail with a clear actionable error that names tunneld as the cause and tells the caller exactly what to do, rather than letting devicectl hang silently for minutes. Surfaced 2026-05-02 reviewing pain in the squz/ge transcript: multiple devicectl launches hung for minutes before completing in the background once tunneld recovered on its own. The user has since installed pmd3-tunneld as a system LaunchDaemon (com.marcelocantos.pmd3-tunneld) so the cold-tunnel tax is gone for the steady state, but the failure-mode-when-tunneld-is-actually-broken still hurts.'
+    tags:
+    - transport
+    - ios
+    - ergonomics
+    origin: forked from agents-guide.md 1.0 tunneld goal; surfaced 2026-05-02 in squz/ge session
+    discovered: 2026-05-02
