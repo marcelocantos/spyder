@@ -250,18 +250,17 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 
 	handler := spydermcp.NewHandler(handlerOpts...)
 
-	// Kick off pool adoption + reconciliation in the background so
-	// startup latency stays low even when creating/booting sims takes
-	// tens of seconds. Adoption rebuilds inventory from live
-	// simctl/avdmanager state plus the persisted hold ledger;
-	// Reconcile then tops the available tier up to AvailableMin.
+	// Kick off pool adoption in the background so startup latency stays
+	// low. Adoption rebuilds inventory from live simctl/avdmanager state
+	// plus the persisted hold ledger. The pool itself is purely
+	// demand-driven — sims are only created in response to Acquire, so
+	// there's no Reconcile/pre-mint step at startup.
 	if poolInst != nil {
 		go func() {
 			if err := poolInst.Adopt(context.Background()); err != nil {
 				slog.Warn("pool: adopt failed; proceeding with empty inventory", "error", err)
 			}
-			poolInst.Reconcile(context.Background())
-			slog.Info("pool: initial reconcile complete")
+			slog.Info("pool: adoption complete")
 		}()
 	}
 

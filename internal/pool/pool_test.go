@@ -224,9 +224,7 @@ func iOSTemplate(name string) TemplateConfig {
 		Platform:             "ios",
 		DeviceType:           "com.apple.CoreSimulator.SimDeviceType.iPhone-16",
 		RuntimeOrSystemImage: "com.apple.CoreSimulator.SimRuntime.iOS-18-3",
-		AvailableMin:         1,
 		AvailableMax:         3,
-		RunningWarm:          1,
 		LingerSeconds:        60,
 	}
 }
@@ -237,9 +235,7 @@ func androidTemplate(name string) TemplateConfig {
 		Platform:             "android",
 		DeviceType:           "pixel_9_pro",
 		RuntimeOrSystemImage: "system-images;android-35;google_apis;arm64-v8a",
-		AvailableMin:         1,
 		AvailableMax:         2,
-		RunningWarm:          0,
 		LingerSeconds:        30,
 	}
 }
@@ -256,17 +252,13 @@ templates:
     platform: ios
     device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
     runtime_or_system_image: com.apple.CoreSimulator.SimRuntime.iOS-18-3
-    available_min: 1
     available_max: 3
-    running_warm: 1
     linger_seconds: 60
   - name: pixel9
     platform: android
     device_type: pixel_9_pro
     runtime_or_system_image: "system-images;android-35;google_apis;arm64-v8a"
-    available_min: 0
     available_max: 2
-    running_warm: 0
 `
 	tmp := t.TempDir()
 	path := tmp + "/pool.yaml"
@@ -327,15 +319,14 @@ templates:
 			wantErr: "platform must be ios or android",
 		},
 		{
-			name: "max < min",
+			name: "negative max",
 			yaml: `
 templates:
   - name: foo
     platform: ios
     device_type: dt
     runtime_or_system_image: rt
-    available_min: 3
-    available_max: 1
+    available_max: -1
 `,
 			wantErr: "available_max",
 		},
@@ -358,34 +349,28 @@ templates:
 	}
 }
 
-func TestReconcileCreatesAvailable(t *testing.T) {
+func TestPoolStartsEmpty(t *testing.T) {
+	// The pool is purely demand-driven: with no Acquire and no
+	// pre-existing live sims, the pool stays at zero indefinitely.
 	cfg := &Config{Templates: []TemplateConfig{iOSTemplate("t1")}}
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
 
-	p.Reconcile(context.Background())
-
-	// AvailableMin=1, RunningWarm=1 → 1 created (available tier) then
-	// 1 pre-booted → 1 running.
 	st := p.Status()
 	if len(st) != 1 {
 		t.Fatalf("want 1 template status, got %d", len(st))
 	}
-	if st[0].Running != 1 {
-		t.Errorf("running = %d, want 1", st[0].Running)
-	}
-	if st[0].Available != 0 {
-		t.Errorf("available = %d, want 0", st[0].Available)
+	if total := st[0].Available + st[0].Running + st[0].Reserved; total != 0 {
+		t.Errorf("expected empty pool, got %d instances", total)
 	}
 }
 
-func TestAcquireRunningTierFirst(t *testing.T) {
+func TestAcquireMintsLazily(t *testing.T) {
 	cfg := &Config{Templates: []TemplateConfig{iOSTemplate("t1")}}
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
-	p.Reconcile(context.Background())
 
 	inst, err := p.Acquire("t1", "test")
 	if err != nil {
@@ -397,11 +382,7 @@ func TestAcquireRunningTierFirst(t *testing.T) {
 	if inst.Template != "t1" {
 		t.Errorf("template = %q, want t1", inst.Template)
 	}
-	// Running tier should now be empty.
 	st := p.Status()
-	if st[0].Running != 0 {
-		t.Errorf("running after acquire = %d, want 0", st[0].Running)
-	}
 	if st[0].Reserved != 1 {
 		t.Errorf("reserved after acquire = %d, want 1", st[0].Reserved)
 	}
@@ -412,14 +393,11 @@ func TestLingerKeepsRunningTierUntilExpiry(t *testing.T) {
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
-	p.Reconcile(context.Background())
 
 	inst, err := p.Acquire("t1", "test")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
-
-	// Release — linger timer starts (60s).
 	if err := p.Release(inst.ID); err != nil {
 		t.Fatalf("Release: %v", err)
 	}
@@ -433,7 +411,6 @@ func TestLingerKeepsRunningTierUntilExpiry(t *testing.T) {
 	// Advance past linger.
 	clk.Advance(61 * time.Second)
 
-	// Now should be available (shutdown but disk still present).
 	st = p.Status()
 	if st[0].Running != 0 {
 		t.Errorf("running after linger = %d, want 0", st[0].Running)
@@ -448,7 +425,6 @@ func TestLingerReacquireBeforeExpiry(t *testing.T) {
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
-	p.Reconcile(context.Background())
 
 	inst, _ := p.Acquire("t1", "test")
 	_ = p.Release(inst.ID)
@@ -465,38 +441,110 @@ func TestLingerReacquireBeforeExpiry(t *testing.T) {
 	// Advance past original linger period — timer should have been cancelled.
 	clk.Advance(61 * time.Second)
 
-	// Still reserved (not transitioned to available).
 	st := p.Status()
 	if st[0].Reserved != 1 {
 		t.Errorf("reserved = %d, want 1", st[0].Reserved)
 	}
 }
 
-func TestPoolCapEnforcementDeletesOnRelease(t *testing.T) {
+func TestNoCapMeansSimsAccumulate(t *testing.T) {
+	// AvailableMax=0 means "no cap": once-released sims sit in
+	// Available indefinitely.
 	tmpl := iOSTemplate("t1")
-	tmpl.AvailableMin = 0
-	tmpl.AvailableMax = 0 // no available slots — always delete on linger expiry
-	tmpl.RunningWarm = 0
+	tmpl.AvailableMax = 0
 	cfg := &Config{Templates: []TemplateConfig{tmpl}}
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
 
-	inst, err := p.Acquire("t1", "test")
-	if err != nil {
-		t.Fatalf("Acquire: %v", err)
-	}
-	if err := p.Release(inst.ID); err != nil {
-		t.Fatalf("Release: %v", err)
+	for i := 0; i < 3; i++ {
+		inst, err := p.Acquire("t1", "test")
+		if err != nil {
+			t.Fatalf("Acquire %d: %v", i, err)
+		}
+		if err := p.Release(inst.ID); err != nil {
+			t.Fatalf("Release %d: %v", i, err)
+		}
+		// Advance past linger so each acquire gets a fresh sim from
+		// available (or mints if none).
+		clk.Advance(61 * time.Second)
 	}
 
-	// Advance past linger — available cap=0 so instance should be deleted.
+	st := p.Status()
+	// Three back-to-back acquire/release/linger cycles, each on the
+	// previously released sim (re-acquired from Available, not minted).
+	// Final state: 1 sim sitting in Available, no cap eviction happened.
+	if st[0].Available != 1 {
+		t.Errorf("available = %d, want 1 (sim should be reused, not duplicated)", st[0].Available)
+	}
+}
+
+func TestLRUEvictionAtCap(t *testing.T) {
+	// AvailableMax=1: when a release would create a 2nd available sim,
+	// the oldest existing available sim gets evicted (LRU).
+	tmpl := iOSTemplate("t1")
+	tmpl.AvailableMax = 1
+	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	exec := newFakeExec()
+	clk := newFakeClock(time.Now())
+	p := newWithClock(cfg, exec, clk)
+
+	// Acquire and release sim A; advance past linger so it lands in Available.
+	a, _ := p.Acquire("t1", "test")
+	_ = p.Release(a.ID)
 	clk.Advance(61 * time.Second)
 
 	st := p.Status()
-	total := st[0].Available + st[0].Running + st[0].Reserved
-	if total != 0 {
-		t.Errorf("total instances = %d, want 0 (cap enforced delete)", total)
+	if st[0].Available != 1 {
+		t.Fatalf("after first release: available = %d, want 1", st[0].Available)
+	}
+
+	// Acquire B: re-acquires A from Available (instant — no mint).
+	// Release B; advance past linger.
+	b, _ := p.Acquire("t1", "test")
+	if b.ID != a.ID {
+		t.Errorf("expected re-acquire of A, got new sim %q", b.ID)
+	}
+	_ = p.Release(b.ID)
+	clk.Advance(61 * time.Second)
+
+	st = p.Status()
+	if st[0].Available != 1 {
+		t.Errorf("after second cycle: available = %d, want 1", st[0].Available)
+	}
+
+	// Now mint a fresh second sim by acquiring while A is still
+	// reserved. We need to keep A reserved and Acquire again so the
+	// pool mints a new one.
+	c, _ := p.Acquire("t1", "test")            // re-acquires A from Available
+	d, err := p.Acquire("t1", "test")          // mints + boots a new sim
+	if err != nil {
+		t.Fatalf("Acquire D: %v", err)
+	}
+	if d.ID == c.ID {
+		t.Fatalf("expected separate instances; got the same %q", d.ID)
+	}
+
+	// Release C first, advance past linger — C lands in Available (1 sim).
+	_ = p.Release(c.ID)
+	clk.Advance(61 * time.Second)
+
+	st = p.Status()
+	if st[0].Available != 1 {
+		t.Fatalf("after C linger expires: available = %d, want 1", st[0].Available)
+	}
+
+	// Release D, advance past linger. Cap is 1; releasing D would
+	// produce 2 available sims, so the oldest (C) gets evicted (LRU).
+	_ = p.Release(d.ID)
+	clk.Advance(61 * time.Second)
+
+	st = p.Status()
+	if st[0].Available != 1 {
+		t.Errorf("after D linger expires: available = %d, want 1 (C should have been evicted)", st[0].Available)
+	}
+	if st[0].Instances[0].ID != d.ID {
+		t.Errorf("survivor should be D (newest); got %q", st[0].Instances[0].ID)
 	}
 }
 
@@ -505,7 +553,11 @@ func TestForceShutdownDrainsTemplate(t *testing.T) {
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
-	p.Reconcile(context.Background())
+
+	// Populate by acquire+release+linger so there's something to drain.
+	inst, _ := p.Acquire("t1", "test")
+	_ = p.Release(inst.ID)
+	clk.Advance(61 * time.Second)
 
 	if err := p.ForceShutdown("t1"); err != nil {
 		t.Fatalf("ForceShutdown: %v", err)
@@ -519,14 +571,12 @@ func TestForceShutdownDrainsTemplate(t *testing.T) {
 }
 
 func TestWarmPreBootsInstances(t *testing.T) {
-	tmpl := iOSTemplate("t1")
-	tmpl.AvailableMin = 3
-	tmpl.RunningWarm = 0
-	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	// Warm is the explicit user-driven path: "I'm about to need N sims,
+	// pre-mint and boot them." Distinct from spontaneous pre-warming.
+	cfg := &Config{Templates: []TemplateConfig{iOSTemplate("t1")}}
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
-	p.Reconcile(context.Background()) // creates 3 available, boots 0
 
 	if err := p.Warm("t1", 2); err != nil {
 		t.Fatalf("Warm: %v", err)
@@ -590,14 +640,10 @@ func TestAcquireUnknownTemplate(t *testing.T) {
 }
 
 func TestAndroidAcquireReleaseCycle(t *testing.T) {
-	tmpl := androidTemplate("pixel")
-	tmpl.AvailableMin = 1
-	tmpl.RunningWarm = 0
-	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	cfg := &Config{Templates: []TemplateConfig{androidTemplate("pixel")}}
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
-	p.Reconcile(context.Background()) // creates 1 available
 
 	inst, err := p.Acquire("pixel", "test")
 	if err != nil {
@@ -628,33 +674,6 @@ func TestAndroidAcquireReleaseCycle(t *testing.T) {
 // Adoption / GC / reserved-counting tests
 // --------------------------------------------------------------------------
 
-func TestReserveCountsTowardFloor(t *testing.T) {
-	tmpl := iOSTemplate("t1")
-	tmpl.AvailableMin = 2
-	tmpl.RunningWarm = 0
-	cfg := &Config{Templates: []TemplateConfig{tmpl}}
-	exec := newFakeExec()
-	clk := newFakeClock(time.Now())
-	p := newWithClock(cfg, exec, clk)
-	p.Reconcile(context.Background()) // creates 2 available
-
-	// Acquire one — now (avail=1, running=0, reserved=1).
-	if _, err := p.Acquire("t1", "alice"); err != nil {
-		t.Fatalf("Acquire: %v", err)
-	}
-
-	// Reconcile again. Without reserved-counting fix this would
-	// mint a third sim to bring avail back to 2. With the fix,
-	// total = avail+running+reserved = 2 already, so nothing happens.
-	p.Reconcile(context.Background())
-
-	st := p.Status()
-	total := st[0].Available + st[0].Running + st[0].Reserved
-	if total != 2 {
-		t.Errorf("total instances = %d, want 2 (no overshoot during reservation)", total)
-	}
-}
-
 func TestHoldPersistsAcrossRestart(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "pool.db")
 	store, err := poolstore.Open(dbPath)
@@ -663,16 +682,12 @@ func TestHoldPersistsAcrossRestart(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	tmpl := iOSTemplate("t1")
-	tmpl.AvailableMin = 1
-	tmpl.RunningWarm = 0
-	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	cfg := &Config{Templates: []TemplateConfig{iOSTemplate("t1")}}
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 
 	// First "daemon": acquire and leave the hold pending.
 	p1 := newWithClock(cfg, exec, clk, WithStore(store))
-	p1.Reconcile(context.Background())
 	inst1, err := p1.Acquire("t1", "alice")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
@@ -704,14 +719,11 @@ func TestAdoptDropsHoldForVanishedDevice(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 
-	tmpl := iOSTemplate("t1")
-	tmpl.AvailableMin = 1
-	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	cfg := &Config{Templates: []TemplateConfig{iOSTemplate("t1")}}
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 
 	p1 := newWithClock(cfg, exec, clk, WithStore(store))
-	p1.Reconcile(context.Background())
 	inst1, err := p1.Acquire("t1", "alice")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
@@ -766,19 +778,15 @@ func TestGCDeletesOrphanSims(t *testing.T) {
 }
 
 func TestGCSparesTrackedInstances(t *testing.T) {
-	tmpl := iOSTemplate("t1")
-	tmpl.AvailableMin = 1
-	tmpl.RunningWarm = 0
-	cfg := &Config{Templates: []TemplateConfig{tmpl}}
+	cfg := &Config{Templates: []TemplateConfig{iOSTemplate("t1")}}
 	exec := newFakeExec()
 	clk := newFakeClock(time.Now())
 	p := newWithClock(cfg, exec, clk)
-	p.Reconcile(context.Background()) // creates 1 sim, fakeExec doesn't set a name
 
-	// fakeExec.SimCreate doesn't record the name, so reach in and set
-	// it to mimic SimCreate giving the sim a spyder-pool-* name.
-	for udid := range exec.sims {
-		exec.simNames[udid] = "spyder-pool-tracked"
+	// Acquire mints a tracked sim. fakeExec.SimCreate already records
+	// the spyder-pool-* name in simNames, so adoption/GC will see it.
+	if _, err := p.Acquire("t1", "test"); err != nil {
+		t.Fatalf("Acquire: %v", err)
 	}
 
 	res := p.GC()
