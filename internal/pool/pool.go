@@ -357,7 +357,6 @@ func (p *Pool) findTemplateForDevice(platform string, holdsByDevice map[string]p
 	return ""
 }
 
-
 // Acquire reserves an instance for the named template on behalf of
 // holder. It prefers a running instance (near-instant), then boots an
 // available one, then mints+boots a new one. The holder identity is
