@@ -377,6 +377,22 @@ func (c *Client) AppState(ctx context.Context, udid, bundleID string) (string, s
 	return resp.State, resp.Description, nil
 }
 
+// ForegroundApp returns the bundle id (or .app folder name) of the
+// currently foregrounded third-party app on the device, or "" when
+// nothing is foregrounded (SpringBoard / home screen). autoawake uses
+// this to decide whether to launch KeepAwake — KA is a fallback for
+// the empty-foreground case only, so the supervisor stays passive when
+// any other app holds the foreground (a spyder-launched app under test,
+// or anything the user task-switched to themselves).
+func (c *Client) ForegroundApp(ctx context.Context, udid string) (string, error) {
+	var resp foregroundAppResponse
+	if err := c.post(ctx, "/v1/foreground_app", timeoutForegroundApp,
+		foregroundAppRequest{UDID: udid}, &resp); err != nil {
+		return "", err
+	}
+	return resp.BundleID, nil
+}
+
 // Battery returns the battery state for the device identified by udid.
 func (c *Client) Battery(ctx context.Context, udid string) (Battery, error) {
 	var resp Battery

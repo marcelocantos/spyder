@@ -44,6 +44,8 @@ from .schemas import (
     ListDevicesResponse,
     AppStateRequest,
     AppStateResponse,
+    ForegroundAppRequest,
+    ForegroundAppResponse,
     PidForBundleRequest,
     PidForBundleResponse,
     RefreshPowerAssertionRequest,
@@ -291,6 +293,18 @@ async def app_state(body: AppStateRequest) -> Any:
     except BridgeError as exc:
         log.warning("app_state udid=%s bundle=%s failed code=%s message=%s",
                     body.udid, body.bundle_id, exc.code, exc.message)
+        return _classify(exc)
+
+
+@app.post("/v1/foreground_app", response_model=ForegroundAppResponse)
+async def foreground_app(body: ForegroundAppRequest) -> Any:
+    log.debug("foreground_app udid=%s", body.udid)
+    try:
+        bundle = await _services.foreground_app(body.udid)
+        return ForegroundAppResponse(bundle_id=bundle)
+    except BridgeError as exc:
+        log.warning("foreground_app udid=%s failed code=%s message=%s",
+                    body.udid, exc.code, exc.message)
         return _classify(exc)
 
 

@@ -96,6 +96,14 @@ type appStateResponse struct {
 	Description string `json:"description"`
 }
 
+type foregroundAppRequest struct {
+	UDID string `json:"udid"`
+}
+
+type foregroundAppResponse struct {
+	BundleID string `json:"bundle_id"`
+}
+
 type batteryRequest struct {
 	UDID string `json:"udid"`
 }

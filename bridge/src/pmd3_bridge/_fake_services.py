@@ -64,6 +64,11 @@ async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
     return ("terminated", "")
 
 
+async def foreground_app(udid: str) -> str:
+    _check_udid(udid)
+    return FAKE_BUNDLE
+
+
 async def battery(udid: str) -> BatteryResponse:
     _check_udid(udid)
     return BatteryResponse(level=0.77, charging=True)

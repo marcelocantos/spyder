@@ -37,6 +37,10 @@ class AppStateRequest(BaseModel):
     bundle_id: str
 
 
+class ForegroundAppRequest(BaseModel):
+    udid: str
+
+
 class BatteryRequest(BaseModel):
     udid: str
 
@@ -141,6 +145,19 @@ class AppStateResponse(BaseModel):
 
     state: str
     description: str = ""  # raw state_description from BKS, for debugging
+
+
+class ForegroundAppResponse(BaseModel):
+    """Identifier of the foregrounded third-party app, or "" for none.
+
+    bundle_id is the BackBoard ``bundleIdentifier`` when surfaced; for
+    older / sparser BackBoard payloads it falls back to the ``.app``
+    folder name parsed from ``execName``. Empty string means no third-
+    party app is foregrounded — SpringBoard (the home screen) does not
+    appear in the BackBoard enumeration.
+    """
+
+    bundle_id: str = ""
 
 
 class BatteryResponse(BaseModel):
