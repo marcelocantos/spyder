@@ -181,6 +181,41 @@ func (a *IOSAdapter) KeepAwakeState(id string) (string, error) {
 	return state, nil
 }
 
+// ForegroundApp returns the bundle id (or .app folder name) of the
+// foregrounded third-party app on the device, or "" when SpringBoard
+// (the home screen) is showing. Routes through the pmd3 bridge's
+// /v1/foreground_app endpoint, which scans the same BackBoard
+// applicationStateNotification: enumeration that AppState uses and
+// returns the entry whose state_description is "Running".
+//
+// autoawake's convergence loop reads this signal first: a non-empty
+// non-KeepAwake result means another app is keeping the screen on
+// already and the supervisor stays passive (no relaunch of KA), so a
+// spyder-deployed app under test, or anything the user task-switched
+// to themselves, is never clobbered. KA is launched only when this
+// returns "".
+func (a *IOSAdapter) ForegroundApp(id string) (string, error) {
+	if id == "" {
+		return "", errors.New("device identifier is empty")
+	}
+	if a.bridge == nil {
+		return "", errNoBridge
+	}
+	bundle, err := a.bridge.ForegroundApp(context.Background(), id)
+	if err != nil {
+		return "", fmt.Errorf("foreground_app on %s: %w", id, err)
+	}
+	return bundle, nil
+}
+
+// IsKeepAwakeForeground returns true when bundle (the value returned by
+// ForegroundApp) identifies the KeepAwake companion. The bridge prefers
+// BackBoard's bundleIdentifier but falls back to the .app folder name
+// when BackBoard doesn't surface one, so this accepts either form.
+func IsKeepAwakeForeground(bundle string) bool {
+	return bundle == KeepAwakeBundleID || bundle == "KeepAwake"
+}
+
 // LaunchKeepAwake foregrounds the KeepAwake companion app on the device via
 // `xcrun devicectl device process launch`. The id may be a hardware UDID,
 // CoreDevice UUID, or any other identifier devicectl's --device flag accepts.

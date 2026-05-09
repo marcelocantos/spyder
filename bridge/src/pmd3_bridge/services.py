@@ -619,29 +619,22 @@ async def pid_for_bundle(udid: str, bundle_id: str) -> Optional[int]:
                 ) from exc
 
 
-async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
-    """Query the lifecycle state of one app on a device.
+async def _enumerate_app_states(udid: str, *, operation: str) -> list[dict]:
+    """Drain BackBoard's applicationStateNotification: enumeration burst.
 
     Subscribes to the DVT mobile-notifications service for ~0.5 s,
-    drains the initial state-enumeration burst BackBoard emits on
-    connection, finds the entry for ``bundle_id`` (matched against
-    ``execName``'s bundle path), and disconnects.
+    collects every entry BackBoard emits during the initial dump, and
+    disconnects. Returns the raw entries unfiltered — callers filter by
+    the field they care about (execName, bundleIdentifier,
+    state_description, …). The exception-handling and dtx slot/lifetime
+    is shared so app_state and foreground_app present a uniform error
+    contract.
 
-    Returns ``(state, description)`` where state ∈ {"running",
-    "backgrounded", "terminated"}.
-
-      * BKS state_description == "Running"        → "running"
-      * other recognised state_descriptions       → "backgrounded"
-      * app not present in the enumeration burst  → "terminated"
-
-    Note: BKS reports SpringBoard specially (not in the enumeration);
-    a query for SpringBoard always returns "terminated". Also note
-    that "Running" is the BKS ForegroundRunning state — it does not
-    distinguish a foregrounded app from a background-running one
-    (e.g. an audio-mode app), but for autoawake's purposes that's
-    fine: KeepAwake never uses background modes, so its "Running"
-    state is unambiguously foreground.
+    Note: BKS reports SpringBoard specially — it never appears in this
+    enumeration, so foreground_app returning "" means "no third-party
+    app is foregrounded; the home screen is showing".
     """
+    entries: list[dict] = []
     async with _dtx_slot(udid):
         async with _service_provider_ctx(udid) as provider:
             try:
@@ -651,7 +644,7 @@ async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
                 from pymobiledevice3.services.dvt.instruments.notifications import (
                     Notifications,
                 )
-                async with _dtx_provider(provider, DvtProvider, operation="dtx_connect.app_state") as dvt:
+                async with _dtx_provider(provider, DvtProvider, operation=f"dtx_connect.{operation}") as dvt:
                     async with _dtx_provider(dvt, Notifications, operation="dtx_connect.notifications") as notif:
                         # Silence the pmd3 channel close-callback that calls
                         # shutdown_queue on a stdlib asyncio.Queue, which lacks
@@ -667,7 +660,6 @@ async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
                         # on connect, then streams transitions. We drain the
                         # dump (events stop arriving when the burst ends) and
                         # ignore everything after.
-                        found_state = ""
                         while True:
                             try:
                                 ev = await asyncio.wait_for(
@@ -680,36 +672,91 @@ async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
                                 continue
                             payload = args[0] if args and isinstance(args[0], list) else [args[0]] if args else []
                             for entry in payload:
-                                exec_name = entry.get("execName", "") or ""
-                                # execName looks like
-                                # "/private/var/containers/Bundle/Application/<UUID>/<App>.app"
-                                # or "/Applications/<App>.app". Match by the
-                                # ".app" path segment against the App-installed
-                                # bundle's known structure.
-                                # Match the .app directory name against the
-                                # bundle id's last segment. iOS bundle ids
-                                # produced from Xcode templates use the target
-                                # name as the last segment AND the .app folder
-                                # name, so this is reliable for any third-party
-                                # app — including KeepAwake. Case-insensitive
-                                # to tolerate Apple system apps where casing
-                                # diverges (e.g. com.apple.camera → Camera.app).
-                                wanted = f"/{bundle_id.split('.')[-1]}.app"
-                                if wanted.lower() in exec_name.lower():
-                                    found_state = entry.get("state_description", "") or ""
+                                if isinstance(entry, dict):
+                                    entries.append(entry)
             except BridgeError:
                 raise
             except Exception as exc:
                 raise BridgeError(
                     "pmd3_error",
-                    f"Failed to query app state on {udid}: {exc}",
+                    f"Failed to enumerate app states on {udid}: {exc}",
                 ) from exc
+    return entries
+
+
+async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
+    """Query the lifecycle state of one app on a device.
+
+    Returns ``(state, description)`` where state ∈ {"running",
+    "backgrounded", "terminated"}.
+
+      * BKS state_description == "Running"        → "running"
+      * other recognised state_descriptions       → "backgrounded"
+      * app not present in the enumeration burst  → "terminated"
+
+    BKS reports SpringBoard specially (not in the enumeration); a
+    query for SpringBoard always returns "terminated". "Running" is
+    the BKS ForegroundRunning state — it does not distinguish a
+    foregrounded app from a background-running one (e.g. an audio-
+    mode app), but for autoawake's purposes that's fine: KeepAwake
+    never uses background modes, so its "Running" state is
+    unambiguously foreground.
+    """
+    entries = await _enumerate_app_states(udid, operation="app_state")
+
+    # execName looks like
+    # "/private/var/containers/Bundle/Application/<UUID>/<App>.app"
+    # or "/Applications/<App>.app". Match the .app directory name
+    # against the bundle id's last segment. iOS bundle ids produced
+    # from Xcode templates use the target name as the last segment AND
+    # the .app folder name, so this is reliable for any third-party
+    # app — including KeepAwake. Case-insensitive to tolerate Apple
+    # system apps where casing diverges (e.g. com.apple.camera →
+    # Camera.app).
+    wanted = f"/{bundle_id.split('.')[-1]}.app"
+    found_state = ""
+    for entry in entries:
+        exec_name = entry.get("execName", "") or ""
+        if wanted.lower() in exec_name.lower():
+            found_state = entry.get("state_description", "") or ""
 
     if not found_state:
         return ("terminated", "")
     if found_state.lower() == "running":
         return ("running", found_state)
     return ("backgrounded", found_state)
+
+
+async def foreground_app(udid: str) -> str:
+    """Return an identifier for the foregrounded app, or "" for none.
+
+    Walks the same BackBoard enumeration ``app_state`` uses and
+    returns the first entry whose state_description is "Running".
+    Prefers the entry's ``bundleIdentifier`` when BackBoard surfaces
+    it; falls back to the ``.app`` folder name parsed from
+    ``execName`` (which equals the last segment of the bundle id for
+    Xcode-template apps, including KeepAwake).
+
+    "" means SpringBoard / nothing user-facing is foregrounded —
+    BackBoard does not include SpringBoard in the enumeration, so the
+    home screen surfaces as an empty result. autoawake uses that
+    signal to decide whether to launch KeepAwake (only when "").
+    """
+    entries = await _enumerate_app_states(udid, operation="foreground_app")
+    for entry in entries:
+        state = entry.get("state_description", "") or ""
+        if state.lower() != "running":
+            continue
+        bundle = entry.get("bundleIdentifier", "") or ""
+        if bundle:
+            return bundle
+        exec_name = entry.get("execName", "") or ""
+        marker = ".app"
+        idx = exec_name.lower().find(marker)
+        if idx > 0:
+            slash = exec_name.rfind("/", 0, idx)
+            return exec_name[slash + 1:idx] if slash >= 0 else exec_name[:idx]
+    return ""
 
 
 async def battery(udid: str) -> BatteryResponse:

@@ -132,8 +132,17 @@ def _make_fake_services(
             )
         return _stream()
 
+    async def app_state(udid: str, bundle_id: str) -> tuple[str, str]:
+        if not installed:
+            return ("terminated", "")
+        return ("running", "Running") if bundle_id == FAKE_BUNDLE else ("terminated", "")
+
+    async def foreground_app(udid: str) -> str:
+        return FAKE_BUNDLE if installed else ""
+
     for fn in [
         list_devices, list_apps, launch_app, kill_app, pid_for_bundle,
+        app_state, foreground_app,
         battery, screenshot, crash_reports_list, crash_reports_pull,
         device_power_state, syslog,
     ]:
@@ -232,6 +241,37 @@ async def test_pid_for_bundle_not_running(client: AsyncClient) -> None:
     r = await client.post("/v1/pid_for_bundle", json={"udid": FAKE_UDID, "bundle_id": FAKE_BUNDLE})
     assert r.status_code == 200
     assert r.json()["pid"] is None
+
+
+# ── app_state ──────────────────────────────────────────────────────────────────
+
+async def test_app_state_running(client: AsyncClient) -> None:
+    r = await client.post("/v1/app_state", json={"udid": FAKE_UDID, "bundle_id": FAKE_BUNDLE})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["state"] == "running"
+    assert body["description"] == "Running"
+
+
+async def test_app_state_terminated(client: AsyncClient) -> None:
+    r = await client.post("/v1/app_state", json={"udid": FAKE_UDID, "bundle_id": "com.unknown.app"})
+    assert r.status_code == 200
+    assert r.json()["state"] == "terminated"
+
+
+# ── foreground_app ─────────────────────────────────────────────────────────────
+
+async def test_foreground_app_returns_bundle(client: AsyncClient) -> None:
+    r = await client.post("/v1/foreground_app", json={"udid": FAKE_UDID})
+    assert r.status_code == 200
+    assert r.json()["bundle_id"] == FAKE_BUNDLE
+
+
+async def test_foreground_app_empty_when_nothing_foregrounded(client: AsyncClient) -> None:
+    _set_services(_make_fake_services(installed=False))
+    r = await client.post("/v1/foreground_app", json={"udid": FAKE_UDID})
+    assert r.status_code == 200
+    assert r.json()["bundle_id"] == ""
 
 
 # ── battery ────────────────────────────────────────────────────────────────────

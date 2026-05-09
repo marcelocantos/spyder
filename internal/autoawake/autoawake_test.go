@@ -70,12 +70,12 @@ func TestSupervisorNilBridge_RunExitsImmediately(t *testing.T) {
 
 // fakeIOSAdapter implements iosAdapter for unit tests.
 // Fields are set per-scenario; zero values give sane defaults
-// (state="terminated", not installed, launch returns nil).
+// (foreground="" / SpringBoard, not installed, launch returns nil).
 type fakeIOSAdapter struct {
 	listDevices     []device.Info
 	listErr         error
-	kaState         string // returned by KeepAwakeState; "" means terminated
-	kaStateErr      error
+	foreground      string // returned by ForegroundApp; "" means SpringBoard
+	foregroundErr   error
 	installed       bool
 	installedErr    error
 	installedVer    string // returned by KeepAwakeInstalledVersion
@@ -89,14 +89,8 @@ type fakeIOSAdapter struct {
 func (f *fakeIOSAdapter) List() ([]device.Info, error) {
 	return f.listDevices, f.listErr
 }
-func (f *fakeIOSAdapter) KeepAwakeState(_ string) (string, error) {
-	if f.kaStateErr != nil {
-		return "", f.kaStateErr
-	}
-	if f.kaState == "" {
-		return device.AppStateTerminated, nil
-	}
-	return f.kaState, nil
+func (f *fakeIOSAdapter) ForegroundApp(_ string) (string, error) {
+	return f.foreground, f.foregroundErr
 }
 func (f *fakeIOSAdapter) KeepAwakeInstalled(_ string) (bool, error) {
 	return f.installed, f.installedErr
@@ -248,12 +242,14 @@ func newSupervisorWithObs(t *testing.T, fake *fakeIOSAdapter, udid string) *Supe
 	return s
 }
 
-// TestConverge_StateRunning_ConvergedNoLaunch: KeepAwake foregrounded
-// → classConverged, no launch, opt-out cleared.
-func TestConverge_StateRunning_ConvergedNoLaunch(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
+// TestConverge_KeepAwakeForeground_ConvergedNoLaunch: KeepAwake is
+// foregrounded → classConverged, no launch attempt, and userOptOut is
+// proactively cleared (proactive-clear rule: KA running is an
+// unambiguous "I want this" signal regardless of how it got there).
+func TestConverge_KeepAwakeForeground_ConvergedNoLaunch(t *testing.T) {
+	fake := &fakeIOSAdapter{foreground: device.KeepAwakeBundleID}
 	s := newSupervisorWithObs(t, fake, "U1")
-	// Pre-set userOptOut to verify the running observation clears it.
+	// Pre-set userOptOut to verify the foreground=KA observation clears it.
 	s.mu.Lock()
 	s.obs["U1"].userOptOut = true
 	s.mu.Unlock()
@@ -261,7 +257,7 @@ func TestConverge_StateRunning_ConvergedNoLaunch(t *testing.T) {
 	s.converge(context.Background(), "U1")
 
 	if n := atomic.LoadInt32(&fake.launchErrN); n != 0 {
-		t.Errorf("LaunchKeepAwake called %d; want 0 when state=running", n)
+		t.Errorf("LaunchKeepAwake called %d; want 0 when KA is already foreground", n)
 	}
 	s.mu.Lock()
 	obs := s.obs["U1"]
@@ -270,25 +266,26 @@ func TestConverge_StateRunning_ConvergedNoLaunch(t *testing.T) {
 		t.Errorf("class = %s; want classConverged", obs.lastClass)
 	}
 	if obs.userOptOut {
-		t.Error("userOptOut still set; expected clear after observing running")
+		t.Error("userOptOut still set; expected proactive clear after observing KA foregrounded")
 	}
 }
 
-// TestConverge_RunningToBackgrounded_SetsOptOut: a Running → backgrounded
-// transition must set userOptOut and produce classUserOptOut.
-func TestConverge_RunningToBackgrounded_SetsOptOut(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
+// TestConverge_KAToHome_SetsOptOut: foreground KA → SpringBoard
+// transition (the user swiped from KeepAwake back to home) sets
+// userOptOut and produces classUserOptOut.
+func TestConverge_KAToHome_SetsOptOut(t *testing.T) {
+	fake := &fakeIOSAdapter{foreground: device.KeepAwakeBundleID, installed: true}
 	s := newSupervisorWithObs(t, fake, "U2")
 
-	s.converge(context.Background(), "U2") // tick 1: observe running
-	fake.kaState = device.AppStateBackgrounded
-	s.converge(context.Background(), "U2") // tick 2: observe backgrounded
+	s.converge(context.Background(), "U2") // tick 1: observe KA foreground
+	fake.foreground = ""                   // user swiped to home
+	s.converge(context.Background(), "U2") // tick 2: observe SpringBoard
 
 	s.mu.Lock()
 	obs := s.obs["U2"]
 	s.mu.Unlock()
 	if !obs.userOptOut {
-		t.Error("userOptOut not set after Running → backgrounded transition")
+		t.Error("userOptOut not set after KA → SpringBoard transition")
 	}
 	if obs.lastClass != classUserOptOut {
 		t.Errorf("class = %s; want classUserOptOut", obs.lastClass)
@@ -298,38 +295,36 @@ func TestConverge_RunningToBackgrounded_SetsOptOut(t *testing.T) {
 	}
 }
 
-// TestConverge_BackgroundedToRunning_ClearsOptOut: user re-foregrounding
-// KeepAwake clears the opt-out and returns to converged.
-func TestConverge_BackgroundedToRunning_ClearsOptOut(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
+// TestConverge_HomeToKA_ClearsOptOut: user re-foregrounding KeepAwake
+// after opt-out clears the flag and returns to converged.
+func TestConverge_HomeToKA_ClearsOptOut(t *testing.T) {
+	fake := &fakeIOSAdapter{foreground: device.KeepAwakeBundleID, installed: true}
 	s := newSupervisorWithObs(t, fake, "U3")
 
-	s.converge(context.Background(), "U3") // tick 1
-	fake.kaState = device.AppStateBackgrounded
+	s.converge(context.Background(), "U3") // tick 1: KA foreground
+	fake.foreground = ""
 	s.converge(context.Background(), "U3") // tick 2: opt-out armed
-	fake.kaState = device.AppStateRunning
-	s.converge(context.Background(), "U3") // tick 3: re-foregrounded
+	fake.foreground = device.KeepAwakeBundleID
+	s.converge(context.Background(), "U3") // tick 3: KA back
 
 	s.mu.Lock()
 	obs := s.obs["U3"]
 	s.mu.Unlock()
 	if obs.userOptOut {
-		t.Error("userOptOut still set after backgrounded → running transition")
+		t.Error("userOptOut still set after SpringBoard → KA transition")
 	}
 	if obs.lastClass != classConverged {
 		t.Errorf("class = %s; want classConverged", obs.lastClass)
 	}
 }
 
-// TestConverge_FreshAttachBackgrounded_LaunchesKeepAwake: a fresh
-// observation that sees Backgrounded without first observing Running
-// has no captured opt-out signal — so autoawake must NOT classify it
-// as classUserOptOut. Unplug → replug is the user's reset gesture; on
-// re-attach autoawake should attempt to foreground KeepAwake. The
-// userOptOut flag stays false (no Running → Backgrounded transition
-// has been observed), and LaunchKeepAwake is invoked.
-func TestConverge_FreshAttachBackgrounded_LaunchesKeepAwake(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateBackgrounded, installed: true}
+// TestConverge_FreshAttachHome_LaunchesKeepAwake: a fresh observation
+// that sees foreground="" (SpringBoard) without a prior KA observation
+// has no captured opt-out signal, so autoawake should foreground
+// KeepAwake. Unplug → replug is the user's reset gesture; on re-attach
+// autoawake re-engages.
+func TestConverge_FreshAttachHome_LaunchesKeepAwake(t *testing.T) {
+	fake := &fakeIOSAdapter{foreground: "", installed: true}
 	s := newSupervisorWithObs(t, fake, "U4")
 
 	s.converge(context.Background(), "U4")
@@ -338,19 +333,19 @@ func TestConverge_FreshAttachBackgrounded_LaunchesKeepAwake(t *testing.T) {
 	obs := s.obs["U4"]
 	s.mu.Unlock()
 	if obs.userOptOut {
-		t.Error("userOptOut set on first-sight backgrounded; want false (no Running observation precedes it)")
+		t.Error("userOptOut set on first-sight SpringBoard; want false (no KA → SpringBoard transition observed)")
 	}
 	if n := atomic.LoadInt32(&fake.launchErrN); n != 1 {
-		t.Errorf("LaunchKeepAwake called %d; want 1 (fresh backgrounded → foreground)", n)
+		t.Errorf("LaunchKeepAwake called %d; want 1 (foreground=\"\" with no opt-out → launch)", n)
 	}
 }
 
-// TestConverge_TerminatedNoOptOut_TriggersLaunch: KeepAwake absent and
-// no opt-out → drop into install + launch path.
-func TestConverge_TerminatedNoOptOut_TriggersLaunch(t *testing.T) {
+// TestConverge_HomeNoOptOut_TriggersLaunch: foreground="" with no
+// opt-out → drop into install + launch path.
+func TestConverge_HomeNoOptOut_TriggersLaunch(t *testing.T) {
 	fake := &fakeIOSAdapter{
-		kaState:   device.AppStateTerminated,
-		installed: true, // skip the install branch
+		foreground: "",
+		installed:  true, // skip the install branch
 	}
 	s := newSupervisorWithObs(t, fake, "U5")
 
@@ -361,25 +356,25 @@ func TestConverge_TerminatedNoOptOut_TriggersLaunch(t *testing.T) {
 	}
 }
 
-// TestConverge_TerminatedWhileOptedOut_NoLaunch: even when KeepAwake
-// is gone, autoawake does not relaunch while the user is opted out.
+// TestConverge_HomeWhileOptedOut_NoLaunch: foreground="" with userOptOut
+// armed must not trigger a launch even if KeepAwake were terminated.
 // iOS reaping a long-suspended KeepAwake must not silently re-arm the
 // supervisor.
-func TestConverge_TerminatedWhileOptedOut_NoLaunch(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateRunning, installed: true}
+func TestConverge_HomeWhileOptedOut_NoLaunch(t *testing.T) {
+	fake := &fakeIOSAdapter{foreground: device.KeepAwakeBundleID, installed: true}
 	s := newSupervisorWithObs(t, fake, "U6")
 
-	s.converge(context.Background(), "U6") // observe running
-	fake.kaState = device.AppStateBackgrounded
-	s.converge(context.Background(), "U6") // arm opt-out
-	fake.kaState = device.AppStateTerminated
-	s.converge(context.Background(), "U6") // iOS reaped
+	s.converge(context.Background(), "U6") // observe KA foreground
+	fake.foreground = ""
+	s.converge(context.Background(), "U6") // arm opt-out (KA → SpringBoard)
+	// Stay on SpringBoard for another tick — opt-out should persist.
+	s.converge(context.Background(), "U6")
 
 	s.mu.Lock()
 	obs := s.obs["U6"]
 	s.mu.Unlock()
 	if !obs.userOptOut {
-		t.Error("userOptOut cleared by terminated transition; should persist")
+		t.Error("userOptOut cleared by steady SpringBoard observations; should persist")
 	}
 	if obs.lastClass != classUserOptOut {
 		t.Errorf("class = %s; want classUserOptOut", obs.lastClass)
@@ -389,13 +384,13 @@ func TestConverge_TerminatedWhileOptedOut_NoLaunch(t *testing.T) {
 	}
 }
 
-// TestConverge_StateProbeError_SkipsTick: a bridge failure must not
-// trigger any action — autoawake should skip silently and re-try on
-// the next tick rather than relaunching on partial information.
-func TestConverge_StateProbeError_SkipsTick(t *testing.T) {
+// TestConverge_ForegroundProbeError_SkipsTick: a bridge failure must
+// not trigger any action — autoawake should skip silently and re-try
+// on the next tick rather than launching on partial information.
+func TestConverge_ForegroundProbeError_SkipsTick(t *testing.T) {
 	fake := &fakeIOSAdapter{
-		kaStateErr: errors.New("bridge unreachable"),
-		installed:  true,
+		foregroundErr: errors.New("bridge unreachable"),
+		installed:     true,
 	}
 	s := newSupervisorWithObs(t, fake, "U7")
 
@@ -427,7 +422,7 @@ func TestConverge_StaleBuild_TriggersReinstall(t *testing.T) {
 	}
 
 	fake := &fakeIOSAdapter{
-		kaState:      device.AppStateRunning,
+		foreground:   device.KeepAwakeBundleID,
 		installed:    true,
 		installedVer: expected + "-stale", // guaranteed mismatch
 	}
@@ -456,7 +451,7 @@ func TestConverge_FreshBuild_NoReinstall(t *testing.T) {
 	}
 
 	fake := &fakeIOSAdapter{
-		kaState:      device.AppStateRunning,
+		foreground:   device.KeepAwakeBundleID,
 		installed:    true,
 		installedVer: expected,
 	}
@@ -476,9 +471,9 @@ func TestConverge_FreshBuild_NoReinstall(t *testing.T) {
 }
 
 // TestConverge_StaleBuildButOptedOut_RespectsOptOut: opt-out wins
-// over staleness. A user who deliberately backgrounded KeepAwake
-// shouldn't have it forcibly redeployed underneath them — the
-// reinstall would kick a foreground app off.
+// over staleness. A user who deliberately swiped from KeepAwake to
+// home shouldn't have it forcibly redeployed under them — the
+// reinstall would re-foreground KeepAwake and undo the dismissal.
 func TestConverge_StaleBuildButOptedOut_RespectsOptOut(t *testing.T) {
 	expected, err := device.ExpectedKeepAwakeVersion()
 	if err != nil || expected == "" {
@@ -486,27 +481,27 @@ func TestConverge_StaleBuildButOptedOut_RespectsOptOut(t *testing.T) {
 	}
 
 	fake := &fakeIOSAdapter{
-		kaState:      device.AppStateRunning,
+		foreground:   device.KeepAwakeBundleID,
 		installed:    true,
 		installedVer: expected + "-stale",
 	}
 	s := newSupervisorWithObs(t, fake, "U-optout-stale")
 
-	// Tick 1: observe Running, version matches at start of test isn't
-	// stale yet — we rig this differently. Drive the opt-out transition
-	// directly by manipulating obs, then mutate kaState.
-	s.converge(context.Background(), "U-optout-stale") // state=Running, but installedVer is stale → reinstall fires
-	// On second thought: this scenario requires opt-out THEN stale.
-	// Reset for the proper sequence:
+	// Tick 1 with KA foreground would reinstall (staleness fires in the
+	// KA-foreground path too). Sequence we want to test is opt-out THEN
+	// stale: arm opt-out via KA → SpringBoard transition, then verify
+	// staleness is skipped.
+	s.converge(context.Background(), "U-optout-stale") // tick 1: KA foreground → uninstall fires
+	// Reset counters and rig the opt-out transition cleanly.
 	atomic.StoreInt32(&fake.uninstallN, 0)
 	s.mu.Lock()
 	s.obs["U-optout-stale"] = &deviceObs{
-		lastClass:   classUnknown,
-		lastKAState: device.AppStateRunning,
-		userOptOut:  false,
+		lastClass:      classUnknown,
+		lastForeground: device.KeepAwakeBundleID,
+		userOptOut:     false,
 	}
 	s.mu.Unlock()
-	fake.kaState = device.AppStateBackgrounded // user just swiped away
+	fake.foreground = "" // user just swiped to home
 
 	s.converge(context.Background(), "U-optout-stale")
 
@@ -514,7 +509,7 @@ func TestConverge_StaleBuildButOptedOut_RespectsOptOut(t *testing.T) {
 	obs := s.obs["U-optout-stale"]
 	s.mu.Unlock()
 	if !obs.userOptOut {
-		t.Error("userOptOut not set after Running→backgrounded")
+		t.Error("userOptOut not set after KA→SpringBoard")
 	}
 	if obs.lastClass != classUserOptOut {
 		t.Errorf("class = %s; want classUserOptOut", obs.lastClass)
@@ -524,100 +519,88 @@ func TestConverge_StaleBuildButOptedOut_RespectsOptOut(t *testing.T) {
 	}
 }
 
-// TestNoteAppLaunched_SuppressesOptOut: a Running → backgrounded
-// transition that follows a NoteAppLaunched call within
-// recentLaunchWindow must NOT set userOptOut — that backgrounding
-// was caused by spyder itself foregrounding another app on the
-// user's behalf, not user dismissal of KeepAwake.
-func TestNoteAppLaunched_SuppressesOptOut(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
-	s := newSupervisorWithObs(t, fake, "U-launch")
+// TestConverge_OtherAppForegrounded_StaysPassive: a foreground app
+// other than KeepAwake (a spyder-deployed app under test, or anything
+// the user task-switched to) must not trigger a launch — that's the
+// 🎯T55 regression the rewrite was driven by. KA stays out of the
+// way until the foreground is empty again.
+func TestConverge_OtherAppForegrounded_StaysPassive(t *testing.T) {
+	fake := &fakeIOSAdapter{
+		foreground: "com.squz.multimaze",
+		installed:  true,
+	}
+	s := newSupervisorWithObs(t, fake, "U-other")
 
-	s.converge(context.Background(), "U-launch") // tick 1: observe Running, baseline state
+	// Run multiple ticks to assert the supervisor stays passive across
+	// the convergeInterval cadence, not just once.
+	for range 4 {
+		s.converge(context.Background(), "U-other")
+	}
 
-	// Spyder routes a launch_app for another bundle through the MCP
-	// handler, which forwards via NoteAppLaunched.
-	s.NoteAppLaunched("U-launch", "com.example.app-under-test")
-
-	// Convergence tick observes KeepAwake now backgrounded (iOS pushed
-	// it out of foreground in response to the new app coming up).
-	fake.kaState = device.AppStateBackgrounded
-	s.converge(context.Background(), "U-launch")
-
+	if n := atomic.LoadInt32(&fake.launchErrN); n != 0 {
+		t.Errorf("LaunchKeepAwake called %d times across 4 ticks; want 0 (other app foregrounded)", n)
+	}
+	if n := atomic.LoadInt32(&fake.uninstallN); n != 0 {
+		t.Errorf("UninstallApp called %d times; want 0 (passive while other app foregrounded)", n)
+	}
 	s.mu.Lock()
-	obs := s.obs["U-launch"]
+	obs := s.obs["U-other"]
 	s.mu.Unlock()
-	if obs.userOptOut {
-		t.Error("userOptOut set after a spyder-mediated launch caused the backgrounding; should be suppressed")
+	if obs.lastClass != classOtherAppForegrounded {
+		t.Errorf("class = %s; want classOtherAppForegrounded", obs.lastClass)
 	}
 }
 
-// TestNoteAppLaunched_StaleMarkerAllowsOptOut: if recentLaunchWindow
-// has passed since the most recent NoteAppLaunched call, the next
-// Running → backgrounded transition is genuine user intent and must
-// set userOptOut.
-func TestNoteAppLaunched_StaleMarkerAllowsOptOut(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
-	s := newSupervisorWithObs(t, fake, "U-launch-stale")
-
-	s.converge(context.Background(), "U-launch-stale")
-
-	// Old launch — well outside the window.
+// TestConverge_OtherAppForegrounded_PreservesOptOut: a third-party
+// foreground app must not flip userOptOut either way. The user's
+// dismissal record for KeepAwake is independent of which other app is
+// up.
+func TestConverge_OtherAppForegrounded_PreservesOptOut(t *testing.T) {
+	fake := &fakeIOSAdapter{foreground: "com.example.test", installed: true}
+	s := newSupervisorWithObs(t, fake, "U-preserve")
+	// Pre-arm opt-out so we can verify it survives the other-app tick.
 	s.mu.Lock()
-	s.obs["U-launch-stale"].spyderLaunchedAt = time.Now().Add(-2 * recentLaunchWindow)
+	s.obs["U-preserve"].userOptOut = true
 	s.mu.Unlock()
 
-	fake.kaState = device.AppStateBackgrounded
-	s.converge(context.Background(), "U-launch-stale")
+	s.converge(context.Background(), "U-preserve")
 
 	s.mu.Lock()
-	obs := s.obs["U-launch-stale"]
+	obs := s.obs["U-preserve"]
 	s.mu.Unlock()
 	if !obs.userOptOut {
-		t.Error("userOptOut not set despite stale launch marker; genuine swipe-to-home should be honoured")
+		t.Error("userOptOut cleared by other-app foreground tick; should be preserved")
 	}
 }
 
-// TestNoteAppLaunched_KeepAwakeBundleIsNoOp: NoteAppLaunched for
-// KeepAwake itself must not record a marker — that path is
-// orchestration-internal (autoawake foregrounding KeepAwake) and
-// shouldn't change the suppression behaviour for unrelated future
-// transitions.
-func TestNoteAppLaunched_KeepAwakeBundleIsNoOp(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
-	s := newSupervisorWithObs(t, fake, "U-noop")
+// TestConverge_KAToOtherApp_DoesNotSetOptOut: when the user (or
+// spyder) task-switches from KeepAwake to a different foreground app,
+// userOptOut must NOT be set. The user hasn't dismissed KeepAwake to
+// the home screen — they've just moved to a different app, and KA
+// should re-engage when that app is closed.
+func TestConverge_KAToOtherApp_DoesNotSetOptOut(t *testing.T) {
+	fake := &fakeIOSAdapter{foreground: device.KeepAwakeBundleID, installed: true}
+	s := newSupervisorWithObs(t, fake, "U-taskswitch")
 
-	before := s.obs["U-noop"].spyderLaunchedAt
-	s.NoteAppLaunched("U-noop", device.KeepAwakeBundleID)
-	after := s.obs["U-noop"].spyderLaunchedAt
-	if !before.Equal(after) {
-		t.Error("NoteAppLaunched(KeepAwakeBundleID) mutated marker; should be a no-op")
-	}
-}
+	s.converge(context.Background(), "U-taskswitch") // tick 1: KA foreground
+	fake.foreground = "com.squz.multimaze"           // task-switch
+	s.converge(context.Background(), "U-taskswitch") // tick 2: other app foreground
 
-// TestNoteAppLaunched_UnknownDeviceIsNoOp: NoteAppLaunched for a
-// device the supervisor doesn't track must not create an orphan obs
-// entry — that would interfere with the per-device convergence
-// state model.
-func TestNoteAppLaunched_UnknownDeviceIsNoOp(t *testing.T) {
-	fake := &fakeIOSAdapter{}
-	s := New(nil, withIOSAdapter(fake))
-	s.NoteAppLaunched("UNKNOWN", "com.example.app")
 	s.mu.Lock()
-	_, ok := s.obs["UNKNOWN"]
+	obs := s.obs["U-taskswitch"]
 	s.mu.Unlock()
-	if ok {
-		t.Error("NoteAppLaunched created obs entry for unknown device")
+	if obs.userOptOut {
+		t.Error("userOptOut set after KA→other-app transition; only KA→SpringBoard should opt out")
 	}
 }
 
 // TestStatus_ProjectsUserOptOut: Status() must surface the new class
 // so external introspection can distinguish opt-out from converged.
 func TestStatus_ProjectsUserOptOut(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateRunning}
+	fake := &fakeIOSAdapter{foreground: device.KeepAwakeBundleID, installed: true}
 	s := newSupervisorWithObs(t, fake, "U8")
 	s.converge(context.Background(), "U8")
-	fake.kaState = device.AppStateBackgrounded
+	fake.foreground = ""
 	s.converge(context.Background(), "U8")
 
 	got := s.Status()

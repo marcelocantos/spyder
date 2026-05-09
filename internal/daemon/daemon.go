@@ -65,7 +65,7 @@ func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version,
 		"disable_autoawake", cfg.DisableAutoAwake)
-	handler, resvStore, bridgeSup, mcpHandler := Build(cfg)
+	handler, resvStore, bridgeSup, _ := Build(cfg)
 
 	// bridgeBaseURL / bridgeToken are populated after a successful Start.
 	// autoawake and the liveness probe each construct their own client from
@@ -100,11 +100,6 @@ func Run(ctx context.Context, cfg Config) error {
 			awakeBridge = pmd3bridge.NewClient(bridgeBaseURL, bridgeToken)
 		}
 		sv := autoawake.New(awakeBridge, awakeOpts...)
-		// Plumb the supervisor back to the MCP handler so launch_app /
-		// deploy_app can flag spyder-initiated foreground-launches and
-		// suppress the opt-out edge that would otherwise misfire when
-		// the launch backgrounds KeepAwake (🎯T48).
-		mcpHandler.SetAutoawakeNotifier(sv)
 		go sv.Run(ctx)
 	}
 
