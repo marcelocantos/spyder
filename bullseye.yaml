@@ -1828,3 +1828,37 @@ targets:
     - ergonomics
     origin: forked from agents-guide.md 1.0 tunneld goal; surfaced 2026-05-02 in squz/ge session
     discovered: 2026-05-02
+  T53:
+    name: pmd3-bridge dylib relocation succeeds during brew install (no "Failed to fix install linkage" warning)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A fresh `brew install marcelocantos/tap/spyder` (or `brew reinstall`, or `brew upgrade`) on macOS arm64 completes with zero "Error: Failed to fix install linkage" output.'
+    - The bundled PyInstaller artifact at libexec/pmd3-bridge/_internal/ contains dylibs/.so files whose Mach-O headerpad is large enough that brew's install_name_tool rewrite from @rpath references to absolute /opt/homebrew/Cellar/spyder/<v>/libexec/pmd3-bridge/_internal/... paths fits without "Updated load commands do not fit in the header" errors.
+    - 'The fix lives in the bridge build (PyInstaller spec, pyproject.toml, or a post-build dylib-padding step), not in the homebrew formula. Formula-level workarounds were investigated and ruled out — `fix_dynamic_linkage` is on brew''s Keg class with no clean per-formula override, and post_install runs too late.'
+    context: 'Discovered during the v0.30.0 release (and reproduced in every release back to v0.28.0). Brew prints `Error: Failed changing dylib ID of /opt/homebrew/Cellar/spyder/<v>/libexec/pmd3-bridge/_internal/pydantic_core/_pydantic_core.cpython-312-darwin.so from @rpath/... to /opt/homebrew/opt/spyder/libexec/pmd3-bridge/_internal/pydantic_core/...`. The error message itself names the fix: `Updated load commands do not fit in the header... needs to be relinked, possibly with -headerpad or -headerpad_max_install_names`. Brew rescues the exception and continues, so the install completes with the bin symlink intact and the bridge runtime works (PyInstaller''s bootloader resolves dylibs at runtime, ignoring the system @rpath). The "error" is therefore cosmetic but loud. The durable fix is to rebuild bundled wheels with `LDFLAGS="-Wl,-headerpad_max_install_names"` or post-process the PyInstaller bundle with `install_name_tool` to set headerpad before tarballing in release.yml. Investigated and ruled out: formula-side overrides via `formula_includes` (brew''s fix_dynamic_linkage is on Keg, not Formula; post_install runs too late; mach_o_files has no formula-level filter).'
+    tags:
+    - bridge
+    - homebrew
+    - dylib
+    - cosmetic-warning
+    origin: surfaced 2026-05-06 during v0.30.0 release verification
+    discovered: 2026-05-09
+  T54:
+    name: brew upgrade marcelocantos/tap/spyder reliably creates the /opt/homebrew/bin/spyder symlink
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'After `brew upgrade marcelocantos/tap/spyder` (with no other brew activity), `/opt/homebrew/bin/spyder` is a live symlink to the new Cellar version, no manual `brew link --overwrite` required.'
+    - The release skill''s install verification step has captured a full upgrade log via `tee` (per the post-v0.30.0 skill change), so the diagnostic data is in hand to identify why the symlink-creation step is being skipped during upgrades.
+    - The fix is identified and applied — likely candidates include the formula''s name-collision with the Scientific Python IDE cask (`spyder`) confusing brew's link logic, or an interaction between PyInstaller-bundled artifacts and brew's upgrade-time link step that the dylib-warning rescue doesn't fully clean up.
+    context: 'Empirically observed across v0.28, v0.29, and v0.30 releases: `brew upgrade marcelocantos/tap/spyder` puts the new version in `/opt/homebrew/Cellar/spyder/<v>/` but `/opt/homebrew/bin/spyder` ends up missing, requiring manual `brew link --overwrite`. Fresh `brew install` (after `brew uninstall`) does NOT exhibit this — the symlink is correctly created. So the bug is specific to the `upgrade` code path. Hypothesis examined and ruled out 2026-05-06: `fix_dynamic_linkage` failing causes the missing symlink. False — brew rescues the exception and continues, and `link(keg)` runs BEFORE `fix_dynamic_linkage` in formula_installer.rb. A fresh install with the dylib error firing still ends with the symlink in place. The actual upgrade-specific cause is unidentified because every release captured only `tail -5` of the upgrade output, which truncates the diagnostically relevant lines. The release skill now `tee`s the full output, so the next release should give us complete diagnostic data. Possible causes to investigate when the data lands: (a) brew''s upgrade flow unlinks old before installing new, and the new install hits a path where link() is conditionally skipped (e.g. when brew detects "would conflict with cask"); (b) the formula-name collision with the published `spyder` cask in homebrew-cask triggers different code paths during upgrade vs install; (c) a launchd-running-old-spyder file lock interaction during the unlink-old/install-new transition.'
+    tags:
+    - homebrew
+    - upgrade
+    - symlink
+    - diagnostic-data-needed
+    origin: surfaced 2026-05-06 during v0.30.0 release verification
+    discovered: 2026-05-09
