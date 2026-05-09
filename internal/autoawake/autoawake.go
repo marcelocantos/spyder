@@ -386,11 +386,14 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 	optedOut := s.recordKAState(udid, state)
 
 	// 2) Stay passive when the user has expressed they don't want
-	// KeepAwake fighting them — backgrounded (live opt-out) or
-	// terminated-while-opted-out (their backgrounded KeepAwake later
-	// got reaped by iOS; we still respect the original signal).
-	if state == device.AppStateBackgrounded ||
-		(state == device.AppStateTerminated && optedOut) {
+	// KeepAwake fighting them. Opt-out is captured at the
+	// running → backgrounded transition (recordKAState) and carried
+	// forward across iOS reaping a backgrounded KeepAwake to
+	// terminated. A fresh observation with no captured transition
+	// (e.g. after device re-attach or daemon restart) has no opt-
+	// out signal and falls through to the install/launch path —
+	// unplug → replug is the user's reset gesture.
+	if optedOut && state != device.AppStateRunning {
 		s.advance(udid, alias, classUserOptOut, nil)
 		return
 	}
@@ -419,9 +422,12 @@ func (s *Supervisor) converge(ctx context.Context, udid string) {
 		return
 	}
 
-	// state == AppStateTerminated, !optedOut, version current.
-	// Install if needed, then launch. attemptInstall handles its own
-	// classification on failure; on success we fall through to launch.
+	// state ∈ {AppStateTerminated, AppStateBackgrounded} with !optedOut,
+	// version current. Install if needed (terminated case), then launch.
+	// LaunchKeepAwake foregrounds a backgrounded app and starts a
+	// terminated one — both converge to AppStateRunning.
+	// attemptInstall handles its own classification on failure; on
+	// success we fall through to launch.
 	installed, err := s.ios.KeepAwakeInstalled(udid)
 	if err != nil {
 		slog.Debug("autoawake: KeepAwakeInstalled probe failed; assuming installed",

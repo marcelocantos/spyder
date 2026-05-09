@@ -321,12 +321,15 @@ func TestConverge_BackgroundedToRunning_ClearsOptOut(t *testing.T) {
 	}
 }
 
-// TestConverge_FreshAttachBackgrounded_NoOptOut: a backgrounded state
-// observed without ever seeing Running first is ambiguous and must NOT
-// flip the flag — that protects against silently inheriting opt-out
-// from prior daemon sessions or mid-suspended-state attaches.
-func TestConverge_FreshAttachBackgrounded_NoOptOut(t *testing.T) {
-	fake := &fakeIOSAdapter{kaState: device.AppStateBackgrounded}
+// TestConverge_FreshAttachBackgrounded_LaunchesKeepAwake: a fresh
+// observation that sees Backgrounded without first observing Running
+// has no captured opt-out signal — so autoawake must NOT classify it
+// as classUserOptOut. Unplug → replug is the user's reset gesture; on
+// re-attach autoawake should attempt to foreground KeepAwake. The
+// userOptOut flag stays false (no Running → Backgrounded transition
+// has been observed), and LaunchKeepAwake is invoked.
+func TestConverge_FreshAttachBackgrounded_LaunchesKeepAwake(t *testing.T) {
+	fake := &fakeIOSAdapter{kaState: device.AppStateBackgrounded, installed: true}
 	s := newSupervisorWithObs(t, fake, "U4")
 
 	s.converge(context.Background(), "U4")
@@ -337,12 +340,8 @@ func TestConverge_FreshAttachBackgrounded_NoOptOut(t *testing.T) {
 	if obs.userOptOut {
 		t.Error("userOptOut set on first-sight backgrounded; want false (no Running observation precedes it)")
 	}
-	// The class is still classUserOptOut because backgrounded means
-	// "don't fight" regardless of why — but the *flag* stays clear so
-	// that a subsequent Running observation cleanly clears it via the
-	// reset path.
-	if obs.lastClass != classUserOptOut {
-		t.Errorf("class = %s; want classUserOptOut", obs.lastClass)
+	if n := atomic.LoadInt32(&fake.launchErrN); n != 1 {
+		t.Errorf("LaunchKeepAwake called %d; want 1 (fresh backgrounded → foreground)", n)
 	}
 }
 
