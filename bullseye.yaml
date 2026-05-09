@@ -1728,10 +1728,11 @@ targets:
     discovered: 2026-05-09
   T55:
     name: autoawake re-foregrounds KeepAwake only when nothing else is foregrounded
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: 'Released v0.32.0 (https://github.com/marcelocantos/spyder/releases/tag/v0.32.0) and verified locally: brew upgrade marcelocantos/tap/spyder reported 0.31.0 -> 0.32.0; /opt/homebrew/bin/spyder symlink intact; `spyder version` prints v0.32.0; brew services restarted and the daemon is listening on :3030. The new convergence rule ships in this build — autoawake reads the bridge''s /v1/foreground_app first and stays passive while a third-party app holds the foreground. Behavioural verification on Jevons / iPhone happens through normal use; the multimaze2-style "KeepAwake clobbers MultiMaze" symptom should no longer reproduce.'
     acceptance:
     - spyder launch_app / deploy_app for a non-KeepAwake bundle leaves that bundle foregrounded; subsequent autoawake convergence ticks observe the foreground app and stay passive — they do NOT relaunch KeepAwake.
     - When the device's foreground app is SpringBoard / nothing AND userOptOut is unset, autoawake launches KeepAwake (the only path that surfaces KeepAwake).
@@ -1749,6 +1750,91 @@ targets:
     - ergonomics
     origin: manual
     discovered: 2026-05-09
+    achieved: 2026-05-10
+  T56:
+    name: spyder runs entirely on go-ios; pmd3-bridge, pmd3-tunneld, and xcrun devicectl are decommissioned
+    status: identified
+    value: 0.0
+    cost: 0.0
+    showcase: true
+    acceptance:
+    - Single Go binary `spyder` (user-space) plus `ios tunnel start` (system LaunchDaemon, root) is the entire runtime. No Python anywhere; no pmd3-bridge subprocess; no `bridge/` Python tree in the repo.
+    - All iOS device operations (list, launch, kill, screenshot, syslog, app_state, foreground_app, install, uninstall, crash reports, battery, device_power_state, power assertions) route through `github.com/danielpaulus/go-ios` as a Go module dependency.
+    - The tunnel daemon is the upstream go-ios `ios tunnel start`, supervised by launchd as a system LaunchDaemon. The previous pmd3-tunneld system daemon is stopped and removed.
+    - Zero `xcrun devicectl` invocations in spyder Go code (xcrun simctl for the simulator adapter is unrelated and stays).
+    - 'Demonstration: deploy MultiMaze to Jevons (iPad mini, iOS 26) and the Minicades iPhone via spyder''s MCP/REST API; both apps stay foregrounded across multiple autoawake convergence ticks; screenshot, syslog, and is_running tools all work; bridge supervisor / pmd3-bridge process / pmd3-tunneld launchd job all confirmed absent.'
+    context: 'Decision 2026-05-10. The pmd3-bridge architecture (Python FastAPI subprocess fronting pymobiledevice3) has hit two structural limits: (1) asyncio event-loop wedges under concurrent load — when a synchronous blocking call in pmd3 parks the loop, every endpoint times out simultaneously (observed at 14:43 UTC during four parallel deploy_app calls + autoawake foreground probes); (2) the in-scope subset of pmd3 is ~16k Python LOC of subtle iOS protocol code that we''d have to track through every iOS major. github.com/danielpaulus/go-ios is a mature ~33k-LOC Go reimplementation of the same protocols, MIT-licensed, actively maintained (commits within days), used in production by Sauce Labs / BrowserStack. Migrating cuts language count to one, removes the bridge subprocess entirely, and gives us native goroutine concurrency: a slow per-device call no longer takes down the whole listener. The Code=1002 / "No provider was found" devicectl provisioning failures we''ve been carrying for the iPhone are a CoreDevice-specific failure mode that go-ios''s installation_proxy path doesn''t have, so we get a free fix to that class of issue. iOS-26 RSD InvalidService intermittency may or may not improve — that''s the spike''s question (T56.1).'
+    tags:
+    - migration
+    - ios
+    - platform
+    - go-ios
+    origin: manual
+    discovered: 2026-05-10
+  T56.1:
+    name: go-ios + ios tunnel start verified working on iOS 26 (Jevons + Minicades iPhone)
+    kind: verify
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A scratch Go program imports github.com/danielpaulus/go-ios, lists connected devices via the new tunnel daemon, and successfully probes the foreground app on Jevons (iOS 26.4.2) over multiple ticks.
+    - InvalidService failure rate over a ~5-minute observation window measured and recorded — comparison data point against the pmd3-bridge baseline. (If go-ios is materially worse, the migration premise is in question and we revisit.)
+    - 'DTX-based operations (screenshot, process control / launch_app, app state) round-trip cleanly against at least one iOS 26 device. We have working go-ios calls for: list_devices, launch_app, kill_app, screenshot, app_state-equivalent, foreground-equivalent.'
+    - go/no-go decision recorded as a comment on T56 (or a docs/papers/t56-spike.md note) with the measured numbers and any blockers.
+    context: 'Cheap empirical check before committing to the full migration. The risk: go-ios''s tunnel might have the same iOS 26 RSD InvalidService noise we see today (in which case the migration''s net win is just "bridge wedge fix", which is real but smaller), or it might handle it materially better (in which case the migration is double-justified). Either way the answer changes our follow-on planning: keep T56.2 / T56.3 as planned vs file a separate "investigate iOS 26 RSD intermittency" target.'
+    verifies:
+    - T56
+    tags:
+    - spike
+    - ios
+    - go-ios
+    origin: manual
+    discovered: 2026-05-10
+    achieved: 2026-05-10
+  T56.2:
+    name: internal/device iOS path + tunnel daemon switched to go-ios; pmd3-bridge subprocess removed
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'internal/device/ios.go uses github.com/danielpaulus/go-ios as a Go module dependency for all device operations: list, launch_app, kill_app, terminate, screenshot, syslog, app_state, foreground_app, install, uninstall, crash reports, battery, device_power_state, and any power-assertion semantics retained from pmd3-bridge.'
+    - internal/pmd3bridge/ source removed. internal/daemon/daemon.go no longer launches a bridge subprocess. The autoawake supervisor's iosAdapter is wired directly to the new go-ios-backed IOSAdapter.
+    - pmd3-tunneld system LaunchDaemon stopped and removed. `sudo ios tunnel start` is running as the system tunnel daemon (system LaunchDaemon plist, root). spyder's iOS path talks to the new tunnel registry endpoint.
+    - All `xcrun devicectl` invocations in spyder Go code are gone (xcrun simctl in internal/device/sim.go is unrelated, stays). KeepAwake install / launch / version-query routes through go-ios.
+    - 'All existing tests pass; go test ./... is green. Manual smoke: deploy + launch + screenshot + autoawake convergence on Jevons and Minicades iPhone work end-to-end.'
+    context: 'The main migration. Single coherent unit — the tunnel daemon and the consumer change together because pmd3-bridge can''t talk to go-ios''s tunnel (different registry shape) and go-ios can''t talk to pmd3-tunneld (different protocol expectations). Likely decomposes into multiple commits within one PR: (1) add go-ios dep, (2) port each adapter method, (3) swap launchd plist + remove pmd3-bridge subprocess wiring, (4) delete dead code. Coexistence path was considered and rejected — the project is single-user, no zero-downtime requirement.'
+    depends_on:
+    - T56.1
+    tags:
+    - migration
+    - ios
+    - go-ios
+    - platform
+    origin: manual
+    discovered: 2026-05-10
+  T56.3:
+    name: bridge/ Python tree, internal/pmd3bridge/, and pmd3 release-pipeline plumbing all removed
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'bridge/ directory removed from the repo (entire Python tree: src/, tests/, pyproject.toml, uv.lock, dist/).'
+    - release.yml stops building and bundling pmd3-bridge; release tarballs no longer contain libexec/pmd3-bridge/.
+    - Homebrew formula generated by homebrew-releaser declares a clean install (no python3 / uv runtime requirement, no headerpad workaround needed since there's no PyInstaller bundle anymore). T53 (pmd3-bridge dylib relocation) is superseded.
+    - 'agents-guide.md, README.md, CLAUDE.md, STABILITY.md, and docs/papers/t36-tunneld-launchd-investigation.md updated to reflect the new architecture: spyder + ios tunnel start, no Python, no pmd3-bridge.'
+    - go-ios is available on the user's machine via the spyder install — either bundled in the spyder release tarball (recommended) or declared as a brew tap dependency. The agents-guide explains how the tunnel daemon is started and verified.
+    - 'Final demonstration: a fresh `brew uninstall spyder && brew install marcelocantos/tap/spyder && brew services start spyder` on a clean machine results in spyder running with no Python on the box at all (pmd3-bridge / pmd3-tunneld absent), and `spyder devices` reports the connected iOS devices.'
+    context: 'Cleanup phase: the actual deletes, the release-pipeline updates, the docs sweep. Naturally follows T56.2 — deleting bridge/ before T56.2 lands would break the build. Includes superseding T53 (dylib relocation issue) since the issue can''t recur without a PyInstaller bundle. T54 (brew upgrade symlink) might or might not be related; the bundle being smaller and not having a 100MB libexec might or might not change the symlink-creation behaviour, worth observing during the post-migration release.'
+    depends_on:
+    - T56.2
+    tags:
+    - cleanup
+    - migration
+    - release-pipeline
+    - docs
+    origin: manual
+    discovered: 2026-05-10
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved
