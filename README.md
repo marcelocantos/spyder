@@ -43,6 +43,25 @@ claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
 Verify with `lsof -iTCP:3030 -sTCP:LISTEN` (the MCP endpoint only answers
 JSON-RPC POSTs, so `curl` is not a useful probe).
 
+### Troubleshooting
+
+If spyder MCP tools aren't available in your agent (or vanish mid-session),
+the daemon likely isn't running. The launchd service is `KeepAlive`, but it
+won't start by itself if `brew services start spyder` was never run, and a
+crash before the agent's MCP bridge has retried can leave the bridge in a
+closed state.
+
+```bash
+brew services list | grep spyder    # want: "started"; "none" means step 2 was skipped
+brew services start spyder          # first time, or after `brew services stop`
+brew services restart spyder        # if it's "started" but :3030 isn't listening
+lsof -iTCP:3030 -sTCP:LISTEN        # confirm spyder is actually listening
+```
+
+After the daemon is back, reload the spyder MCP server in your agent
+(in Claude Code: `/mcp`, then reconnect) — bridges that exited while the
+daemon was down don't auto-revive, but live ones reconnect on next call.
+
 If you use an agentic coding tool, include
 [`agents-guide.md`](agents-guide.md) in your project context — it has
 everything below plus gotchas, device-inventory format, and the full

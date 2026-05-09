@@ -516,8 +516,8 @@ func TestLRUEvictionAtCap(t *testing.T) {
 	// Now mint a fresh second sim by acquiring while A is still
 	// reserved. We need to keep A reserved and Acquire again so the
 	// pool mints a new one.
-	c, _ := p.Acquire("t1", "test")            // re-acquires A from Available
-	d, err := p.Acquire("t1", "test")          // mints + boots a new sim
+	c, _ := p.Acquire("t1", "test")   // re-acquires A from Available
+	d, err := p.Acquire("t1", "test") // mints + boots a new sim
 	if err != nil {
 		t.Fatalf("Acquire D: %v", err)
 	}
