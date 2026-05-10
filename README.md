@@ -10,8 +10,10 @@ Not a replacement for
 [mobile-mcp](https://github.com/mobile-next/mobile-mcp) (UI automation via
 WebDriverAgent) or [XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP)
 (xcodebuild). Spyder sits above them: it remembers what the device *is* and
-wraps the workflow around it, using `pymobiledevice3` + CoreDevice to talk
-directly to iOS physical devices where mobile-mcp's WDA path often fails.
+wraps the workflow around it, using the bundled [go-ios](https://github.com/danielpaulus/go-ios)
+library + CLI to talk directly to iOS physical devices where mobile-mcp's
+WDA path often fails. The whole stack is one Go binary plus a small `ios`
+helper binary (also Go) — no Python runtime, no system LaunchDaemon required.
 
 ## Quick start (for agents)
 
@@ -186,7 +188,7 @@ the [agent guide](agents-guide.md#device-inventory) for the format.
 ## Build from source
 
 ```bash
-make build          # bin/spyder
+make build          # bin/spyder + bin/ios (bundled tunnel daemon)
 make test
 make bullseye       # full invariants
 ```
@@ -194,10 +196,16 @@ make bullseye       # full invariants
 Dependencies:
 
 - Go 1.26+
-- `pymobiledevice3` ≥ 8.2 in PATH (iOS operations)
+- `xcrun` (macOS, simulator support — Apple)
 - `adb` (Android operations)
 - `alerter` (persistent macOS notifications for the locked-device prompt;
   falls back to `terminal-notifier` → `osascript`)
+
+iOS device support is in-process via the bundled
+[go-ios](https://github.com/danielpaulus/go-ios) Go library; the
+`bin/ios` binary that `make build` produces is the same project's CLI
+and is spawned by spyder as a userspace tunnel daemon at runtime.
+No Python, no `pymobiledevice3`, no system LaunchDaemon.
 
 ## Licence
 

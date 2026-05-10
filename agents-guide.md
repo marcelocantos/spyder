@@ -2,14 +2,15 @@
 
 Spyder is an HTTP-based MCP server that owns session state for real-device mobile
 development: symbolic device aliases, live device facts (battery, charging,
-foreground app), screenshots, app lifecycle, and power-assertion management via
-the bundled pmd3 bridge to prevent device auto-lock.
+foreground app), screenshots, app lifecycle, and the autoawake KeepAwake
+supervisor that prevents iOS device screen auto-lock.
 
 Spyder sits *above* [mobile-mcp](https://github.com/mobile-next/mobile-mcp) and
 [XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP): those tools drive
 the device; spyder remembers what the device *is* and wraps the workflow around
-it. In particular, spyder handles iOS physical devices cleanly via
-`pymobiledevice3` where mobile-mcp's WebDriverAgent path often fails.
+it. iOS physical-device support is in-process via the bundled
+[go-ios](https://github.com/danielpaulus/go-ios) Go library — usbmux, lockdown,
+DTX, and RSD all run inside spyder rather than fronting a Python subprocess.
 
 ## Installation (not a one-liner — do **all** the steps)
 
@@ -80,7 +81,7 @@ map symbolic aliases to platform-specific identifiers:
 ]
 ```
 
-- `ios_uuid` — hardware UDID (from `pymobiledevice3 usbmux list` or
+- `ios_uuid` — hardware UDID (from `ios list` or
   `xcrun xctrace list devices`).
 - `ios_coredevice` — CoreDevice UUID from `devicectl list devices`.
 - `android_serial` — adb serial from `adb devices`.
@@ -100,14 +101,14 @@ everything it can see.
 | `devices` | List connected iOS + Android devices, annotated with inventory alias. | `platform` filter: `ios`, `android`, or `all` (default). |
 | `resolve` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
 | `device_state` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
-| `screenshot` | PNG of the current screen, returned inline as an image content block. | iOS uses `pymobiledevice3 developer dvt screenshot` (needs tunneld); Android uses `adb shell screencap`. |
+| `screenshot` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService` (needs tunnel); Android uses `adb shell screencap`. |
 | `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
-| `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses DVT launch (needs tunneld); Android uses `adb monkey -c LAUNCHER`. |
+| `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses go-ios's `appservice.LaunchApp` (CoreDevice launch path, needs tunnel); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
 | `rotate` | Rotate an iOS simulator or Android emulator to a named orientation. Physical iOS/Android devices return a clear error. | Orientations: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. iOS uses `xcrun simctl io <udid> rotate`; Android uses `adb emu rotate` (driven N times to reach the target). |
 | `install_app` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | iOS: `xcrun devicectl device install app`; Android: `adb install -r`. |
 | `uninstall_app` | Remove an app by bundle id / package name. | iOS: `xcrun devicectl device uninstall app --bundle-identifier`; Android: `adb uninstall`. |
-| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS needs tunneld for launch + pid-verify. Fail-fast on install error; "not running" from terminate is ignored. |
+| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
 | `reserve` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Also stops any active recording owned by the releaser. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Any applied network profile is cleared automatically. |
@@ -372,7 +373,7 @@ Via MCP, the same operations are:
 | `record_start` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | `{device, owner?}`. iOS simulators only — physical devices return an immediate error. Only one recording per device at a time. Reservation-gated. |
 | `record_stop` | Stop the active recording and return the local mp4 path. | `{device, owner?}`. Waits for the recorder to flush. On Android, pulls the file from the device. |
 | `network` | Apply or clear network condition shaping. | `{device, owner, profile?}` or `{device, owner, clear:true}`. Android emulators only — see gotchas below. |
-| `logs` | Fetch log lines between two timestamps. | Read-only. iOS routes through the bundled pmd3 bridge (`OsTraceService.syslog`); Android uses `adb logcat`. For live tailing use REST SSE (see below). |
+| `logs` | Fetch log lines between two timestamps. | Read-only. iOS routes through go-ios's `syslog_relay` shim (BSD-style syslog stream); Android uses `adb logcat`. For live tailing use REST SSE (see below). |
 
 ### Log queries — range vs. live
 
@@ -409,14 +410,20 @@ spyder log Pippa --regex "crash|panic"             # regex on message
 
 **Platform quirks:**
 
-- **iOS range queries** subscribe to the live syslog stream via the pmd3
-  bridge (`OsTraceService.syslog`) for up to 5 seconds and collect lines
-  in the window. This is adequate for post-hoc debugging but is not a
-  true archived-log query. For long-span queries run multiple short
-  windows or use `--follow` and let the stream run while reproducing.
-- **iOS timestamps** are device-local RFC3339 (with timezone preserved)
-  produced by pmd3's `SyslogEntry.timestamp` and forwarded verbatim
-  through the bridge.
+- **iOS range queries** subscribe to the live syslog stream via go-ios's
+  `syslog_relay` shim for up to 5 seconds and collect lines in the
+  window. This is adequate for post-hoc debugging but is not a true
+  archived-log query. For long-span queries run multiple short windows
+  or use `--follow` and let the stream run while reproducing.
+- **iOS timestamps** come from go-ios's BSD-syslog parser (`MMM D
+  HH:MM:SS`) and are surfaced as ISO-formatted strings without a
+  timezone. The classic BSD format doesn't carry timezone metadata,
+  so the per-entry since/until filter is suppressed on iOS — use the
+  call-level deadline (the ~5s default cap on a missing `until`) to
+  bound the window.
+- **iOS subsystem filter** is unsupported on the go-ios path: the
+  syslog_relay parser only surfaces classic BSD fields (process, pid,
+  level, message). A non-empty subsystem filter drops everything.
 - **Android tag filter** — logcat `-s <tag>:V *:S` suppresses all other tags.
   Combining tag + regex is the most targeted approach.
 - **Android process filter** — there is no direct process-name filter in logcat;
@@ -861,31 +868,35 @@ reboots the device).
 ## Environment and dependencies
 
 - **macOS host.** macOS 15+ / Apple Silicon only. Spyder's value is iOS device
-  orchestration via macOS-specific tooling (`xcrun devicectl`, pmd3 tunneld
-  + RSD, CoreDevice); Linux is not a release target. (🎯T45)
-- **`pymobiledevice3` ≥ 8.2** — iOS operations. The `pmd3-bridge` FastAPI
-  subprocess (bundled at `libexec/pmd3-bridge/pmd3-bridge`) provides a
-  persistent loopback HTTP API over pmd3; spyder's Go daemon supervises
-  it automatically.
-- **`pymobiledevice3 remote tunneld`** — **required** for any DVT operation
-  on iOS 17+ (screenshot is the most user-visible) and for reliable
-  device enumeration on iOS 17+. Run as root (TUN/TAP interface), bound
-  to the default `127.0.0.1:49151`. Typical setup is a launchd service.
-  Spyder detects an externally-managed instance via the HTTP probe at
-  that address and falls back to USBMux-only enumeration when tunneld
-  is absent (older devices keep working; iOS 17+ screenshot returns
-  `tunneld_unavailable` until tunneld is up). Bridge-supervised tunneld
-  is a 1.0 prerequisite (🎯T30 follow-up).
+  orchestration via macOS-specific tooling (`xcrun simctl` for simulators,
+  the bundled go-ios CLI / tunnel for real devices); Linux is not a release
+  target. (🎯T45)
+- **bundled `ios` binary** — the [go-ios](https://github.com/danielpaulus/go-ios)
+  CLI, installed at `$(brew --prefix)/libexec/spyder/ios`. spyder spawns
+  it as `ios tunnel start --userspace` at daemon startup; the tunnel
+  registry on `127.0.0.1:60105` is what the in-process iOS adapter
+  queries to do RSD lookups for iOS-17+ devices. Userspace mode means
+  no sudo is required.
 - **`adb`** — Android operations.
 - **`alerter`** — persistent macOS notifications for the locked-device prompt
   (fallbacks: `terminal-notifier`, `osascript`).
+
+The previous architecture (a Python `pmd3-bridge` FastAPI subprocess
+plus a system-level `pmd3-tunneld` LaunchDaemon) was retired in
+v0.33 (🎯T56). If you upgraded from a pre-0.33 install and had the
+manual `com.marcelocantos.pmd3-tunneld` LaunchDaemon, it's safe to
+remove now — the bundled `ios` binary supersedes it:
+
+```bash
+sudo launchctl bootout system /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist 2>/dev/null
+sudo rm -f /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist
+```
 
 ## Configuration
 
 ```bash
 spyder serve                                  # default: 127.0.0.1:3030, HTTP MCP on /mcp (loopback only)
 spyder serve --addr :3030                     # expose on all interfaces (caution: no auth; only on trusted networks)
-spyder serve --tunneld-addr 127.0.0.1:49151   # non-default tunneld location
 ```
 
 **Security note.** Spyder's MCP endpoint has no authentication; anyone
@@ -898,11 +909,10 @@ loopback bind is deliberate — external exposure is opt-in via
 
 When spyder runs as a Homebrew service, launchd doesn't inherit your
 shell env. The formula sets a default `PATH` that covers
-`/opt/homebrew/bin` and the usual system paths. No additional
-configuration is needed for the pmd3 bridge — the bridge binary is
-bundled at `$(brew --prefix)/libexec/pmd3-bridge/pmd3-bridge` and
-resolved relative to the spyder executable automatically. No `launchctl
-setenv PATH` surgery required on a fresh machine.
+`/opt/homebrew/bin` and the usual system paths. The bundled `ios`
+tunnel binary lives at `$(brew --prefix)/libexec/spyder/ios` and is
+resolved relative to the spyder executable automatically. No
+`launchctl setenv PATH` surgery required on a fresh machine.
 
 ## Screen recording
 
