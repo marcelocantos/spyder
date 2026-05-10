@@ -30,9 +30,12 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/paths"
 )
 
 // Supervisor manages an `ios tunnel start --userspace` subprocess.
@@ -70,6 +73,18 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	// teardown sequence and needs to send SIGTERM first for clean
 	// shutdown of the user-space TUN.
 	cmd := exec.Command(s.binPath, "tunnel", "start", "--userspace")
+
+	// go-ios writes selfIdentity.plist (and the per-device pair
+	// records) to its cwd. Under launchctl / brew services the cwd
+	// is "/" which is read-only, so the tunnel exits immediately
+	// with "open selfIdentity.plist: read-only file system". Pin the
+	// cwd to ~/.spyder/iostunnel so the pair records have a stable,
+	// writable home that survives across spyder restarts.
+	tunnelCwd := filepath.Join(paths.Base(), "iostunnel")
+	if err := os.MkdirAll(tunnelCwd, 0o755); err != nil {
+		return fmt.Errorf("iostunnel: create cwd %s: %w", tunnelCwd, err)
+	}
+	cmd.Dir = tunnelCwd
 
 	// Detach from spyder's controlling terminal. Without Setpgid the
 	// tunnel inherits spyder's pgid and would receive Ctrl-C / SIGINT
