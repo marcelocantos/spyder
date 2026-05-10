@@ -89,6 +89,34 @@ func TestListApps_Live(t *testing.T) {
 	t.Logf("ListApps(%s): %d user apps; first 3: %+v", udid, len(apps), apps[:min(3, len(apps))])
 }
 
+// TestList_Live exercises the new go-ios.ListDevices + lockdown
+// enrichment path. With at least one paired device attached, expects
+// at least one entry in the returned list.
+func TestList_Live(t *testing.T) {
+	udid := os.Getenv("SPYDER_LIVE_UDID")
+	if udid == "" {
+		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
+	}
+	adapter := NewIOSAdapter(nil)
+	devs, err := adapter.List()
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(devs) == 0 {
+		t.Fatalf("List returned 0 devices; expected the live device %s", udid)
+	}
+	found := false
+	for _, d := range devs {
+		if d.UUID == udid {
+			found = true
+			t.Logf("live device entry: %+v", d)
+		}
+	}
+	if !found {
+		t.Errorf("live device %s missing from List output: got %v", udid, devs)
+	}
+}
+
 // TestState_Live exercises the new go-ios lockdown battery path.
 func TestState_Live(t *testing.T) {
 	udid := os.Getenv("SPYDER_LIVE_UDID")

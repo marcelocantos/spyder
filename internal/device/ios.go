@@ -143,37 +143,6 @@ func (a *IOSAdapter) KeepAwakeInstalledVersion(id string) (string, error) {
 	return rec.version, nil
 }
 
-// KeepAwakeState reports KeepAwake's lifecycle state on the device:
-// "running" (foregrounded), "backgrounded" (suspended or background-
-// running), or "terminated" (not present in the BackBoard state list).
-// Routes through the pmd3 bridge's /v1/app_state endpoint, which
-// subscribes to the DVT mobile-notifications service, drains the
-// initial state-enumeration burst, and returns the matching entry's
-// state_description.
-//
-// Used by autoawake's convergence loop to detect user-initiated
-// opt-out: a Running → backgrounded transition for KeepAwake (observed
-// across two ticks) means the user swiped away from KeepAwake or
-// launched another app; either way, autoawake should stay passive
-// until the user explicitly re-foregrounds KeepAwake.
-//
-// Returns ("", error) when the bridge is unavailable; callers can
-// treat that as "unknown" and skip the convergence step rather than
-// triggering a relaunch on partial information.
-func (a *IOSAdapter) KeepAwakeState(id string) (string, error) {
-	if id == "" {
-		return "", errors.New("device identifier is empty")
-	}
-	if a.bridge == nil {
-		return "", errNoBridge
-	}
-	state, _, err := a.bridge.AppState(context.Background(), id, KeepAwakeBundleID)
-	if err != nil {
-		return "", fmt.Errorf("app_state on %s: %w", id, err)
-	}
-	return state, nil
-}
-
 // ForegroundApp returns the bundle id (or .app folder name) of the
 // foregrounded third-party app on the device, or "" when SpringBoard
 // (the home screen) is showing. Routes through the pmd3 bridge's
@@ -421,24 +390,24 @@ func (a *IOSAdapter) List() ([]Info, error) {
 
 	var devices []Info
 
-	if a.bridge != nil {
-		if bridgeDevices, err := a.bridge.ListDevices(context.Background()); err == nil {
-			for _, d := range bridgeDevices {
-				if connected != nil && !connected[d.UDID] {
-					// devicectl says this device isn't reachable — drop it.
-					continue
-				}
-				info := Info{
-					UUID:     d.UDID,
-					Name:     d.Name,
-					Platform: "ios",
-					Model:    d.ProductType,
-				}
-				if d.OSVersion != "" {
-					info.OS = "iOS " + d.OSVersion
-				}
-				devices = append(devices, info)
+	// Primary source: go-ios's usbmux enumeration, with per-device
+	// lockdown enrichment for the human-friendly fields. Replaces the
+	// previous pmd3-bridge /v1/list_devices call (🎯T56).
+	if devList, err := goios_ios.ListDevices(); err == nil {
+		for _, dev := range devList.DeviceList {
+			udid := dev.Properties.SerialNumber
+			if connected != nil && !connected[udid] {
+				continue
 			}
+			info := Info{UUID: udid, Platform: "ios"}
+			if values, gerr := goios_ios.GetValues(dev); gerr == nil {
+				info.Name = values.Value.DeviceName
+				info.Model = values.Value.ProductType
+				if values.Value.ProductVersion != "" {
+					info.OS = "iOS " + values.Value.ProductVersion
+				}
+			}
+			devices = append(devices, info)
 		}
 	}
 
