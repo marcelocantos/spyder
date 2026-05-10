@@ -7,10 +7,8 @@ bin/
 ios/**/*.xcodeproj/xcuserdata/
 ios/**/*.xcodeproj/project.xcworkspace/xcuserdata/
 
-# Python bridge
-bridge/.venv/
-bridge/dist/
-bridge/build/
-bridge/__pycache__/
-bridge/**/__pycache__/
-bridge/.pytest_cache/
+# go-ios scratch state — `ios image auto` downloads the developer
+# disk image into ./devimages/, and the userspace tunnel writes a
+# pair-record next to the cwd. Neither is repo content.
+devimages/
+selfIdentity.plist

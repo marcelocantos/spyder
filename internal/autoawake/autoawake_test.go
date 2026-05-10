@@ -30,7 +30,7 @@ func TestAliasOf_FromInventory(t *testing.T) {
 		[]byte(`[{"alias":"Pippa","platform":"ios","ios_uuid":"00008103-000D39301A6A201E"}]`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s := New(nil) // bridge nil; aliasOf doesn't use it
+	s := New() // bridge nil; aliasOf doesn't use it
 	if got := s.aliasOf("00008103-000D39301A6A201E"); got != "Pippa" {
 		t.Errorf("aliasOf(Pippa UDID) = %q; want Pippa", got)
 	}
@@ -39,7 +39,7 @@ func TestAliasOf_FromInventory(t *testing.T) {
 func TestAliasOf_UnknownShortens(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp) // no inventory file
-	s := New(nil)
+	s := New()
 
 	if got := s.aliasOf("00008103-000D39301A6A201E"); got != "00008103…" {
 		t.Errorf("aliasOf(unknown long) = %q; want 00008103…", got)
@@ -53,7 +53,7 @@ func TestAliasOf_UnknownShortens(t *testing.T) {
 // --- nil bridge guard ------------------------------------------------
 
 func TestSupervisorNilBridge_RunExitsImmediately(t *testing.T) {
-	s := New(nil)
+	s := New()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -125,7 +125,7 @@ func TestConverge_NoProviderFound_TriggersReinstall(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
-	s := New(nil, withIOSAdapter(fake))
+	s := New(withIOSAdapter(fake))
 	udid := "FAKE-0001"
 	s.mu.Lock()
 	s.obs[udid] = &deviceObs{lastClass: classUnknown}
@@ -176,7 +176,7 @@ func TestConverge_NoProviderFound_DoesNotSpamOnRepeat(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
-	s := New(nil, withIOSAdapter(fake))
+	s := New(withIOSAdapter(fake))
 	udid := "FAKE-0002"
 	s.mu.Lock()
 	s.obs[udid] = &deviceObs{lastClass: classUnknown}
@@ -235,7 +235,7 @@ func newSupervisorWithObs(t *testing.T, fake *fakeIOSAdapter, udid string) *Supe
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
-	s := New(nil, withIOSAdapter(fake))
+	s := New(withIOSAdapter(fake))
 	s.mu.Lock()
 	s.obs[udid] = &deviceObs{lastClass: classUnknown}
 	s.mu.Unlock()

@@ -1,7 +1,22 @@
 .PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean
 
-build:
+build: bin/spyder bin/ios
+
+bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' 2>/dev/null) go.mod go.sum
 	go build -ldflags "-X main.version=dev" -o bin/spyder .
+
+# bin/ios is the bundled go-ios CLI / tunnel daemon. spyder spawns
+# `ios tunnel start --userspace` as a subprocess for iOS-17+ RSD
+# device discovery. The binary is built from the same go-ios module
+# version pinned in go.mod (with the local `replace` during the
+# upstream PR shake-out).
+#
+# `-mod=mod` is required because go-ios's CLI pulls in deps (docopt,
+# gopacket, struc, ...) that spyder itself doesn't import — `go mod
+# tidy` strips them from go.sum, but the ios build needs them. mod
+# mode auto-fetches them at build time.
+bin/ios:
+	go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios
 
 test:
 	go test ./...
@@ -19,17 +34,18 @@ fmt-check:
 test-report:
 	@./scripts/test-report.sh
 
-# test-integration runs the real-bridge integration tier only.
-# (Also exposed by test-report as the "integration" suite when
-# SPYDER_INTEGRATION=1.)
+# test-integration is reserved for HIL / integration tests that
+# require real devices or external services. Currently a no-op stub
+# now that the pmd3-bridge bulkhead tests are gone (🎯T56).
 test-integration:
-	@go test -tags=integration ./internal/pmd3bridge/...
+	@echo "no integration tier configured; HIL tests run via SPYDER_LIVE_UDID-gated _Live tests"
 
 bullseye:
 	@test -z "$$(gofmt -l .)" && echo "✓ fmt" || \
 	 (echo "✗ gofmt issues:"; gofmt -l .; exit 1)
 	@go vet ./... && echo "✓ vet"
 	@go build -ldflags "-X main.version=dev" -o bin/spyder . && echo "✓ build"
+	@go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios && echo "✓ build ios"
 	@go test ./... 2>&1 | tail -20 && echo "✓ tests"
 	@test -z "$$(git status --porcelain)" && echo "✓ clean" || \
 	 (echo "✗ dirty tree:"; git status --short; exit 1)

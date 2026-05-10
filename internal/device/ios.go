@@ -19,8 +19,15 @@ import (
 	"sync"
 	"time"
 
+	goios_ios "github.com/danielpaulus/go-ios/ios"
+	"github.com/danielpaulus/go-ios/ios/appservice"
+	"github.com/danielpaulus/go-ios/ios/crashreport"
+	"github.com/danielpaulus/go-ios/ios/installationproxy"
+	"github.com/danielpaulus/go-ios/ios/instruments"
+	goios_syslog "github.com/danielpaulus/go-ios/ios/syslog"
+	"github.com/danielpaulus/go-ios/ios/zipconduit"
+	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
-	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
 
 // ErrLocked is returned when an operation fails specifically because the
@@ -76,47 +83,34 @@ type keepAwakeAppRecord struct {
 	version string
 }
 
-// inspectKeepAwakeApp runs one `xcrun devicectl device info apps`
-// query and extracts the KeepAwake entry, if present. Single source
-// of truth for KeepAwakeInstalled and KeepAwakeInstalledVersion so
-// autoawake's per-tick cost stays at one devicectl call.
+// inspectKeepAwakeApp asks installation_proxy for the installed app
+// list and pulls out the KeepAwake entry, if present. Single source of
+// truth for KeepAwakeInstalled and KeepAwakeInstalledVersion so
+// autoawake's per-tick cost stays at one round-trip.
 func (a *IOSAdapter) inspectKeepAwakeApp(id string) (keepAwakeAppRecord, error) {
 	if id == "" {
 		return keepAwakeAppRecord{}, errors.New("device identifier is empty")
 	}
-	tmp, err := os.MkdirTemp("", "spyder-devctl-apps-*")
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		return keepAwakeAppRecord{}, fmt.Errorf("mkdir temp: %w", err)
+		return keepAwakeAppRecord{}, fmt.Errorf("inspect KeepAwake: %w", err)
 	}
-	defer os.RemoveAll(tmp)
-	jsonPath := filepath.Join(tmp, "apps.json")
-	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "--timeout",
-		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "info", "apps",
-		"--device", id, "--quiet", "--json-output", jsonPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return keepAwakeAppRecord{}, fmt.Errorf(
-			"devicectl device info apps: %w\n%s", err, truncate(string(out), 200))
-	}
-	data, err := os.ReadFile(jsonPath)
+	conn, err := installationproxy.New(dev)
 	if err != nil {
-		return keepAwakeAppRecord{}, fmt.Errorf("read devicectl apps JSON: %w", err)
+		a.goios.Invalidate(id)
+		return keepAwakeAppRecord{}, fmt.Errorf("installation_proxy on %s: %w", id, err)
 	}
-	var doc struct {
-		Result struct {
-			Apps []struct {
-				BundleIdentifier string `json:"bundleIdentifier"`
-				Version          string `json:"version"`
-			} `json:"apps"`
-		} `json:"result"`
+	defer conn.Close()
+	apps, err := conn.BrowseAllApps()
+	if err != nil {
+		return keepAwakeAppRecord{}, fmt.Errorf("browse apps on %s: %w", id, err)
 	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return keepAwakeAppRecord{}, fmt.Errorf("decode devicectl apps JSON: %w", err)
-	}
-	for _, app := range doc.Result.Apps {
-		if app.BundleIdentifier == KeepAwakeBundleID {
-			return keepAwakeAppRecord{installed: true, version: app.Version}, nil
+	for _, app := range apps {
+		if app.CFBundleIdentifier() == KeepAwakeBundleID {
+			return keepAwakeAppRecord{
+				installed: true,
+				version:   app.CFBundleShortVersionString(),
+			}, nil
 		}
 	}
 	return keepAwakeAppRecord{installed: false}, nil
@@ -150,37 +144,6 @@ func (a *IOSAdapter) KeepAwakeInstalledVersion(id string) (string, error) {
 	return rec.version, nil
 }
 
-// KeepAwakeState reports KeepAwake's lifecycle state on the device:
-// "running" (foregrounded), "backgrounded" (suspended or background-
-// running), or "terminated" (not present in the BackBoard state list).
-// Routes through the pmd3 bridge's /v1/app_state endpoint, which
-// subscribes to the DVT mobile-notifications service, drains the
-// initial state-enumeration burst, and returns the matching entry's
-// state_description.
-//
-// Used by autoawake's convergence loop to detect user-initiated
-// opt-out: a Running → backgrounded transition for KeepAwake (observed
-// across two ticks) means the user swiped away from KeepAwake or
-// launched another app; either way, autoawake should stay passive
-// until the user explicitly re-foregrounds KeepAwake.
-//
-// Returns ("", error) when the bridge is unavailable; callers can
-// treat that as "unknown" and skip the convergence step rather than
-// triggering a relaunch on partial information.
-func (a *IOSAdapter) KeepAwakeState(id string) (string, error) {
-	if id == "" {
-		return "", errors.New("device identifier is empty")
-	}
-	if a.bridge == nil {
-		return "", errNoBridge
-	}
-	state, _, err := a.bridge.AppState(context.Background(), id, KeepAwakeBundleID)
-	if err != nil {
-		return "", fmt.Errorf("app_state on %s: %w", id, err)
-	}
-	return state, nil
-}
-
 // ForegroundApp returns the bundle id (or .app folder name) of the
 // foregrounded third-party app on the device, or "" when SpringBoard
 // (the home screen) is showing. Routes through the pmd3 bridge's
@@ -198,14 +161,77 @@ func (a *IOSAdapter) ForegroundApp(id string) (string, error) {
 	if id == "" {
 		return "", errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return "", errNoBridge
-	}
-	bundle, err := a.bridge.ForegroundApp(context.Background(), id)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		return "", fmt.Errorf("foreground_app on %s: %w", id, err)
+		return "", fmt.Errorf("foreground_app: %w", err)
 	}
-	return bundle, nil
+	recv, closeFn, err := instruments.ListenAppStateNotifications(dev)
+	if err != nil {
+		// Transport-level failure — drop the cached session so the
+		// next call re-handshakes (covers tunnel restart / device
+		// replug between calls).
+		a.goios.Invalidate(id)
+		return "", fmt.Errorf("foreground_app: subscribe on %s: %w", id, err)
+	}
+	defer closeFn()
+
+	// Drain BackBoard's initial state-enumeration burst into a buffered
+	// channel so the deadline below isn't wedged by recv()'s blocking
+	// read. The 750ms drain matches pmd3's 0.5s window with a touch of
+	// slack for slow tunnels — BackBoard delivers the typical burst
+	// (~14-30 entries) in <100ms once the channel is open.
+	type recvResult struct {
+		data map[string]interface{}
+		err  error
+	}
+	results := make(chan recvResult, 64)
+	go func() {
+		for {
+			data, recvErr := recv()
+			results <- recvResult{data: data, err: recvErr}
+			if recvErr != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.After(750 * time.Millisecond)
+	for {
+		select {
+		case <-deadline:
+			return "", nil
+		case r := <-results:
+			if r.err != nil {
+				return "", fmt.Errorf("foreground_app: recv on %s: %w", id, r.err)
+			}
+			stateDesc, _ := r.data["state_description"].(string)
+			if stateDesc != "Running" {
+				continue
+			}
+			if bundle, _ := r.data["bundleIdentifier"].(string); bundle != "" {
+				return bundle, nil
+			}
+			if exec, _ := r.data["execName"].(string); exec != "" {
+				return appNameFromExec(exec), nil
+			}
+		}
+	}
+}
+
+// appNameFromExec extracts the .app folder basename from a BackBoard
+// execName like "/private/var/.../KeepAwake.app/KeepAwake". Used as a
+// fallback when BackBoard's notification entry omits bundleIdentifier
+// (system apps and some older iOS versions).
+func appNameFromExec(exec string) string {
+	idx := strings.LastIndex(strings.ToLower(exec), ".app")
+	if idx <= 0 {
+		return ""
+	}
+	prefix := exec[:idx]
+	if slash := strings.LastIndex(prefix, "/"); slash >= 0 {
+		return prefix[slash+1:]
+	}
+	return prefix
 }
 
 // IsKeepAwakeForeground returns true when bundle (the value returned by
@@ -216,56 +242,41 @@ func IsKeepAwakeForeground(bundle string) bool {
 	return bundle == KeepAwakeBundleID || bundle == "KeepAwake"
 }
 
-// LaunchKeepAwake foregrounds the KeepAwake companion app on the device via
-// `xcrun devicectl device process launch`. The id may be a hardware UDID,
-// CoreDevice UUID, or any other identifier devicectl's --device flag accepts.
-// Assumes the app is already installed on the device.
+// LaunchKeepAwake foregrounds the KeepAwake companion app via go-ios's
+// instruments.ProcessControl (DTX). Assumes the app is already
+// installed on the device.
 //
-// Error classification: returns ErrLocked when the device's screen is
-// locked (autoawake fires a persistent macOS alert asking the user to
-// unlock); ErrTrustNotGranted when the developer certificate hasn't
-// been trusted on the device; a generic error for anything else. The
-// typed errors let autoawake respond to each case appropriately.
+// Error classification: returns ErrLocked / ErrTrustNotGranted /
+// ErrKeepAwakeNotInstalled when the underlying error matches one of
+// the recognised patterns; a wrapped generic error otherwise. The
+// CoreDevice-specific ErrNoProviderFound is no longer reachable from
+// this path — installation_proxy doesn't do CoreDevice's provider
+// lookup, so the Code=1002 failure mode the iPhone has been hitting
+// disappears with this migration.
 func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "--timeout",
-		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "process", "launch",
-		"--device", id, KeepAwakeBundleID)
-	out, err := cmd.CombinedOutput()
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return fmt.Errorf("launch KeepAwake: %w", err)
+	}
+	pc, err := instruments.NewProcessControl(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return classifyKeepAwakeLaunchErr(id, err)
+	}
+	defer pc.Close()
+	pid, err := pc.LaunchApp(KeepAwakeBundleID, map[string]any{})
 	elapsedMs := time.Since(started).Milliseconds()
 	if err != nil {
-		tail := strings.TrimSpace(string(out))
-		switch {
-		case keepAwakeLaunchMissingPattern.MatchString(tail):
-			slog.Debug("devicectl launch KeepAwake: not installed",
-				"device", id, "duration_ms", elapsedMs)
-			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrKeepAwakeNotInstalled)
-		case keepAwakeLaunchLockedPattern.MatchString(tail):
-			slog.Debug("devicectl launch KeepAwake: device locked",
-				"device", id, "duration_ms", elapsedMs)
-			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrLocked)
-		case keepAwakeLaunchTrustPattern.MatchString(tail):
-			slog.Debug("devicectl launch KeepAwake: trust not granted",
-				"device", id, "duration_ms", elapsedMs)
-			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrTrustNotGranted)
-		case keepAwakeLaunchNoProviderPattern.MatchString(tail):
-			slog.Debug("devicectl launch KeepAwake: no provider (stale profile)",
-				"device", id, "duration_ms", elapsedMs)
-			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrNoProviderFound)
-		}
-		slog.Warn("devicectl launch KeepAwake failed",
-			"device", id, "duration_ms", elapsedMs,
-			"error", err.Error(), "output_tail", truncate(tail, 200))
-		return fmt.Errorf("devicectl launch KeepAwake: %w\n%s", err, tail)
+		return classifyKeepAwakeLaunchErr(id, err)
 	}
 	slog.Debug("KeepAwake launched",
 		"device", id, "duration_ms", elapsedMs,
-		"bundle", KeepAwakeBundleID)
+		"bundle", KeepAwakeBundleID, "pid", pid)
+	_ = pid
 	return nil
 }
 
@@ -275,10 +286,39 @@ func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 // (🎯T32) instead of re-trying the launch.
 var ErrKeepAwakeNotInstalled = errors.New("KeepAwake not installed on device")
 
-// keepAwakeLaunchMissingPattern matches devicectl output indicating the
-// app bundle isn't present on the device.
+// keepAwakeLaunchMissingPattern matches output indicating the app
+// bundle isn't present on the device. Used for the legacy devicectl
+// path AND the new go-ios ProcessControl path — go-ios surfaces
+// BackBoard errors as text that overlaps with devicectl's wording.
 var keepAwakeLaunchMissingPattern = regexp.MustCompile(
-	`(?i)could not find.*app|app.*not installed|bundle.*not found|no such app`)
+	`(?i)could not find.*app|app.*not installed|bundle.*not found|no such app|application.*does not exist|unknown application`)
+
+// classifyKeepAwakeLaunchErr maps a raw error from go-ios's
+// ProcessControl path to one of the typed sentinels autoawake's
+// classifier expects (ErrLocked / ErrTrustNotGranted /
+// ErrKeepAwakeNotInstalled). Falls through to a wrapped generic error
+// when nothing matches. ErrNoProviderFound is no longer reachable
+// from this code path — that's a CoreDevice-only failure mode.
+func classifyKeepAwakeLaunchErr(udid string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	switch {
+	case keepAwakeLaunchMissingPattern.MatchString(msg):
+		slog.Debug("go-ios launch KeepAwake: not installed", "device", udid)
+		return fmt.Errorf("launch KeepAwake on %s: %w", udid, ErrKeepAwakeNotInstalled)
+	case keepAwakeLaunchLockedPattern.MatchString(msg):
+		slog.Debug("go-ios launch KeepAwake: device locked", "device", udid)
+		return fmt.Errorf("launch KeepAwake on %s: %w", udid, ErrLocked)
+	case keepAwakeLaunchTrustPattern.MatchString(msg):
+		slog.Debug("go-ios launch KeepAwake: trust not granted", "device", udid)
+		return fmt.Errorf("launch KeepAwake on %s: %w", udid, ErrTrustNotGranted)
+	}
+	slog.Warn("go-ios launch KeepAwake failed",
+		"device", udid, "error", truncate(msg, 240))
+	return fmt.Errorf("launch KeepAwake on %s: %w", udid, err)
+}
 
 // stateTTL bounds how often we re-query a device. Tools called in quick
 // succession (e.g. from an agent reasoning loop) share a snapshot so the
@@ -300,15 +340,13 @@ const (
 	devicectlTimeout        = (devicectlTimeoutSeconds + 2) * time.Second
 )
 
-// errNoBridge is returned by IOSAdapter methods when no bridge was injected.
-var errNoBridge = errors.New("iOS adapter requires the pmd3 bridge — ensure the bridge binary is installed")
-
-// IOSAdapter talks to iOS devices via the pmd3 bridge (for most operations)
-// and xcrun devicectl (for install/uninstall and device inventory enrichment).
+// IOSAdapter talks to iOS devices via in-process go-ios calls
+// (🎯T56). The pmd3 Python bridge subprocess and xcrun devicectl
+// dependencies it used to carry are gone.
 type IOSAdapter struct {
-	bridge *pmd3bridge.Client
-	mu     sync.Mutex
-	cache  map[string]cachedState
+	goios *goios.Resolver
+	mu    sync.Mutex
+	cache map[string]cachedState
 }
 
 type cachedState struct {
@@ -316,11 +354,14 @@ type cachedState struct {
 	at    time.Time
 }
 
-// NewIOSAdapter returns a new iOS adapter. bridge may be nil when the bridge
-// binary is unavailable; every method that requires the bridge returns a clear
-// error in that case rather than panicking.
-func NewIOSAdapter(bridge *pmd3bridge.Client) *IOSAdapter {
-	return &IOSAdapter{bridge: bridge, cache: map[string]cachedState{}}
+// NewIOSAdapter returns a new iOS adapter wired to a default-tunnel
+// goios.Resolver (127.0.0.1:60105 — the `ios tunnel start --userspace`
+// registry endpoint).
+func NewIOSAdapter() *IOSAdapter {
+	return &IOSAdapter{
+		goios: goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort),
+		cache: map[string]cachedState{},
+	}
 }
 
 // List returns iOS devices that are currently reachable. The set is the
@@ -343,24 +384,24 @@ func (a *IOSAdapter) List() ([]Info, error) {
 
 	var devices []Info
 
-	if a.bridge != nil {
-		if bridgeDevices, err := a.bridge.ListDevices(context.Background()); err == nil {
-			for _, d := range bridgeDevices {
-				if connected != nil && !connected[d.UDID] {
-					// devicectl says this device isn't reachable — drop it.
-					continue
-				}
-				info := Info{
-					UUID:     d.UDID,
-					Name:     d.Name,
-					Platform: "ios",
-					Model:    d.ProductType,
-				}
-				if d.OSVersion != "" {
-					info.OS = "iOS " + d.OSVersion
-				}
-				devices = append(devices, info)
+	// Primary source: go-ios's usbmux enumeration, with per-device
+	// lockdown enrichment for the human-friendly fields. Replaces the
+	// previous pmd3-bridge /v1/list_devices call (🎯T56).
+	if devList, err := goios_ios.ListDevices(); err == nil {
+		for _, dev := range devList.DeviceList {
+			udid := dev.Properties.SerialNumber
+			if connected != nil && !connected[udid] {
+				continue
 			}
+			info := Info{UUID: udid, Platform: "ios"}
+			if values, gerr := goios_ios.GetValues(dev); gerr == nil {
+				info.Name = values.Value.DeviceName
+				info.Model = values.Value.ProductType
+				if values.Value.ProductVersion != "" {
+					info.OS = "iOS " + values.Value.ProductVersion
+				}
+			}
+			devices = append(devices, info)
 		}
 	}
 
@@ -550,30 +591,29 @@ func (a *IOSAdapter) State(id string) (State, error) {
 	}
 	a.mu.Unlock()
 
-	if a.bridge == nil {
-		return State{}, errNoBridge
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return State{}, fmt.Errorf("state: %w", err)
 	}
 
 	var state State
 
-	// Per-endpoint timeout is owned by the bridge client (🎯T26.2).
-	batt, err := a.bridge.Battery(context.Background(), id)
+	// Battery info comes from lockdown's com.apple.mobile.battery domain
+	// — go-ios's GetBatteryDiagnostics wraps the per-key fetch and gives
+	// us the capacity (already 0–100) and charging flag in one helper.
+	batt, err := goios_ios.GetBatteryDiagnostics(dev)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return State{}, fmt.Errorf("device not paired: %s", id)
-		}
 		state.Notes = append(state.Notes, fmt.Sprintf("battery data unavailable: %v", err))
-	} else {
-		if batt.Level != nil {
-			level := int(*batt.Level * 100)
-			state.BatteryLevel = &level
-		}
-		state.Charging = batt.Charging
+	} else if batt.HasBattery {
+		level := int(batt.BatteryCurrentCapacity)
+		state.BatteryLevel = &level
+		charging := batt.BatteryIsCharging
+		state.Charging = &charging
 	}
 
 	state.Notes = append(state.Notes,
 		"thermal state unavailable on iOS 17.4+ (MobileGestalt deprecated)",
-		"foreground app detection unavailable via bridge today",
+		"foreground app detection unavailable via state today",
 	)
 
 	a.mu.Lock()
@@ -642,176 +682,230 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// Screenshot captures a PNG via the bridge. The iOS 17+ path routes
-// through pmd3 tunneld + RSD + DVT (🎯T30); typed errors from the
-// bridge are mapped to MCP-friendly messages here.
+// Screenshot captures a PNG via go-ios's instruments.ScreenshotService
+// (DTX). One round-trip to dtservicehub; raw PNG bytes returned.
 func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return nil, errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	data, err := a.bridge.Screenshot(ctx, id)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		switch {
-		case pmd3bridge.IsDeviceNotPaired(err):
-			return nil, fmt.Errorf("device not connected: %s", id)
-		case pmd3bridge.IsTunneldUnavailable(err):
-			return nil, fmt.Errorf("tunneld is not running on the host; "+
-				"start it with `sudo pymobiledevice3 remote tunneld` (%v)", err)
-		case pmd3bridge.IsDeveloperModeDisabled(err):
-			return nil, fmt.Errorf("Developer Mode is not enabled on %s — "+
-				"enable at Settings → Privacy & Security → Developer Mode "+
-				"(device will reboot)", id)
-		}
-		return nil, fmt.Errorf("screenshot on %s: %v", id, err)
+		return nil, fmt.Errorf("screenshot: %w", err)
+	}
+	svc, err := instruments.NewScreenshotService(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return nil, fmt.Errorf("screenshot on %s: %w", id, err)
+	}
+	defer svc.Close()
+	data, err := svc.TakeScreenshot()
+	if err != nil {
+		return nil, fmt.Errorf("screenshot on %s: %w", id, err)
 	}
 	return data, nil
 }
 
-// ListApps returns installed user apps via the bridge.
+// ListApps returns installed user apps via go-ios's installation_proxy.
+// Sorted by bundle id for stable output.
 func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return nil, errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	bridgeApps, err := a.bridge.ListApps(ctx, id)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return nil, fmt.Errorf("device not connected: %s", id)
-		}
-		return nil, fmt.Errorf("list_apps on %s: %v", id, err)
+		return nil, fmt.Errorf("list_apps: %w", err)
 	}
-	apps := make([]AppInfo, 0, len(bridgeApps))
-	for _, ba := range bridgeApps {
-		ai := AppInfo{BundleID: ba.BundleID}
-		if ba.Name != nil {
-			ai.Name = *ba.Name
-		}
-		if ba.Version != nil {
-			ai.Version = *ba.Version
-		}
-		apps = append(apps, ai)
+	conn, err := installationproxy.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return nil, fmt.Errorf("installation_proxy on %s: %w", id, err)
+	}
+	defer conn.Close()
+	raw, err := conn.BrowseUserApps()
+	if err != nil {
+		return nil, fmt.Errorf("list_apps on %s: %w", id, err)
+	}
+	apps := make([]AppInfo, 0, len(raw))
+	for _, app := range raw {
+		apps = append(apps, AppInfo{
+			BundleID: app.CFBundleIdentifier(),
+			Name:     app.CFBundleName(),
+			Version:  app.CFBundleShortVersionString(),
+		})
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
 	return apps, nil
 }
 
-// LaunchApp foregrounds an arbitrary app via the bridge.
+// LaunchApp foregrounds an arbitrary app via go-ios's appservice
+// (com.apple.coredevice.feature.launchapplication, the iOS-17+
+// CoreDevice launch path). The pid the launch returns is currently
+// discarded — callers that need it call AppPID after.
 func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	if a.bridge == nil {
-		return errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	_, err := a.bridge.LaunchApp(ctx, id, bundleID)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return fmt.Errorf("device not connected: %s", id)
-		}
-		if pmd3bridge.IsBundleNotInstalled(err) {
+		return fmt.Errorf("launch: %w", err)
+	}
+	conn, err := appservice.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("appservice on %s: %w", id, err)
+	}
+	defer conn.Close()
+	if _, err := conn.LaunchApp(bundleID, nil, nil, nil, false); err != nil {
+		// Map "app not installed"-shaped errors to the spyder convention.
+		msg := err.Error()
+		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
 			return fmt.Errorf("app not installed: %s", bundleID)
 		}
-		return fmt.Errorf("launch %s on %s: %v", bundleID, id, err)
+		return fmt.Errorf("launch %s on %s: %w", bundleID, id, err)
 	}
 	return nil
 }
 
-// TerminateApp stops an app via the bridge.
+// TerminateApp stops an app by bundle id. iOS doesn't expose a
+// "kill by bundle id" RPC directly — go-ios's appservice only kills by
+// pid — so we resolve the pid first.
 func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	if a.bridge == nil {
-		return errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	err := a.bridge.KillApp(ctx, id, bundleID)
+	pid, err := a.AppPID(id, bundleID)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return fmt.Errorf("device not connected: %s", id)
+		// "app not running" is the no-op success: nothing to terminate.
+		if strings.HasPrefix(err.Error(), "app not running") {
+			return nil
 		}
-		if pmd3bridge.IsBundleNotInstalled(err) {
-			return fmt.Errorf("app not installed: %s", bundleID)
-		}
-		return fmt.Errorf("terminate %s on %s: %v", bundleID, id, err)
+		return err
+	}
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return fmt.Errorf("terminate: %w", err)
+	}
+	conn, err := appservice.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("appservice on %s: %w", id, err)
+	}
+	defer conn.Close()
+	if err := conn.KillProcess(pid); err != nil {
+		return fmt.Errorf("terminate %s (pid %d) on %s: %w", bundleID, pid, id, err)
 	}
 	return nil
 }
 
-// AppPID returns the process id of a running app by bundle id via the bridge.
-// Returns 0 and an "app not running" error if the app is not running.
+// AppPID returns the pid of a running app by bundle id. Implemented
+// in two RPCs: installation_proxy resolves the bundle id to its
+// installed .app folder, and appservice.ListProcesses scans live
+// processes for one whose path contains that .app folder. Returns the
+// "app not running" error sentinel that the deploy_app handler keys
+// off when verify-pid runs immediately after a launch.
 func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
-	if a.bridge == nil {
-		return 0, errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	pidPtr, err := a.bridge.PIDForBundle(ctx, id, bundleID)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return 0, fmt.Errorf("device not connected: %s", id)
+		return 0, fmt.Errorf("resolve pid: %w", err)
+	}
+	appBase, err := installedAppFolder(dev, bundleID)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return 0, err
+	}
+	if appBase == "" {
+		return 0, fmt.Errorf("app not installed: %s", bundleID)
+	}
+	asConn, err := appservice.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return 0, fmt.Errorf("appservice on %s: %w", id, err)
+	}
+	defer asConn.Close()
+	procs, err := asConn.ListProcesses()
+	if err != nil {
+		return 0, fmt.Errorf("list processes on %s: %w", id, err)
+	}
+	needle := "/" + appBase + "/"
+	for _, p := range procs {
+		if strings.Contains(p.Path, needle) {
+			return p.Pid, nil
 		}
-		return 0, fmt.Errorf("resolve pid for %s on %s: %v", bundleID, id, err)
 	}
-	if pidPtr == nil {
-		return 0, fmt.Errorf("app not running: %s", bundleID)
-	}
-	return *pidPtr, nil
+	return 0, fmt.Errorf("app not running: %s", bundleID)
 }
 
-// Crashes fetches crash reports from the device via the bridge.
-// Reports are returned newest-first.
+// installedAppFolder returns the basename of the .app folder
+// (e.g. "MultiMaze.app") for the given bundle id, queried via
+// installation_proxy. Returns "" when the bundle isn't installed.
+func installedAppFolder(dev goios_ios.DeviceEntry, bundleID string) (string, error) {
+	conn, err := installationproxy.New(dev)
+	if err != nil {
+		return "", fmt.Errorf("installation_proxy: %w", err)
+	}
+	defer conn.Close()
+	apps, err := conn.BrowseAllApps()
+	if err != nil {
+		return "", fmt.Errorf("browse apps: %w", err)
+	}
+	for _, app := range apps {
+		if app.CFBundleIdentifier() == bundleID {
+			return filepath.Base(app.Path()), nil
+		}
+	}
+	return "", nil
+}
+
+// Crashes fetches crash reports from the device via go-ios's
+// crashreport package (afc over com.apple.crashreportcopymobile).
+// Bulk-downloads all .ips files into a temp directory, parses the
+// first-line JSON header from each, and filters by since/process.
+// Returns reports newest-first.
 func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]CrashReport, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return nil, errNoBridge
-	}
-	// TODO(🎯T26.3): streaming will replace this aggregate pattern. For now
-	// per-endpoint timeouts are owned by the bridge client (🎯T26.2).
-	ctx := context.Background()
-
-	bridgeReports, err := a.bridge.CrashReportsList(ctx, id, since, process)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return nil, fmt.Errorf("device not connected: %s", id)
-		}
-		return nil, fmt.Errorf("crash_reports_list on %s: %v", id, err)
+		return nil, fmt.Errorf("crashes: %w", err)
 	}
 
-	reports := make([]CrashReport, 0, len(bridgeReports))
-	for _, br := range bridgeReports {
-		ts, _ := time.Parse(time.RFC3339, br.Timestamp)
-		// Pull the raw content for each report.
-		raw, pullErr := a.bridge.CrashReportsPull(ctx, id, br.Name)
-		if pullErr != nil {
-			// Include the report with metadata but no raw content.
-			reports = append(reports, CrashReport{
-				Process:   br.Process,
-				Timestamp: ts,
-			})
+	tmp, err := os.MkdirTemp("", "spyder-crashes-*")
+	if err != nil {
+		return nil, fmt.Errorf("mkdir temp for crashes: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	if err := crashreport.DownloadReports(dev, "*", tmp); err != nil {
+		a.goios.Invalidate(id)
+		return nil, fmt.Errorf("crashreport download on %s: %w", id, err)
+	}
+
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return nil, fmt.Errorf("read crash temp dir: %w", err)
+	}
+
+	reports := make([]CrashReport, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
 			continue
 		}
-		cr := CrashReport{
-			Process:   br.Process,
-			Timestamp: ts,
-			Raw:       raw,
+		raw, rerr := os.ReadFile(filepath.Join(tmp, e.Name()))
+		if rerr != nil {
+			continue
 		}
-		// Parse the first-line JSON header for structured fields.
-		firstLine := raw
-		if i := strings.IndexByte(raw, '\n'); i >= 0 {
-			firstLine = raw[:i]
+		cr := CrashReport{Raw: string(raw)}
+
+		// Parse the first-line JSON header for structured fields. .ips
+		// files start with a one-line JSON envelope, then a multi-line
+		// body. The legacy bridge path used the same pattern.
+		firstLine := cr.Raw
+		if i := strings.IndexByte(cr.Raw, '\n'); i >= 0 {
+			firstLine = cr.Raw[:i]
 		}
 		var hdr ipsHeader
 		if err := json.Unmarshal([]byte(strings.TrimSpace(firstLine)), &hdr); err == nil {
@@ -841,6 +935,15 @@ func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]Cras
 				}
 			}
 			cr.Reason = reason
+		}
+
+		// Apply since/process filters that the bridge previously did
+		// server-side.
+		if !since.IsZero() && cr.Timestamp.Before(since) {
+			continue
+		}
+		if process != "" && cr.Process != process {
+			continue
 		}
 		reports = append(reports, cr)
 	}
@@ -930,31 +1033,46 @@ func (a *IOSAdapter) StopRecording(id string, pid int) error {
 	return fmt.Errorf("screen recording is not supported on iOS physical devices")
 }
 
-// InstallApp installs a .app or .ipa bundle via `xcrun devicectl device
-// install app`. The device id may be the hardware UDID, CoreDevice UUID,
-// or any other identifier that devicectl --device accepts.
+// InstallApp installs a .app or .ipa bundle via go-ios's zipconduit
+// (com.apple.streaming_zip_conduit). zipconduit handles both folder
+// (.app) and archive (.ipa) inputs natively, no zipping step needed.
 func (a *IOSAdapter) InstallApp(id, path string) error {
 	if id == "" || path == "" {
 		return errors.New("device id and path are required")
 	}
-	_, stderr, err := runDevicectl("device", "install", "app", "--device", id, path)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		return fmt.Errorf("devicectl install app: %v\n%s", err, truncate(string(stderr), 300))
+		return fmt.Errorf("install: %w", err)
+	}
+	conn, err := zipconduit.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("zipconduit on %s: %w", id, err)
+	}
+	if err := conn.SendFile(path); err != nil {
+		return fmt.Errorf("install %s on %s: %w", filepath.Base(path), id, err)
 	}
 	return nil
 }
 
-// UninstallApp removes an app by bundle identifier via
-// `xcrun devicectl device uninstall app <bundle-id>`. The bundle id is
-// a positional argument; an earlier version of this code passed it via
-// `--bundle-identifier` which devicectl rejects with `Unknown option`.
+// UninstallApp removes an app by bundle identifier via go-ios's
+// installation_proxy.
 func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	_, stderr, err := runDevicectl("device", "uninstall", "app", "--device", id, bundleID)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		return fmt.Errorf("devicectl uninstall app: %v\n%s", err, truncate(string(stderr), 300))
+		return fmt.Errorf("uninstall: %w", err)
+	}
+	conn, err := installationproxy.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("installation_proxy on %s: %w", id, err)
+	}
+	defer conn.Close()
+	if err := conn.Uninstall(bundleID); err != nil {
+		return fmt.Errorf("uninstall %s on %s: %w", bundleID, id, err)
 	}
 	return nil
 }
@@ -1052,45 +1170,30 @@ func parseIOSSyslogTimestamp(s string) time.Time {
 	return time.Time{}
 }
 
-// syslogEntryToLogLine converts the bridge's structured SyslogEntry into the
-// adapter's LogLine shape. Falls back to time.Now() if the bridge timestamp
-// fails to parse — better to surface the message than to drop it.
-func syslogEntryToLogLine(e pmd3bridge.SyslogEntry) LogLine {
-	ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
-	if err != nil {
-		ts, _ = time.Parse(time.RFC3339, e.Timestamp)
-	}
-	return LogLine{
-		Timestamp: ts,
-		Process:   e.Process,
-		Level:     e.Level,
-		Message:   e.Message,
-	}
-}
-
-// LogRange returns syslog lines from the device between since and until,
-// streamed through the pmd3 bridge. pmd3 does not expose a stable CLI for
-// archived-log timestamp queries, so this drains the live stream and keeps
-// entries inside the window. Callers should provide a reasonable upper
-// bound; absent one we cap at 5 s to bound the call.
+// LogRange returns syslog lines from the device between since and
+// until, streamed through go-ios's syslog_relay (RSD-shimmed on
+// iOS-17+). The device exposes only a live tail — there's no stable
+// API to query archived logs by timestamp — so this drains the live
+// stream and keeps entries inside the window. Callers should provide
+// a reasonable upper bound; absent one we cap at 5s to bound the call.
 //
-// Filter fields: Process (matched against image_name), Subsystem (matched
-// against label.subsystem), Regex (applied client-side to Message).
+// Filter fields:
+//
+//   - Process: matched client-side against the parsed image_name
+//   - Regex: matched client-side against Message
+//   - Subsystem: NOT supported on the go-ios path. The legacy
+//     pmd3 path filtered server-side via OSLog's structured label
+//     metadata; go-ios's syslog_relay parser surfaces only the
+//     classic BSD-style fields (Timestamp, Device, Process, PID,
+//     Level, Message). A non-empty Subsystem filter is honoured by
+//     dropping all entries (since none have a subsystem to match).
 func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return nil, errNoBridge
-	}
-
-	var regexFilter *regexp.Regexp
-	if filter.Regex != "" {
-		var err error
-		regexFilter, err = regexp.Compile(filter.Regex)
-		if err != nil {
-			return nil, fmt.Errorf("invalid regex: %w", err)
-		}
+	regexFilter, err := compileLogRegex(filter.Regex)
+	if err != nil {
+		return nil, err
 	}
 
 	// Deadline: respect an explicit `until` up to a reasonable cap so a
@@ -1111,66 +1214,40 @@ func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Tim
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
-	bf := pmd3bridge.SyslogFilter{
-		PID:         -1,
-		ProcessName: filter.Process,
-		Subsystem:   filter.Subsystem,
-	}
-
+	// Since/until filter caveat (go-ios path): go-ios's syslog parser
+	// timestamps lines in UTC even though iOS emits them in the device's
+	// local timezone. That makes per-entry timestamp comparisons
+	// unreliable across timezones — an entry from a +10:00 device
+	// appears 10h in the future to UTC-naive comparisons. To keep the
+	// behaviour predictable we honour the deadline (set above from
+	// until) for stream termination but skip the per-entry since/until
+	// drop. Callers that need strict windowing should rely on the
+	// deadline, not on filtered-out entries.
 	var lines []LogLine
-	err := a.bridge.Syslog(ctx, id, bf, func(e pmd3bridge.SyslogEntry) bool {
-		ll := syslogEntryToLogLine(e)
-		if !since.IsZero() && ll.Timestamp.Before(since) {
-			return true
-		}
-		if !until.IsZero() && ll.Timestamp.After(until) {
-			return true
-		}
-		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			return true
-		}
+	_ = since
+	err = a.streamSyslog(ctx, id, filter, regexFilter, func(ll LogLine) bool {
 		lines = append(lines, ll)
 		return true
 	})
-	// Deadline-based cancellation is expected.
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		return lines, err
 	}
 	return lines, nil
 }
 
-// LogStream pumps live syslog lines from the device through the pmd3 bridge
-// into out until ctx is cancelled. Filter.Process matches image_name,
-// Filter.Subsystem matches label.subsystem (both server-side); Filter.Regex
-// is applied client-side to Message.
+// LogStream pumps live syslog lines from the device through go-ios's
+// syslog_relay into out until ctx is cancelled. Filter semantics
+// match LogRange — see its docstring for the Subsystem caveat on
+// the go-ios path.
 func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return errNoBridge
+	regexFilter, err := compileLogRegex(filter.Regex)
+	if err != nil {
+		return err
 	}
-
-	var regexFilter *regexp.Regexp
-	if filter.Regex != "" {
-		var err error
-		regexFilter, err = regexp.Compile(filter.Regex)
-		if err != nil {
-			return fmt.Errorf("invalid regex: %w", err)
-		}
-	}
-
-	bf := pmd3bridge.SyslogFilter{
-		PID:         -1,
-		ProcessName: filter.Process,
-		Subsystem:   filter.Subsystem,
-	}
-
-	err := a.bridge.Syslog(ctx, id, bf, func(e pmd3bridge.SyslogEntry) bool {
-		ll := syslogEntryToLogLine(e)
-		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			return true
-		}
+	err = a.streamSyslog(ctx, id, filter, regexFilter, func(ll LogLine) bool {
 		select {
 		case out <- ll:
 			return true
@@ -1182,6 +1259,91 @@ func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter,
 		return err
 	}
 	return nil
+}
+
+func compileLogRegex(s string) (*regexp.Regexp, error) {
+	if s == "" {
+		return nil, nil
+	}
+	r, err := regexp.Compile(s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	return r, nil
+}
+
+// streamSyslog opens a go-ios syslog connection and drives lines
+// through the parser + filters into emit. emit returns false to stop
+// the stream early (e.g. ctx cancellation in LogStream's send branch).
+// The connection is closed when emit returns false or ctx fires.
+func (a *IOSAdapter) streamSyslog(ctx context.Context, id string, filter LogFilter,
+	regexFilter *regexp.Regexp, emit func(LogLine) bool) error {
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return fmt.Errorf("syslog: %w", err)
+	}
+	conn, err := goios_syslog.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("syslog on %s: %w", id, err)
+	}
+	defer conn.Close()
+
+	// Cancel the underlying read by closing the connection when ctx fires
+	// — go-ios's blocking ReadLogMessage doesn't honour context directly.
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	parser := goios_syslog.Parser()
+	subsystemRequested := filter.Subsystem != ""
+	var read, parsed int
+	for {
+		raw, err := conn.ReadLogMessage()
+		if err != nil {
+			slog.Debug("syslog stream end", "device", id,
+				"read", read, "parsed", parsed, "err", err.Error())
+			// EOF after Close() is the normal shutdown path.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("syslog read on %s: %w", id, err)
+		}
+		read++
+		entry, perr := parser(raw)
+		if perr != nil {
+			// Lines that don't match BSD-syslog format (e.g. multi-
+			// line continuation) are dropped silently; they're noise.
+			continue
+		}
+		parsed++
+		if filter.Process != "" && entry.Process != filter.Process {
+			continue
+		}
+		if subsystemRequested {
+			// Subsystem isn't surfaced by go-ios's syslog parser —
+			// no entry can match a non-empty Subsystem filter.
+			continue
+		}
+		ll := goiosSyslogToLogLine(entry)
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		if !emit(ll) {
+			return ctx.Err()
+		}
+	}
+}
+
+func goiosSyslogToLogLine(e *goios_syslog.LogEntry) LogLine {
+	ts, _ := time.Parse("2006-01-02T15:04:05", e.Timestamp)
+	return LogLine{
+		Timestamp: ts,
+		Process:   e.Process,
+		Level:     e.Level,
+		Message:   e.Message,
+	}
 }
 
 func stringOf(v any) string {

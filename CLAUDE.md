@@ -4,23 +4,31 @@ Cross-platform mobile development workflow assistant. HTTP-based MCP
 server (Go) that sits above mobile-mcp and XcodeBuildMCP as the
 session-state layer — device inventory, wake-state, and prep/run/restore
 orchestration around real-device tests. iOS physical devices are a
-first-class citizen (via `pymobiledevice3` + CoreDevice, where
-mobile-mcp struggles); Android is supported via `adb`.
+first-class citizen (via the bundled
+[go-ios](https://github.com/danielpaulus/go-ios) Go library — usbmux,
+lockdown, DTX, RSD, all in-process), where mobile-mcp's WDA path
+often fails; Android is supported via `adb`.
 
 ## What it owns
 
 - Device inventory (symbolic names → platform UUIDs)
 - Device state snapshots (battery, charging, thermal, foreground app)
-- Power-assertion management via the bundled pmd3 bridge (prevents auto-lock)
+- KeepAwake foreground-app supervisor (prevents iOS device auto-lock — a
+  tiny SwiftUI app stays foregrounded with `isIdleTimerDisabled=true`)
 - Session-aware test-run orchestration (`spyder run --` wraps the
   test command under an auto-acquired device reservation)
+- A bundled `ios` tunnel daemon (the go-ios CLI, spawned as a child
+  process in `--userspace` mode) — provides the iOS-17+ RSD endpoint
+  registry that the in-process iOS adapter queries
 
 ## What it does NOT own
 
 - UI automation (tap/swipe/type/UI tree) — that's mobile-mcp
 - xcodebuild invocations — that's XcodeBuildMCP
-- Raw device protocols — spyder shells out to `pymobiledevice3` /
-  `devicectl` / `adb`, it doesn't reimplement them
+- iOS protocol implementations — that's go-ios (vendored as a Go
+  module dependency); spyder is just its consumer
+- Simulator control on macOS — that's `xcrun simctl` (Apple)
+- Android protocol — that's `adb` (Google)
 
 ## Build & Run
 
@@ -40,10 +48,20 @@ claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
   server), `run` (test-wrapper), `version`.
 - **internal/daemon** — wires `github.com/mark3labs/mcp-go`'s
   `MCPServer` and `StreamableHTTPServer` with spyder's tool handlers.
+  Spawns the bundled `ios` tunnel as a child process at startup;
+  reaps it on shutdown.
+- **internal/iostunnel** — supervisor for the `ios tunnel start
+  --userspace` subprocess.
+- **internal/goios** — per-UDID session helper around go-ios:
+  walks tunnel-info → RSD-handshake → enriched DeviceEntry once,
+  caches the result, hands callers a populated DeviceEntry that
+  go-ios's instruments / installationproxy / appservice / syslog
+  packages expect.
 - **internal/mcp** — `Handler` + `Definitions()`. Dispatches tool calls.
 - **internal/device** — `Adapter` interface; `ios.go` and `android.go`
-  implementations. iOS shells out to `pymobiledevice3` + `devicectl`;
-  Android shells out to `adb`.
+  implementations. iOS uses go-ios as a Go module dependency
+  (`installationproxy`, `instruments`, `appservice`, `syslog`,
+  `crashreport`, `zipconduit`); Android shells out to `adb`.
 - **internal/inventory** — symbolic name resolution, JSON-backed.
 - **internal/paths** — `~/.spyder/` path conventions.
 
@@ -103,10 +121,11 @@ go test ./...
 ```
 
 **Tests run on the laptop, not in CI.** spyder's value surface (real
-iOS/Android devices via `pymobiledevice3`/`devicectl`/`adb`, tunneld
-RSD, KeepAwake xcodebuild, on-device DVT) can't be reproduced in any
-hosted CI runner. The only GitHub Actions workflow is `release.yml`,
-which builds + packages on tag push; there is no per-PR CI.
+iOS/Android devices via go-ios + `adb`, the bundled tunnel daemon's
+RSD path, KeepAwake xcodebuild, on-device DTX) can't be reproduced in
+any hosted CI runner. The only GitHub Actions workflow is
+`release.yml`, which builds + packages on tag push; there is no
+per-PR CI.
 
 Instead, the laptop is the test runner and `TEST-REPORT.json` at the
 repo root is the attestation:
@@ -114,9 +133,10 @@ repo root is the attestation:
 - `scripts/test-report.sh` (invoked via `make test-report`) runs every
   tier on a clean tree and writes `TEST-REPORT.json`. Tiers:
   1. `go-unit` — `go test ./...`
-  2. `bridge-python-unit` — `cd bridge && uv run pytest tests/`
-  3. `integration` — `go test -tags=integration ./internal/pmd3bridge/...` (gated on `SPYDER_INTEGRATION=1`)
-  4. `device` — `go test -tags=device ./internal/pmd3bridge/...` (gated on `SPYDER_DEVICES=1`, requires a paired device)
+  2. `live` — `go test -run '_Live$' ./internal/device/...` (gated on
+     `SPYDER_LIVE_UDID=<udid>`; requires a paired iOS device and the
+     bundled `ios tunnel start --userspace` running, which spyder
+     spawns automatically)
 - The report is an attestation — *the engineer ran these tests, here
   are the per-tier outcomes*. Keeping it up to date relative to the
   code is the engineer's responsibility. There is no automated

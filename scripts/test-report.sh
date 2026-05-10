@@ -70,23 +70,14 @@ run_suite_skipped() {
 # ── Tier 1: Go unit ──────────────────────────────────────────────────────────
 run_suite go-unit "go test ./..."
 
-# ── Tier 1: Python bridge unit ───────────────────────────────────────────────
-run_suite bridge-python-unit "cd bridge && uv run --project . --extra dev pytest tests/"
-
-# ── Tier 2: integration against real bridge subprocess ───────────────────────
-# Gated on INTEGRATION=1 until the harness lands (🎯T26.4 part 3).
-if [[ "${SPYDER_INTEGRATION:-0}" == "1" ]]; then
-  run_suite integration "go test -tags=integration ./internal/pmd3bridge/..."
+# ── Tier 2: live device tier (go-ios) ────────────────────────────────────────
+# Gated on SPYDER_LIVE_UDID. Requires a paired iOS device + the bundled
+# `ios tunnel start --userspace` running (spyder spawns it; outside spyder
+# you can run `bin/ios tunnel start --userspace` manually).
+if [[ -n "${SPYDER_LIVE_UDID:-}" ]]; then
+  run_suite live "go test -run '_Live$' ./internal/device/..."
 else
-  run_suite_skipped integration "set SPYDER_INTEGRATION=1 to run (harness lands incrementally)"
-fi
-
-# ── Tier 3: device tier ──────────────────────────────────────────────────────
-# Gated on SPYDER_DEVICES=1 and at least one attached device.
-if [[ "${SPYDER_DEVICES:-0}" == "1" ]]; then
-  run_suite device "go test -tags=device ./internal/pmd3bridge/..."
-else
-  run_suite_skipped device "set SPYDER_DEVICES=1 to run; requires a paired device"
+  run_suite_skipped live "set SPYDER_LIVE_UDID=<udid> to run; requires a paired device"
 fi
 
 # ── Compose overall ──────────────────────────────────────────────────────────

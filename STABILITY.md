@@ -22,14 +22,19 @@ exists to get these right.
 ## Supported platforms
 
 **macOS arm64 only.** Spyder's iOS device orchestration relies on macOS-only
-tooling (`xcrun devicectl`, `pymobiledevice3 remote tunneld` with RSD,
-CoreDevice). The bundled `pmd3-bridge` subprocess is the value proposition
-and it's Mac-only. The Android adapter via `adb` is cross-platform in
-principle, but `adb` itself is cross-platform; spyder doesn't add value to
-adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
+tooling (`xcrun simctl` for simulators, the bundled go-ios CLI / userspace
+tunnel for real devices). The Android adapter via `adb` is cross-platform
+in principle, but `adb` itself is cross-platform; spyder doesn't add value
+to adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.27.0`.
+Snapshot as of `v0.33.0` — the iOS path was migrated from a Python
+`pmd3-bridge` FastAPI subprocess + `pmd3-tunneld` system LaunchDaemon
+onto the in-process [go-ios](https://github.com/danielpaulus/go-ios)
+Go library plus a bundled `ios` userspace tunnel daemon spawned as a
+spyder child process (🎯T56). All operations that previously required
+the Python bridge or the privileged tunneld now route directly through
+go-ios in-process, with no subprocess crossing for the data path.
 
 ## Interaction surface catalogue
 
@@ -40,10 +45,10 @@ Snapshot as of `v0.27.0`.
 | `devices` | `{platform?: "ios"\|"android"\|"all"}` (default `all`). | JSON array of `device.Info` (`uuid`, `name`, `platform`, `model`, `os`, `alias`). When `platform=all` and an adapter errors, wraps as `{devices: [...], errors: [...]}`. | Stable |
 | `resolve` | `{name?: string, selector?: string}`. Exactly one of name (alias / raw UUID) or selector (JSON predicate, same grammar as `reserve`'s selector) required. | JSON-encoded `inventory.Entry` (`alias`, `platform`, `ios_uuid`, `ios_coredevice`, `android_serial`, `notes`). With selector, returns the entry of the first matching live device. | Needs review — passthrough shape for unknown IDs may evolve |
 | `device_state` | `{device: string}` (required; alias or raw UUID/serial). | JSON-encoded `device.State` (`battery_level?`, `charging?`, `thermal_state?`, `foreground_app?`, `storage_free_mb?`, `notes?`). | Needs review — pointer-typed optionals, field additions expected |
-| `screenshot` | `{device: string, owner?: string}` (device required; owner for reservation auth). | MCP image content block (base64 PNG, `image/png`). iOS 17+ devices (iOS 17, 18, 26+) route through pmd3's DVT Screenshot instrument over a tunneld-mediated RSD connection; requires an externally-managed `pymobiledevice3 remote tunneld` on the host (typically a launchd service). Pre-iOS-17 devices are not currently supported (legacy `com.apple.mobile.screenshotr` fallback not implemented). Surfaces `tunneld_unavailable` (HTTP 503) when tunneld is down or the device is not in the tunnel registry, and `developer_mode_disabled` (HTTP 412) when the device's Developer Mode toggle is off. | Stable |
+| `screenshot` | `{device: string, owner?: string}` (device required; owner for reservation auth). | MCP image content block (base64 PNG, `image/png`). iOS 17+ devices route through go-ios's DVT `ScreenshotService` over the bundled userspace tunnel; spyder spawns the tunnel automatically as a child process. Pre-iOS-17 devices are not currently supported. Surfaces a clear error when the bundled `ios` binary couldn't be found or when the tunnel hasn't started. | Stable |
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
 | `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
-| `is_running` | `{device: string, bundle_id: string}` (both required). | JSON `{state: "running"\|"not_running"\|"not_installed", pid?: number}`. Read-only; not subject to reservations. iOS uses pmd3 dvt process-id-for-bundle-id (requires tunneld); Android uses `adb shell pidof`. ListApps cross-check distinguishes not_running from not_installed. | Stable (🎯T38.1) |
+| `is_running` | `{device: string, bundle_id: string}` (both required). | JSON `{state: "running"\|"not_running"\|"not_installed", pid?: number}`. Read-only; not subject to reservations. iOS uses go-ios's `appservice.ListProcesses` cross-referenced with `installation_proxy.BrowseAllApps` to map bundle id → .app folder → running pid; Android uses `adb shell pidof`. | Stable (🎯T38.1) |
 | `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `install_app` | `{device: string, path: string, owner?: string}` (device and path required). Path must not contain `..` and must exist. | Text confirmation. | Stable |
 | `uninstall_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required). | Text confirmation. | Stable |
@@ -77,52 +82,57 @@ Snapshot as of `v0.27.0`.
 | `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); see *iOS log live-window contract* below. Field set and timestamp precision may evolve |
 
 Error classification is part of the contract: `device not connected`, `app
-not installed`, `app not running`, `'Locked'`, `'Security'` (trust),
-`tunneld is not running on the host`, and `Developer Mode is not
-enabled` are all surfaced as distinct tool-error text. Callers
-can match on these phrases.
+not installed`, `app not running`, the `ErrLocked` sentinel, and
+`ErrTrustNotGranted` are all surfaced as distinct tool-error text.
+Callers can match on these phrases.
 
 #### iOS log live-window contract (🎯T38.2)
 
 `logs` and `log_stream` on iOS physical devices are **live-window only**:
-they route through the bundled `pmd3-bridge` subprocess, which wraps
-pmd3's `OsTraceService.syslog` and streams entries to the daemon as
-NDJSON over loopback HTTP (🎯T46). There is no archived-log query
-mode — `OsTraceService` exposes a live tail, not a backfill.
+they subscribe to go-ios's `syslog_relay` (com.apple.syslog_relay over
+the userspace tunnel's RSD shim on iOS-17+) and collect entries during
+the live window. There is no archived-log query mode.
 
 The hard rule callers can rely on:
 
 - A `since` timestamp **older than the moment the live tail subscribes
   to the device** will silently miss lines that occurred before the
-  subscription started.
-- The live-tail subscription begins when the spyder daemon receives the
-  `logs` request and the bridge's `OsTraceService` reader connects
-  (typically <1s).
+  subscription started. The window starts now.
 - The collector caps the wait at 30s (or `until - now`, whichever is
   smaller) to bound query latency.
+
+Additionally on the go-ios path:
+
+- The `subsystem` filter is unsupported. go-ios's syslog parser
+  surfaces only the classic BSD-syslog fields (timestamp, process,
+  pid, level, message) — there is no structured subsystem metadata
+  to filter on. A non-empty `subsystem` filter rejects all entries.
+- The per-entry since/until *drop* filter is suppressed. go-ios's
+  parser timestamps entries in UTC even though iOS emits them in the
+  device's local timezone; comparing those across timezones would
+  reject the whole stream. The deadline still bounds collection;
+  what's lost is the ability to discard old entries that happen to
+  land in the drained burst.
 
 Practical consequence for callers:
 - "Did this process log anything in the **last 5 minutes**?" cannot be
   answered against archived logs. The window starts now.
-- For crash detection, prefer the `crashes` tool (which reads
-  `~/Library/Logs/CrashReporter/MobileDevice/<device>/`-style aggregate
-  storage on the host) over `logs`.
+- For crash detection, prefer the `crashes` tool (which reads from
+  `~/Library/Logs/CrashReporter/MobileDevice/<device>/`-style storage
+  via go-ios's afc-mediated `crashreport.DownloadReports`).
 - For continuous monitoring, use `log --follow` (live SSE stream) and
   inspect lines as they arrive rather than retrospectively.
 
-iOS simulators and Android devices do not share this constraint —
+iOS simulators and Android devices do not share these constraints —
 simulators read from the host's unified-log store via `xcrun simctl
 spawn ... log`, and Android's `adb logcat` has its own ring buffer.
-
-This contract may relax post-1.0 if pmd3 grows a stable archived-log
-query surface that the bridge can wrap.
 
 ### CLI subcommands
 
 | Invocation | Behaviour | Stability |
 |---|---|---|
 | `spyder` (no args) | Prints usage to stdout. | Stable |
-| `spyder serve [--addr :PORT]` | HTTP MCP server + auto-awake supervisor + bundled pmd3 bridge. Blocks until SIGINT/SIGTERM. | Stable |
+| `spyder serve [--addr :PORT]` | HTTP MCP server + autoawake KeepAwake supervisor + bundled `ios tunnel start --userspace` subprocess. Blocks until SIGINT/SIGTERM. | Stable |
 | `spyder run [--device ALIAS\|-d ALIAS\|--on PREDICATE] [--as OWNER] [--timeout DURATION] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. `--on PREDICATE` resolves+reserves atomically via the daemon (closing the resolve→release→re-acquire race window). `--timeout DURATION` (e.g. `5m`) bounds the wrapped child invocation; on deadline, exits 30 (`ExitTimeout`) instead of forwarding the child's signal-induced exit. `--device` and `--on` are mutually exclusive. | Stable (🎯T38.4 + 🎯T38.5) |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |
@@ -395,10 +405,10 @@ builds. **Stable.**
 
 ## Gaps and prerequisites for 1.0
 
-- **iOS foreground-app detection.** Currently a note on `device_state`
-  outputs ("foreground app detection pending"). pymobiledevice3 DVT surface
-  doesn't expose this cleanly; needs investigation. Blocks full
-  `device_state` parity.
+- **iOS foreground-app detection.** Surfaces via `ForegroundApp` on the
+  iOS adapter — go-ios's BackBoard `applicationStateNotification:`
+  subscription, taking the first "Running" entry. Used by autoawake's
+  convergence loop. `device_state` doesn't expose it directly yet.
 - **iOS thermal state.** `thermal_state` is always empty on iOS 17.4+
   because MobileGestalt was deprecated. Alternative source (`dumpsys
   thermalservice` analog? `sysmon`?) is open research.
@@ -406,57 +416,44 @@ builds. **Stable.**
   Name/version parity via per-package `dumpsys` is feasible but deferred.
 - **Android thermal state.** Not yet wired — `dumpsys thermalservice` is
   available, just not parsed.
-- **Shell-out path coverage.** Pure logic (inventory, parsers, classifiers,
-  MCP dispatch, reservations, daemon HTTP roundtrip, bridge protocol) is
-  unit-covered. The developer-run test-report workflow (🎯T26.4) adds real-
-  bridge integration and real-device device tiers, but the `internal/device`
-  adapter wrappers around `pymobiledevice3`/`adb`/`devicectl` and the
-  `internal/notify` OS-specific helpers still lack the same rigour. Before
-  1.0 these should be brought under the tiered test runner with their own
-  device-present coverage.
-- **`pmd3-bridge` internal dependency.** The `internal/pmd3bridge` package
-  wraps a FastAPI bridge subprocess as a daemon-private dependency (ephemeral
-  loopback port + bearer token, 🎯T26.1; fail-fast on any unresponsiveness,
-  🎯T26.2; NDJSON/octet-stream streaming with inter-packet deadline,
-  🎯T26.3). The bridge binary ships at `libexec/pmd3-bridge/pmd3-bridge` in
-  the Homebrew formula. Battery, list_apps, launch/kill_app, crash-report,
-  screenshot, device_power_state, and syslog (🎯T46) surfaces flow
-  through the bridge — every iOS operation that needs `pymobiledevice3`
-  is routed via the bridge so spyder no longer depends on
-  `pymobiledevice3` being on `PATH` at runtime (a real failure mode under
-  launchd-supervised daemons). Internal to the daemon and not part of
-  the 1.0 stability contract.
+- **iOS bridge dependency** (resolved in 🎯T56). The previous
+  `internal/pmd3bridge` package and its bundled `pmd3-bridge` Python
+  subprocess have been removed. iOS device operations now run
+  in-process via the [go-ios](https://github.com/danielpaulus/go-ios)
+  Go module (`installationproxy`, `instruments`, `appservice`,
+  `screenshotr`, `crashreport`, `syslog_relay`, `zipconduit`, plus
+  the lockdown / DTX / RSD foundation). The only remaining iOS
+  child process is the bundled `ios tunnel start --userspace`
+  daemon (also go-ios), spawned by spyder at startup and reaped on
+  shutdown — no privileged LaunchDaemon required.
 - **iOS keep-awake via on-device companion app.** The `ios/KeepAwake/`
   SwiftUI app sets `UIApplication.isIdleTimerDisabled = true` while
   foregrounded and exits on `batteryState == .unplugged` so iOS reclaims
   the slot when the cable is pulled. Autoawake runs a convergence loop
-  (🎯T32): every 15 s it queries KeepAwake's BackBoard lifecycle state
-  via the bridge's `app_state` endpoint (DVT mobile-notifications under
-  the hood), installs (xcodebuild + devicectl) when absent, launches
-  when terminated, and re-tests human-gate states (locked, needs-trust,
-  needs-developer-mode) each tick so user-side resolutions are detected
-  without re-plugging. **User opt-out semantics (v0.23.0, refined v0.25.0):** a
-  `Running → backgrounded` transition for KeepAwake is treated as
-  the user expressing they don't want autoawake to fight (e.g. they
-  swiped KeepAwake to the home screen); the supervisor transitions
-  to `classUserOptOut` and stays passive (even if iOS later reaps
-  the suspended KeepAwake) until the user re-foregrounds KeepAwake
-  or unplugs the device. **Spyder-initiated launches don't count
-  as opt-out (v0.25.0):** when the MCP `launch_app` / `deploy_app`
-  handlers foreground a non-KeepAwake bundle on the user's behalf,
-  they call `Supervisor.NoteAppLaunched(udid, bundleID)`; the next
-  Running → backgrounded transition observed within
-  `recentLaunchWindow` (30 s) is suppressed, so legitimate
-  orchestration (running a test app, deploying a bundle, etc.)
-  doesn't disable autoawake. The "connected" filter is wired-only
-  (`devicectl transportType=wired`); Wi-Fi-reachable devices are
-  excluded so they don't fight KeepAwake's unplugged self-exit in a
-  relaunch loop. Per-developer signing identity required (free-tier
-  Apple ID suffices). pmd3's `PowerAssertionService` was attempted as a
-  drop-in replacement in v0.6.0–v0.8.0 but is a no-op for display sleep
-  on iOS; reverted in v0.9.0 (🎯T31). **Build-version drift detection
-  (v0.24.0):** every convergence tick compares the on-device bundle's
-  `CFBundleShortVersionString` (via `devicectl info apps`) to the
+  (🎯T32 / 🎯T55): every 15 s it probes the device's foreground app
+  via go-ios's BackBoard `applicationStateNotification:` subscription,
+  re-installs KeepAwake (xcodebuild + go-ios installation_proxy) when
+  absent, launches via go-ios `instruments.ProcessControl` when
+  terminated, and re-tests human-gate states (locked, needs-trust,
+  needs-developer-mode) each tick so user-side resolutions are
+  detected without re-plugging. **Convergence rule (🎯T55):** if the
+  foreground app is KeepAwake → converged; if it's anything else →
+  passive (don't clobber the user's app); only when nothing is
+  foregrounded does autoawake launch KeepAwake. The previous
+  `Running → backgrounded` transition + 30 s recent-launch marker
+  scheme that v0.25 used is gone — the foreground-app probe is the
+  ground truth. The "connected" filter is still wired-only
+  (`devicectl transportType=wired` is consulted by `List` as a
+  cross-check overlay against the go-ios usbmux enumeration);
+  Wi-Fi-reachable devices are excluded so they don't fight
+  KeepAwake's unplugged self-exit in a relaunch loop. Per-developer
+  signing identity required (free-tier Apple ID suffices).
+  Historical note: pmd3's `PowerAssertionService` was attempted as a
+  drop-in replacement in v0.6.0–v0.8.0 but is a no-op for display
+  sleep on iOS; reverted in v0.9.0 (🎯T31). **Build-version drift
+  detection (v0.24.0):** every convergence tick compares the
+  on-device bundle's `CFBundleShortVersionString` (via go-ios's
+  `installation_proxy.BrowseAllApps`) to the
   source-of-truth `MARKETING_VERSION` parsed from the bundled
   `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`; on mismatch
   (and provided the user hasn't opted out) autoawake uninstalls,
@@ -466,20 +463,19 @@ builds. **Stable.**
   `ios/KeepAwake/Sources/` changes in a way that should be
   redeployed. The string is opaque — semver, semver-with-suffix
   (`0.2.0-rc1`), date-based (`2026.04.27`), all work.
-- **Tunneld lifecycle.** iOS 17+ screenshot and any future
-  DVT-instrument operations need an active RSD tunnel for the device.
-  spyder's bridge expects an externally-managed `pymobiledevice3 remote
-  tunneld` process on `127.0.0.1:49151` (typically a launchd service
-  installed by the user) and surfaces `tunneld_unavailable` (bridge error
-  code, HTTP 503) when tunneld is unreachable or has no registered devices.
-  This is the accepted design for v0.x — the bridge does not start or
-  supervise tunneld itself. Pre-iOS-17 devices that are not in the tunneld
-  registry will fail screenshot with `device_not_paired`; a legacy
-  `com.apple.mobile.screenshotr` fallback for pre-17 devices is deferred
-  (no test target on currently-paired hardware). The bridge transparently
-  retries transient `EHOSTUNREACH` from the tunneld probe (3 attempts, 0.5
-  s backoff) so a brewservices-supervised daemon survives loopback hiccups
-  during tunneld restart (🎯T36, v0.17.0).
+- **Tunnel daemon lifecycle.** iOS 17+ DVT operations
+  (screenshot, app_state, foreground_app, ProcessControl, etc.)
+  need an active RSD tunnel per device. spyder spawns the bundled
+  `ios tunnel start --userspace` as a child process at startup and
+  reaps it on shutdown — no system LaunchDaemon, no sudo, no
+  privileged TUN device. The tunnel registry exposes a loopback
+  HTTP API on `127.0.0.1:60105`; goios.Resolver queries it per
+  device to obtain the RSD address+port and complete the
+  handshake. If the bundled `ios` binary isn't found at startup
+  spyder logs a warning and proceeds without a tunnel —
+  iOS-17+ DVT-dependent tools then fail per-call with a clear
+  error rather than crashing the daemon. Pre-iOS-17 devices that
+  don't need RSD continue to work over usbmux.
 - **macOS-only host enforcement.** Spyder runs on Linux but iOS operations
   will fail noisily there. Either restrict the binary to Darwin or
   gracefully degrade iOS-related tools with a clear "host does not support
