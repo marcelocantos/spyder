@@ -1676,9 +1676,10 @@ targets:
     achieved: 2026-04-30
   T52:
     name: Tunneld health is observable from spyder, with actionable errors when it is down
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Superseded 2026-05-10 by 🎯T56''s architectural rewrite. T52 was scoped to the privileged `pmd3-tunneld` system LaunchDaemon — a process spyder did not own and could not restart. With T56, that daemon is gone: the tunnel is now spawned as a child subprocess of spyder itself (`internal/iostunnel.Supervisor` → `bin/ios tunnel start --userspace`), and observability is already much stronger than what T52 specified — the supervisor logs `iostunnel: started/stopped/exited` at slog levels with PID, errors are surfaced inline, and a wedged tunnel manifests as goios.Resolver.Session call-level errors with cache invalidation driving recovery. The remaining gap (a structured `tunneld_status` MCP tool) is no longer a 1.0 prerequisite because the failure mode T52 was preventing — silent multi-minute hangs while pmd3-tunneld was wedged — does not happen on the new path. If a structured-status MCP tool turns out to be useful in practice, it can be filed as a fresh, smaller target framed against the new architecture.'
     acceptance:
     - 'Background health probe in the daemon hits 127.0.0.1:49151 (or --tunneld-addr) with a bounded 5s timeout and exposes one of three states via slog: healthy, unreachable, wedged.'
     - MCP tool tunneld_status returns structured JSON with state, address, last_probe_at, last_healthy_at. Read-only; not subject to reservations.
@@ -1694,7 +1695,7 @@ targets:
     discovered: 2026-05-02
   T53:
     name: pmd3-bridge dylib relocation succeeds during brew install (no "Failed to fix install linkage" warning)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1709,9 +1710,10 @@ targets:
     - cosmetic-warning
     origin: surfaced 2026-05-06 during v0.30.0 release verification
     discovered: 2026-05-09
+    achieved: 2026-05-10
   T54:
     name: brew upgrade marcelocantos/tap/spyder reliably creates the /opt/homebrew/bin/spyder symlink
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1726,6 +1728,7 @@ targets:
     - diagnostic-data-needed
     origin: surfaced 2026-05-06 during v0.30.0 release verification
     discovered: 2026-05-09
+    achieved: 2026-05-10
   T55:
     name: autoawake re-foregrounds KeepAwake only when nothing else is foregrounded
     status: achieved
