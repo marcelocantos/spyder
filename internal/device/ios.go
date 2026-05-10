@@ -19,8 +19,11 @@ import (
 	"sync"
 	"time"
 
+	goios_ios "github.com/danielpaulus/go-ios/ios"
+	"github.com/danielpaulus/go-ios/ios/appservice"
 	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
+	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/pmd3bridge"
@@ -625,30 +628,29 @@ func (a *IOSAdapter) State(id string) (State, error) {
 	}
 	a.mu.Unlock()
 
-	if a.bridge == nil {
-		return State{}, errNoBridge
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return State{}, fmt.Errorf("state: %w", err)
 	}
 
 	var state State
 
-	// Per-endpoint timeout is owned by the bridge client (🎯T26.2).
-	batt, err := a.bridge.Battery(context.Background(), id)
+	// Battery info comes from lockdown's com.apple.mobile.battery domain
+	// — go-ios's GetBatteryDiagnostics wraps the per-key fetch and gives
+	// us the capacity (already 0–100) and charging flag in one helper.
+	batt, err := goios_ios.GetBatteryDiagnostics(dev)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return State{}, fmt.Errorf("device not paired: %s", id)
-		}
 		state.Notes = append(state.Notes, fmt.Sprintf("battery data unavailable: %v", err))
-	} else {
-		if batt.Level != nil {
-			level := int(*batt.Level * 100)
-			state.BatteryLevel = &level
-		}
-		state.Charging = batt.Charging
+	} else if batt.HasBattery {
+		level := int(batt.BatteryCurrentCapacity)
+		state.BatteryLevel = &level
+		charging := batt.BatteryIsCharging
+		state.Charging = &charging
 	}
 
 	state.Notes = append(state.Notes,
 		"thermal state unavailable on iOS 17.4+ (MobileGestalt deprecated)",
-		"foreground app detection unavailable via bridge today",
+		"foreground app detection unavailable via state today",
 	)
 
 	a.mu.Lock()
@@ -717,131 +719,181 @@ func truncate(s string, n int) string {
 	return s[:n] + "…"
 }
 
-// Screenshot captures a PNG via the bridge. The iOS 17+ path routes
-// through pmd3 tunneld + RSD + DVT (🎯T30); typed errors from the
-// bridge are mapped to MCP-friendly messages here.
+// Screenshot captures a PNG via go-ios's instruments.ScreenshotService
+// (DTX). One round-trip to dtservicehub; raw PNG bytes returned.
 func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return nil, errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	data, err := a.bridge.Screenshot(ctx, id)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		switch {
-		case pmd3bridge.IsDeviceNotPaired(err):
-			return nil, fmt.Errorf("device not connected: %s", id)
-		case pmd3bridge.IsTunneldUnavailable(err):
-			return nil, fmt.Errorf("tunneld is not running on the host; "+
-				"start it with `sudo pymobiledevice3 remote tunneld` (%v)", err)
-		case pmd3bridge.IsDeveloperModeDisabled(err):
-			return nil, fmt.Errorf("Developer Mode is not enabled on %s — "+
-				"enable at Settings → Privacy & Security → Developer Mode "+
-				"(device will reboot)", id)
-		}
-		return nil, fmt.Errorf("screenshot on %s: %v", id, err)
+		return nil, fmt.Errorf("screenshot: %w", err)
+	}
+	svc, err := instruments.NewScreenshotService(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return nil, fmt.Errorf("screenshot on %s: %w", id, err)
+	}
+	defer svc.Close()
+	data, err := svc.TakeScreenshot()
+	if err != nil {
+		return nil, fmt.Errorf("screenshot on %s: %w", id, err)
 	}
 	return data, nil
 }
 
-// ListApps returns installed user apps via the bridge.
+// ListApps returns installed user apps via go-ios's installation_proxy.
+// Sorted by bundle id for stable output.
 func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return nil, errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	bridgeApps, err := a.bridge.ListApps(ctx, id)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return nil, fmt.Errorf("device not connected: %s", id)
-		}
-		return nil, fmt.Errorf("list_apps on %s: %v", id, err)
+		return nil, fmt.Errorf("list_apps: %w", err)
 	}
-	apps := make([]AppInfo, 0, len(bridgeApps))
-	for _, ba := range bridgeApps {
-		ai := AppInfo{BundleID: ba.BundleID}
-		if ba.Name != nil {
-			ai.Name = *ba.Name
-		}
-		if ba.Version != nil {
-			ai.Version = *ba.Version
-		}
-		apps = append(apps, ai)
+	conn, err := installationproxy.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return nil, fmt.Errorf("installation_proxy on %s: %w", id, err)
+	}
+	defer conn.Close()
+	raw, err := conn.BrowseUserApps()
+	if err != nil {
+		return nil, fmt.Errorf("list_apps on %s: %w", id, err)
+	}
+	apps := make([]AppInfo, 0, len(raw))
+	for _, app := range raw {
+		apps = append(apps, AppInfo{
+			BundleID: app.CFBundleIdentifier(),
+			Name:     app.CFBundleName(),
+			Version:  app.CFBundleShortVersionString(),
+		})
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
 	return apps, nil
 }
 
-// LaunchApp foregrounds an arbitrary app via the bridge.
+// LaunchApp foregrounds an arbitrary app via go-ios's appservice
+// (com.apple.coredevice.feature.launchapplication, the iOS-17+
+// CoreDevice launch path). The pid the launch returns is currently
+// discarded — callers that need it call AppPID after.
 func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	if a.bridge == nil {
-		return errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	_, err := a.bridge.LaunchApp(ctx, id, bundleID)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return fmt.Errorf("device not connected: %s", id)
-		}
-		if pmd3bridge.IsBundleNotInstalled(err) {
+		return fmt.Errorf("launch: %w", err)
+	}
+	conn, err := appservice.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("appservice on %s: %w", id, err)
+	}
+	defer conn.Close()
+	if _, err := conn.LaunchApp(bundleID, nil, nil, nil, false); err != nil {
+		// Map "app not installed"-shaped errors to the spyder convention.
+		msg := err.Error()
+		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
 			return fmt.Errorf("app not installed: %s", bundleID)
 		}
-		return fmt.Errorf("launch %s on %s: %v", bundleID, id, err)
+		return fmt.Errorf("launch %s on %s: %w", bundleID, id, err)
 	}
 	return nil
 }
 
-// TerminateApp stops an app via the bridge.
+// TerminateApp stops an app by bundle id. iOS doesn't expose a
+// "kill by bundle id" RPC directly — go-ios's appservice only kills by
+// pid — so we resolve the pid first.
 func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	if a.bridge == nil {
-		return errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	err := a.bridge.KillApp(ctx, id, bundleID)
+	pid, err := a.AppPID(id, bundleID)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return fmt.Errorf("device not connected: %s", id)
+		// "app not running" is the no-op success: nothing to terminate.
+		if strings.HasPrefix(err.Error(), "app not running") {
+			return nil
 		}
-		if pmd3bridge.IsBundleNotInstalled(err) {
-			return fmt.Errorf("app not installed: %s", bundleID)
-		}
-		return fmt.Errorf("terminate %s on %s: %v", bundleID, id, err)
+		return err
+	}
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return fmt.Errorf("terminate: %w", err)
+	}
+	conn, err := appservice.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("appservice on %s: %w", id, err)
+	}
+	defer conn.Close()
+	if err := conn.KillProcess(pid); err != nil {
+		return fmt.Errorf("terminate %s (pid %d) on %s: %w", bundleID, pid, id, err)
 	}
 	return nil
 }
 
-// AppPID returns the process id of a running app by bundle id via the bridge.
-// Returns 0 and an "app not running" error if the app is not running.
+// AppPID returns the pid of a running app by bundle id. Implemented
+// in two RPCs: installation_proxy resolves the bundle id to its
+// installed .app folder, and appservice.ListProcesses scans live
+// processes for one whose path contains that .app folder. Returns the
+// "app not running" error sentinel that the deploy_app handler keys
+// off when verify-pid runs immediately after a launch.
 func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
-	if a.bridge == nil {
-		return 0, errNoBridge
-	}
-	ctx := context.Background() // per-endpoint timeouts are owned by the bridge client (🎯T26.2)
-	pidPtr, err := a.bridge.PIDForBundle(ctx, id, bundleID)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return 0, fmt.Errorf("device not connected: %s", id)
+		return 0, fmt.Errorf("resolve pid: %w", err)
+	}
+	appBase, err := installedAppFolder(dev, bundleID)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return 0, err
+	}
+	if appBase == "" {
+		return 0, fmt.Errorf("app not installed: %s", bundleID)
+	}
+	asConn, err := appservice.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return 0, fmt.Errorf("appservice on %s: %w", id, err)
+	}
+	defer asConn.Close()
+	procs, err := asConn.ListProcesses()
+	if err != nil {
+		return 0, fmt.Errorf("list processes on %s: %w", id, err)
+	}
+	needle := "/" + appBase + "/"
+	for _, p := range procs {
+		if strings.Contains(p.Path, needle) {
+			return p.Pid, nil
 		}
-		return 0, fmt.Errorf("resolve pid for %s on %s: %v", bundleID, id, err)
 	}
-	if pidPtr == nil {
-		return 0, fmt.Errorf("app not running: %s", bundleID)
+	return 0, fmt.Errorf("app not running: %s", bundleID)
+}
+
+// installedAppFolder returns the basename of the .app folder
+// (e.g. "MultiMaze.app") for the given bundle id, queried via
+// installation_proxy. Returns "" when the bundle isn't installed.
+func installedAppFolder(dev goios_ios.DeviceEntry, bundleID string) (string, error) {
+	conn, err := installationproxy.New(dev)
+	if err != nil {
+		return "", fmt.Errorf("installation_proxy: %w", err)
 	}
-	return *pidPtr, nil
+	defer conn.Close()
+	apps, err := conn.BrowseAllApps()
+	if err != nil {
+		return "", fmt.Errorf("browse apps: %w", err)
+	}
+	for _, app := range apps {
+		if app.CFBundleIdentifier() == bundleID {
+			return filepath.Base(app.Path()), nil
+		}
+	}
+	return "", nil
 }
 
 // Crashes fetches crash reports from the device via the bridge.
@@ -1005,31 +1057,46 @@ func (a *IOSAdapter) StopRecording(id string, pid int) error {
 	return fmt.Errorf("screen recording is not supported on iOS physical devices")
 }
 
-// InstallApp installs a .app or .ipa bundle via `xcrun devicectl device
-// install app`. The device id may be the hardware UDID, CoreDevice UUID,
-// or any other identifier that devicectl --device accepts.
+// InstallApp installs a .app or .ipa bundle via go-ios's zipconduit
+// (com.apple.streaming_zip_conduit). zipconduit handles both folder
+// (.app) and archive (.ipa) inputs natively, no zipping step needed.
 func (a *IOSAdapter) InstallApp(id, path string) error {
 	if id == "" || path == "" {
 		return errors.New("device id and path are required")
 	}
-	_, stderr, err := runDevicectl("device", "install", "app", "--device", id, path)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		return fmt.Errorf("devicectl install app: %v\n%s", err, truncate(string(stderr), 300))
+		return fmt.Errorf("install: %w", err)
+	}
+	conn, err := zipconduit.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("zipconduit on %s: %w", id, err)
+	}
+	if err := conn.SendFile(path); err != nil {
+		return fmt.Errorf("install %s on %s: %w", filepath.Base(path), id, err)
 	}
 	return nil
 }
 
-// UninstallApp removes an app by bundle identifier via
-// `xcrun devicectl device uninstall app <bundle-id>`. The bundle id is
-// a positional argument; an earlier version of this code passed it via
-// `--bundle-identifier` which devicectl rejects with `Unknown option`.
+// UninstallApp removes an app by bundle identifier via go-ios's
+// installation_proxy.
 func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	_, stderr, err := runDevicectl("device", "uninstall", "app", "--device", id, bundleID)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		return fmt.Errorf("devicectl uninstall app: %v\n%s", err, truncate(string(stderr), 300))
+		return fmt.Errorf("uninstall: %w", err)
+	}
+	conn, err := installationproxy.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("installation_proxy on %s: %w", id, err)
+	}
+	defer conn.Close()
+	if err := conn.Uninstall(bundleID); err != nil {
+		return fmt.Errorf("uninstall %s on %s: %w", bundleID, id, err)
 	}
 	return nil
 }
