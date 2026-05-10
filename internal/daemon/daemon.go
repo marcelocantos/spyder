@@ -26,7 +26,6 @@ import (
 	"github.com/marcelocantos/spyder/internal/inventory"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
-	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 	"github.com/marcelocantos/spyder/internal/pool"
 	"github.com/marcelocantos/spyder/internal/poolstore"
 	"github.com/marcelocantos/spyder/internal/reservations"
@@ -65,41 +64,14 @@ func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version,
 		"disable_autoawake", cfg.DisableAutoAwake)
-	handler, resvStore, bridgeSup, _ := Build(cfg)
-
-	// bridgeBaseURL / bridgeToken are populated after a successful Start.
-	// autoawake and the liveness probe each construct their own client from
-	// these values — one-per-goroutine is simpler than sharing a Client.
-	var bridgeBaseURL, bridgeToken string
-
-	if bridgeSup != nil {
-		// Bridge binary was resolved, so startup failure is a bug
-		// (missing Python deps, broken install, etc.), not a config state.
-		// Surface it by returning — the caller will treat this as a daemon
-		// startup error. The whole-process panic-on-unresponsiveness model
-		// only kicks in once the bridge is up.
-		if err := bridgeSup.Start(ctx); err != nil {
-			return fmt.Errorf("pmd3-bridge startup: %w", err)
-		}
-		bridgeBaseURL = bridgeSup.BaseURL()
-		bridgeToken = bridgeSup.Token()
-		// Liveness probe: periodic ListDevices from the daemon, so a wedged
-		// Uvicorn (alive process, dead listener) panics via the client's
-		// fatal hook rather than producing silent non-functionality.
-		probeClient := pmd3bridge.NewClient(bridgeBaseURL, bridgeToken)
-		go pmd3bridge.LivenessProbe(ctx, probeClient)
-	}
+	handler, resvStore, _ := Build(cfg)
 
 	if !cfg.DisableAutoAwake {
 		awakeOpts := []autoawake.Option{}
 		if resvStore != nil {
 			awakeOpts = append(awakeOpts, autoawake.WithReservations(resvStore))
 		}
-		var awakeBridge *pmd3bridge.Client
-		if bridgeSup != nil {
-			awakeBridge = pmd3bridge.NewClient(bridgeBaseURL, bridgeToken)
-		}
-		sv := autoawake.New(awakeBridge, awakeOpts...)
+		sv := autoawake.New(awakeOpts...)
 		go sv.Run(ctx)
 	}
 
@@ -115,11 +87,6 @@ func Run(ctx context.Context, cfg Config) error {
 		slog.Info("daemon: shutting down (signal or context cancel)")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		if bridgeSup != nil {
-			if err := bridgeSup.Stop(shutdownCtx); err != nil {
-				slog.Warn("daemon: pmd3-bridge stop error", "error", err)
-			}
-		}
 		slog.Info("daemon: draining http server")
 		_ = srv.Shutdown(shutdownCtx)
 		slog.Info("daemon: shutdown complete")
@@ -143,7 +110,7 @@ func Run(ctx context.Context, cfg Config) error {
 // The returned Supervisor is non-nil when the bridge binary was found and
 // should be started by the caller; it is nil when the bridge is unavailable
 // (graceful degradation).
-func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Supervisor, *spydermcp.Handler) {
+func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler) {
 	srv := server.NewMCPServer(
 		"spyder",
 		cfg.Version,
@@ -230,19 +197,6 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 		handlerOpts = append(handlerOpts, spydermcp.WithPoolManager(poolInst))
 	}
 
-	// Resolve the pmd3-bridge binary and construct a Supervisor + Client if
-	// the binary is available. Missing binary is not fatal — bridge tools fall
-	// back to the existing shell-out paths.
-	var bridgeSup *pmd3bridge.Supervisor
-	if binPath := resolveBridgeBinary(); binPath != "" {
-		bridgeSup = pmd3bridge.NewSupervisor(binPath)
-		// The Client reads the bridge's base URL and token from the
-		// supervisor on every request, so it works whether Build or Run
-		// is who eventually calls Start.
-		handlerOpts = append(handlerOpts, spydermcp.WithPMD3Bridge(bridgeSup.Client()))
-		slog.Info("pmd3-bridge configured", "binary", binPath)
-	}
-
 	handler := spydermcp.NewHandler(handlerOpts...)
 
 	// Kick off pool adoption in the background so startup latency stays
@@ -275,88 +229,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *pmd3bridge.Superviso
 	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv,
 		server.WithHeartbeatInterval(30*time.Second)))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
-	return mux, resvStore, bridgeSup, handler
-}
-
-// resolveBridgeBinary returns the path to the pmd3-bridge binary.
-// Resolution order:
-//  1. SPYDER_PMD3_BRIDGE environment variable.
-//  2. Relative to the running executable: ../libexec/pmd3-bridge/pmd3-bridge
-//     (production install layout via Homebrew). Symlinks are resolved
-//     before computing the relative path so a Homebrew-style symlink
-//     `/opt/homebrew/bin/spyder → /opt/homebrew/Cellar/spyder/<v>/bin/spyder`
-//     points at the Cellar's libexec, not the empty `/opt/homebrew/libexec`
-//     (🎯T35).
-//  3. bridge/dist/pmd3-bridge/pmd3-bridge relative to the repo root
-//     (development fallback — best-effort).
-//
-// Returns "" when no candidate exists; the caller should log a warning and
-// skip the bridge rather than fail hard.
-func resolveBridgeBinary() string {
-	// 1. Explicit override.
-	if env := os.Getenv("SPYDER_PMD3_BRIDGE"); env != "" {
-		if _, err := os.Stat(env); err == nil {
-			return env
-		}
-		slog.Warn("SPYDER_PMD3_BRIDGE set but binary not found",
-			"path", env, "bridge", "disabled")
-		return ""
-	}
-
-	// 2. Production layout: <real-exe-dir>/../libexec/pmd3-bridge/pmd3-bridge.
-	// EvalSymlinks resolves the Homebrew bin/ symlink to the Cellar path
-	// where the libexec sibling actually lives.
-	if exe, err := exePathReal(); err == nil {
-		candidate := filepath.Join(filepath.Dir(exe), "..", "libexec", "pmd3-bridge", "pmd3-bridge")
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate
-		}
-	}
-
-	// 3. Development fallback: walk up from the executable looking for
-	// bridge/dist/pmd3-bridge/pmd3-bridge. This handles `go run .` and
-	// `bin/spyder` from the repo root. The dev fallback intentionally
-	// uses os.Executable directly (no symlink eval) since the dev tree
-	// layout is not symlinked.
-	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
-		for range 5 {
-			candidate := filepath.Join(dir, "bridge", "dist", "pmd3-bridge", "pmd3-bridge")
-			if _, err := os.Stat(candidate); err == nil {
-				slog.Info("pmd3-bridge: using development build", "path", candidate)
-				return candidate
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-			dir = parent
-		}
-	}
-
-	slog.Warn("pmd3-bridge binary not found — bridge tools disabled; " +
-		"set SPYDER_PMD3_BRIDGE or install via Homebrew")
-	return ""
-}
-
-// exePathReal returns the path to the running executable with all
-// symlinks resolved. Homebrew installs each formula in a versioned
-// Cellar directory and links the binary into a flat bin/ — `os.Executable`
-// returns the symlink path, but the libexec sibling lives next to the
-// real binary inside the Cellar. Without resolving the symlink, every
-// Homebrew-installed spyder fails to find the bundled bridge (🎯T35).
-func exePathReal() (string, error) {
-	exe, err := os.Executable()
-	if err != nil {
-		return "", err
-	}
-	resolved, err := filepath.EvalSymlinks(exe)
-	if err != nil {
-		// Fall back to the unresolved path; better to attempt resolution
-		// against the symlink than to fail outright.
-		return exe, nil
-	}
-	return resolved, nil
+	return mux, resvStore, handler
 }
 
 // runsPolicyFromEnv reads the retention overrides from environment

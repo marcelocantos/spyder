@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
 
 // --- parseDevicectlList ----------------------------------------------------
@@ -195,17 +193,7 @@ func TestTruncate(t *testing.T) {
 	}
 }
 
-// --- IOSAdapter bridge-backed methods: fake bridge -------------------------
-
-// fakeBridge implements a minimal subset of the pmd3bridge.Client API via a
-// local interface so tests don't need to spin up a real HTTP server.
-// IOSAdapter holds a *pmd3bridge.Client — we test the adapter against the
-// real bridge type by providing pre-canned responses via a small HTTP test
-// server, OR by extracting an interface for the adapter's needs.
-//
-// The approach here: we test error-classification logic by constructing
-// BridgeErrors directly and verifying the adapter maps them to the right
-// surface errors.
+// --- IOSAdapter ------------------------------------------------------------
 
 // TestIOSAdapter_NoSuchDevice_GoIOSMethods covers methods that have
 // migrated off the bridge to go-ios. With a synthetic UDID and no
@@ -214,7 +202,7 @@ func TestTruncate(t *testing.T) {
 // surfaces that without panicking and with the bundle id wrapped in
 // the error.
 func TestIOSAdapter_NoSuchDevice_GoIOSMethods(t *testing.T) {
-	a := NewIOSAdapter(nil)
+	a := NewIOSAdapter()
 
 	cases := []struct {
 		name string
@@ -246,7 +234,7 @@ func TestIOSAdapter_NoSuchDevice_GoIOSMethods(t *testing.T) {
 // TestIOSAdapter_EmptyID verifies that methods reject empty device IDs
 // before touching the bridge (no bridge needed for this check).
 func TestIOSAdapter_EmptyID(t *testing.T) {
-	a := NewIOSAdapter(nil) // nil bridge — empty-ID check must fire first
+	a := NewIOSAdapter() // nil bridge — empty-ID check must fire first
 
 	t.Run("State", func(t *testing.T) {
 		_, err := a.State("")
@@ -278,30 +266,6 @@ func TestIOSAdapter_EmptyID(t *testing.T) {
 			t.Errorf("LaunchApp('UDID','') = %v; want 'required' error", err)
 		}
 	})
-}
-
-// TestBridgeErrorClassification verifies that BridgeError codes round-trip
-// through the pmd3bridge helper functions used by IOSAdapter.
-func TestBridgeErrorClassification(t *testing.T) {
-	paired := &pmd3bridge.BridgeError{Code: "device_not_paired", Status: 422}
-	notInstalled := &pmd3bridge.BridgeError{Code: "bundle_not_installed", Status: 422}
-	other := &pmd3bridge.BridgeError{Code: "internal_error", Status: 500}
-
-	if !pmd3bridge.IsDeviceNotPaired(paired) {
-		t.Error("IsDeviceNotPaired(paired) = false; want true")
-	}
-	if pmd3bridge.IsDeviceNotPaired(notInstalled) {
-		t.Error("IsDeviceNotPaired(not_installed) = true; want false")
-	}
-	if pmd3bridge.IsBundleNotInstalled(notInstalled) == false {
-		t.Error("IsBundleNotInstalled(not_installed) = false; want true")
-	}
-	if pmd3bridge.IsBundleNotInstalled(paired) {
-		t.Error("IsBundleNotInstalled(paired) = true; want false")
-	}
-	if pmd3bridge.IsDeviceNotPaired(other) || pmd3bridge.IsBundleNotInstalled(other) {
-		t.Error("other BridgeError should match neither classifier")
-	}
 }
 
 // --- ParseIOSSyslogLine ----------------------------------------------------
@@ -351,20 +315,17 @@ func TestIsSimulatorID(t *testing.T) {
 
 // --- IOSAdapter state cache ------------------------------------------------
 
-// TestStateCache verifies that a cached State is returned without hitting the
-// bridge (bridge is nil; a nil-bridge call would return errNoBridge, not a
-// cached state, so we use a non-nil bridge that points to a non-existent
-// socket and prime the cache manually).
+// TestStateCache verifies that a cached State is returned without
+// hitting go-ios. Primes the cache directly with a known value and
+// confirms State() returns it.
 func TestStateCache_ReturnsWithinTTL(t *testing.T) {
-	a := NewIOSAdapter(pmd3bridge.NewClient("http://127.0.0.1:1", "test-token"))
-	// Prime the cache directly.
+	a := NewIOSAdapter()
 	chargingTrue := true
 	primed := State{Charging: &chargingTrue}
 	a.mu.Lock()
 	a.cache["UDID"] = cachedState{state: primed, at: time.Now()}
 	a.mu.Unlock()
 
-	// Should get cache hit, no dial attempted.
 	got, err := a.State("UDID")
 	if err != nil {
 		t.Fatalf("State err = %v; want nil (cache hit)", err)
@@ -405,7 +366,7 @@ func TestStateCache_ReturnsWithinTTL(t *testing.T) {
 // fails (no such paired device); we just check the failure manifests
 // as a battery-data-unavailable Note.
 func TestStateCache_MissDialsBattery(t *testing.T) {
-	a := NewIOSAdapter(nil)
+	a := NewIOSAdapter()
 	// Prime with an expired entry so State() takes the cache-miss path.
 	a.mu.Lock()
 	a.cache["UDID"] = cachedState{state: State{}, at: time.Now().Add(-stateTTL - time.Second)}

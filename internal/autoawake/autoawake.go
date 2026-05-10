@@ -67,7 +67,6 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/notify"
-	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 	"github.com/marcelocantos/spyder/internal/reservations"
 )
 
@@ -192,12 +191,6 @@ type iosAdapter interface {
 // Supervisor runs the convergence loop. Construct via New; call Run in
 // a goroutine for the lifetime of the daemon.
 type Supervisor struct {
-	// bridge is retained for compatibility with the daemon wiring but
-	// is otherwise unused — the convergence loop only depends on the
-	// IOSAdapter, which talks to devicectl directly. A nil bridge is
-	// fine; the IOSAdapter constructed below tolerates it for the
-	// keep-awake-relevant operations.
-	bridge       *pmd3bridge.Client
 	ios          iosAdapter
 	inventory    *inventory.Store
 	reservations *reservations.Store
@@ -225,13 +218,12 @@ func withIOSAdapter(a iosAdapter) Option {
 	return func(sv *Supervisor) { sv.ios = a }
 }
 
-// New creates a new Supervisor. bridge may be nil; the convergence loop
-// uses devicectl directly via the IOSAdapter and doesn't depend on the
-// pmd3 bridge for any keep-awake operation.
-func New(bridge *pmd3bridge.Client, opts ...Option) *Supervisor {
+// New creates a new Supervisor. The convergence loop uses
+// device.IOSAdapter (in-process go-ios) and doesn't depend on any
+// other subprocess.
+func New(opts ...Option) *Supervisor {
 	sv := &Supervisor{
-		bridge:    bridge,
-		ios:       device.NewIOSAdapter(bridge),
+		ios:       device.NewIOSAdapter(),
 		inventory: inventory.New(),
 		obs:       map[string]*deviceObs{},
 		inFlight:  map[string]bool{},

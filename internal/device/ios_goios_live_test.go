@@ -23,7 +23,7 @@ func TestForegroundApp_Live(t *testing.T) {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
 	}
 
-	adapter := NewIOSAdapter(nil) // nil bridge — ForegroundApp is fully on go-ios now
+	adapter := NewIOSAdapter() // nil bridge — ForegroundApp is fully on go-ios now
 	fg, err := adapter.ForegroundApp(udid)
 	if err != nil {
 		t.Fatalf("ForegroundApp(%s): %v", udid, err)
@@ -39,7 +39,7 @@ func TestKeepAwakeInspect_Live(t *testing.T) {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
 	}
 
-	adapter := NewIOSAdapter(nil)
+	adapter := NewIOSAdapter()
 	installed, err := adapter.KeepAwakeInstalled(udid)
 	if err != nil {
 		t.Fatalf("KeepAwakeInstalled(%s): %v", udid, err)
@@ -58,7 +58,7 @@ func TestScreenshot_Live(t *testing.T) {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
 	}
 
-	adapter := NewIOSAdapter(nil)
+	adapter := NewIOSAdapter()
 	png, err := adapter.Screenshot(udid)
 	if err != nil {
 		t.Fatalf("Screenshot(%s): %v", udid, err)
@@ -79,7 +79,7 @@ func TestListApps_Live(t *testing.T) {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
 	}
 
-	adapter := NewIOSAdapter(nil)
+	adapter := NewIOSAdapter()
 	apps, err := adapter.ListApps(udid)
 	if err != nil {
 		t.Fatalf("ListApps(%s): %v", udid, err)
@@ -98,7 +98,7 @@ func TestLogRange_Live(t *testing.T) {
 	if udid == "" {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
 	}
-	adapter := NewIOSAdapter(nil)
+	adapter := NewIOSAdapter()
 	// Ignore the time window — pass zero values so all entries pass the
 	// since/until check. (Unrelated to deadline: there's a default 5s
 	// cap when until is zero.)
@@ -127,7 +127,7 @@ func TestList_Live(t *testing.T) {
 	if udid == "" {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
 	}
-	adapter := NewIOSAdapter(nil)
+	adapter := NewIOSAdapter()
 	devs, err := adapter.List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -154,7 +154,7 @@ func TestState_Live(t *testing.T) {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
 	}
 
-	adapter := NewIOSAdapter(nil)
+	adapter := NewIOSAdapter()
 	state, err := adapter.State(udid)
 	if err != nil {
 		t.Fatalf("State(%s): %v", udid, err)
@@ -176,4 +176,3 @@ func ptrBool(p *bool) any {
 	}
 	return *p
 }
-

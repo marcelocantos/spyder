@@ -28,7 +28,6 @@ import (
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
-	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
 
 // ErrLocked is returned when an operation fails specifically because the
@@ -341,19 +340,13 @@ const (
 	devicectlTimeout        = (devicectlTimeoutSeconds + 2) * time.Second
 )
 
-// errNoBridge is returned by IOSAdapter methods when no bridge was injected.
-var errNoBridge = errors.New("iOS adapter requires the pmd3 bridge — ensure the bridge binary is installed")
-
-// IOSAdapter talks to iOS devices. Operations are being migrated from the
-// pmd3 Python bridge subprocess to direct in-process go-ios calls (🎯T56);
-// during the migration both code paths coexist on the type. The `bridge`
-// field is consulted only by methods that haven't been ported yet, and is
-// removed at the end of T56.
+// IOSAdapter talks to iOS devices via in-process go-ios calls
+// (🎯T56). The pmd3 Python bridge subprocess and xcrun devicectl
+// dependencies it used to carry are gone.
 type IOSAdapter struct {
-	bridge *pmd3bridge.Client
-	goios  *goios.Resolver
-	mu     sync.Mutex
-	cache  map[string]cachedState
+	goios *goios.Resolver
+	mu    sync.Mutex
+	cache map[string]cachedState
 }
 
 type cachedState struct {
@@ -361,14 +354,13 @@ type cachedState struct {
 	at    time.Time
 }
 
-// NewIOSAdapter returns a new iOS adapter. bridge may be nil for tests or
-// for environments where only the go-ios path is exercised; every method
-// that still requires the bridge returns a clear error when it's nil.
-func NewIOSAdapter(bridge *pmd3bridge.Client) *IOSAdapter {
+// NewIOSAdapter returns a new iOS adapter wired to a default-tunnel
+// goios.Resolver (127.0.0.1:60105 — the `ios tunnel start --userspace`
+// registry endpoint).
+func NewIOSAdapter() *IOSAdapter {
 	return &IOSAdapter{
-		bridge: bridge,
-		goios:  goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort),
-		cache:  map[string]cachedState{},
+		goios: goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort),
+		cache: map[string]cachedState{},
 	}
 }
 
