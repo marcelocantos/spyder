@@ -15,10 +15,10 @@ jobs:
       fail-fast: false
       matrix:
         # darwin-arm64 only — spyder's value is iOS device orchestration
-        # via macOS-specific tooling (xcrun devicectl, pymobiledevice3
-        # tunneld + RSD, CoreDevice). The Android adapter via adb is
-        # cross-platform in principle but the bundled pmd3-bridge is
-        # the value proposition and it's Mac-only. (🎯T45)
+        # via macOS-specific tooling (xcrun simctl for simulators, the
+        # bundled go-ios CLI + tunnel daemon for real devices). Linux
+        # builds would need a different device-discovery story; not
+        # currently a use case. (🎯T45)
         include:
           - target: darwin-arm64
             runner: macos-latest
@@ -32,16 +32,10 @@ jobs:
           go-version: '1.26'
           check-latest: true
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - uses: astral-sh/setup-uv@v5
-
       - name: Test
         run: go test ./...
 
-      - name: Build
+      - name: Build spyder
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -52,20 +46,27 @@ jobs:
           go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
             -o "dist/spyder" .
 
-      - name: Build pmd3-bridge
-        working-directory: bridge
+      - name: Build go-ios (bundled tunnel daemon)
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
         run: |
-          uv sync --dev
-          uv run pyinstaller pmd3-bridge.spec \
-            --distpath dist --workpath build --noconfirm
+          # spyder spawns `ios tunnel start --userspace` as a child
+          # process for iOS-17+ RSD device discovery. The binary is
+          # bundled into libexec/spyder/ in the release tarball and
+          # spyder's resolveIOSTunnelBinary finds it via
+          # <exe-real-dir>/../libexec/spyder/ios.
+          go build -trimpath -ldflags "-s -w" -mod=mod \
+            -o "dist/ios" github.com/danielpaulus/go-ios
 
       - name: Package
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           TARBALL_DIR="spyder-${VERSION}-${{ matrix.target }}"
-          mkdir -p "${TARBALL_DIR}/bin" "${TARBALL_DIR}/libexec"
+          mkdir -p "${TARBALL_DIR}/bin" "${TARBALL_DIR}/libexec/spyder"
           cp dist/spyder "${TARBALL_DIR}/bin/"
-          cp -R bridge/dist/pmd3-bridge "${TARBALL_DIR}/libexec/"
+          cp dist/ios "${TARBALL_DIR}/libexec/spyder/"
           # Bundle the KeepAwake Swift source so a Homebrew-installed
           # autoawake supervisor can rebuild + reinstall when the on-
           # device profile expires (free-team 7-day cycle, or paid-team
@@ -100,7 +101,7 @@ jobs:
           github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           formula_folder: Formula
           version: ${{ github.event.release.tag_name }}
-          install: 'bin.install "bin/spyder" => "spyder"; libexec.install Dir["libexec/pmd3-bridge"]; libexec.install Dir["libexec/spyder-source"]'
+          install: 'bin.install "bin/spyder" => "spyder"; (libexec/"spyder").install "libexec/spyder/ios"; libexec.install Dir["libexec/spyder-source"]'
           target_darwin_arm64: true
           test: 'system bin/"spyder", "--version"'
           skip_checksum: true
@@ -132,5 +133,14 @@ jobs:
 
                 If MCP tools disappear mid-session, the daemon likely stopped
                 — restart with `brew services restart spyder`.
+
+                spyder spawns a bundled `ios` binary (go-ios) as a child
+                process for iOS-17+ device discovery. No system LaunchDaemon
+                or sudo is required — the tunnel runs in user-space mode.
+
+                Upgrading from a pre-0.33 install? The old pmd3-tunneld
+                LaunchDaemon (if you installed it manually) can be removed:
+                  sudo launchctl bootout system /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist
+                  sudo rm /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist
               EOS
             end

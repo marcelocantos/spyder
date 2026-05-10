@@ -24,6 +24,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/autoawake"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/iostunnel"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/pool"
@@ -66,6 +67,21 @@ func Run(ctx context.Context, cfg Config) error {
 		"disable_autoawake", cfg.DisableAutoAwake)
 	handler, resvStore, _ := Build(cfg)
 
+	// Bundled go-ios tunnel daemon. Spawned as a child process so its
+	// lifecycle is tied to spyder's — start before autoawake (which
+	// needs the registry endpoint to do RSD lookups for iOS-17+
+	// devices), stop on shutdown. Missing binary is non-fatal —
+	// degraded mode where iOS DTX-dependent tools fail per-call but
+	// the daemon stays up.
+	var tunnelSup *iostunnel.Supervisor
+	if binPath := resolveIOSTunnelBinary(); binPath != "" {
+		tunnelSup = iostunnel.New(binPath)
+		if err := tunnelSup.Start(ctx); err != nil {
+			slog.Warn("iostunnel: start failed; iOS tools degraded", "error", err)
+			tunnelSup = nil
+		}
+	}
+
 	if !cfg.DisableAutoAwake {
 		awakeOpts := []autoawake.Option{}
 		if resvStore != nil {
@@ -87,6 +103,11 @@ func Run(ctx context.Context, cfg Config) error {
 		slog.Info("daemon: shutting down (signal or context cancel)")
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
+		if tunnelSup != nil {
+			if err := tunnelSup.Stop(shutdownCtx); err != nil {
+				slog.Warn("daemon: iostunnel stop error", "error", err)
+			}
+		}
 		slog.Info("daemon: draining http server")
 		_ = srv.Shutdown(shutdownCtx)
 		slog.Info("daemon: shutdown complete")
@@ -230,6 +251,80 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler) {
 		server.WithHeartbeatInterval(30*time.Second)))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
 	return mux, resvStore, handler
+}
+
+// resolveIOSTunnelBinary returns the path to the bundled `ios` binary
+// (the go-ios tunnel + CLI). Resolution order:
+//
+//  1. SPYDER_IOS_TUNNEL_BINARY environment variable.
+//  2. <real-exe-dir>/../libexec/spyder/ios — the production install
+//     layout. Homebrew installs spyder into the Cellar's bin/ and
+//     the bundled ios binary into the Cellar's libexec/spyder/.
+//     EvalSymlinks resolves the bin/ → Cellar symlink so the libexec
+//     sibling is found relative to the real binary location.
+//  3. bin/ios relative to the repo root — development fallback,
+//     produced by `make build` alongside bin/spyder.
+//
+// Returns "" when no candidate exists; the caller logs a warning
+// and proceeds without a tunnel (iOS-17+ DTX operations fail
+// per-call rather than crashing the daemon).
+func resolveIOSTunnelBinary() string {
+	if env := os.Getenv("SPYDER_IOS_TUNNEL_BINARY"); env != "" {
+		if _, err := os.Stat(env); err == nil {
+			return env
+		}
+		slog.Warn("SPYDER_IOS_TUNNEL_BINARY set but binary not found",
+			"path", env, "tunnel", "disabled")
+		return ""
+	}
+
+	if exe, err := exePathReal(); err == nil {
+		candidate := filepath.Join(filepath.Dir(exe), "..", "libexec", "spyder", "ios")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+
+	// Dev fallback: walk up from the executable looking for bin/ios
+	// (parallel to bin/spyder).
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		for range 5 {
+			candidate := filepath.Join(dir, "ios")
+			if _, err := os.Stat(candidate); err == nil && candidate != exe {
+				slog.Info("iostunnel: using development build", "path", candidate)
+				return candidate
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			dir = parent
+		}
+	}
+
+	slog.Warn("iostunnel: bundled `ios` binary not found — iOS-17+ DTX tools degraded; " +
+		"set SPYDER_IOS_TUNNEL_BINARY or install via Homebrew")
+	return ""
+}
+
+// exePathReal returns the path to the running executable with all
+// symlinks resolved. Homebrew installs each formula in a versioned
+// Cellar directory and links the binary into a flat bin/ —
+// os.Executable returns the symlink path, but the libexec sibling
+// lives next to the real binary inside the Cellar. Without resolving
+// the symlink, every Homebrew-installed spyder fails to find the
+// bundled tunnel binary.
+func exePathReal() (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		return exe, nil
+	}
+	return resolved, nil
 }
 
 // runsPolicyFromEnv reads the retention overrides from environment
