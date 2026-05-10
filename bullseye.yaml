@@ -1753,10 +1753,11 @@ targets:
     achieved: 2026-05-10
   T56:
     name: spyder runs entirely on go-ios; pmd3-bridge, pmd3-tunneld, and xcrun devicectl are decommissioned
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     showcase: true
+    demonstration: 'Released v0.34.0 (after v0.33.0 hotfix for the iostunnel cwd bug) and verified the user-installed brew service: `brew services restart spyder` spawns spyder v0.34.0 which spawns the bundled `ios tunnel start --userspace` subprocess (PID 6609 in the run), `selfIdentity.plist` lands cleanly in `~/.spyder/iostunnel/`, port 60105 is listening, both iOS devices (iPhone 00008110-0014182E0AC2801E and Jevons 00008130-0009702E1110001C) attached and the tunnel started establishing connections to them. No `pmd3-bridge` process, no `pmd3-tunneld` plist, no Python runtime — Cellar size dropped from 88.1 MB → 32.7 MB. Spyder''s logs show `iostunnel: started binary=/opt/homebrew/Cellar/spyder/0.34.0/libexec/spyder/ios pid=6609` followed by `Tunnel server started` and per-device `start tunnel` lines.'
     acceptance:
     - Single Go binary `spyder` (user-space) plus `ios tunnel start` (system LaunchDaemon, root) is the entire runtime. No Python anywhere; no pmd3-bridge subprocess; no `bridge/` Python tree in the repo.
     - All iOS device operations (list, launch, kill, screenshot, syslog, app_state, foreground_app, install, uninstall, crash reports, battery, device_power_state, power assertions) route through `github.com/danielpaulus/go-ios` as a Go module dependency.
@@ -1771,6 +1772,7 @@ targets:
     - go-ios
     origin: manual
     discovered: 2026-05-10
+    achieved: 2026-05-10
   T56.1:
     name: go-ios + ios tunnel start verified working on iOS 26 (Jevons + Minicades iPhone)
     kind: verify
@@ -1794,7 +1796,7 @@ targets:
     achieved: 2026-05-10
   T56.2:
     name: internal/device iOS path + tunnel daemon switched to go-ios; pmd3-bridge subprocess removed
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1813,9 +1815,10 @@ targets:
     - platform
     origin: manual
     discovered: 2026-05-10
+    achieved: 2026-05-10
   T56.3:
     name: bridge/ Python tree, internal/pmd3bridge/, and pmd3 release-pipeline plumbing all removed
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1835,6 +1838,7 @@ targets:
     - docs
     origin: manual
     discovered: 2026-05-10
+    achieved: 2026-05-10
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved
