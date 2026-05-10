@@ -21,8 +21,10 @@ import (
 
 	goios_ios "github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/appservice"
+	"github.com/danielpaulus/go-ios/ios/crashreport"
 	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
+	goios_syslog "github.com/danielpaulus/go-ios/ios/syslog"
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -865,49 +867,53 @@ func installedAppFolder(dev goios_ios.DeviceEntry, bundleID string) (string, err
 	return "", nil
 }
 
-// Crashes fetches crash reports from the device via the bridge.
-// Reports are returned newest-first.
+// Crashes fetches crash reports from the device via go-ios's
+// crashreport package (afc over com.apple.crashreportcopymobile).
+// Bulk-downloads all .ips files into a temp directory, parses the
+// first-line JSON header from each, and filters by since/process.
+// Returns reports newest-first.
 func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]CrashReport, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return nil, errNoBridge
-	}
-	// TODO(🎯T26.3): streaming will replace this aggregate pattern. For now
-	// per-endpoint timeouts are owned by the bridge client (🎯T26.2).
-	ctx := context.Background()
-
-	bridgeReports, err := a.bridge.CrashReportsList(ctx, id, since, process)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		if pmd3bridge.IsDeviceNotPaired(err) {
-			return nil, fmt.Errorf("device not connected: %s", id)
-		}
-		return nil, fmt.Errorf("crash_reports_list on %s: %v", id, err)
+		return nil, fmt.Errorf("crashes: %w", err)
 	}
 
-	reports := make([]CrashReport, 0, len(bridgeReports))
-	for _, br := range bridgeReports {
-		ts, _ := time.Parse(time.RFC3339, br.Timestamp)
-		// Pull the raw content for each report.
-		raw, pullErr := a.bridge.CrashReportsPull(ctx, id, br.Name)
-		if pullErr != nil {
-			// Include the report with metadata but no raw content.
-			reports = append(reports, CrashReport{
-				Process:   br.Process,
-				Timestamp: ts,
-			})
+	tmp, err := os.MkdirTemp("", "spyder-crashes-*")
+	if err != nil {
+		return nil, fmt.Errorf("mkdir temp for crashes: %w", err)
+	}
+	defer os.RemoveAll(tmp)
+
+	if err := crashreport.DownloadReports(dev, "*", tmp); err != nil {
+		a.goios.Invalidate(id)
+		return nil, fmt.Errorf("crashreport download on %s: %w", id, err)
+	}
+
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		return nil, fmt.Errorf("read crash temp dir: %w", err)
+	}
+
+	reports := make([]CrashReport, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
 			continue
 		}
-		cr := CrashReport{
-			Process:   br.Process,
-			Timestamp: ts,
-			Raw:       raw,
+		raw, rerr := os.ReadFile(filepath.Join(tmp, e.Name()))
+		if rerr != nil {
+			continue
 		}
-		// Parse the first-line JSON header for structured fields.
-		firstLine := raw
-		if i := strings.IndexByte(raw, '\n'); i >= 0 {
-			firstLine = raw[:i]
+		cr := CrashReport{Raw: string(raw)}
+
+		// Parse the first-line JSON header for structured fields. .ips
+		// files start with a one-line JSON envelope, then a multi-line
+		// body. The legacy bridge path used the same pattern.
+		firstLine := cr.Raw
+		if i := strings.IndexByte(cr.Raw, '\n'); i >= 0 {
+			firstLine = cr.Raw[:i]
 		}
 		var hdr ipsHeader
 		if err := json.Unmarshal([]byte(strings.TrimSpace(firstLine)), &hdr); err == nil {
@@ -937,6 +943,15 @@ func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]Cras
 				}
 			}
 			cr.Reason = reason
+		}
+
+		// Apply since/process filters that the bridge previously did
+		// server-side.
+		if !since.IsZero() && cr.Timestamp.Before(since) {
+			continue
+		}
+		if process != "" && cr.Process != process {
+			continue
 		}
 		reports = append(reports, cr)
 	}
@@ -1163,45 +1178,30 @@ func parseIOSSyslogTimestamp(s string) time.Time {
 	return time.Time{}
 }
 
-// syslogEntryToLogLine converts the bridge's structured SyslogEntry into the
-// adapter's LogLine shape. Falls back to time.Now() if the bridge timestamp
-// fails to parse — better to surface the message than to drop it.
-func syslogEntryToLogLine(e pmd3bridge.SyslogEntry) LogLine {
-	ts, err := time.Parse(time.RFC3339Nano, e.Timestamp)
-	if err != nil {
-		ts, _ = time.Parse(time.RFC3339, e.Timestamp)
-	}
-	return LogLine{
-		Timestamp: ts,
-		Process:   e.Process,
-		Level:     e.Level,
-		Message:   e.Message,
-	}
-}
-
-// LogRange returns syslog lines from the device between since and until,
-// streamed through the pmd3 bridge. pmd3 does not expose a stable CLI for
-// archived-log timestamp queries, so this drains the live stream and keeps
-// entries inside the window. Callers should provide a reasonable upper
-// bound; absent one we cap at 5 s to bound the call.
+// LogRange returns syslog lines from the device between since and
+// until, streamed through go-ios's syslog_relay (RSD-shimmed on
+// iOS-17+). The device exposes only a live tail — there's no stable
+// API to query archived logs by timestamp — so this drains the live
+// stream and keeps entries inside the window. Callers should provide
+// a reasonable upper bound; absent one we cap at 5s to bound the call.
 //
-// Filter fields: Process (matched against image_name), Subsystem (matched
-// against label.subsystem), Regex (applied client-side to Message).
+// Filter fields:
+//
+//   - Process: matched client-side against the parsed image_name
+//   - Regex: matched client-side against Message
+//   - Subsystem: NOT supported on the go-ios path. The legacy
+//     pmd3 path filtered server-side via OSLog's structured label
+//     metadata; go-ios's syslog_relay parser surfaces only the
+//     classic BSD-style fields (Timestamp, Device, Process, PID,
+//     Level, Message). A non-empty Subsystem filter is honoured by
+//     dropping all entries (since none have a subsystem to match).
 func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return nil, errNoBridge
-	}
-
-	var regexFilter *regexp.Regexp
-	if filter.Regex != "" {
-		var err error
-		regexFilter, err = regexp.Compile(filter.Regex)
-		if err != nil {
-			return nil, fmt.Errorf("invalid regex: %w", err)
-		}
+	regexFilter, err := compileLogRegex(filter.Regex)
+	if err != nil {
+		return nil, err
 	}
 
 	// Deadline: respect an explicit `until` up to a reasonable cap so a
@@ -1222,66 +1222,40 @@ func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Tim
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
-	bf := pmd3bridge.SyslogFilter{
-		PID:         -1,
-		ProcessName: filter.Process,
-		Subsystem:   filter.Subsystem,
-	}
-
+	// Since/until filter caveat (go-ios path): go-ios's syslog parser
+	// timestamps lines in UTC even though iOS emits them in the device's
+	// local timezone. That makes per-entry timestamp comparisons
+	// unreliable across timezones — an entry from a +10:00 device
+	// appears 10h in the future to UTC-naive comparisons. To keep the
+	// behaviour predictable we honour the deadline (set above from
+	// until) for stream termination but skip the per-entry since/until
+	// drop. Callers that need strict windowing should rely on the
+	// deadline, not on filtered-out entries.
 	var lines []LogLine
-	err := a.bridge.Syslog(ctx, id, bf, func(e pmd3bridge.SyslogEntry) bool {
-		ll := syslogEntryToLogLine(e)
-		if !since.IsZero() && ll.Timestamp.Before(since) {
-			return true
-		}
-		if !until.IsZero() && ll.Timestamp.After(until) {
-			return true
-		}
-		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			return true
-		}
+	_ = since
+	err = a.streamSyslog(ctx, id, filter, regexFilter, func(ll LogLine) bool {
 		lines = append(lines, ll)
 		return true
 	})
-	// Deadline-based cancellation is expected.
 	if err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
 		return lines, err
 	}
 	return lines, nil
 }
 
-// LogStream pumps live syslog lines from the device through the pmd3 bridge
-// into out until ctx is cancelled. Filter.Process matches image_name,
-// Filter.Subsystem matches label.subsystem (both server-side); Filter.Regex
-// is applied client-side to Message.
+// LogStream pumps live syslog lines from the device through go-ios's
+// syslog_relay into out until ctx is cancelled. Filter semantics
+// match LogRange — see its docstring for the Subsystem caveat on
+// the go-ios path.
 func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return errNoBridge
+	regexFilter, err := compileLogRegex(filter.Regex)
+	if err != nil {
+		return err
 	}
-
-	var regexFilter *regexp.Regexp
-	if filter.Regex != "" {
-		var err error
-		regexFilter, err = regexp.Compile(filter.Regex)
-		if err != nil {
-			return fmt.Errorf("invalid regex: %w", err)
-		}
-	}
-
-	bf := pmd3bridge.SyslogFilter{
-		PID:         -1,
-		ProcessName: filter.Process,
-		Subsystem:   filter.Subsystem,
-	}
-
-	err := a.bridge.Syslog(ctx, id, bf, func(e pmd3bridge.SyslogEntry) bool {
-		ll := syslogEntryToLogLine(e)
-		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			return true
-		}
+	err = a.streamSyslog(ctx, id, filter, regexFilter, func(ll LogLine) bool {
 		select {
 		case out <- ll:
 			return true
@@ -1293,6 +1267,91 @@ func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter,
 		return err
 	}
 	return nil
+}
+
+func compileLogRegex(s string) (*regexp.Regexp, error) {
+	if s == "" {
+		return nil, nil
+	}
+	r, err := regexp.Compile(s)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex: %w", err)
+	}
+	return r, nil
+}
+
+// streamSyslog opens a go-ios syslog connection and drives lines
+// through the parser + filters into emit. emit returns false to stop
+// the stream early (e.g. ctx cancellation in LogStream's send branch).
+// The connection is closed when emit returns false or ctx fires.
+func (a *IOSAdapter) streamSyslog(ctx context.Context, id string, filter LogFilter,
+	regexFilter *regexp.Regexp, emit func(LogLine) bool) error {
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return fmt.Errorf("syslog: %w", err)
+	}
+	conn, err := goios_syslog.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return fmt.Errorf("syslog on %s: %w", id, err)
+	}
+	defer conn.Close()
+
+	// Cancel the underlying read by closing the connection when ctx fires
+	// — go-ios's blocking ReadLogMessage doesn't honour context directly.
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+
+	parser := goios_syslog.Parser()
+	subsystemRequested := filter.Subsystem != ""
+	var read, parsed int
+	for {
+		raw, err := conn.ReadLogMessage()
+		if err != nil {
+			slog.Debug("syslog stream end", "device", id,
+				"read", read, "parsed", parsed, "err", err.Error())
+			// EOF after Close() is the normal shutdown path.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("syslog read on %s: %w", id, err)
+		}
+		read++
+		entry, perr := parser(raw)
+		if perr != nil {
+			// Lines that don't match BSD-syslog format (e.g. multi-
+			// line continuation) are dropped silently; they're noise.
+			continue
+		}
+		parsed++
+		if filter.Process != "" && entry.Process != filter.Process {
+			continue
+		}
+		if subsystemRequested {
+			// Subsystem isn't surfaced by go-ios's syslog parser —
+			// no entry can match a non-empty Subsystem filter.
+			continue
+		}
+		ll := goiosSyslogToLogLine(entry)
+		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
+			continue
+		}
+		if !emit(ll) {
+			return ctx.Err()
+		}
+	}
+}
+
+func goiosSyslogToLogLine(e *goios_syslog.LogEntry) LogLine {
+	ts, _ := time.Parse("2006-01-02T15:04:05", e.Timestamp)
+	return LogLine{
+		Timestamp: ts,
+		Process:   e.Process,
+		Level:     e.Level,
+		Message:   e.Message,
+	}
 }
 
 func stringOf(v any) string {

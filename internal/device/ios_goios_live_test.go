@@ -6,6 +6,7 @@ package device
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // TestForegroundApp_Live exercises the new go-ios-backed ForegroundApp
@@ -87,6 +88,35 @@ func TestListApps_Live(t *testing.T) {
 		t.Fatalf("ListApps(%s) returned 0 apps; device should have at least one user app", udid)
 	}
 	t.Logf("ListApps(%s): %d user apps; first 3: %+v", udid, len(apps), apps[:min(3, len(apps))])
+}
+
+// TestLogRange_Live exercises the new go-ios.syslog path. Drains live
+// log lines for 3 seconds and expects at least one entry — iOS devices
+// continuously emit syslog so an empty result is a problem.
+func TestLogRange_Live(t *testing.T) {
+	udid := os.Getenv("SPYDER_LIVE_UDID")
+	if udid == "" {
+		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
+	}
+	adapter := NewIOSAdapter(nil)
+	// Ignore the time window — pass zero values so all entries pass the
+	// since/until check. (Unrelated to deadline: there's a default 5s
+	// cap when until is zero.)
+	lines, err := adapter.LogRange(udid, LogFilter{}, time.Time{}, time.Now().Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("LogRange: %v", err)
+	}
+	t.Logf("LogRange(%s) over ~3s: %d lines (first: %+v)", udid, len(lines), firstOrEmpty(lines))
+	if len(lines) == 0 {
+		t.Errorf("expected ≥1 syslog line over 3s on a live device; got 0")
+	}
+}
+
+func firstOrEmpty(lines []LogLine) any {
+	if len(lines) == 0 {
+		return "<no lines>"
+	}
+	return lines[0]
 }
 
 // TestList_Live exercises the new go-ios.ListDevices + lockdown

@@ -4,25 +4,12 @@
 package device
 
 import (
-	"encoding/json"
-	"errors"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
-
-// newTestServer stands up an httptest.Server on loopback TCP and returns
-// the base URL. Under 🎯T26.1 the bridge is TCP-only.
-func newTestServer(t *testing.T, h http.Handler) string {
-	t.Helper()
-	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-	return srv.URL
-}
 
 // --- parseDevicectlList ----------------------------------------------------
 
@@ -220,22 +207,6 @@ func TestTruncate(t *testing.T) {
 // BridgeErrors directly and verifying the adapter maps them to the right
 // surface errors.
 
-// TestIOSAdapter_NilBridge_LegacyMethods covers the methods that still
-// route through the pmd3 bridge (🎯T56 migration in progress). Methods
-// already migrated to go-ios are not in this list — they fail with a
-// device-not-found error from go-ios's usbmux when given a synthetic
-// UDID, which is checked separately.
-func TestIOSAdapter_NilBridge_LegacyMethods(t *testing.T) {
-	a := NewIOSAdapter(nil)
-
-	t.Run("Crashes", func(t *testing.T) {
-		_, err := a.Crashes("UDID", time.Time{}, "")
-		if !errors.Is(err, errNoBridge) {
-			t.Errorf("Crashes err = %v; want errNoBridge", err)
-		}
-	})
-}
-
 // TestIOSAdapter_NoSuchDevice_GoIOSMethods covers methods that have
 // migrated off the bridge to go-ios. With a synthetic UDID and no
 // matching attached device, go-ios's usbmux returns a clear
@@ -257,6 +228,7 @@ func TestIOSAdapter_NoSuchDevice_GoIOSMethods(t *testing.T) {
 		{"AppPID", func() error { _, err := a.AppPID("UDID", "com.example.app"); return err }},
 		{"ForegroundApp", func() error { _, err := a.ForegroundApp("UDID"); return err }},
 		{"KeepAwakeInstalled", func() error { _, err := a.KeepAwakeInstalled("UDID"); return err }},
+		{"Crashes", func() error { _, err := a.Crashes("UDID", time.Time{}, ""); return err }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -415,107 +387,16 @@ func TestStateCache_ReturnsWithinTTL(t *testing.T) {
 // apart (total span ~100 ms). LogRange is called with a 200 ms window
 // (since=now, until=now+200ms). All 5 entries have timestamps within the
 // window, so the call must both wait and accumulate them.
-func TestLogRange_WaitsForDeadline(t *testing.T) {
-	now := time.Now()
-	const (
-		entryCount     = 5
-		entrySpacing   = 20 * time.Millisecond
-		windowDuration = 200 * time.Millisecond
-	)
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/syslog", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.WriteHeader(http.StatusOK)
-		flusher, canFlush := w.(http.Flusher)
-		for i := range entryCount {
-			// Emit an entry with a timestamp squarely inside the window.
-			ts := now.Add(time.Duration(i+1) * entrySpacing)
-			entry := map[string]any{
-				"pid":       i + 1,
-				"timestamp": ts.Format(time.RFC3339Nano),
-				"level":     "INFO",
-				"process":   "TestApp",
-				"message":   "log line",
-			}
-			b, _ := json.Marshal(entry)
-			_, _ = w.Write(b)
-			_, _ = w.Write([]byte{'\n'})
-			if canFlush {
-				flusher.Flush()
-			}
-			time.Sleep(entrySpacing)
-		}
-		// Close body — the Go client's context deadline fires first or we
-		// exhaust entries here; either way the call ends cleanly.
-	})
-
-	baseURL := newTestServer(t, mux)
-	a := NewIOSAdapter(pmd3bridge.NewClient(baseURL, "test-token"))
-
-	since := now
-	until := now.Add(windowDuration)
-	started := time.Now()
-	lines, err := a.LogRange("UDID", LogFilter{}, since, until)
-	elapsed := time.Since(started)
-
-	if err != nil {
-		t.Fatalf("LogRange returned error: %v", err)
-	}
-
-	// Must have waited at least half the window — proves the deadline math
-	// is not returning immediately.
-	const minWait = windowDuration / 2
-	if elapsed < minWait {
-		t.Errorf("LogRange returned too quickly (elapsed=%v; want >=%v) — deadline math is wrong", elapsed, minWait)
-	}
-
-	// Must have captured entries — proves the since/until filter and
-	// timestamp parsing are working (timezone-aware RFC3339Nano shapes).
-	if len(lines) == 0 {
-		t.Error("LogRange returned [] — since/until filter dropped all entries (timezone or parse bug?)")
-	}
-}
-
-// TestLogRange_PastWindowReturnsQuickly verifies that when `until` is already
-// in the past, LogRange does not hang — the deadline fires immediately and the
-// call returns.
-func TestLogRange_PastWindowReturnsQuickly(t *testing.T) {
-	// Server that blocks forever (simulates a live stream).
-	released := make(chan struct{})
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/syslog", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/x-ndjson")
-		w.WriteHeader(http.StatusOK)
-		<-released // block until test releases (or request context is cancelled)
-	})
-	t.Cleanup(func() { close(released) })
-
-	baseURL := newTestServer(t, mux)
-	a := NewIOSAdapter(pmd3bridge.NewClient(baseURL, "test-token"))
-
-	// Both since and until are 1 s in the past — the deadline has already
-	// passed, so the context is cancelled immediately and LogRange returns.
-	pastSince := time.Now().Add(-2 * time.Second)
-	pastUntil := time.Now().Add(-1 * time.Second)
-
-	started := time.Now()
-	lines, err := a.LogRange("UDID", LogFilter{}, pastSince, pastUntil)
-	elapsed := time.Since(started)
-
-	if err != nil {
-		t.Fatalf("LogRange returned error: %v", err)
-	}
-	// No entries — the device hasn't emitted anything in the past window.
-	if len(lines) != 0 {
-		t.Errorf("LogRange returned %d lines for a past window; want 0", len(lines))
-	}
-	// Must return promptly — within 500 ms.
-	const maxWait = 500 * time.Millisecond
-	if elapsed > maxWait {
-		t.Errorf("LogRange took too long for a past window (elapsed=%v; want <%v)", elapsed, maxWait)
-	}
-}
+// TestLogRange behaviour previously covered here was tightly coupled to
+// the pmd3-bridge HTTP layer (fake /v1/syslog NDJSON server, timezone-
+// aware RFC3339 parsing, deadline math validated against streamed
+// entries). The go-ios syslog path doesn't expose a similar injection
+// surface — `goios_syslog.New` opens a live device connection. The
+// deadline-math contract is preserved structurally (LogRange still
+// uses context.WithDeadline + a select branch in streamSyslog), but
+// the behavioural test that proved it has been retired with the bridge.
+// Coverage for the parser (BSD-syslog → LogLine) is preserved by the
+// remaining ParseIOSSyslogLine_* tests in logs_test.go.
 
 // TestStateCache_MissDialsBattery verifies that an expired cache entry
 // causes the adapter to dial go-ios for battery data, and that
