@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -78,47 +79,34 @@ type keepAwakeAppRecord struct {
 	version string
 }
 
-// inspectKeepAwakeApp runs one `xcrun devicectl device info apps`
-// query and extracts the KeepAwake entry, if present. Single source
-// of truth for KeepAwakeInstalled and KeepAwakeInstalledVersion so
-// autoawake's per-tick cost stays at one devicectl call.
+// inspectKeepAwakeApp asks installation_proxy for the installed app
+// list and pulls out the KeepAwake entry, if present. Single source of
+// truth for KeepAwakeInstalled and KeepAwakeInstalledVersion so
+// autoawake's per-tick cost stays at one round-trip.
 func (a *IOSAdapter) inspectKeepAwakeApp(id string) (keepAwakeAppRecord, error) {
 	if id == "" {
 		return keepAwakeAppRecord{}, errors.New("device identifier is empty")
 	}
-	tmp, err := os.MkdirTemp("", "spyder-devctl-apps-*")
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		return keepAwakeAppRecord{}, fmt.Errorf("mkdir temp: %w", err)
+		return keepAwakeAppRecord{}, fmt.Errorf("inspect KeepAwake: %w", err)
 	}
-	defer os.RemoveAll(tmp)
-	jsonPath := filepath.Join(tmp, "apps.json")
-	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "--timeout",
-		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "info", "apps",
-		"--device", id, "--quiet", "--json-output", jsonPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return keepAwakeAppRecord{}, fmt.Errorf(
-			"devicectl device info apps: %w\n%s", err, truncate(string(out), 200))
-	}
-	data, err := os.ReadFile(jsonPath)
+	conn, err := installationproxy.New(dev)
 	if err != nil {
-		return keepAwakeAppRecord{}, fmt.Errorf("read devicectl apps JSON: %w", err)
+		a.goios.Invalidate(id)
+		return keepAwakeAppRecord{}, fmt.Errorf("installation_proxy on %s: %w", id, err)
 	}
-	var doc struct {
-		Result struct {
-			Apps []struct {
-				BundleIdentifier string `json:"bundleIdentifier"`
-				Version          string `json:"version"`
-			} `json:"apps"`
-		} `json:"result"`
+	defer conn.Close()
+	apps, err := conn.BrowseAllApps()
+	if err != nil {
+		return keepAwakeAppRecord{}, fmt.Errorf("browse apps on %s: %w", id, err)
 	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return keepAwakeAppRecord{}, fmt.Errorf("decode devicectl apps JSON: %w", err)
-	}
-	for _, app := range doc.Result.Apps {
-		if app.BundleIdentifier == KeepAwakeBundleID {
-			return keepAwakeAppRecord{installed: true, version: app.Version}, nil
+	for _, app := range apps {
+		if app.CFBundleIdentifier() == KeepAwakeBundleID {
+			return keepAwakeAppRecord{
+				installed: true,
+				version:   app.CFBundleShortVersionString(),
+			}, nil
 		}
 	}
 	return keepAwakeAppRecord{installed: false}, nil
@@ -281,56 +269,41 @@ func IsKeepAwakeForeground(bundle string) bool {
 	return bundle == KeepAwakeBundleID || bundle == "KeepAwake"
 }
 
-// LaunchKeepAwake foregrounds the KeepAwake companion app on the device via
-// `xcrun devicectl device process launch`. The id may be a hardware UDID,
-// CoreDevice UUID, or any other identifier devicectl's --device flag accepts.
-// Assumes the app is already installed on the device.
+// LaunchKeepAwake foregrounds the KeepAwake companion app via go-ios's
+// instruments.ProcessControl (DTX). Assumes the app is already
+// installed on the device.
 //
-// Error classification: returns ErrLocked when the device's screen is
-// locked (autoawake fires a persistent macOS alert asking the user to
-// unlock); ErrTrustNotGranted when the developer certificate hasn't
-// been trusted on the device; a generic error for anything else. The
-// typed errors let autoawake respond to each case appropriately.
+// Error classification: returns ErrLocked / ErrTrustNotGranted /
+// ErrKeepAwakeNotInstalled when the underlying error matches one of
+// the recognised patterns; a wrapped generic error otherwise. The
+// CoreDevice-specific ErrNoProviderFound is no longer reachable from
+// this path — installation_proxy doesn't do CoreDevice's provider
+// lookup, so the Code=1002 failure mode the iPhone has been hitting
+// disappears with this migration.
 func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
 	started := time.Now()
-	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "--timeout",
-		fmt.Sprintf("%d", devicectlTimeoutSeconds), "device", "process", "launch",
-		"--device", id, KeepAwakeBundleID)
-	out, err := cmd.CombinedOutput()
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return fmt.Errorf("launch KeepAwake: %w", err)
+	}
+	pc, err := instruments.NewProcessControl(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return classifyKeepAwakeLaunchErr(id, err)
+	}
+	defer pc.Close()
+	pid, err := pc.LaunchApp(KeepAwakeBundleID, map[string]any{})
 	elapsedMs := time.Since(started).Milliseconds()
 	if err != nil {
-		tail := strings.TrimSpace(string(out))
-		switch {
-		case keepAwakeLaunchMissingPattern.MatchString(tail):
-			slog.Debug("devicectl launch KeepAwake: not installed",
-				"device", id, "duration_ms", elapsedMs)
-			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrKeepAwakeNotInstalled)
-		case keepAwakeLaunchLockedPattern.MatchString(tail):
-			slog.Debug("devicectl launch KeepAwake: device locked",
-				"device", id, "duration_ms", elapsedMs)
-			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrLocked)
-		case keepAwakeLaunchTrustPattern.MatchString(tail):
-			slog.Debug("devicectl launch KeepAwake: trust not granted",
-				"device", id, "duration_ms", elapsedMs)
-			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrTrustNotGranted)
-		case keepAwakeLaunchNoProviderPattern.MatchString(tail):
-			slog.Debug("devicectl launch KeepAwake: no provider (stale profile)",
-				"device", id, "duration_ms", elapsedMs)
-			return fmt.Errorf("launch KeepAwake on %s: %w", id, ErrNoProviderFound)
-		}
-		slog.Warn("devicectl launch KeepAwake failed",
-			"device", id, "duration_ms", elapsedMs,
-			"error", err.Error(), "output_tail", truncate(tail, 200))
-		return fmt.Errorf("devicectl launch KeepAwake: %w\n%s", err, tail)
+		return classifyKeepAwakeLaunchErr(id, err)
 	}
 	slog.Debug("KeepAwake launched",
 		"device", id, "duration_ms", elapsedMs,
-		"bundle", KeepAwakeBundleID)
+		"bundle", KeepAwakeBundleID, "pid", pid)
+	_ = pid
 	return nil
 }
 
@@ -340,10 +313,39 @@ func (a *IOSAdapter) LaunchKeepAwake(id string) error {
 // (🎯T32) instead of re-trying the launch.
 var ErrKeepAwakeNotInstalled = errors.New("KeepAwake not installed on device")
 
-// keepAwakeLaunchMissingPattern matches devicectl output indicating the
-// app bundle isn't present on the device.
+// keepAwakeLaunchMissingPattern matches output indicating the app
+// bundle isn't present on the device. Used for the legacy devicectl
+// path AND the new go-ios ProcessControl path — go-ios surfaces
+// BackBoard errors as text that overlaps with devicectl's wording.
 var keepAwakeLaunchMissingPattern = regexp.MustCompile(
-	`(?i)could not find.*app|app.*not installed|bundle.*not found|no such app`)
+	`(?i)could not find.*app|app.*not installed|bundle.*not found|no such app|application.*does not exist|unknown application`)
+
+// classifyKeepAwakeLaunchErr maps a raw error from go-ios's
+// ProcessControl path to one of the typed sentinels autoawake's
+// classifier expects (ErrLocked / ErrTrustNotGranted /
+// ErrKeepAwakeNotInstalled). Falls through to a wrapped generic error
+// when nothing matches. ErrNoProviderFound is no longer reachable
+// from this code path — that's a CoreDevice-only failure mode.
+func classifyKeepAwakeLaunchErr(udid string, err error) error {
+	if err == nil {
+		return nil
+	}
+	msg := err.Error()
+	switch {
+	case keepAwakeLaunchMissingPattern.MatchString(msg):
+		slog.Debug("go-ios launch KeepAwake: not installed", "device", udid)
+		return fmt.Errorf("launch KeepAwake on %s: %w", udid, ErrKeepAwakeNotInstalled)
+	case keepAwakeLaunchLockedPattern.MatchString(msg):
+		slog.Debug("go-ios launch KeepAwake: device locked", "device", udid)
+		return fmt.Errorf("launch KeepAwake on %s: %w", udid, ErrLocked)
+	case keepAwakeLaunchTrustPattern.MatchString(msg):
+		slog.Debug("go-ios launch KeepAwake: trust not granted", "device", udid)
+		return fmt.Errorf("launch KeepAwake on %s: %w", udid, ErrTrustNotGranted)
+	}
+	slog.Warn("go-ios launch KeepAwake failed",
+		"device", udid, "error", truncate(msg, 240))
+	return fmt.Errorf("launch KeepAwake on %s: %w", udid, err)
+}
 
 // stateTTL bounds how often we re-query a device. Tools called in quick
 // succession (e.g. from an agent reasoning loop) share a snapshot so the

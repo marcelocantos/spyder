@@ -29,3 +29,23 @@ func TestForegroundApp_Live(t *testing.T) {
 	}
 	t.Logf("foreground on %s: %q", udid, fg)
 }
+
+// TestKeepAwakeInspect_Live exercises the new go-ios-backed
+// installationproxy path. Same gating as TestForegroundApp_Live.
+func TestKeepAwakeInspect_Live(t *testing.T) {
+	udid := os.Getenv("SPYDER_LIVE_UDID")
+	if udid == "" {
+		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
+	}
+
+	adapter := NewIOSAdapter(nil)
+	installed, err := adapter.KeepAwakeInstalled(udid)
+	if err != nil {
+		t.Fatalf("KeepAwakeInstalled(%s): %v", udid, err)
+	}
+	version, err := adapter.KeepAwakeInstalledVersion(udid)
+	if err != nil {
+		t.Fatalf("KeepAwakeInstalledVersion(%s): %v", udid, err)
+	}
+	t.Logf("KeepAwake on %s: installed=%v version=%q", udid, installed, version)
+}
