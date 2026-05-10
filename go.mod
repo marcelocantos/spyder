@@ -54,4 +54,4 @@ require (
 	software.sslmate.com/src/go-pkcs12 v0.2.0 // indirect
 )
 
-replace github.com/danielpaulus/go-ios => /tmp/go-ios-src
+replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20260510062847-15d4eb19a94b
