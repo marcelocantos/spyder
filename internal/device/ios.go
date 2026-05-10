@@ -19,6 +19,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielpaulus/go-ios/ios/instruments"
+	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/pmd3bridge"
 )
@@ -198,14 +200,77 @@ func (a *IOSAdapter) ForegroundApp(id string) (string, error) {
 	if id == "" {
 		return "", errors.New("device identifier is empty")
 	}
-	if a.bridge == nil {
-		return "", errNoBridge
-	}
-	bundle, err := a.bridge.ForegroundApp(context.Background(), id)
+	dev, err := a.goios.Session(id)
 	if err != nil {
-		return "", fmt.Errorf("foreground_app on %s: %w", id, err)
+		return "", fmt.Errorf("foreground_app: %w", err)
 	}
-	return bundle, nil
+	recv, closeFn, err := instruments.ListenAppStateNotifications(dev)
+	if err != nil {
+		// Transport-level failure — drop the cached session so the
+		// next call re-handshakes (covers tunnel restart / device
+		// replug between calls).
+		a.goios.Invalidate(id)
+		return "", fmt.Errorf("foreground_app: subscribe on %s: %w", id, err)
+	}
+	defer closeFn()
+
+	// Drain BackBoard's initial state-enumeration burst into a buffered
+	// channel so the deadline below isn't wedged by recv()'s blocking
+	// read. The 750ms drain matches pmd3's 0.5s window with a touch of
+	// slack for slow tunnels — BackBoard delivers the typical burst
+	// (~14-30 entries) in <100ms once the channel is open.
+	type recvResult struct {
+		data map[string]interface{}
+		err  error
+	}
+	results := make(chan recvResult, 64)
+	go func() {
+		for {
+			data, recvErr := recv()
+			results <- recvResult{data: data, err: recvErr}
+			if recvErr != nil {
+				return
+			}
+		}
+	}()
+
+	deadline := time.After(750 * time.Millisecond)
+	for {
+		select {
+		case <-deadline:
+			return "", nil
+		case r := <-results:
+			if r.err != nil {
+				return "", fmt.Errorf("foreground_app: recv on %s: %w", id, r.err)
+			}
+			stateDesc, _ := r.data["state_description"].(string)
+			if stateDesc != "Running" {
+				continue
+			}
+			if bundle, _ := r.data["bundleIdentifier"].(string); bundle != "" {
+				return bundle, nil
+			}
+			if exec, _ := r.data["execName"].(string); exec != "" {
+				return appNameFromExec(exec), nil
+			}
+		}
+	}
+}
+
+// appNameFromExec extracts the .app folder basename from a BackBoard
+// execName like "/private/var/.../KeepAwake.app/KeepAwake". Used as a
+// fallback when BackBoard's notification entry omits bundleIdentifier
+// (system apps and some older iOS versions).
+func appNameFromExec(exec string) string {
+	idx := strings.LastIndex(strings.ToLower(exec), ".app")
+	if idx <= 0 {
+		return ""
+	}
+	prefix := exec[:idx]
+	if slash := strings.LastIndex(prefix, "/"); slash >= 0 {
+		return prefix[slash+1:]
+	}
+	return prefix
 }
 
 // IsKeepAwakeForeground returns true when bundle (the value returned by
@@ -303,10 +368,14 @@ const (
 // errNoBridge is returned by IOSAdapter methods when no bridge was injected.
 var errNoBridge = errors.New("iOS adapter requires the pmd3 bridge — ensure the bridge binary is installed")
 
-// IOSAdapter talks to iOS devices via the pmd3 bridge (for most operations)
-// and xcrun devicectl (for install/uninstall and device inventory enrichment).
+// IOSAdapter talks to iOS devices. Operations are being migrated from the
+// pmd3 Python bridge subprocess to direct in-process go-ios calls (🎯T56);
+// during the migration both code paths coexist on the type. The `bridge`
+// field is consulted only by methods that haven't been ported yet, and is
+// removed at the end of T56.
 type IOSAdapter struct {
 	bridge *pmd3bridge.Client
+	goios  *goios.Resolver
 	mu     sync.Mutex
 	cache  map[string]cachedState
 }
@@ -316,11 +385,15 @@ type cachedState struct {
 	at    time.Time
 }
 
-// NewIOSAdapter returns a new iOS adapter. bridge may be nil when the bridge
-// binary is unavailable; every method that requires the bridge returns a clear
-// error in that case rather than panicking.
+// NewIOSAdapter returns a new iOS adapter. bridge may be nil for tests or
+// for environments where only the go-ios path is exercised; every method
+// that still requires the bridge returns a clear error when it's nil.
 func NewIOSAdapter(bridge *pmd3bridge.Client) *IOSAdapter {
-	return &IOSAdapter{bridge: bridge, cache: map[string]cachedState{}}
+	return &IOSAdapter{
+		bridge: bridge,
+		goios:  goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort),
+		cache:  map[string]cachedState{},
+	}
 }
 
 // List returns iOS devices that are currently reachable. The set is the
