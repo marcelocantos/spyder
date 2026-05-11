@@ -5,7 +5,7 @@
 // ~/.spyder/baselines/<suite>/<variant>/<case>.{png,manifest.json}.
 //
 // A variant encodes per-device and per-orientation context as a
-// URL-safe string (e.g. "pippa-landscape"). Callers construct the
+// URL-safe string (e.g. "ipad-landscape"). Callers construct the
 // variant key however makes sense for their test suite; the store is
 // opaque to the key's content — it just uses it as a path component.
 // For v1 the convention is "<device-alias>-<orientation>"; variants

@@ -72,10 +72,10 @@ map symbolic aliases to platform-specific identifiers:
 ```json
 [
   {
-    "alias": "Pippa",
+    "alias": "iPad",
     "platform": "ios",
-    "ios_uuid": "00008103-000D39301A6A201E",
-    "ios_coredevice": "E1A01EA6-8D77-556C-B18D-D470B2909E87",
+    "ios_uuid": "00008103-001122334455667A",
+    "ios_coredevice": "00000000-0000-0000-0000-000000000001",
     "notes": "Preferred iPad test device"
   }
 ]
@@ -348,7 +348,7 @@ Manifests are JSON objects with this shape:
 
 ```bash
 # 1. Capture a reference screenshot and store as baseline.
-spyder screenshot Pippa --output login.png
+spyder screenshot iPad --output login.png
 spyder baseline update login-flow/main-screen login.png
 
 # 2. Later, compare a new screenshot against the baseline.
@@ -360,8 +360,8 @@ spyder baseline update login-flow/main-screen login.png manifest.json
 spyder diff login-flow/main-screen new-screenshot.png new-manifest.json
 
 # 4. Use --variant for per-device or per-orientation separation:
-spyder baseline update login-flow/main-screen login.png --variant pippa-landscape
-spyder diff login-flow/main-screen new-screenshot.png --variant pippa-landscape
+spyder baseline update login-flow/main-screen login.png --variant ipad-landscape
+spyder diff login-flow/main-screen new-screenshot.png --variant ipad-landscape
 ```
 
 Via MCP, the same operations are:
@@ -396,16 +396,16 @@ REST SSE endpoint instead:
 # Live tail — server-sent events, each line is a JSON LogLine.
 curl -N -X POST http://127.0.0.1:3030/api/v1/log_stream \
   -H 'Content-Type: application/json' \
-  -d '{"device":"Pippa","process":"MyApp","regex":"error"}'
+  -d '{"device":"iPad","process":"MyApp","regex":"error"}'
 ```
 
 Or via the CLI:
 
 ```bash
-spyder log Pippa --follow                          # live tail
-spyder log Pippa --follow --process MyApp          # process filter
-spyder log Pippa --since 2026-04-19T00:00:00Z     # bounded range
-spyder log Pippa --regex "crash|panic"             # regex on message
+spyder log iPad --follow                          # live tail
+spyder log iPad --follow --process MyApp          # process filter
+spyder log iPad --since 2026-04-19T00:00:00Z     # bounded range
+spyder log iPad --regex "crash|panic"             # regex on message
 ```
 
 **Platform quirks:**
@@ -443,7 +443,7 @@ naming the holder if someone else is holding the device. Read tools
 Pin a specific device by alias or UUID:
 
 ```json
-{"name": "reserve", "arguments": {"device": "Pippa", "owner": "tiltbuggy", "ttl_seconds": 3600, "note": "UI regression run"}}
+{"name": "reserve", "arguments": {"device": "iPad", "owner": "tiltbuggy", "ttl_seconds": 3600, "note": "UI regression run"}}
 ```
 
 ### Fuzzy reservation (selector)
@@ -483,9 +483,9 @@ can now carry these optional fields:
 
 ```json
 {
-  "alias": "Pippa",
+  "alias": "iPad",
   "platform": "ios",
-  "ios_uuid": "00008103-000D39301A6A201E",
+  "ios_uuid": "00008103-001122334455667A",
   "tags": ["ipad", "arm64"],
   "attrs": {"env": "ci", "zone": "lab-a"}
 }
@@ -548,7 +548,7 @@ spyder reserve --platform ios --model ipad --as tiltbuggy
 spyder reserve --platform android --tag arm64 --tag ci --as tiltbuggy
 
 # Literal device (unchanged)
-spyder reserve Pippa --as tiltbuggy
+spyder reserve iPad --as tiltbuggy
 ```
 
 Agents don't *have* to reserve: if the device is free, mutating calls just
@@ -561,7 +561,7 @@ common test-run pattern.
 To pass owner-authentication on a mutating call while someone else holds
 the device, pass `"owner": "<your-owner>"` in the arguments map. The
 server resolves canonical identity via the inventory, so reserving
-"Pippa" also blocks operations on her raw UDID and vice versa.
+"iPad" also blocks operations on her raw UDID and vice versa.
 
 ## Run-artefact store
 
@@ -691,11 +691,11 @@ the local daemon and render the result:
 
 ```bash
 spyder devices --platform ios --json
-spyder screenshot Pippa --output /tmp/pippa.png
-spyder reserve Pippa --ttl 600 --note "UI sweep"
-spyder list-apps Pippa --json
-spyder is-running Pippa com.example.app   # exit 0 / 20 / 22
-spyder release Pippa
+spyder screenshot iPad --output /tmp/ipad.png
+spyder reserve iPad --ttl 600 --note "UI sweep"
+spyder list-apps iPad --json
+spyder is-running iPad com.example.app   # exit 0 / 20 / 22
+spyder release iPad
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
 spyder sim list --json
@@ -711,8 +711,8 @@ spyder emu shutdown emulator-5554
 spyder emu create Pixel6_API34 \
   --image 'system-images;android-34;google_apis;arm64-v8a' --device pixel_6
 spyder emu delete Pixel6_API34
-spyder log Pippa --since 2026-04-19T00:00:00Z --json
-spyder log Pippa --follow --process MyApp         # live SSE tail
+spyder log iPad --since 2026-04-19T00:00:00Z --json
+spyder log iPad --follow --process MyApp         # live SSE tail
 ```
 
 `--as OWNER` defaults to `filepath.Base(cwd)` (same convention as
@@ -817,10 +817,10 @@ or failure):
 
 ```bash
 spyder run -- xcodebuild -project MyApp.xcodeproj \
-  -scheme MyApp -destination 'id=00008103-000D39301A6A201E' test
+  -scheme MyApp -destination 'id=00008103-001122334455667A' test
 ```
 
-- Default device is `Pippa`. Override with `--device <alias-or-uuid>`.
+- Default device is `iPad`. Override with `--device <alias-or-uuid>`.
 - The wrapper forwards stdin/stdout/stderr and the command's exit code.
 - Release failures are logged but do not mask the test's exit code.
 

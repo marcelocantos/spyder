@@ -12,10 +12,10 @@ import (
 
 const sampleInventory = `[
   {
-    "alias": "Pippa",
+    "alias": "iPad",
     "platform": "ios",
-    "ios_uuid": "00008103-000D39301A6A201E",
-    "ios_coredevice": "E1A01EA6-8D77-556C-B18D-D470B2909E87",
+    "ios_uuid": "00008103-001122334455667A",
+    "ios_coredevice": "00000000-0000-0000-0000-000000000001",
     "notes": "Preferred iPad test device"
   },
   {
@@ -45,14 +45,14 @@ func withInventory(t *testing.T, contents string) *Store {
 
 func TestLookup_AliasCaseInsensitive(t *testing.T) {
 	s := withInventory(t, sampleInventory)
-	for _, name := range []string{"Pippa", "pippa", "PIPPA", "PiPpA"} {
+	for _, name := range []string{"iPad", "ipad", "IPAD", "iPaD"} {
 		entry, ok := s.Lookup(name)
 		if !ok {
 			t.Errorf("Lookup(%q) = !ok; want ok", name)
 			continue
 		}
-		if entry.Alias != "Pippa" {
-			t.Errorf("Lookup(%q).Alias = %q; want Pippa", name, entry.Alias)
+		if entry.Alias != "iPad" {
+			t.Errorf("Lookup(%q).Alias = %q; want iPad", name, entry.Alias)
 		}
 	}
 }
@@ -60,8 +60,8 @@ func TestLookup_AliasCaseInsensitive(t *testing.T) {
 func TestLookup_ByUUID(t *testing.T) {
 	s := withInventory(t, sampleInventory)
 	cases := map[string]string{
-		"00008103-000D39301A6A201E":            "Pippa",     // iOS hardware UDID
-		"E1A01EA6-8D77-556C-B18D-D470B2909E87": "Pippa",     // iOS CoreDevice UUID
+		"00008103-001122334455667A":            "iPad",     // iOS hardware UDID
+		"00000000-0000-0000-0000-000000000001": "iPad",     // iOS CoreDevice UUID
 		"R5CR112X76K":                          "Raspberry", // Android serial
 	}
 	for id, wantAlias := range cases {
@@ -85,8 +85,8 @@ func TestLookup_Miss(t *testing.T) {
 
 func TestAliasFor(t *testing.T) {
 	s := withInventory(t, sampleInventory)
-	if got := s.AliasFor("00008103-000D39301A6A201E"); got != "Pippa" {
-		t.Errorf("AliasFor(iOS UDID) = %q; want Pippa", got)
+	if got := s.AliasFor("00008103-001122334455667A"); got != "iPad" {
+		t.Errorf("AliasFor(iOS UDID) = %q; want iPad", got)
 	}
 	if got := s.AliasFor("R5CR112X76K"); got != "Raspberry" {
 		t.Errorf("AliasFor(Android serial) = %q; want Raspberry", got)
@@ -99,10 +99,10 @@ func TestAliasFor(t *testing.T) {
 func TestMissingInventory_IsEmpty(t *testing.T) {
 	// Don't write any inventory file — Lookup must return no error.
 	s := withInventory(t, "")
-	if _, ok := s.Lookup("Pippa"); ok {
+	if _, ok := s.Lookup("iPad"); ok {
 		t.Errorf("Lookup on missing inventory returned ok; want !ok")
 	}
-	if got := s.AliasFor("00008103-000D39301A6A201E"); got != "" {
+	if got := s.AliasFor("00008103-001122334455667A"); got != "" {
 		t.Errorf("AliasFor on missing inventory = %q; want empty", got)
 	}
 }
@@ -113,9 +113,9 @@ func TestMissingInventory_IsEmpty(t *testing.T) {
 func TestEntryTagsAttrs_JSONRoundTrip(t *testing.T) {
 	const withTagsAttrs = `[
 	  {
-	    "alias": "Pippa",
+	    "alias": "iPad",
 	    "platform": "ios",
-	    "ios_uuid": "00008103-000D39301A6A201E",
+	    "ios_uuid": "00008103-001122334455667A",
 	    "tags": ["ipad", "arm64"],
 	    "attrs": {"env": "ci", "zone": "lab-a"}
 	  }
@@ -154,9 +154,9 @@ func TestEntryTagsAttrs_JSONRoundTrip(t *testing.T) {
 // (without tags/attrs) load without errors and have nil/empty values.
 func TestEntryTagsAttrs_BackwardsCompat(t *testing.T) {
 	s := withInventory(t, sampleInventory)
-	entry, ok := s.Lookup("Pippa")
+	entry, ok := s.Lookup("iPad")
 	if !ok {
-		t.Fatal("Pippa not found")
+		t.Fatal("iPad not found")
 	}
 	if entry.Tags != nil {
 		t.Errorf("old entry should have nil Tags; got %v", entry.Tags)
@@ -181,8 +181,8 @@ func TestClassifyRaw(t *testing.T) {
 		wantPlatform string
 		wantField    string // which field the input should end up in
 	}{
-		{"00008103-000D39301A6A201E", "ios", "ios_uuid"},                  // hardware UDID
-		{"E1A01EA6-8D77-556C-B18D-D470B2909E87", "ios", "ios_coredevice"}, // standard UUID
+		{"00008103-001122334455667A", "ios", "ios_uuid"},                  // hardware UDID
+		{"00000000-0000-0000-0000-000000000001", "ios", "ios_coredevice"}, // standard UUID
 		{"12345678-1234-1234-1234-1234567890AB", "ios", "ios_coredevice"},
 		{"R5CR112X76K", "android", "android_serial"},
 		{"some-random-string", "android", "android_serial"},

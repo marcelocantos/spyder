@@ -12,7 +12,7 @@ import (
 
 func TestParseIOSSyslogLine_HappyPath(t *testing.T) {
 	// Typical line from `pymobiledevice3 syslog live` text output.
-	line := "Mar 15 14:23:01.123 Pippa MyApp[1234] <Error>: crash happened"
+	line := "Mar 15 14:23:01.123 iPad MyApp[1234] <Error>: crash happened"
 	ll, ok := ParseIOSSyslogLine(line)
 	if !ok {
 		t.Fatalf("ParseIOSSyslogLine returned ok=false for valid line")

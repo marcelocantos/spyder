@@ -28,8 +28,8 @@ func TestEscAppleScript(t *testing.T) {
 }
 
 func TestOsascriptScript_Shape(t *testing.T) {
-	got := osascriptScript("spyder", "unlock Pippa")
-	want := `display notification "unlock Pippa" with title "spyder"`
+	got := osascriptScript("spyder", "unlock iPad")
+	want := `display notification "unlock iPad" with title "spyder"`
 	if got != want {
 		t.Errorf("osascriptScript basic = %q; want %q", got, want)
 	}

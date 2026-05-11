@@ -27,14 +27,14 @@ func TestOpen_CreatesDirAndManifest(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 30, 22, 0, time.UTC)
 	s := newTestStore(t, &now)
 
-	r, err := s.Open("Pippa", "tiltbuggy", "ui regression")
+	r, err := s.Open("iPad", "tiltbuggy", "ui regression")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if !strings.HasPrefix(r.ID, "20260419-143022-") {
 		t.Errorf("run id %q does not carry timestamp prefix", r.ID)
 	}
-	if r.Device != "Pippa" || r.Owner != "tiltbuggy" || r.Note != "ui regression" {
+	if r.Device != "iPad" || r.Owner != "tiltbuggy" || r.Note != "ui regression" {
 		t.Errorf("unexpected run: %+v", r)
 	}
 	if !r.CreatedAt.Equal(now) {
@@ -73,7 +73,7 @@ func TestOpen_RequiresDeviceAndOwner(t *testing.T) {
 func TestClose_StampsManifest(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
 	s := newTestStore(t, &now)
-	r, _ := s.Open("Pippa", "tiltbuggy", "")
+	r, _ := s.Open("iPad", "tiltbuggy", "")
 
 	now = now.Add(5 * time.Minute)
 	if err := s.Close(r.ID); err != nil {
@@ -104,27 +104,27 @@ func TestActive_MatchesDeviceAndOwner(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
 	s := newTestStore(t, &now)
 
-	r1, _ := s.Open("Pippa", "tiltbuggy", "")
+	r1, _ := s.Open("iPad", "tiltbuggy", "")
 	now = now.Add(10 * time.Second)
-	r2, _ := s.Open("Pippa", "otherproj", "")
+	r2, _ := s.Open("iPad", "otherproj", "")
 
-	got, err := s.Active("Pippa", "tiltbuggy")
+	got, err := s.Active("iPad", "tiltbuggy")
 	if err != nil {
 		t.Fatalf("Active: %v", err)
 	}
 	if got == nil || got.ID != r1.ID {
-		t.Errorf("Active(Pippa, tiltbuggy) = %+v; want %q", got, r1.ID)
+		t.Errorf("Active(iPad, tiltbuggy) = %+v; want %q", got, r1.ID)
 	}
 
-	// After closing r1, only r2 remains active for Pippa.
+	// After closing r1, only r2 remains active for iPad.
 	_ = s.Close(r1.ID)
-	got, _ = s.Active("Pippa", "tiltbuggy")
+	got, _ = s.Active("iPad", "tiltbuggy")
 	if got != nil {
 		t.Errorf("Active after Close should be nil; got %+v", got)
 	}
-	got, _ = s.Active("Pippa", "otherproj")
+	got, _ = s.Active("iPad", "otherproj")
 	if got == nil || got.ID != r2.ID {
-		t.Errorf("Active(Pippa, otherproj) = %+v; want %q", got, r2.ID)
+		t.Errorf("Active(iPad, otherproj) = %+v; want %q", got, r2.ID)
 	}
 
 	// Unknown (device, owner) → nil with nil error.
@@ -140,7 +140,7 @@ func TestActive_MatchesDeviceAndOwner(t *testing.T) {
 func TestAddArtefact_PersistsAndUpdatesManifest(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
 	s := newTestStore(t, &now)
-	r, _ := s.Open("Pippa", "tiltbuggy", "")
+	r, _ := s.Open("iPad", "tiltbuggy", "")
 
 	png := []byte("\x89PNG\r\n\x1a\nfake")
 	a, err := s.AddArtefact(r.ID, "screenshot", "shot-1.png", "image/png", png)
@@ -170,7 +170,7 @@ func TestAddArtefact_PersistsAndUpdatesManifest(t *testing.T) {
 func TestAddArtefact_RejectsReservedManifestName(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
 	s := newTestStore(t, &now)
-	r, _ := s.Open("Pippa", "tiltbuggy", "")
+	r, _ := s.Open("iPad", "tiltbuggy", "")
 
 	if _, err := s.AddArtefact(r.ID, "screenshot", "manifest.json", "", []byte("x")); err == nil {
 		t.Error("AddArtefact(name=manifest.json) should be rejected")
@@ -180,7 +180,7 @@ func TestAddArtefact_RejectsReservedManifestName(t *testing.T) {
 func TestAddArtefact_RejectsPathTraversal(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
 	s := newTestStore(t, &now)
-	r, _ := s.Open("Pippa", "tiltbuggy", "")
+	r, _ := s.Open("iPad", "tiltbuggy", "")
 
 	// filepath.Base strips traversal segments; the bytes must land in
 	// the run dir.
@@ -199,7 +199,7 @@ func TestAddArtefact_RejectsPathTraversal(t *testing.T) {
 func TestAddArtefact_ClosedRunRejected(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
 	s := newTestStore(t, &now)
-	r, _ := s.Open("Pippa", "tiltbuggy", "")
+	r, _ := s.Open("iPad", "tiltbuggy", "")
 	_ = s.Close(r.ID)
 	if _, err := s.AddArtefact(r.ID, "screenshot", "shot.png", "", []byte("x")); err == nil {
 		t.Error("AddArtefact on closed run should fail")
@@ -384,7 +384,7 @@ func TestCrossStore_ReadsForeignRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writer New: %v", err)
 	}
-	r, err := writer.Open("Pippa", "tiltbuggy", "")
+	r, err := writer.Open("iPad", "tiltbuggy", "")
 	if err != nil {
 		t.Fatalf("writer Open: %v", err)
 	}
@@ -393,7 +393,7 @@ func TestCrossStore_ReadsForeignRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reader New: %v", err)
 	}
-	got, err := reader.Active("Pippa", "tiltbuggy")
+	got, err := reader.Active("iPad", "tiltbuggy")
 	if err != nil {
 		t.Fatalf("reader Active: %v", err)
 	}

@@ -72,10 +72,10 @@ JSON array at `~/.spyder/inventory.json`:
 ```json
 [
   {
-    "alias": "Pippa",
+    "alias": "iPad",
     "platform": "ios",
-    "ios_uuid": "00008103-000D39301A6A201E",
-    "ios_coredevice": "E1A01EA6-8D77-556C-B18D-D470B2909E87",
+    "ios_uuid": "00008103-001122334455667A",
+    "ios_coredevice": "00000000-0000-0000-0000-000000000001",
     "notes": "Preferred iPad test device"
   }
 ]

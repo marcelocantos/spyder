@@ -48,7 +48,7 @@ const defaultAddr = "127.0.0.1:3030"
 
 // defaultRunDevice is the device alias used when `spyder run` is invoked
 // without --device. The inventory must contain an entry with this alias.
-const defaultRunDevice = "Pippa"
+const defaultRunDevice = "iPad"
 
 const usage = `Usage: spyder [command]
 

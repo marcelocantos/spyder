@@ -190,7 +190,7 @@ every poll cycle.
 A behavioural test that exercises `autoawake.Supervisor` end-to-end
 against a real device is feasible but expensive to set up and
 maintain. The HIL flow used during the v0.8.0 release (operator
-observes Pippa, agent asks, operator reports) is sufficient for the
+observes iPad, agent asks, operator reports) is sufficient for the
 foreseeable future. Revisit if production usage surfaces a regression
 that the existing fd-leak guard (🎯T27) and foreground-state probe
 don't already catch.

@@ -24,9 +24,9 @@ func makeSession(t *testing.T, reg *Registry, device, owner string) *Session {
 
 func TestStart_HappyPath(t *testing.T) {
 	reg := NewRegistry()
-	s := makeSession(t, reg, "Pippa", "tiltbuggy")
-	if s.Device != "Pippa" {
-		t.Errorf("Device = %q; want Pippa", s.Device)
+	s := makeSession(t, reg, "iPad", "tiltbuggy")
+	if s.Device != "iPad" {
+		t.Errorf("Device = %q; want iPad", s.Device)
 	}
 	if s.Owner != "tiltbuggy" {
 		t.Errorf("Owner = %q; want tiltbuggy", s.Owner)
@@ -35,10 +35,10 @@ func TestStart_HappyPath(t *testing.T) {
 
 func TestStart_Conflict(t *testing.T) {
 	reg := NewRegistry()
-	makeSession(t, reg, "Pippa", "alpha")
+	makeSession(t, reg, "iPad", "alpha")
 
 	done := make(chan struct{})
-	_, err := reg.Start("Pippa", "beta", "/tmp/other.mp4", func() error { return nil }, done)
+	_, err := reg.Start("iPad", "beta", "/tmp/other.mp4", func() error { return nil }, done)
 	if err == nil {
 		t.Fatal("expected ErrConflict; got nil")
 	}
@@ -53,9 +53,9 @@ func TestStart_Conflict(t *testing.T) {
 
 func TestStop_RemovesFromRegistry(t *testing.T) {
 	reg := NewRegistry()
-	makeSession(t, reg, "Pippa", "tiltbuggy")
+	makeSession(t, reg, "iPad", "tiltbuggy")
 
-	s, err := reg.Stop("Pippa")
+	s, err := reg.Stop("iPad")
 	if err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -64,14 +64,14 @@ func TestStop_RemovesFromRegistry(t *testing.T) {
 	}
 
 	// Registry should be clear now.
-	if reg.ForDevice("Pippa") != nil {
-		t.Error("ForDevice(Pippa) should return nil after Stop")
+	if reg.ForDevice("iPad") != nil {
+		t.Error("ForDevice(iPad) should return nil after Stop")
 	}
 }
 
 func TestStop_NotRecording(t *testing.T) {
 	reg := NewRegistry()
-	_, err := reg.Stop("Pippa")
+	_, err := reg.Stop("iPad")
 	if err == nil {
 		t.Fatal("expected error stopping non-existent session")
 	}
@@ -81,7 +81,7 @@ func TestStop_CallsStopFn(t *testing.T) {
 	reg := NewRegistry()
 	called := false
 	done := make(chan struct{})
-	_, err := reg.Start("Pippa", "alpha", "/tmp/x.mp4", func() error {
+	_, err := reg.Start("iPad", "alpha", "/tmp/x.mp4", func() error {
 		called = true
 		close(done)
 		return nil
@@ -90,7 +90,7 @@ func TestStop_CallsStopFn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, stopErr := reg.Stop("Pippa")
+	_, stopErr := reg.Stop("iPad")
 	if stopErr != nil {
 		t.Fatalf("Stop: %v", stopErr)
 	}
@@ -107,8 +107,8 @@ func TestStop_CallsStopFn(t *testing.T) {
 
 func TestGet_ReturnsSession(t *testing.T) {
 	reg := NewRegistry()
-	makeSession(t, reg, "Pippa", "alpha")
-	s, err := reg.Get("Pippa")
+	makeSession(t, reg, "iPad", "alpha")
+	s, err := reg.Get("iPad")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestGet_ReturnsSession(t *testing.T) {
 
 func TestGet_NotFound(t *testing.T) {
 	reg := NewRegistry()
-	s, err := reg.Get("Pippa")
+	s, err := reg.Get("iPad")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestGet_NotFound(t *testing.T) {
 }
 
 func TestIsConflict(t *testing.T) {
-	err := &ErrConflict{Device: "Pippa", CurrentOwner: "alpha"}
+	err := &ErrConflict{Device: "iPad", CurrentOwner: "alpha"}
 	if !IsConflict(err) {
 		t.Error("IsConflict should return true for *ErrConflict")
 	}
@@ -143,12 +143,12 @@ func TestIsConflict(t *testing.T) {
 
 func TestForOwner(t *testing.T) {
 	reg := NewRegistry()
-	makeSession(t, reg, "Pippa", "alpha")
+	makeSession(t, reg, "iPad", "alpha")
 	makeSession(t, reg, "Raspberry", "beta")
 
 	sessions := reg.ForOwner("alpha")
-	if len(sessions) != 1 || sessions[0].Device != "Pippa" {
-		t.Errorf("ForOwner(alpha) = %v; want [Pippa]", sessions)
+	if len(sessions) != 1 || sessions[0].Device != "iPad" {
+		t.Errorf("ForOwner(alpha) = %v; want [iPad]", sessions)
 	}
 
 	sessions = reg.ForOwner("beta")
@@ -164,11 +164,11 @@ func TestForOwner(t *testing.T) {
 
 func TestStartAfterStop(t *testing.T) {
 	reg := NewRegistry()
-	makeSession(t, reg, "Pippa", "alpha")
-	reg.Stop("Pippa") //nolint:errcheck
+	makeSession(t, reg, "iPad", "alpha")
+	reg.Stop("iPad") //nolint:errcheck
 
 	// Should be able to start again after stop.
-	s := makeSession(t, reg, "Pippa", "beta")
+	s := makeSession(t, reg, "iPad", "beta")
 	if s.Owner != "beta" {
 		t.Errorf("Owner = %q; want beta", s.Owner)
 	}

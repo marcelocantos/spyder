@@ -35,7 +35,7 @@ func newHandlerWithReservations(t *testing.T, ios, android device.Adapter) (*Han
 func TestHandleReserve_HappyPath(t *testing.T) {
 	h, _ := newHandlerWithReservations(t, nil, nil)
 	r := dispatchJSON(t, h, "reserve", map[string]any{
-		"device":      "Pippa",
+		"device":      "iPad",
 		"owner":       "tiltbuggy",
 		"ttl_seconds": 60.0,
 		"note":        "unit test",
@@ -44,7 +44,7 @@ func TestHandleReserve_HappyPath(t *testing.T) {
 		t.Fatalf("reserve should succeed; body=%s", resultText(t, &r))
 	}
 	body := resultText(t, &r)
-	for _, want := range []string{"Pippa", "tiltbuggy", "unit test", "expires_at"} {
+	for _, want := range []string{"iPad", "tiltbuggy", "unit test", "expires_at"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("reserve body missing %q: %s", want, body)
 		}
@@ -53,10 +53,10 @@ func TestHandleReserve_HappyPath(t *testing.T) {
 
 func TestHandleReserve_Conflict(t *testing.T) {
 	h, s := newHandlerWithReservations(t, nil, nil)
-	_, _ = s.Acquire("Pippa", "someone-else", 0, "testing")
+	_, _ = s.Acquire("iPad", "someone-else", 0, "testing")
 
 	r := dispatchJSON(t, h, "reserve", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"owner":  "tiltbuggy",
 	})
 	if !r.IsError {
@@ -69,26 +69,26 @@ func TestHandleReserve_Conflict(t *testing.T) {
 
 func TestHandleRelease_ByOwner(t *testing.T) {
 	h, s := newHandlerWithReservations(t, nil, nil)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
 
 	r := dispatchJSON(t, h, "release", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"owner":  "tiltbuggy",
 	})
 	if r.IsError {
 		t.Fatalf("owner release should succeed; body=%s", resultText(t, &r))
 	}
-	if _, held := s.Get("Pippa"); held {
+	if _, held := s.Get("iPad"); held {
 		t.Error("reservation should be gone after release")
 	}
 }
 
 func TestHandleRelease_NonOwner_Conflicts(t *testing.T) {
 	h, s := newHandlerWithReservations(t, nil, nil)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
 
 	r := dispatchJSON(t, h, "release", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"owner":  "otherproj",
 	})
 	if !r.IsError {
@@ -98,10 +98,10 @@ func TestHandleRelease_NonOwner_Conflicts(t *testing.T) {
 
 func TestHandleRenew(t *testing.T) {
 	h, s := newHandlerWithReservations(t, nil, nil)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
 
 	r := dispatchJSON(t, h, "renew", map[string]any{
-		"device":      "Pippa",
+		"device":      "iPad",
 		"owner":       "tiltbuggy",
 		"ttl_seconds": 7200.0,
 	})
@@ -112,7 +112,7 @@ func TestHandleRenew(t *testing.T) {
 
 func TestHandleReservations_List(t *testing.T) {
 	h, s := newHandlerWithReservations(t, nil, nil)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
 	_, _ = s.Acquire("Raspberry", "otherproj", 0, "")
 
 	r := dispatchJSON(t, h, "reservations", map[string]any{})
@@ -120,7 +120,7 @@ func TestHandleReservations_List(t *testing.T) {
 		t.Fatalf("reservations should succeed; body=%s", resultText(t, &r))
 	}
 	body := resultText(t, &r)
-	for _, want := range []string{"Pippa", "Raspberry", "tiltbuggy", "otherproj"} {
+	for _, want := range []string{"iPad", "Raspberry", "tiltbuggy", "otherproj"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("list missing %q: %s", want, body)
 		}
@@ -146,10 +146,10 @@ func TestHandleLaunchApp_RejectsWhenHeld(t *testing.T) {
 		return nil
 	}}
 	h, s := newHandlerWithReservations(t, ios, nil)
-	_, _ = s.Acquire("Pippa", "someone-else", 0, "")
+	_, _ = s.Acquire("iPad", "someone-else", 0, "")
 
 	r := dispatchJSON(t, h, "launch_app", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"bundle_id": "com.foo",
 	})
 	if !r.IsError {
@@ -163,10 +163,10 @@ func TestHandleTerminateApp_RejectsWhenHeld(t *testing.T) {
 		return nil
 	}}
 	h, s := newHandlerWithReservations(t, ios, nil)
-	_, _ = s.Acquire("Pippa", "someone-else", 0, "")
+	_, _ = s.Acquire("iPad", "someone-else", 0, "")
 
 	r := dispatchJSON(t, h, "terminate_app", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"bundle_id": "com.foo",
 	})
 	if !r.IsError {
@@ -180,9 +180,9 @@ func TestHandleScreenshot_RejectsWhenHeld(t *testing.T) {
 		return nil, nil
 	}}
 	h, s := newHandlerWithReservations(t, ios, nil)
-	_, _ = s.Acquire("Pippa", "someone-else", 0, "")
+	_, _ = s.Acquire("iPad", "someone-else", 0, "")
 
-	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
 	if !r.IsError {
 		t.Fatal("screenshot on reserved device should fail")
 	}
@@ -199,16 +199,16 @@ func TestReadTools_IgnoreReservations(t *testing.T) {
 		},
 	}
 	h, s := newHandlerWithReservations(t, ios, nil)
-	_, _ = s.Acquire("Pippa", "someone-else", 0, "")
+	_, _ = s.Acquire("iPad", "someone-else", 0, "")
 
 	// device_state is read-only → should proceed without owner.
-	r := dispatchJSON(t, h, "device_state", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "device_state", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Errorf("device_state should be read-only and unaffected by reservations; body=%s", resultText(t, &r))
 	}
 
 	// resolve is read-only too.
-	r = dispatchJSON(t, h, "resolve", map[string]any{"name": "Pippa"})
+	r = dispatchJSON(t, h, "resolve", map[string]any{"name": "iPad"})
 	if r.IsError {
 		t.Errorf("resolve should be read-only; body=%s", resultText(t, &r))
 	}
@@ -219,10 +219,10 @@ func TestReadTools_IgnoreReservations(t *testing.T) {
 func TestMutatingTool_AnonymousCaller_Rejected(t *testing.T) {
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return nil, nil }}
 	h, s := newHandlerWithReservations(t, ios, nil)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
 
 	// No owner arg → treated as anonymous → rejected because device is held.
-	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
 	if !r.IsError {
 		t.Fatal("anonymous mutating call on held device should reject")
 	}
@@ -237,7 +237,7 @@ func TestMutatingTool_AnonymousCaller_FreeDevice_Proceeds(t *testing.T) {
 	h, _ := newHandlerWithReservations(t, ios, nil)
 
 	// No reservation → anonymous caller proceeds.
-	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("free-device anonymous call should succeed; body=%s", resultText(t, &r))
 	}

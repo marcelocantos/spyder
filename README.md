@@ -118,7 +118,7 @@ For live log tailing, use the SSE endpoint:
 # Stream filtered log lines until Ctrl-C.
 curl -N -X POST http://127.0.0.1:3030/api/v1/log_stream \
   -H 'Content-Type: application/json' \
-  -d '{"device":"Pippa","process":"MyApp","regex":"error"}'
+  -d '{"device":"iPad","process":"MyApp","regex":"error"}'
 ```
 
 Each SSE event is `data: <JSON LogLine>` on a single line, followed by a
@@ -135,10 +135,10 @@ the default `http://127.0.0.1:3030`.
 
 ```bash
 spyder devices --platform ios --json
-spyder screenshot Pippa --output /tmp/pippa.png
-spyder reserve Pippa --ttl 600 --note "UI sweep"
+spyder screenshot iPad --output /tmp/ipad.png
+spyder reserve iPad --ttl 600 --note "UI sweep"
 spyder reservations --json
-spyder release Pippa
+spyder release iPad
 spyder rotate C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8 --to landscape-left
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
@@ -152,7 +152,7 @@ shells get a sensible reservation identity without ceremony.
 
 ```bash
 spyder run -- xcodebuild -project MyApp.xcodeproj \
-  -scheme MyApp -destination 'id=00008103-000D39301A6A201E' test
+  -scheme MyApp -destination 'id=00008103-001122334455667A' test
 ```
 
 Runs the command, waits for it to exit, then releases the device reservation

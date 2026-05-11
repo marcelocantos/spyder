@@ -363,7 +363,7 @@ Open runs are never pruned — they represent in-flight reservations.
 Path: `~/.spyder/baselines/<suite>/<variant>/<case>.{png,manifest.json}`.
 
 A variant key encodes per-device / per-orientation context as a URL-safe
-string, e.g. `pippa-landscape`. The store is opaque to the key's content.
+string, e.g. `ipad-landscape`. The store is opaque to the key's content.
 Writes are atomic (write-to-temp then rename).
 
 Diff report shape (`visualdiff.Report`):

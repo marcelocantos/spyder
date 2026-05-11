@@ -969,7 +969,7 @@ type ipsHeader struct {
 //
 // Hardware UDID format: exactly 8 hex + "-" + 16 hex, e.g.
 //
-//	00008103-000D39301A6A201E
+//	00008103-001122334455667A
 //
 // Simulator UUIDs follow the standard UUID4 shape (8-4-4-4-12 hex groups),
 // matching devicectl / xcrun simctl output, e.g.
@@ -1120,7 +1120,7 @@ func (a *IOSAdapter) ClearNetwork(_ string) error {
 //
 // Example:
 //
-//	Mar 15 14:23:01.123 Pippa MyApp(com.example.app)[1234] <Error>: crash happened
+//	Mar 15 14:23:01.123 iPad MyApp(com.example.app)[1234] <Error>: crash happened
 //
 // The regex is intentionally permissive to handle variations (missing
 // subsystem, different bracket styles, etc.).

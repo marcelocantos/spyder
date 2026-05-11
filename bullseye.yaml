@@ -111,7 +111,7 @@ targets:
     actual_cost: 1.0
     acceptance:
     - tools/call devices returns a structured result (may be empty list if inventory unset, but with correct shape)
-    - tools/call resolve with {name:"Pippa"} returns a structured result even if inventory is empty (error payload with correct JSON-RPC shape is acceptable)
+    - tools/call resolve with {name:"iPad"} returns a structured result even if inventory is empty (error payload with correct JSON-RPC shape is acceptable)
     - tools/call keepawake and device_state return structured results (stub payloads are fine at this layer — this target validates the dispatch path, not the business logic)
     - unknown tool names return a proper JSON-RPC error, not a crash
     context: Confirms the full proxy → daemon → ToolHandler.Dispatch path. Tool-specific business logic lives in 🎯T2, 🎯T3, 🎯T5, 🎯T6 — this target only cares that the dispatch wiring is intact.
@@ -183,11 +183,11 @@ targets:
     - spyder run [--as <owner>] auto-acquires a reservation for the command's lifetime; owner defaults to filepath.Base(cwd); opportunistic renewal so long-running commands don't expire mid-run; release on exit (defer) regardless of success/failure/panic
     - Auto-awake supervisor uses owner id "autoawake"; skips devices held by anyone else (no yank-focus mid-test)
     - Reservations persist to ~/.spyder/reservations.json; expired entries pruned on daemon startup and on any access
-    - 'Device identity is normalized via inventory: reserving "Pippa" also blocks operations against Pippa''s raw UDID/CoreDevice UUID and vice versa'
+    - 'Device identity is normalized via inventory: reserving "iPad" also blocks operations against iPad''s raw UDID/CoreDevice UUID and vice versa'
     - Default TTL 3600s; max 86400s; renew accepts the same bounds
     - Unit tests cover acquire / release / renew / conflict / TTL expiry / persistence round-trip / normalization
     context: |-
-      User runs multiple parallel dev sessions (separate Claude Code instances, separate projects) that all talk to the same device fleet via spyder. Without coordination, session B's launch_app or keepawake yanks focus during session A's xcodebuild test. spyder is the natural owner of this state — it's a single daemon per host, every client flows through it, and it already owns device inventory.\n\nDesign agreed with user on 2026-04-19:\n- Strict on mutating tools, advisory on read tools.\n- Owner identity is a free-form string; convention is filepath.Base(cwd). Not server-assigned — keeps 'Pippa is held by tiltbuggy' readable.\n- Agents aren't required to reserve before mutating calls: if the device is free, the call just works. They only pay the token cost when they want an exclusive hold.\n- spyder run is the blessed path that makes this ergonomic: it auto-reserves, opportunistically renews, and releases on exit.\n- Auto-awake cooperates — skips devices held by non-self; doesn't hold its own reservations (launches are fast).\n- Persistence via ~/.spyder/reservations.json so brew services restart doesn't orphan a live spyder run.\n\nDeferred: force: true override, interactive macOS notification UX, multi-device reservations in a single call.</context>
+      User runs multiple parallel dev sessions (separate Claude Code instances, separate projects) that all talk to the same device fleet via spyder. Without coordination, session B's launch_app or keepawake yanks focus during session A's xcodebuild test. spyder is the natural owner of this state — it's a single daemon per host, every client flows through it, and it already owns device inventory.\n\nDesign agreed with user on 2026-04-19:\n- Strict on mutating tools, advisory on read tools.\n- Owner identity is a free-form string; convention is filepath.Base(cwd). Not server-assigned — keeps 'iPad is held by tiltbuggy' readable.\n- Agents aren't required to reserve before mutating calls: if the device is free, the call just works. They only pay the token cost when they want an exclusive hold.\n- spyder run is the blessed path that makes this ergonomic: it auto-reserves, opportunistically renews, and releases on exit.\n- Auto-awake cooperates — skips devices held by non-self; doesn't hold its own reservations (launches are fast).\n- Persistence via ~/.spyder/reservations.json so brew services restart doesn't orphan a live spyder run.\n\nDeferred: force: true override, interactive macOS notification UX, multi-device reservations in a single call.</context>
       <parameter name="observable">true
     tags:
     - mcp-tool
@@ -213,7 +213,7 @@ targets:
     context: |-
       Today the daemon's only network surface is `/mcp` (JSON-RPC), and the only non-agent entry point is `spyder run <cmd>` (reservation-wrapping shell wrapper). Tests and smoke scripts (e.g. ge/tools/smoke-test.sh, ge/tools/rotation-stability-test.sh) have no way to enumerate devices, take screenshots, or hold reservations without either embedding an MCP client or bypassing spyder and shelling out to pymobiledevice3/adb directly. Bypassing defeats the reservation invariants — two concurrent consumers (e.g. an agent and a CI run) would corrupt each other's device state.
 
-      Everything must go through the daemon so reservation state stays centralised. A REST surface on the existing HTTP server is the right shape: the CLI becomes a thin REST client (`spyder devices`, `spyder screenshot --device Pippa`, `spyder reserve`/`release`/`renew`), and any language or `curl` can participate without linking MCP. MCP remains for agents; REST and MCP share the same underlying handler code and the same Authorize() checks.
+      Everything must go through the daemon so reservation state stays centralised. A REST surface on the existing HTTP server is the right shape: the CLI becomes a thin REST client (`spyder devices`, `spyder screenshot --device iPad`, `spyder reserve`/`release`/`renew`), and any language or `curl` can participate without linking MCP. MCP remains for agents; REST and MCP share the same underlying handler code and the same Authorize() checks.
 
       Reservation semantics are already production-grade (file-backed, atomic-rename, TTL leases, owner-auth on mutations) — the hard part is done. This target is purely about transport.
     origin: manual
@@ -364,12 +364,12 @@ targets:
     showcase: true
     actual_cost: 2.0
     acceptance:
-    - ~/.spyder/inventory.json format is documented with at least Pippa as a worked example
-    - 'resolve({name: "Pippa"}) returns both the hardware UDID (00008103-000D39301A6A201E) and the CoreDevice UUID (E1A01EA6-8D77-556C-B18D-D470B2909E87)'
+    - ~/.spyder/inventory.json format is documented with at least iPad as a worked example
+    - 'resolve({name: "iPad"}) returns both the hardware UDID (00008103-001122334455667A) and the CoreDevice UUID (00000000-0000-0000-0000-000000000001)'
     - Alias lookup is case-insensitive; raw UUIDs pass through unchanged when not in the inventory
     - Missing inventory file is handled as empty, not an error
     - devices tool annotates results with the inventory alias when the UUID matches
-    context: The inventory layer is what lets the agent say \"the iPad\" or \"Pippa\" without memorising UUIDs — and lets tests target the right device by semantic name. Two UUID systems coexist in iOS tooling (hardware UDID for xctrace/xcodebuild, CoreDevice UUID for devicectl/pymobiledevice3); the inventory holds both so callers don't have to care which their downstream tool needs. Skeleton is in internal/inventory/inventory.go.
+    context: The inventory layer is what lets the agent say \"the iPad\" or \"iPad\" without memorising UUIDs — and lets tests target the right device by semantic name. Two UUID systems coexist in iOS tooling (hardware UDID for xctrace/xcodebuild, CoreDevice UUID for devicectl/pymobiledevice3); the inventory holds both so callers don't have to care which their downstream tool needs. Skeleton is in internal/inventory/inventory.go.
     depends_on:
     - T1
     tags:
@@ -569,7 +569,7 @@ targets:
     - internal/device/ios.go no longer calls exec.Command("pymobiledevice3", ...) anywhere. Every pmd3 operation goes through an IOSBridgeClient that wraps http.Client with a Unix-socket DialContext and typed request/response structs. exec.LookPath("pymobiledevice3") checks and the 'pymobiledevice3 not found in PATH' error paths are deleted.
     - 'The Homebrew formula installs the bridge bundle as part of the spyder package; the launchd plist no longer needs ~/.py/bin on PATH for pmd3 to be found. Spyder resolves the bridge binary via os.Executable() relative path (or a SPYDER_PMD3_BRIDGE env var override for development). Autoawake''s ''install check failed: pymobiledevice3 not found in PATH'' log line can no longer occur — because there is no install check.'
     - 'End-to-end test: plug in a fresh iOS device with no prior spyder interaction, observe spyder''s log shows ''autoawake: assertion acquired'' within ~5 seconds of plug-in, leave the device idle for longer than its normal auto-lock interval (e.g. 2 minutes if set to 1), and confirm the device is still unlocked. No app is installed on the device by spyder during this test.'
-    context: 'Surfaced 2026-04-21 while investigating why two freshly-plugged-in iOS devices had no keep-awake running.\n\nThe proximate bug: the Homebrew launchd plist for spyder sets PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \u2014 which does NOT include the user''s ~/.py/bin where pymobiledevice3 actually lives. Consequence: every autoawake install-check fails at the first pmd3 call (''pymobiledevice3 apps list: exec: \"pymobiledevice3\": executable file not found in $PATH''), handleNewDevice bails at autoawake.go:184 before reaching the deploy branch, and the whole ''plug in \u2192 auto-install-and-launch KeepAwake'' design never actually executes. Demonstrated with two iPads (Jevons, Pippa) on 2026-04-21 \u2014 neither had KeepAwake running despite being physically connected and spyder being healthy.\n\nThe deeper realisation: the entire on-device app approach was the wrong design. pymobiledevice3 already exposes PowerAssertionService (pymobiledevice3/services/power_assertion.py) which wraps Apple''s IOPMAssertionCreateWithName \u2014 the same API Xcode uses during debugging to prevent device sleep. Assertion types include PreventUserIdleSystemSleep (exactly what KeepAwake was emulating) and PreventSystemSleep. It''s a lockdown/RSD service, not a DVT service \u2014 so it doesn''t even need developer-mode / DDI mounting. Works on any paired device.\n\nArchitectural decisions made during the investigation:\n- HTTP-over-Unix-socket chosen over stdio JSON-RPC: standard http.Client handles concurrent requests from goroutines without a demuxer, framing is solved, curl --unix-socket gives a free debug path. Stdio JSON-RPC would require a ~200-line Go-side demuxer and custom framing that''s fragile under buffer flush errors.\n- Pre-built .ipa deploy rejected: signing + provisioning profile constraints mean you can only pre-sign for known UDIDs, which defeats the auto-deploy-on-plug-in use case. This is now moot because there is no app to deploy.\n- Embedding CPython via cgo rejected: same Go-Python interop hairball that made the earlier attempt hard, plus GIL and Python-version coupling at build time. Also moot because the bridge is a separate process.\n- Full rewrite to go-ios (https://github.com/danielpaulus/go-ios) deferred: cleanest long-term outcome \u2014 eliminates Python entirely \u2014 but 1\u20132 weeks of porting effort and loses pmd3''s fast cadence on new iOS versions. Worth keeping on the horizon but not in T25''s scope.\n\nThe bridge design is still the right architecture because spyder uses pmd3 for many things beyond power assertions (list_apps, screenshot, crash reports, battery, launch/kill for non-KeepAwake apps, etc.). Moving all those off the PATH-dependent CLI shell-out path to a clean HTTP API is the infrastructural win. The power assertion migration is the immediate functional payoff that lets us delete a significant chunk of code (the whole KeepAwake app project + deploy pipeline) rather than just rewire it.\n\nOne empirical question to verify during implementation: confirm the assertion survives a brief lockdown disconnect+reconnect, or if the connection drops, how long the window is before auto-lock could kick in. If there''s a risky window, pair with PreventSystemSleep while actively running tests, not just during idle supervision.\n\nEstimated effort revised downward from 4\u20136 days to 3\u20135 days because the deploy pipeline deletion is substantial and the assertion API is tiny.'
+    context: 'Surfaced 2026-04-21 while investigating why two freshly-plugged-in iOS devices had no keep-awake running.\n\nThe proximate bug: the Homebrew launchd plist for spyder sets PATH=/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin \u2014 which does NOT include the user''s ~/.py/bin where pymobiledevice3 actually lives. Consequence: every autoawake install-check fails at the first pmd3 call (''pymobiledevice3 apps list: exec: \"pymobiledevice3\": executable file not found in $PATH''), handleNewDevice bails at autoawake.go:184 before reaching the deploy branch, and the whole ''plug in \u2192 auto-install-and-launch KeepAwake'' design never actually executes. Demonstrated with two iPads (iPad-mini, iPad) on 2026-04-21 \u2014 neither had KeepAwake running despite being physically connected and spyder being healthy.\n\nThe deeper realisation: the entire on-device app approach was the wrong design. pymobiledevice3 already exposes PowerAssertionService (pymobiledevice3/services/power_assertion.py) which wraps Apple''s IOPMAssertionCreateWithName \u2014 the same API Xcode uses during debugging to prevent device sleep. Assertion types include PreventUserIdleSystemSleep (exactly what KeepAwake was emulating) and PreventSystemSleep. It''s a lockdown/RSD service, not a DVT service \u2014 so it doesn''t even need developer-mode / DDI mounting. Works on any paired device.\n\nArchitectural decisions made during the investigation:\n- HTTP-over-Unix-socket chosen over stdio JSON-RPC: standard http.Client handles concurrent requests from goroutines without a demuxer, framing is solved, curl --unix-socket gives a free debug path. Stdio JSON-RPC would require a ~200-line Go-side demuxer and custom framing that''s fragile under buffer flush errors.\n- Pre-built .ipa deploy rejected: signing + provisioning profile constraints mean you can only pre-sign for known UDIDs, which defeats the auto-deploy-on-plug-in use case. This is now moot because there is no app to deploy.\n- Embedding CPython via cgo rejected: same Go-Python interop hairball that made the earlier attempt hard, plus GIL and Python-version coupling at build time. Also moot because the bridge is a separate process.\n- Full rewrite to go-ios (https://github.com/danielpaulus/go-ios) deferred: cleanest long-term outcome \u2014 eliminates Python entirely \u2014 but 1\u20132 weeks of porting effort and loses pmd3''s fast cadence on new iOS versions. Worth keeping on the horizon but not in T25''s scope.\n\nThe bridge design is still the right architecture because spyder uses pmd3 for many things beyond power assertions (list_apps, screenshot, crash reports, battery, launch/kill for non-KeepAwake apps, etc.). Moving all those off the PATH-dependent CLI shell-out path to a clean HTTP API is the infrastructural win. The power assertion migration is the immediate functional payoff that lets us delete a significant chunk of code (the whole KeepAwake app project + deploy pipeline) rather than just rewire it.\n\nOne empirical question to verify during implementation: confirm the assertion survives a brief lockdown disconnect+reconnect, or if the connection drops, how long the window is before auto-lock could kick in. If there''s a risky window, pair with PreventSystemSleep while actively running tests, not just during idle supervision.\n\nEstimated effort revised downward from 4\u20136 days to 3\u20135 days because the deploy pipeline deletion is substantial and the assertion API is tiny.'
     tags:
     - pmd3
     - bridge
@@ -721,7 +721,7 @@ targets:
     - Any bridge unresponsiveness — wedge, exit, protocol error, inter-packet stall — crashes the daemon with a descriptive panic, with no retry/restart/circuit-breaker machinery
     - List-returning and file-returning bridge endpoints stream incrementally with per-chunk deadlines, not whole-result timeouts
     - A developer can run `go test ./...` and exercise the real bridge subprocess end-to-end, including induced-bug scenarios (wedge, crash, protocol stall), without installing the Homebrew formula or plugging in a device
-    context: 'Umbrella target covering three design issues surfaced on 2026-04-22 after Jevons fell asleep. Root cause was a wedged pmd3-bridge Uvicorn process: the subprocess watchdog only watches for process *exit* (supervisor.go:290), autoawake silently swallows bridge errors (autoawake.go:102-104), and no test in the current suite exercises the real bridge process over its real transport. Three structural gaps emerged: (1) the bridge uses a world-discoverable `~/.spyder/pmd3-bridge.sock` path — architectural leakage for what is a private subprocess; (2) resilience code is framed wrongly as "recover from transient failures" when this is a same-host local-only pipe where any failure is a bug and should crash the daemon; (3) the test pyramid is four isolated layers with every layer below mocked — no end-to-end coverage. Decomposes into 🎯T26.1–🎯T26.4.'
+    context: 'Umbrella target covering three design issues surfaced on 2026-04-22 after iPad-mini fell asleep. Root cause was a wedged pmd3-bridge Uvicorn process: the subprocess watchdog only watches for process *exit* (supervisor.go:290), autoawake silently swallows bridge errors (autoawake.go:102-104), and no test in the current suite exercises the real bridge process over its real transport. Three structural gaps emerged: (1) the bridge uses a world-discoverable `~/.spyder/pmd3-bridge.sock` path — architectural leakage for what is a private subprocess; (2) resilience code is framed wrongly as "recover from transient failures" when this is a same-host local-only pipe where any failure is a bug and should crash the daemon; (3) the test pyramid is four isolated layers with every layer below mocked — no end-to-end coverage. Decomposes into 🎯T26.1–🎯T26.4.'
     depends_on:
     - T26.1
     - T26.2
@@ -734,7 +734,7 @@ targets:
     - reliability
     - architecture
     - testing
-    origin: 'discovered 2026-04-22: Jevons fell asleep; root-cause analysis revealed wedged bridge + silent-swallow + no integration test coverage'
+    origin: 'discovered 2026-04-22: iPad-mini fell asleep; root-cause analysis revealed wedged bridge + silent-swallow + no integration test coverage'
     discovered: 2026-04-22
     achieved: 2026-04-22
   T26.1:
@@ -888,10 +888,10 @@ targets:
     - '`autoawake.Supervisor.Status()` exposes the current udid→handle map so tests can assert assertions are held without reading private fields'
     - The stay-awake test, when run against the v0.7.0 pre-fix code, FAILS (proves it catches the regression); when run against the fixed code it PASSES. Evidence recorded in a PR description or commit trailer
     context: |-
-      Raised 2026-04-22 after v0.7.0 shipped with an fd leak in services.list_devices (and every other _lockdown caller) that manifested as EMFILE ~4 minutes into autoawake polling, causing Jevons to fall asleep despite the new T26 hardening. The T26 work ensures the daemon detects and crashes when the bridge goes unresponsive — but this failure mode doesn't go unresponsive, it goes slowly-wrong: list_devices returns a structured BridgeError (pmd3_error, 500, "Too many open files") that the fail-fast path correctly classifies as legitimate and propagates, while the underlying issue — a file-descriptor leak — silently drives the system into failure. Per-call unit tests against fakes don't allocate real file descriptors and therefore can't see this class of bug. Resource-leak tests require real subprocesses, real sockets, and enough iterations to surface the drift. T27 is the infrastructure for that category. The stay-awake test is the first concrete instance and is gating on T26.2-class releases.</context>
+      Raised 2026-04-22 after v0.7.0 shipped with an fd leak in services.list_devices (and every other _lockdown caller) that manifested as EMFILE ~4 minutes into autoawake polling, causing iPad-mini to fall asleep despite the new T26 hardening. The T26 work ensures the daemon detects and crashes when the bridge goes unresponsive — but this failure mode doesn't go unresponsive, it goes slowly-wrong: list_devices returns a structured BridgeError (pmd3_error, 500, "Too many open files") that the fail-fast path correctly classifies as legitimate and propagates, while the underlying issue — a file-descriptor leak — silently drives the system into failure. Per-call unit tests against fakes don't allocate real file descriptors and therefore can't see this class of bug. Resource-leak tests require real subprocesses, real sockets, and enough iterations to surface the drift. T27 is the infrastructure for that category. The stay-awake test is the first concrete instance and is gating on T26.2-class releases.</context>
       <parameter name="status">identified</parameter>
       <parameter name="tags">["testing", "resource-leak", "soak", "regression"]</parameter>
-      <parameter name="origin">discovered 2026-04-22 from v0.7.0 fd-leak incident (Jevons fell asleep ~4min into autoawake polling)</parameter>
+      <parameter name="origin">discovered 2026-04-22 from v0.7.0 fd-leak incident (iPad-mini fell asleep ~4min into autoawake polling)</parameter>
       </invoke>
     origin: manual
     discovered: 2026-04-22
@@ -979,13 +979,13 @@ targets:
     acceptance:
     - ios/KeepAwake/ contains a buildable Xcode project producing com.marcelocantos.spyder.KeepAwake
     - The app sets UIApplication.shared.isIdleTimerDisabled = true on foreground and unsets on background
-    - Bundle is installable on Pippa via devicectl or Xcode, survives device reboot, and works with a standard free developer profile (no paid entitlements required)
-    - 'keepawake({device: "Pippa"}) MCP tool foregrounds the app on the device and returns a success confirmation'
-    - With the app foregrounded, a plugged-in Pippa stays awake indefinitely in practice (verified over a ≥30 minute idle window)
+    - Bundle is installable on iPad via devicectl or Xcode, survives device reboot, and works with a standard free developer profile (no paid entitlements required)
+    - 'keepawake({device: "iPad"}) MCP tool foregrounds the app on the device and returns a success confirmation'
+    - With the app foregrounded, a plugged-in iPad stays awake indefinitely in practice (verified over a ≥30 minute idle window)
     context: |-
       The originating pain point: iOS has no system-level "stay awake on power" setting. A trivial SwiftUI app that holds isIdleTimerDisabled is the cleanest workaround. The MCP surface wraps the launch step so automation (test-run wrappers) can bring the app back to the foreground without manual taps. Scope-fence: no fancy UI, no telemetry, no background operation — it only works while foregrounded and that's the whole point. The iOS Shortcut automation ("when power connected → open KeepAwake") is belt-and-braces and can be set up manually by the user.
 
-      Progress (commit 3482133): scaffolded ios/KeepAwake/ (xcodegen-driven, SwiftUI, iOS 18 target), bundle id com.marcelocantos.spyder.KeepAwake, scenePhase-driven isIdleTimerDisabled toggle. Simulator build ✓. IOSAdapter.LaunchKeepAwake wired to `xcrun devicectl device process launch`. Remaining: install on Pippa via Xcode (requires Apple ID linked in Xcode → Settings → Accounts; free developer profile suffices), then confirm ≥30 min idle hold.
+      Progress (commit 3482133): scaffolded ios/KeepAwake/ (xcodegen-driven, SwiftUI, iOS 18 target), bundle id com.marcelocantos.spyder.KeepAwake, scenePhase-driven isIdleTimerDisabled toggle. Simulator build ✓. IOSAdapter.LaunchKeepAwake wired to `xcrun devicectl device process launch`. Remaining: install on iPad via Xcode (requires Apple ID linked in Xcode → Settings → Accounts; free developer profile suffices), then confirm ≥30 min idle hold.
     depends_on:
     - T1
     - T2
@@ -1008,7 +1008,7 @@ targets:
     - Device Developer Mode enablement is surfaced as a structured BridgeError (e.g. code=`developer_mode_disabled`) rather than a generic pmd3_error so the MCP client can give a specific actionable message
     - 'Device-tier Go test `TestDevice_Screenshot_WorksOniOS17Plus` in `internal/pmd3bridge/`: spawns the real bridge, calls the real screenshot endpoint against a real attached iOS 17+ device, asserts the response is a decodable PNG of reasonable size (> 4 KB) and has the PNG magic header. No fakes, no stubs, no golden-image comparison. Runs under SPYDER_DEVICES=1'
     - STABILITY.md `screenshot` entry reflects the actual iOS version support matrix and the new tunneld dependency
-    context: 'Discovered 2026-04-22 while spiking stay-awake detection. Attempted ScreenshotService.take_screenshot() against both Minicades iPhone (iOS 26.2) and Jevons iPad (iOS 26.4.1); both returned pymobiledevice3.exceptions.InvalidServiceError: InvalidService regardless of awake/asleep state. The legacy com.apple.mobile.screenshotr service was deprecated in iOS 17; the current path is CoreDevice / DVT instruments. Our bridge''s services.screenshot uses ScreenshotService which routes to the legacy service, so MCP `screenshot` tool is likely non-functional on any iOS 17+ test device. This is a separate bug from the fd leak, not a release blocker for v0.8.0 (no regressions — it was probably broken all along) but should be addressed.'
+    context: 'Discovered 2026-04-22 while spiking stay-awake detection. Attempted ScreenshotService.take_screenshot() against both iPhone iPhone (iOS 26.2) and iPad-mini iPad (iOS 26.4.1); both returned pymobiledevice3.exceptions.InvalidServiceError: InvalidService regardless of awake/asleep state. The legacy com.apple.mobile.screenshotr service was deprecated in iOS 17; the current path is CoreDevice / DVT instruments. Our bridge''s services.screenshot uses ScreenshotService which routes to the legacy service, so MCP `screenshot` tool is likely non-functional on any iOS 17+ test device. This is a separate bug from the fd leak, not a release blocker for v0.8.0 (no regressions — it was probably broken all along) but should be addressed.'
     tags:
     - bug
     - ios
@@ -1049,7 +1049,7 @@ targets:
     - When autoawake detects a new iOS device and LaunchKeepAwake fails because the app is not installed, the supervisor attempts an autonomous install+launch cycle
     - The autonomous path runs silently on success — no user prompt, no blocking. Log shows the normal `KeepAwake foregrounded` line once the app is running
     - 'Preconditions probed before attempting install: (a) codesigning identity available in the Mac keychain via `security find-identity -p codesigning -v`; (b) iOS device Developer Mode enabled (via pymobiledevice3 amfi developer-mode-status or equivalent); (c) device Trust for the team already granted (probe via provisioning profiles with matching TeamIdentifier, or detect via the first install attempt)'
-    - On each failing precondition, autoawake logs a specific actionable message naming the exact device and what the user must do (e.g. 'Developer Mode is disabled on Jevons — enable at Settings → Privacy & Security → Developer Mode; device will reboot'). No interactive prompt — the log is the channel. Autoawake tracks per-device gate state and does NOT re-log the same gate every 15s; only on state change (device re-plugged, Developer Mode flipped, etc.)
+    - On each failing precondition, autoawake logs a specific actionable message naming the exact device and what the user must do (e.g. 'Developer Mode is disabled on iPad-mini — enable at Settings → Privacy & Security → Developer Mode; device will reboot'). No interactive prompt — the log is the channel. Autoawake tracks per-device gate state and does NOT re-log the same gate every 15s; only on state change (device re-plugged, Developer Mode flipped, etc.)
     - 'Build is cached per daemon lifetime: first install triggers an `xcodebuild -allowProvisioningUpdates DEVELOPMENT_TEAM=<detected> CODE_SIGN_STYLE=Automatic` into a daemon-owned derivedData path. Subsequent devices needing install in the same session reuse the cached .app bundle'
     - '`DEVELOPMENT_TEAM` passed on the xcodebuild command line; the committed `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj` stays blank-team, never mutated at runtime'
     - 'Idempotent: once KeepAwake is installed on a device, further attempts are just `devicectl launch` (the existing LaunchKeepAwake path). Re-polls every 15 s as today'
@@ -1075,15 +1075,15 @@ targets:
     - A Swift binary (`spyder-iosbridge`) wraps Apple's CoreDevice.framework and is bundled in the spyder release tar alongside the Go daemon. Swift Package Manager build target lives under `ios-bridge/` (or similar) and is invoked from the spyder Makefile. KeepAwake stays separate (it ships on-device, not host).
     - 'spyder-iosbridge serves the same wire protocol the pmd3-bridge serves today: spawned by the daemon supervisor, ephemeral TCP port + bearer-token handshake over stdio (`ready port=NNNN token=XXXX`), NDJSON streaming where useful, fail-fast on protocol violation. The Go-side `internal/pmd3bridge` package keeps its public Client API; only the bridge implementation language changes.'
     - 'Every operation `internal/pmd3bridge.Client` exposes today is implemented via CoreDevice: list_devices, get_apps, running_processes, app_info, kill_app, screenshot, crash_reports, diagnostics. Power-assertion endpoints are NOT carried over (KeepAwake replaced them in T31; the old endpoints are deleted from the Client surface as part of this work).'
-    - 'iOS 17+ devices appear in `list_devices` reliably. HIL: with Pippa (iOS 26.3.1), Jevons (iOS 26.4.1), and Minicades (iOS 26.2) all attached, `spyder devices` returns all three from the bridge path (not the separate xctrace path) without needing usbmuxd interaction.'
-    - 'Screenshot works on iOS 17+ devices. Closes 🎯T30 — the InvalidServiceError disappears because we''re not using the legacy screenshotr. Acceptance test: `TestDevice_Screenshot_WorksOniOS17Plus` from T30 passes against Jevons.'
-    - Autoawake's full T32 HIL passes against every attached device — happy-path silent install on Jevons and Minicades (not just Pippa), locked-device alert + retry, trust-not-granted alert. Closes the gap that blocked T32 final verification.
+    - 'iOS 17+ devices appear in `list_devices` reliably. HIL: with iPad (iOS 26.3.1), iPad-mini (iOS 26.4.1), and iPhone (iOS 26.2) all attached, `spyder devices` returns all three from the bridge path (not the separate xctrace path) without needing usbmuxd interaction.'
+    - 'Screenshot works on iOS 17+ devices. Closes 🎯T30 — the InvalidServiceError disappears because we''re not using the legacy screenshotr. Acceptance test: `TestDevice_Screenshot_WorksOniOS17Plus` from T30 passes against iPad-mini.'
+    - Autoawake's full T32 HIL passes against every attached device — happy-path silent install on iPad-mini and iPhone (not just iPad), locked-device alert + retry, trust-not-granted alert. Closes the gap that blocked T32 final verification.
     - 'The Python bridge is fully removed: `bridge/` tree deleted, `scripts/run-dev-bridge.sh` deleted, `internal/pmd3bridge/integration_test.go` and `fdcount_test.go` deleted or rewritten against the Swift bridge, no remaining references to `pymobiledevice3`, `uv`, or the Python venv anywhere in the repo or release artifacts. CI workflow updated to drop the Python toolchain step.'
     - 'Daemon-private security posture preserved or improved: bearer token enforced on every request, supervisor restarts the bridge fail-fast on protocol error, FD/connection counts bounded (no equivalent of the v0.7.0 EMFILE leak surfaceable through the new bridge).'
     - Build is reproducible without a paid Apple Developer Program seat — the sidecar only links against system frameworks, no entitlements that require provisioning. (Distinct from KeepAwake which does need codesigning to run on-device.)
     - All existing autoawake / runs / mcp / rest tests pass against the new bridge. The integration tier (`make test-integration`) covers the full bridge surface end-to-end against a real attached device, with no Python in the loop.
     context: |-
-      Raised earlier on 2026-04-25 in response to T32 HIL apparently surfacing that pmd3 couldn't enumerate iOS 17+ devices and that screenshot was broken. The Swift sidecar was framed as the structural fix. Subsequent investigation that same day showed the diagnosis was wrong: pmd3 + an externally-running `pymobiledevice3 remote tunneld` + DVT-via-RSD path works for iOS 17+ devices (verified against Jevons (iOS 26.4.1) producing a 44KB PNG via `pmd3 developer dvt screenshot --tunnel <udid>`). The bridge's screenshot impl was using the deprecated `com.apple.mobile.screenshotr` legacy lockdown service rather than the DVT instrument over RSD; that's the actual bug. T30 already describes the correct fix in its acceptance criteria — bridge to use the DVT-based Screenshot instrument over a tunneld-mediated RSD connection. T33 retired without work because the right work lives under T30 (and likely a future target for any other bridge ops with the same legacy-vs-tunneld split).</context>
+      Raised earlier on 2026-04-25 in response to T32 HIL apparently surfacing that pmd3 couldn't enumerate iOS 17+ devices and that screenshot was broken. The Swift sidecar was framed as the structural fix. Subsequent investigation that same day showed the diagnosis was wrong: pmd3 + an externally-running `pymobiledevice3 remote tunneld` + DVT-via-RSD path works for iOS 17+ devices (verified against iPad-mini (iOS 26.4.1) producing a 44KB PNG via `pmd3 developer dvt screenshot --tunnel <udid>`). The bridge's screenshot impl was using the deprecated `com.apple.mobile.screenshotr` legacy lockdown service rather than the DVT instrument over RSD; that's the actual bug. T30 already describes the correct fix in its acceptance criteria — bridge to use the DVT-based Screenshot instrument over a tunneld-mediated RSD connection. T33 retired without work because the right work lives under T30 (and likely a future target for any other bridge ops with the same legacy-vs-tunneld split).</context>
       <parameter name="acceptance">["Retired without work — see context. The actual fix for iOS 17+ screenshot lives in T30; pmd3 itself stays."]
     tags:
     - ios
@@ -1102,9 +1102,9 @@ targets:
     acceptance:
     - When devicectl process launch returns the CoreDevice 'No provider was found' error (Code=1002) — i.e. the bundle is installed but the host has no provisioning profile that matches the on-device signature — the convergence loop attempts uninstall + reinstall via the currently-detected codesigning team, then retries launch.
     - On success the device transitions to converged on the next tick. On repeated failure the convergence loop logs once and stays in classOther without spamming the log.
-    - 'Acceptance test: a device with a stale KeepAwake install (e.g. Pippa, where KeepAwake is already on-device but signed by a no-longer-resolvable team) drives to converged within two convergence ticks (≤30 s) once spyder starts.'
+    - 'Acceptance test: a device with a stale KeepAwake install (e.g. iPad, where KeepAwake is already on-device but signed by a no-longer-resolvable team) drives to converged within two convergence ticks (≤30 s) once spyder starts.'
     context: |-
-      Raised 2026-04-25 during T32 HIL verification. Pippa (iPad Air 5, iOS 26.3.1) had a previously-installed KeepAwake from an earlier session whose provisioning profile is no longer resolvable on the host — every devicectl launch attempt fails with 'No provider was found' (CoreDeviceError Code=1002). The new convergence loop correctly observes installed=true and tries to launch each tick; the launch fails, gets classified as classOther, and stays stuck. The fix: detect that specific error pattern and treat it as 'install is corrupt; uninstall and reinstall'. Probably ~30 lines of Go in autoawake plus a new error sentinel from internal/device. Not a v0.10.0 release blocker (autoawake handles every other observed device correctly; Pippa just stays unmanaged), but should land soon to avoid the per-15s log line on hosts where any stale install lingers.</context>
+      Raised 2026-04-25 during T32 HIL verification. iPad (iPad Air 5, iOS 26.3.1) had a previously-installed KeepAwake from an earlier session whose provisioning profile is no longer resolvable on the host — every devicectl launch attempt fails with 'No provider was found' (CoreDeviceError Code=1002). The new convergence loop correctly observes installed=true and tries to launch each tick; the launch fails, gets classified as classOther, and stays stuck. The fix: detect that specific error pattern and treat it as 'install is corrupt; uninstall and reinstall'. Probably ~30 lines of Go in autoawake plus a new error sentinel from internal/device. Not a v0.10.0 release blocker (autoawake handles every other observed device correctly; iPad just stays unmanaged), but should land soon to avoid the per-15s log line on hosts where any stale install lingers.</context>
       <parameter name="tags">["ios", "autoawake", "follow-up", "post-t32"]
     origin: manual
     discovered: 2026-04-25
@@ -1120,7 +1120,7 @@ targets:
     - 'Fix is in `internal/daemon/daemon.go` `resolveBridgeBinary`: call `filepath.EvalSymlinks` on the result of `os.Executable()` before computing the relative path to libexec. The dev fallback (walking up looking for `bridge/dist/pmd3-bridge/pmd3-bridge`) stays unchanged.'
     - 'Acceptance test: a Go unit test that constructs the resolution logic against a temp tree containing a symlink → real binary, asserting the symlink target''s libexec sibling is found.'
     context: |-
-      Discovered 2026-04-25 testing v0.11.0 via `brew install marcelocantos/tap/spyder` immediately after release. The daemon started, listened on :3030, the autoawake convergence loop spun up — but every iOS tool call returned `iOS adapter requires the pmd3 bridge — ensure the bridge binary is installed`. Daemon log line: `pmd3-bridge binary not found — bridge tools disabled; set SPYDER_PMD3_BRIDGE or install via Homebrew`. Root cause: `os.Executable()` returns the symlink path `/opt/homebrew/bin/spyder` (linked from `/opt/homebrew/Cellar/spyder/0.11.0/bin/spyder`); `resolveBridgeBinary` then computes `<exe-dir>/../libexec/pmd3-bridge/pmd3-bridge` = `/opt/homebrew/libexec/pmd3-bridge/pmd3-bridge`, which doesn't exist. The actual bridge is in the Cellar at `/opt/homebrew/Cellar/spyder/0.11.0/libexec/pmd3-bridge/pmd3-bridge`. This affects every Homebrew user; CI's release-test step doesn't catch it because it tests the locally-built binary, not the installed-via-tap binary. Workaround: `SPYDER_PMD3_BRIDGE=/opt/homebrew/Cellar/spyder/0.11.0/libexec/pmd3-bridge/pmd3-bridge spyder serve` works fine and verified DVT screenshot of Jevons end-to-end via MCP. Should ship as v0.12.0 ASAP — every fresh install is broken otherwise.</context>
+      Discovered 2026-04-25 testing v0.11.0 via `brew install marcelocantos/tap/spyder` immediately after release. The daemon started, listened on :3030, the autoawake convergence loop spun up — but every iOS tool call returned `iOS adapter requires the pmd3 bridge — ensure the bridge binary is installed`. Daemon log line: `pmd3-bridge binary not found — bridge tools disabled; set SPYDER_PMD3_BRIDGE or install via Homebrew`. Root cause: `os.Executable()` returns the symlink path `/opt/homebrew/bin/spyder` (linked from `/opt/homebrew/Cellar/spyder/0.11.0/bin/spyder`); `resolveBridgeBinary` then computes `<exe-dir>/../libexec/pmd3-bridge/pmd3-bridge` = `/opt/homebrew/libexec/pmd3-bridge/pmd3-bridge`, which doesn't exist. The actual bridge is in the Cellar at `/opt/homebrew/Cellar/spyder/0.11.0/libexec/pmd3-bridge/pmd3-bridge`. This affects every Homebrew user; CI's release-test step doesn't catch it because it tests the locally-built binary, not the installed-via-tap binary. Workaround: `SPYDER_PMD3_BRIDGE=/opt/homebrew/Cellar/spyder/0.11.0/libexec/pmd3-bridge/pmd3-bridge spyder serve` works fine and verified DVT screenshot of iPad-mini end-to-end via MCP. Should ship as v0.12.0 ASAP — every fresh install is broken otherwise.</context>
       <parameter name="tags">["bug", "release", "homebrew", "ios", "post-v0.11.0"]
     origin: manual
     discovered: 2026-04-25
@@ -1280,7 +1280,7 @@ targets:
 
       - `bin/spyder` (no args) lists `is-running` in the device-tools section, alongside the existing `launch-app`/`terminate-app` siblings.
       - `bin/spyder is-running` (no args) — usage error, exit 2 with `spyder is-running <device> <bundle-id> [--json]` synopsis.
-      - `bin/spyder resolve Pippa` — returns the full inventory entry JSON (alias, platform, ios_uuid, ios_coredevice, notes), exit 0.
+      - `bin/spyder resolve iPad` — returns the full inventory entry JSON (alias, platform, ios_uuid, ios_coredevice, notes), exit 0.
       - `bin/spyder resolve "this-is-not-an-alias-or-predicate"` — exit 15 with `"…" is not a known alias and not a parseable selector predicate (no '=' found)`.
       - `bin/spyder resolve "platform=android,bogus=true"` — exit 15 surfacing the parse error: `selector parse: unknown key "bogus" in "bogus=true"`.
       - `bin/spyder run --timeout banana -- echo hi` — exit 2 with `--timeout: time: invalid duration "banana"`.
@@ -1337,7 +1337,7 @@ targets:
     actual_cost: 3.0
     acceptance:
     - A wrapper command (subcommand or companion script) runs xcodebuild test/run with arbitrary args, waits for completion, and foregrounds KeepAwake on exit — success or failure
-    - Target device defaults to the inventory's canonical iPad (Pippa) but can be overridden
+    - Target device defaults to the inventory's canonical iPad (iPad) but can be overridden
     - No race between test teardown and KeepAwake launch — if the device is still holding the test app, the wrapper waits for the test process to exit before launching KeepAwake
     - 'Idempotent: calling it when KeepAwake is already foregrounded is a no-op, not an error'
     context: The actual automation piece that closes the loop on the user's original ask. Without this, the human has to remember to re-foreground KeepAwake after every test run — which is exactly the failure mode the user described. The wrapper is what makes the workflow reliable. Could be a subcommand like `spyder run -- xcodebuild ...` or a thin shell script; decide when implementing.
@@ -1387,13 +1387,13 @@ targets:
 
       Root cause: internal/pmd3bridge/client.go:223 `func (c *Client) fire(err error)` treats every error as fatal — logs ERROR "bridge call FATAL — about to panic" then calls `c.fatal(err)` (which is `panic(err)` in production). This is invoked from `post()` and `postStream()` for marshal failures, transport errors, decode errors, unstructured non-2xx responses, etc. There's only one exception: when the supervisor is already in shutdown (`c.sup.Stopped()` true).
 
-      The autoawake supervisor polls /v1/list_devices every 2 seconds. When the bridge subprocess hangs once (likely a pmd3 syslog-stream lock or a lockdown freeze on Pippa or the iPhone — both UDIDs were emitting lockdown failure warnings every poll), the timeout fires, the daemon panics, and Claude Code drops.
+      The autoawake supervisor polls /v1/list_devices every 2 seconds. When the bridge subprocess hangs once (likely a pmd3 syslog-stream lock or a lockdown freeze on iPad or the iPhone — both UDIDs were emitting lockdown failure warnings every poll), the timeout fires, the daemon panics, and Claude Code drops.
 
       Architecturally: the bridge supervisor exists precisely so the bridge can fault without taking the daemon down. The current panic-on-transport-error short-circuits that recovery. The minimal, correct fix is to distinguish fault classes in `fire()`:
       - Transport errors (context.DeadlineExceeded, net.Error, refused) → log WARN, return error to caller, supervisor optionally restarts bridge.
       - Decode errors / unstructured 5xx / marshal errors → still fatal (these are genuine code bugs).
 
-      A second-order issue: this is the same iPad+iPhone whose lockdown queries were warning continuously (00008130-... and 00008110-...). Pippa's UDID is the iPad. The other is presumably an iPhone freshly added without trust. The bridge stall may correlate with one of those devices being unresponsive.
+      A second-order issue: this is the same iPad+iPhone whose lockdown queries were warning continuously (00008130-... and 00008110-...). iPad's UDID is the iPad. The other is presumably an iPhone freshly added without trust. The bridge stall may correlate with one of those devices being unresponsive.
 
       This is high-priority — every Claude Code session today is being kicked every ~30 minutes until this lands.
     tags:
@@ -1411,18 +1411,18 @@ targets:
     value: 0.0
     cost: 0.0
     acceptance:
-    - 'Operations that today fail on iOS 17+ devices with `device not connected: <alias>` — `device_state` (battery/thermal/foreground app), `launch_app`, `terminate_app`, `list_apps`, `logs`, `crashes` — succeed when the device is in the tunneld RSD registry, mirroring the path `screenshot` already takes. Verified end-to-end against Jevons (iPad mini A17 Pro on iOS 26.4.1) and at least one other iOS 17+ device.'
+    - 'Operations that today fail on iOS 17+ devices with `device not connected: <alias>` — `device_state` (battery/thermal/foreground app), `launch_app`, `terminate_app`, `list_apps`, `logs`, `crashes` — succeed when the device is in the tunneld RSD registry, mirroring the path `screenshot` already takes. Verified end-to-end against iPad-mini (iPad mini A17 Pro on iOS 26.4.1) and at least one other iOS 17+ device.'
     - When tunneld is down, the same operations report `tunneld_unavailable` (HTTP 503) with the existing actionable message, not a generic `pmd3_error`/`device not connected` mash-up.
     - iOS <17 devices continue to use the USBMux lockdown path. The bridge picks the right transport based on the device's tunneld-registry membership, not the OS version string (which it doesn't always know).
     - The 'lockdown failed udid=... err=' empty-error log artefact (see 🎯T43) is gone for these endpoints — failures here are routed through the RSD path's structured error handling.
     - An integration test (env-gated with SPYDER_DEVICES=1) drives one full lifecycle (device_state → launch_app → is_running → terminate_app) against an iOS 17+ device and asserts every step returns a successful structured response.
     context: |-
-      Surfaced 2026-04-26 ~23:00 local while the user was driving spyder from a jevons MCP session against Jevons (iPad mini A17 Pro, UDID 00008130-0009702E1110001C, iOS 26.4.1). Symptoms captured in the jevons transcript at /Users/marcelo/.claude/projects/-Users-marcelo-work-github-com-marcelocantos-jevons/11191d31-...jsonl around 22:55-23:05:
+      Surfaced 2026-04-26 ~23:00 local while the user was driving spyder from a ipad-mini MCP session against iPad-mini (iPad mini A17 Pro, UDID 00008130-001122334455667B, iOS 26.4.1). Symptoms captured in the ipad-mini transcript at /Users/marcelo/.claude/projects/-Users-marcelo-work-github-com-marcelocantos-ipad-mini/11191d31-...jsonl around 22:55-23:05:
 
-      1. `mcp__spyder__devices` returned Jevons + Minicades Test iPhone (00008110-...) cleanly.
-      2. `mcp__spyder__terminate_app device=Jevons bundle_id=com.marcelocantos.jevon` → `device not connected: Jevons`.
-      3. `mcp__spyder__launch_app` → `device not connected: Jevons`.
-      4. `mcp__spyder__device_state` → `reading state: device not connected: Jevons`.
+      1. `mcp__spyder__devices` returned iPad-mini + Test iPhone (00008110-...) cleanly.
+      2. `mcp__spyder__terminate_app device=iPad-mini bundle_id=com.marcelocantos.jevon` → `device not connected: iPad-mini`.
+      3. `mcp__spyder__launch_app` → `device not connected: iPad-mini`.
+      4. `mcp__spyder__device_state` → `reading state: device not connected: iPad-mini`.
       5. Meanwhile `xcrun devicectl device process launch ...` (which goes through tunneld) succeeded against the same UDID at the same wall-clock time.
 
       Root cause: bridge/src/pmd3_bridge/services.py:73 `_open_lockdown(udid)` calls `pymobiledevice3.lockdown.create_using_usbmux(serial=udid)`, which is unreliable for iOS 17+ devices — usbmuxd's view of these devices flickers, and `screenshot()` already abandoned this path in 🎯T30 in favour of `_tunneld_rsd_for(udid)` for exactly this reason. But the lockdown path is still used for everything else: device_state, launch_app, terminate_app, list_apps, logs, crashes. Each of those silently degrades to `device not connected` on iOS 17+ even when the device is fully reachable via the tunnel.
@@ -1441,7 +1441,7 @@ targets:
     - tunneld
     - device_not_connected
     - high-priority
-    origin: forked-from user-reported MCP disconnect investigation 2026-04-26 (jevons session 11191d31)
+    origin: forked-from user-reported MCP disconnect investigation 2026-04-26 (ipad-mini session 11191d31)
     discovered: 2026-04-26
     achieved: 2026-04-26
   T43:
@@ -1453,9 +1453,9 @@ targets:
     - 'bridge/src/pmd3_bridge/services.py''s three `lockdown ...` warning sites (`lockdown unpaired`, `lockdown failed`, anywhere else `err=%s` is logged from a caught exception) format the exception as `repr(exc)` or `type(exc).__name__: <str>` rather than bare `str(exc)`. When `str(exc)` is empty, the log retains a meaningful breadcrumb (e.g. `err=DeviceNotFoundError()` or `err=DeviceNotFoundError: <empty>`), not the current `err=` artefact.'
     - An audit-style grep across `bridge/src/` confirms no remaining `err=%s ... str(exc)` patterns where the exception class produces an empty string.
     context: |-
-      Observed in /opt/homebrew/var/log/spyder.log on 2026-04-26 with both Jevons (00008130-...) and Minicades Test iPhone (00008110-...): the bridge emits
+      Observed in /opt/homebrew/var/log/spyder.log on 2026-04-26 with both iPad-mini (00008130-...) and Test iPhone (00008110-...): the bridge emits
 
-        WARNING pmd3_bridge.services lockdown failed udid=00008130-0009702E1110001C elapsed_ms=1 err=
+        WARNING pmd3_bridge.services lockdown failed udid=00008130-001122334455667B elapsed_ms=1 err=
 
       every 2 seconds (autoawake polling) with `err=` empty. `str(exc)` from pymobiledevice3 exceptions is sometimes empty (the exception class is typed but carries no message), and the bridge's logging discards the type. Result: "lockdown failed err=" with no actionable breadcrumb.
 
@@ -1484,7 +1484,7 @@ targets:
     - Verified by an integration test (env-gated, e.g. SPYDER_LIFECYCLE=1) that starts `spyder serve`, sends SIGKILL to the parent, and asserts within 1s that the bridge subprocess from that run is gone. A second test exercises the panic path via a fault-injection hook and asserts the same.
     - 'Documented in STABILITY.md under the bridge supervisor section so the lifecycle invariant is part of the public contract: "the bridge subprocess does not outlive its spyder parent under any exit path; the parent''s stdin pipe is the liveness channel and guarantees this without any polling."'
     context: |-
-      Surfaced 2026-04-26 ~23:05 local in the jevons MCP session: the user reported "Kill them all" referring to orphaned pmd3-bridge processes accumulated across multiple spyder daemon panics. The user manually cleaned them up.
+      Surfaced 2026-04-26 ~23:05 local in the ipad-mini MCP session: the user reported "Kill them all" referring to orphaned pmd3-bridge processes accumulated across multiple spyder daemon panics. The user manually cleaned them up.
 
       Background. The bridge supervisor (internal/pmd3bridge/supervisor.go) spawns a `pmd3-bridge` subprocess and tracks its lifecycle. Clean shutdown paths (SIGINT/SIGTERM via signal.NotifyContext) call the supervisor's Stop() which sends SIGTERM to the child and waits for exit. **Panic paths bypass this entirely.** The 🎯T41 panic path was a representative example: `c.fire(err)` → `panic(err)` → goroutine unwinds → process exits → launchd respawns the daemon — and the prior `pmd3-bridge` child is now orphaned (its parent PID becomes 1). It keeps running, holds its listener port, holds whatever fd's it had open against tunneld, and the next daemon's supervisor spawns a fresh one. Across multiple panic cycles, you accumulate zombie children. Each holds a few thousand fd's via pmd3, and the user-visible symptom is degraded performance plus port collisions.
 
@@ -1499,7 +1499,7 @@ targets:
 
       Pairs with 🎯T41 — the panic-on-transport-error fix stops the daemon from dying needlessly, but doesn't help when a real bug DOES make it panic. 🎯T44 makes panics survivable in the operational sense: no leftover state to confuse the next spyder run.
 
-      Note: `pymobiledevice3 remote tunneld` is run separately (manually, as root, by the user) and is NOT spyder's child. It does not need to die with spyder. The "Spyder should manage tunneld itself" question raised in the jevons session is a separate architectural concern that should get its own target if pursued.
+      Note: `pymobiledevice3 remote tunneld` is run separately (manually, as root, by the user) and is NOT spyder's child. It does not need to die with spyder. The "Spyder should manage tunneld itself" question raised in the ipad-mini session is a separate architectural concern that should get its own target if pursued.
     tags:
     - bridge
     - supervisor
@@ -1507,7 +1507,7 @@ targets:
     - panic-recovery
     - v0.20-candidate
     - high-priority
-    origin: forked-from user-reported orphaned pmd3 processes 2026-04-26 (jevons session 11191d31)
+    origin: forked-from user-reported orphaned pmd3 processes 2026-04-26 (ipad-mini session 11191d31)
     discovered: 2026-04-26
     achieved: 2026-04-26
   T45:
@@ -1578,7 +1578,7 @@ targets:
     - mcp__spyder__terminate_app kills the running PID without errors
     - 'Neither call returns the current `pmd3_error (500): not connected — use ''async with'' or await connect()` message'
     - A regression test pins the launch/kill DVT context-manager usage so this doesn't regress a third time
-    context: 'Observed on spyder 0.24.0 against a Wi-Fi-only iPad mini (Jevons, iOS 26.4.1) during a jevons T14.1 smoke. mcp__spyder__launch_app and terminate_app return: `bridge error pmd3_error (500): Failed to launch com.marcelocantos.jevon on 00008130-0009702E1110001C: not connected — use ''async with'' or await connect()`. The screenshot tool works on the same device (also via tunneld DVT), so the tunnel itself is fine and 🎯T42 (iOS 17+ ops route through tunneld RSD) is partially in effect — the bug is the bridge''s launch/kill code path failing to enter the RSD context manager (`async with` or `await rsd.connect()`) before invoking dvt instruments. xcrun devicectl works as a workaround. See bridge/src/pmd3_bridge/services.py for the launch/kill handlers and contrast with the screenshot handler that wraps in `async with DvtProvider(rsd) as dvt`.'
+    context: 'Observed on spyder 0.24.0 against a Wi-Fi-only iPad mini (iPad-mini, iOS 26.4.1) during a ipad-mini T14.1 smoke. mcp__spyder__launch_app and terminate_app return: `bridge error pmd3_error (500): Failed to launch com.marcelocantos.jevon on 00008130-001122334455667B: not connected — use ''async with'' or await connect()`. The screenshot tool works on the same device (also via tunneld DVT), so the tunnel itself is fine and 🎯T42 (iOS 17+ ops route through tunneld RSD) is partially in effect — the bug is the bridge''s launch/kill code path failing to enter the RSD context manager (`async with` or `await rsd.connect()`) before invoking dvt instruments. xcrun devicectl works as a workaround. See bridge/src/pmd3_bridge/services.py for the launch/kill handlers and contrast with the screenshot handler that wraps in `async with DvtProvider(rsd) as dvt`.'
     depends_on:
     - T42
     origin: manual
@@ -1594,7 +1594,7 @@ targets:
     - mcp__spyder__logs against an iOS 17+ device returns at least the os_log lines emitted during the call's since/until window when an active app is logging
     - Calls with `until` more than 5 s in the future actually wait until that deadline (or until the bridge ends the stream), instead of returning [] immediately
     - A regression test against a real or synthesised syslog stream pins the path
-    context: Observed on spyder 0.24.0 against a Wi-Fi-only iPad mini (Jevons, iOS 26.4.1). 🎯T46 ("iOS log streaming routes through the pmd3 bridge, not external pymobiledevice3") shipped, but mcp__spyder__logs returns `[]` immediately for any since/until window — including ones overlapping a fresh app launch with known os_log activity. internal/device/ios.go:1009 LogRange drains /v1/syslog until the deadline; expected behaviour is that lines for the window arrive. Either the bridge's syslog endpoint closes the stream prematurely, the SyslogEntry callback never fires, or the bridge's wedge state (see 🎯T47 sibling) blocks the call. Made the jevons T14.1 iOS-side smoke un-debuggable from spyder.
+    context: Observed on spyder 0.24.0 against a Wi-Fi-only iPad mini (iPad-mini, iOS 26.4.1). 🎯T46 ("iOS log streaming routes through the pmd3 bridge, not external pymobiledevice3") shipped, but mcp__spyder__logs returns `[]` immediately for any since/until window — including ones overlapping a fresh app launch with known os_log activity. internal/device/ios.go:1009 LogRange drains /v1/syslog until the deadline; expected behaviour is that lines for the window arrive. Either the bridge's syslog endpoint closes the stream prematurely, the SyslogEntry callback never fires, or the bridge's wedge state (see 🎯T47 sibling) blocks the call. Made the ipad-mini T14.1 iOS-side smoke un-debuggable from spyder.
     depends_on:
     - T46
     origin: manual
@@ -1608,7 +1608,7 @@ targets:
     showcase: true
     actual_cost: 5.0
     acceptance:
-    - 'device_state({device: "Pippa"}) returns battery level (0-100), charging bool, thermal state (nominal/fair/serious/critical), and foreground app bundle ID'
+    - 'device_state({device: "iPad"}) returns battery level (0-100), charging bool, thermal state (nominal/fair/serious/critical), and foreground app bundle ID'
     - Implementation shells out to pymobiledevice3 and/or devicectl — no private iOS APIs, no jailbreak
     - Results are cached per-device with a short TTL (~2s) to avoid hammering the device when tools call in quick succession
     - 'Graceful degradation: if any single field is unavailable, the others are still returned with a note'
@@ -1735,7 +1735,7 @@ targets:
     value: 0.0
     cost: 0.0
     showcase: true
-    demonstration: 'Released v0.32.0 (https://github.com/marcelocantos/spyder/releases/tag/v0.32.0) and verified locally: brew upgrade marcelocantos/tap/spyder reported 0.31.0 -> 0.32.0; /opt/homebrew/bin/spyder symlink intact; `spyder version` prints v0.32.0; brew services restarted and the daemon is listening on :3030. The new convergence rule ships in this build — autoawake reads the bridge''s /v1/foreground_app first and stays passive while a third-party app holds the foreground. Behavioural verification on Jevons / iPhone happens through normal use; the multimaze2-style "KeepAwake clobbers MultiMaze" symptom should no longer reproduce.'
+    demonstration: 'Released v0.32.0 (https://github.com/marcelocantos/spyder/releases/tag/v0.32.0) and verified locally: brew upgrade marcelocantos/tap/spyder reported 0.31.0 -> 0.32.0; /opt/homebrew/bin/spyder symlink intact; `spyder version` prints v0.32.0; brew services restarted and the daemon is listening on :3030. The new convergence rule ships in this build — autoawake reads the bridge''s /v1/foreground_app first and stays passive while a third-party app holds the foreground. Behavioural verification on iPad-mini / iPhone happens through normal use; the multimaze2-style "KeepAwake clobbers MultiMaze" symptom should no longer reproduce.'
     acceptance:
     - spyder launch_app / deploy_app for a non-KeepAwake bundle leaves that bundle foregrounded; subsequent autoawake convergence ticks observe the foreground app and stay passive — they do NOT relaunch KeepAwake.
     - When the device's foreground app is SpringBoard / nothing AND userOptOut is unset, autoawake launches KeepAwake (the only path that surfaces KeepAwake).
@@ -1760,13 +1760,13 @@ targets:
     value: 0.0
     cost: 0.0
     showcase: true
-    demonstration: 'Released v0.34.0 (after v0.33.0 hotfix for the iostunnel cwd bug) and verified the user-installed brew service: `brew services restart spyder` spawns spyder v0.34.0 which spawns the bundled `ios tunnel start --userspace` subprocess (PID 6609 in the run), `selfIdentity.plist` lands cleanly in `~/.spyder/iostunnel/`, port 60105 is listening, both iOS devices (iPhone 00008110-0014182E0AC2801E and Jevons 00008130-0009702E1110001C) attached and the tunnel started establishing connections to them. No `pmd3-bridge` process, no `pmd3-tunneld` plist, no Python runtime — Cellar size dropped from 88.1 MB → 32.7 MB. Spyder''s logs show `iostunnel: started binary=/opt/homebrew/Cellar/spyder/0.34.0/libexec/spyder/ios pid=6609` followed by `Tunnel server started` and per-device `start tunnel` lines.'
+    demonstration: 'Released v0.34.0 (after v0.33.0 hotfix for the iostunnel cwd bug) and verified the user-installed brew service: `brew services restart spyder` spawns spyder v0.34.0 which spawns the bundled `ios tunnel start --userspace` subprocess (PID 6609 in the run), `selfIdentity.plist` lands cleanly in `~/.spyder/iostunnel/`, port 60105 is listening, both iOS devices (iPhone 00008110-001122334455667C and iPad-mini 00008130-001122334455667B) attached and the tunnel started establishing connections to them. No `pmd3-bridge` process, no `pmd3-tunneld` plist, no Python runtime — Cellar size dropped from 88.1 MB → 32.7 MB. Spyder''s logs show `iostunnel: started binary=/opt/homebrew/Cellar/spyder/0.34.0/libexec/spyder/ios pid=6609` followed by `Tunnel server started` and per-device `start tunnel` lines.'
     acceptance:
     - Single Go binary `spyder` (user-space) plus `ios tunnel start` (system LaunchDaemon, root) is the entire runtime. No Python anywhere; no pmd3-bridge subprocess; no `bridge/` Python tree in the repo.
     - All iOS device operations (list, launch, kill, screenshot, syslog, app_state, foreground_app, install, uninstall, crash reports, battery, device_power_state, power assertions) route through `github.com/danielpaulus/go-ios` as a Go module dependency.
     - The tunnel daemon is the upstream go-ios `ios tunnel start`, supervised by launchd as a system LaunchDaemon. The previous pmd3-tunneld system daemon is stopped and removed.
     - Zero `xcrun devicectl` invocations in spyder Go code (xcrun simctl for the simulator adapter is unrelated and stays).
-    - 'Demonstration: deploy MultiMaze to Jevons (iPad mini, iOS 26) and the Minicades iPhone via spyder''s MCP/REST API; both apps stay foregrounded across multiple autoawake convergence ticks; screenshot, syslog, and is_running tools all work; bridge supervisor / pmd3-bridge process / pmd3-tunneld launchd job all confirmed absent.'
+    - 'Demonstration: deploy MultiMaze to iPad-mini (iPad mini, iOS 26) and the iPhone iPhone via spyder''s MCP/REST API; both apps stay foregrounded across multiple autoawake convergence ticks; screenshot, syslog, and is_running tools all work; bridge supervisor / pmd3-bridge process / pmd3-tunneld launchd job all confirmed absent.'
     context: 'Decision 2026-05-10. The pmd3-bridge architecture (Python FastAPI subprocess fronting pymobiledevice3) has hit two structural limits: (1) asyncio event-loop wedges under concurrent load — when a synchronous blocking call in pmd3 parks the loop, every endpoint times out simultaneously (observed at 14:43 UTC during four parallel deploy_app calls + autoawake foreground probes); (2) the in-scope subset of pmd3 is ~16k Python LOC of subtle iOS protocol code that we''d have to track through every iOS major. github.com/danielpaulus/go-ios is a mature ~33k-LOC Go reimplementation of the same protocols, MIT-licensed, actively maintained (commits within days), used in production by Sauce Labs / BrowserStack. Migrating cuts language count to one, removes the bridge subprocess entirely, and gives us native goroutine concurrency: a slow per-device call no longer takes down the whole listener. The Code=1002 / "No provider was found" devicectl provisioning failures we''ve been carrying for the iPhone are a CoreDevice-specific failure mode that go-ios''s installation_proxy path doesn''t have, so we get a free fix to that class of issue. iOS-26 RSD InvalidService intermittency may or may not improve — that''s the spike''s question (T56.1).'
     tags:
     - migration
@@ -1777,13 +1777,13 @@ targets:
     discovered: 2026-05-10
     achieved: 2026-05-10
   T56.1:
-    name: go-ios + ios tunnel start verified working on iOS 26 (Jevons + Minicades iPhone)
+    name: go-ios + ios tunnel start verified working on iOS 26 (iPad-mini + iPhone iPhone)
     kind: verify
     status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
-    - A scratch Go program imports github.com/danielpaulus/go-ios, lists connected devices via the new tunnel daemon, and successfully probes the foreground app on Jevons (iOS 26.4.2) over multiple ticks.
+    - A scratch Go program imports github.com/danielpaulus/go-ios, lists connected devices via the new tunnel daemon, and successfully probes the foreground app on iPad-mini (iOS 26.4.2) over multiple ticks.
     - InvalidService failure rate over a ~5-minute observation window measured and recorded — comparison data point against the pmd3-bridge baseline. (If go-ios is materially worse, the migration premise is in question and we revisit.)
     - 'DTX-based operations (screenshot, process control / launch_app, app state) round-trip cleanly against at least one iOS 26 device. We have working go-ios calls for: list_devices, launch_app, kill_app, screenshot, app_state-equivalent, foreground-equivalent.'
     - go/no-go decision recorded as a comment on T56 (or a docs/papers/t56-spike.md note) with the measured numbers and any blockers.
@@ -1807,7 +1807,7 @@ targets:
     - internal/pmd3bridge/ source removed. internal/daemon/daemon.go no longer launches a bridge subprocess. The autoawake supervisor's iosAdapter is wired directly to the new go-ios-backed IOSAdapter.
     - pmd3-tunneld system LaunchDaemon stopped and removed. `sudo ios tunnel start` is running as the system tunnel daemon (system LaunchDaemon plist, root). spyder's iOS path talks to the new tunnel registry endpoint.
     - All `xcrun devicectl` invocations in spyder Go code are gone (xcrun simctl in internal/device/sim.go is unrelated, stays). KeepAwake install / launch / version-query routes through go-ios.
-    - 'All existing tests pass; go test ./... is green. Manual smoke: deploy + launch + screenshot + autoawake convergence on Jevons and Minicades iPhone work end-to-end.'
+    - 'All existing tests pass; go test ./... is green. Manual smoke: deploy + launch + screenshot + autoawake convergence on iPad-mini and iPhone iPhone work end-to-end.'
     context: 'The main migration. Single coherent unit — the tunnel daemon and the consumer change together because pmd3-bridge can''t talk to go-ios''s tunnel (different registry shape) and go-ios can''t talk to pmd3-tunneld (different protocol expectations). Likely decomposes into multiple commits within one PR: (1) add go-ios dep, (2) port each adapter method, (3) swap launchd plist + remove pmd3-bridge subprocess wiring, (4) delete dead code. Coexistence path was considered and rejected — the project is single-user, no zero-downtime requirement.'
     depends_on:
     - T56.1
@@ -1853,7 +1853,7 @@ targets:
     - devices tool lists Android devices via adb, annotated with inventory alias when matched, alongside iOS devices in a single call
     - device_state({device:<android>}) returns battery level (0-100), charging bool, and foreground activity (via adb dumpsys)
     - keepawake({device:<android>}) returns a success no-op explaining that Android handles stay-awake natively via Settings → Developer options → Stay awake while plugged in
-    - 'Cross-platform behaviour: a single devices call works with iOS (Pippa) and ≥1 Android devices attached simultaneously'
+    - 'Cross-platform behaviour: a single devices call works with iOS (iPad) and ≥1 Android devices attached simultaneously'
     context: |-
       Elevated from low-priority: user has confirmed Android is a key target. Android does NOT need the KeepAwake companion app — the OS offers a native \"stay on while plugged in\" developer setting, so the keepawake MCP tool only needs to report that cleanly. The interesting work is wiring the Android adapter for list and state via adb + dumpsys. Three Android devices are currently attached to the Mac (R5CR112X76K, T1AIOC662722687, emulator-5554) — good test bed. The cross-platform seam (internal/device.Adapter) is already in place; this is adapter fleshout, not new architecture.
 
@@ -1944,7 +1944,7 @@ targets:
     - Android path uses `adb -s <serial> shell screencap -p` and streams the PNG back
     - Result size is reasonable (≤ ~5 MB PNG per screenshot) — raw capture, no re-encoding beyond whatever the device produces
     - Error surface distinguishes 'device not connected', 'tunneld unavailable' (iOS), and 'tool not in PATH' (adb / pymobiledevice3)
-    context: 'Closes the mobile-mcp gap on iOS physical devices and is a quick demonstrable win. Already validated end-to-end during research: `pymobiledevice3 developer dvt screenshot` produced a valid Pippa PNG in ~1s; mobile-mcp couldn''t see Pippa at all. Android side is trivial via screencap. Blocks on 🎯T7 only for the iOS path — Android screenshot works without tunneld.'
+    context: 'Closes the mobile-mcp gap on iOS physical devices and is a quick demonstrable win. Already validated end-to-end during research: `pymobiledevice3 developer dvt screenshot` produced a valid iPad PNG in ~1s; mobile-mcp couldn''t see iPad at all. Android side is trivial via screencap. Blocks on 🎯T7 only for the iOS path — Android screenshot works without tunneld.'
     depends_on:
     - T7
     tags:

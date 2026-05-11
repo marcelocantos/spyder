@@ -298,7 +298,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("resolve",
-			mcpgo.WithDescription("Resolve a symbolic device name (e.g. 'Pippa') to its platform-specific UUIDs for use with xcodebuild, devicectl, pymobiledevice3, or adb. Supply exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`'s selector). With `selector`, returns the inventory entry of the first matching live device. (🎯T38.3)"),
+			mcpgo.WithDescription("Resolve a symbolic device name (e.g. 'iPad') to its platform-specific UUIDs for use with xcodebuild, devicectl, pymobiledevice3, or adb. Supply exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`'s selector). With `selector`, returns the inventory entry of the first matching live device. (🎯T38.3)"),
 			mcpgo.WithString("name",
 				mcpgo.Description("Symbolic name or raw UUID from the device inventory (mutually exclusive with selector)"),
 			),

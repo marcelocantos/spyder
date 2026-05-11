@@ -14,7 +14,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   and `--help-agent` flag. Rewrote README for the HTTP architecture
   that replaced the original bimodal mcpbridge scaffold mid-cycle.
   Auto-awake + persistent locked-device alerts via `alerter` verified
-  end-to-end across Pippa (iPad Air 5) and a Samsung S23 Ultra.
+  end-to-end across iPad (iPad Air 5) and a Samsung S23 Ultra.
 
 ## 2026-04-19 — /release v0.2.0
 
@@ -177,8 +177,8 @@ maintenance activities. Append-only — newest entries at the bottom.
   connection, replacing the legacy `com.apple.mobile.screenshotr`
   lockdown service that Apple deprecated in iOS 17 (the bridge had been
   returning `InvalidServiceError` on every modern device for months).
-  HIL-verified against Pippa (iPad, iOS 26.3.1), Jevons (iPhone, iOS
-  26.4.1), and Minicades (iPhone, iOS 26.2) — all three return real
+  HIL-verified against iPad (iPad, iOS 26.3.1), iPad-mini (iPhone, iOS
+  26.4.1), and iPhone (iPhone, iOS 26.2) — all three return real
   PNGs. Bridge `list_devices` now reads tunneld's HTTP registry as
   canonical so iOS 17+ enumeration is no longer subject to `pmd3 usbmux
   list`'s random drops. Autoawake redesigned from a one-shot trigger-
@@ -255,7 +255,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   refuse the next launch with "App Is No Longer Available" once the
   profile expired (and devicectl would emit `CoreDeviceError 1002 No
   provider was found` on the host side). Surfaced from a yesterday's
-  HIL screenshot of Jevons that captured the iOS dialog directly. Fix
+  HIL screenshot of iPad-mini that captured the iOS dialog directly. Fix
   (PR #44): invert the preference so paid teams win first; free
   Personal Team stays as the second-pass fallback for users who only
   have one of those. Live-keychain test added to keepawake_test.go.
@@ -287,7 +287,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   line installs that directory into the Cellar; `findRepoRoot` probes
   `<real-exe-dir>/../libexec/spyder-source` first via EvalSymlinks
   (same symlink-resolution trick T35 uses for the bridge). Foreground
-  spyder rebuilt KeepAwake on Jevons / Minicades / Pippa with
+  spyder rebuilt KeepAwake on iPad-mini / iPhone / iPad with
   team=SWA3H3N7TW (paid Squz Pty Ltd) and installed cleanly on all
   three; simulated Homebrew layout in /tmp/ confirms the libexec
   source path is found through the bin/spyder symlink. Published for
@@ -298,13 +298,13 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Commit**: `859416b`
 - **Outcome**: Hotfix bounding every `xcrun devicectl ...` invocation
   with a 30-second timeout. Surfaced live during v0.14.0 verification:
-  Minicades had been force-restarted and was mid-DDI-personalization
-  under Xcode's "Preparing Minicades Test iPhone" spinner.
+  iPhone had been force-restarted and was mid-DDI-personalization
+  under Xcode's "Preparing Test iPhone" spinner.
   autoawake's per-device convergence step called
   `devicectl device info processes` against it, which hangs
   indefinitely on a device whose DVT/DDI subsystem isn't ready. With
   no timeout, the call held the per-device inFlight lock for 6+
-  minutes; subsequent 15s convergence ticks skipped Minicades silently
+  minutes; subsequent 15s convergence ticks skipped iPhone silently
   and KeepAwake never got rebuilt + reinstalled. PR #50 introduces a
   new `runDevicectl(args...)` helper that wraps every devicectl call
   with `context.WithTimeout(32s)` plus passes devicectl's own
@@ -320,7 +320,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   calls return promptly and the device advances normally. Worst-case
   latency from "device healthy" to "KeepAwake foregrounded" is one
   convergeInterval (~15s) plus one round of devicectl probes. HIL
-  evidence: the Minicades scenario where v0.14.0 wedged for 6+ minutes
+  evidence: the iPhone scenario where v0.14.0 wedged for 6+ minutes
   would now retry every 15s with bounded probe duration. Published for
   darwin-arm64, linux-amd64, linux-arm64.
 
@@ -366,7 +366,7 @@ maintenance activities. Append-only — newest entries at the bottom.
     success unless `-v` / `--verbose` is set; failure always prints
     to stderr with the appropriate exit code. `screenshot` prints
     just the file path (script-friendly `OUT=$(spyder screenshot
-    Pippa)`); the human-readable size+mime line moves to stderr
+    iPad)`); the human-readable size+mime line moves to stderr
     behind `-v`. Read commands continue printing as before — they ARE
     the data.
   - **🎯T37.6 hermeticity.** New `TestCLIHermeticity` exercises
@@ -402,7 +402,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   one PR per the user's "build the whole thing end-to-end" pacing.
   Four targets retired (🎯T30, 🎯T34, 🎯T35, 🎯T36); 🎯T29 stays
   active with the prototype landed but the device-tier test still
-  skipped pending HIL on Pippa.
+  skipped pending HIL on iPad.
   - **🎯T35 (retired) — Homebrew bridge resolution.** The
     `exePathReal` helper that calls `filepath.EvalSymlinks` on
     `os.Executable()` was already present in `daemon.go` from an
@@ -428,7 +428,7 @@ maintenance activities. Append-only — newest entries at the bottom.
     new tests via the extracted `iosAdapter` interface verify (a)
     `UninstallApp` is called on the stale-install path, and (b)
     repeated failures fall through to `classOther` rather than
-    looping indefinitely. Pippa's stuck v0.10.0–v0.12.0 install
+    looping indefinitely. iPad's stuck v0.10.0–v0.12.0 install
     now drives to converged within two convergence ticks (≤30s).
   - **🎯T36 (retired) — brew-services tunneld reachability.** The
     launchd-sandbox / Local-Network-privacy / IPv4-vs-IPv6
@@ -454,7 +454,7 @@ maintenance activities. Append-only — newest entries at the bottom.
     `developer_mode_disabled` BridgeError, the device-tier
     `TestDevice_Screenshot_WorksOniOS17Plus` (`//go:build device`,
     `SPYDER_DEVICES=1`) — landed in v0.11.0 and was end-to-end
-    verified against Jevons (iOS 26.4.1). This release closes the
+    verified against iPad-mini (iOS 26.4.1). This release closes the
     target with a `STABILITY.md` refresh: explicit iOS-version
     range (17+) on the `screenshot` row, pre-iOS-17 limitation
     documented, both BridgeError HTTP statuses listed, and the
@@ -474,7 +474,7 @@ maintenance activities. Append-only — newest entries at the bottom.
     `docs/papers/t29-device-state-detection.md` evaluates 5
     candidate paths and the IOKit properties that distinguish
     them. The device-tier `TestDevice_StaysAwake_Mechanical`
-    contract is written but `t.Skip`-ed pending HIL on Pippa to
+    contract is written but `t.Skip`-ed pending HIL on iPad to
     (a) confirm the screenshot call does not in fact reset the
     idle timer over a 60-second wait, (b) capture the exact
     `pmd3_error` exception string for display-off so it lands in
@@ -510,7 +510,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   observed the data plane (tunneld + devicectl) while KeepAwake
   observed the power plane (`UIDevice.batteryState`); the two
   only coincide with a normal data+power cable to the dev laptop.
-  Verified end-to-end on Pippa: with cable unplugged but on
+  Verified end-to-end on iPad: with cable unplugged but on
   Wi-Fi the supervisor ignores her; plugging in attaches +
   foregrounds KeepAwake within one converge tick. Added a
   `parseDevicectlConnectedIOSDevices` unit test covering wired,
@@ -548,12 +548,12 @@ maintenance activities. Append-only — newest entries at the bottom.
 ## 2026-04-27 — /release v0.24.0
 
 - **Commit**: `50bd099`
-- **Outcome**: Released v0.24.0. Adds KeepAwake build-version drift detection (🎯T47): autoawake's per-tick convergence now reads the bundled `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`'s `MARKETING_VERSION` (parsed via a permissive regex that captures any non-`;` payload, so semver / semver-with-suffix / date-based version strings all work) and compares it to the on-device `CFBundleShortVersionString` returned by `devicectl info apps`. On mismatch — and provided the user hasn't opted out — `attemptReinstall` fires (uninstall → `ResetKeepAwakeBuild()` → fresh xcodebuild → reinstall → relaunch), so a manual `MARKETING_VERSION` bump in the pbxproj propagates to all attached devices on the next tick. Versioning is deliberately manual: bump both Debug and Release buildSettings entries in the pbxproj whenever `ios/KeepAwake/Sources/` changes in a way that should be redeployed. New `IOSAdapter.KeepAwakeInstalledVersion` adapter method shares one `devicectl info apps` query with the existing `KeepAwakeInstalled` probe via a private `inspectKeepAwakeApp` helper, so per-tick cost stays at one devicectl call. New `device.ExpectedKeepAwakeVersion()` (sync.Once-cached) reads the source pbxproj — looked up via the same `findRepoRoot()` resolution chain (extended with a cwd-walk-up step so `go test` from any package directory finds the source). `attemptReinstall` parameterised with an `errorClass` reason argument so the existing `classStaleInstall` path (stale provisioning profile, `ErrNoProviderFound`) and the new `classStaleBuild` path (source-version drift) share the same uninstall+rebuild+relaunch flow with distinct log lines. `MARKETING_VERSION` bumped 0.1.0 → 0.2.0 in both Debug and Release configs of the pbxproj — the slow-drift KeepAwake change shipped in v0.22.0 hadn't reached the on-device installs (Jevons reported 0.1.0 prior to this release), so the bump triggers redeploy on next convergence tick. 4 new unit tests cover stale → reinstall, fresh → no-action, opt-out beats stale, and the regex variant matrix; `TestExpectedKeepAwakeVersion_FromBundledPbxproj` validates the parser end-to-end. End-to-end smoke-tested on Jevons (00008130-…) + Minicades Test iPhone (00008110-…) — both converge through the new path; staleness check completes in <100 ms on top of the existing devicectl apps probe; zero ERROR/TypeError lines. STABILITY.md keep-awake gap entry refreshed; catalogue snapshot bumped to v0.24.0. No public MCP / CLI / REST surface changes — staleness check is internal to autoawake. Published for darwin-arm64, linux-amd64, linux-arm64.
+- **Outcome**: Released v0.24.0. Adds KeepAwake build-version drift detection (🎯T47): autoawake's per-tick convergence now reads the bundled `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`'s `MARKETING_VERSION` (parsed via a permissive regex that captures any non-`;` payload, so semver / semver-with-suffix / date-based version strings all work) and compares it to the on-device `CFBundleShortVersionString` returned by `devicectl info apps`. On mismatch — and provided the user hasn't opted out — `attemptReinstall` fires (uninstall → `ResetKeepAwakeBuild()` → fresh xcodebuild → reinstall → relaunch), so a manual `MARKETING_VERSION` bump in the pbxproj propagates to all attached devices on the next tick. Versioning is deliberately manual: bump both Debug and Release buildSettings entries in the pbxproj whenever `ios/KeepAwake/Sources/` changes in a way that should be redeployed. New `IOSAdapter.KeepAwakeInstalledVersion` adapter method shares one `devicectl info apps` query with the existing `KeepAwakeInstalled` probe via a private `inspectKeepAwakeApp` helper, so per-tick cost stays at one devicectl call. New `device.ExpectedKeepAwakeVersion()` (sync.Once-cached) reads the source pbxproj — looked up via the same `findRepoRoot()` resolution chain (extended with a cwd-walk-up step so `go test` from any package directory finds the source). `attemptReinstall` parameterised with an `errorClass` reason argument so the existing `classStaleInstall` path (stale provisioning profile, `ErrNoProviderFound`) and the new `classStaleBuild` path (source-version drift) share the same uninstall+rebuild+relaunch flow with distinct log lines. `MARKETING_VERSION` bumped 0.1.0 → 0.2.0 in both Debug and Release configs of the pbxproj — the slow-drift KeepAwake change shipped in v0.22.0 hadn't reached the on-device installs (iPad-mini reported 0.1.0 prior to this release), so the bump triggers redeploy on next convergence tick. 4 new unit tests cover stale → reinstall, fresh → no-action, opt-out beats stale, and the regex variant matrix; `TestExpectedKeepAwakeVersion_FromBundledPbxproj` validates the parser end-to-end. End-to-end smoke-tested on iPad-mini (00008130-…) + Test iPhone (00008110-…) — both converge through the new path; staleness check completes in <100 ms on top of the existing devicectl apps probe; zero ERROR/TypeError lines. STABILITY.md keep-awake gap entry refreshed; catalogue snapshot bumped to v0.24.0. No public MCP / CLI / REST surface changes — staleness check is internal to autoawake. Published for darwin-arm64, linux-amd64, linux-arm64.
 
 ## 2026-04-27 — /release v0.23.0
 
 - **Commit**: `240c61b`
-- **Outcome**: Released v0.23.0. Fixes a long-standing autoawake bug where convergence treated "KeepAwake foregrounded" as the only acceptable state — when a user launched another app via `launch_app` or swiped to home, autoawake re-foregrounded KeepAwake within 15 s and kicked them out. The redesign reframes the convergence target as "the user has not expressed a preference for the device to sleep": a `Running → backgrounded` transition for KeepAwake (whether from a swipe-to-home or a deliberate launch of another app) is now treated as the user's opt-out signal, and autoawake stays passive — even if iOS later reaps the suspended KeepAwake — until the user re-foregrounds KeepAwake or unplugs the device. Implementation: new bridge endpoint `/v1/app_state` (`AppStateRequest` / `AppStateResponse` schemas) backed by DVT `mobilenotifications` service drains the BackBoard initial-state burst and returns the matching app's state collapsed onto `running` / `backgrounded` / `terminated`; new Go bridge client `Client.AppState` and `IOSAdapter.KeepAwakeState` route through it; autoawake's converge loop is rewritten around the new probe with `classUserOptOut` added and `lastKAState` / `userOptOut` tracked per-device. Cosmetic pmd3 channel-cleanup `TypeError` (Python 3.11's `asyncio.Queue` lacks `.shutdown()`, added in 3.13) silenced via `notif.service.on_closed = lambda *_args, **_kwargs: None` so the autoawake convergence cadence doesn't flood the daemon log. 7 new unit tests cover every transition (KA→home sets opt-out, BG→running clears, fresh-attach steady-state backgrounded does not flip, terminated+optedOut blocks launch, terminated+!optedOut launches, probe error skips silently, `Status()` projection). End-to-end smoke-tested on Jevons — `KeepAwake foregrounded` after ~2 s cold app_state probe, ~700 ms warm, zero ERROR/TypeError lines. STABILITY.md keep-awake gap entry refreshed to document the opt-out semantics; catalogue snapshot bumped to v0.23.0. No public MCP / CLI / REST surface changes — `app_state` is internal bridge plumbing. Published for darwin-arm64, linux-amd64, linux-arm64.
+- **Outcome**: Released v0.23.0. Fixes a long-standing autoawake bug where convergence treated "KeepAwake foregrounded" as the only acceptable state — when a user launched another app via `launch_app` or swiped to home, autoawake re-foregrounded KeepAwake within 15 s and kicked them out. The redesign reframes the convergence target as "the user has not expressed a preference for the device to sleep": a `Running → backgrounded` transition for KeepAwake (whether from a swipe-to-home or a deliberate launch of another app) is now treated as the user's opt-out signal, and autoawake stays passive — even if iOS later reaps the suspended KeepAwake — until the user re-foregrounds KeepAwake or unplugs the device. Implementation: new bridge endpoint `/v1/app_state` (`AppStateRequest` / `AppStateResponse` schemas) backed by DVT `mobilenotifications` service drains the BackBoard initial-state burst and returns the matching app's state collapsed onto `running` / `backgrounded` / `terminated`; new Go bridge client `Client.AppState` and `IOSAdapter.KeepAwakeState` route through it; autoawake's converge loop is rewritten around the new probe with `classUserOptOut` added and `lastKAState` / `userOptOut` tracked per-device. Cosmetic pmd3 channel-cleanup `TypeError` (Python 3.11's `asyncio.Queue` lacks `.shutdown()`, added in 3.13) silenced via `notif.service.on_closed = lambda *_args, **_kwargs: None` so the autoawake convergence cadence doesn't flood the daemon log. 7 new unit tests cover every transition (KA→home sets opt-out, BG→running clears, fresh-attach steady-state backgrounded does not flip, terminated+optedOut blocks launch, terminated+!optedOut launches, probe error skips silently, `Status()` projection). End-to-end smoke-tested on iPad-mini — `KeepAwake foregrounded` after ~2 s cold app_state probe, ~700 ms warm, zero ERROR/TypeError lines. STABILITY.md keep-awake gap entry refreshed to document the opt-out semantics; catalogue snapshot bumped to v0.23.0. No public MCP / CLI / REST surface changes — `app_state` is internal bridge plumbing. Published for darwin-arm64, linux-amd64, linux-arm64.
 
 ## 2026-04-28 — /release v0.26.0
 

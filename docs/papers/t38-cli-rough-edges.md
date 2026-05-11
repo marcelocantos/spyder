@@ -38,7 +38,7 @@ dance", not any individual primitive.
 # not backgrounded ones. iOS path is also pending per STABILITY.md, so
 # we either skip the check or live with a false negative on backgrounded
 # apps.
-fg=$(spyder device-state Pippa --json | jq -r .foreground_app)
+fg=$(spyder device-state iPad --json | jq -r .foreground_app)
 if [[ "$fg" != "$BUNDLE_ID" ]]; then
   echo "WARN: $BUNDLE_ID not foreground (might be backgrounded; can't tell)"
 fi
@@ -47,7 +47,7 @@ fi
 **After:**
 
 ```bash
-spyder is-running Pippa "$BUNDLE_ID"
+spyder is-running iPad "$BUNDLE_ID"
 case $? in
   0)  echo "running" ;;          # also prints `running pid=<n>`
   20) echo "not installed"; install_app ;;
@@ -77,7 +77,7 @@ through to a `ListApps` cross-check to distinguish `not_running` from
 ```bash
 # Workaround: bypass spyder. Scan the host crash dir directly because
 # spyder log can only see lines from "now" forward.
-recent_crashes=$(find ~/Library/Logs/CrashReporter/MobileDevice/Pippa \
+recent_crashes=$(find ~/Library/Logs/CrashReporter/MobileDevice/iPad \
   -newer /tmp/last_smoke_run -name '*.ips' 2>/dev/null)
 ```
 
@@ -98,7 +98,7 @@ live-window contract", is:
 - For continuous monitoring, use `log --follow` (live SSE stream).
 
 ge's existing `~/Library/Logs/CrashReporter/...` scan should migrate to
-`spyder crashes Pippa --since <ts>` — same data, normalised, and goes
+`spyder crashes iPad --since <ts>` — same data, normalised, and goes
 through the daemon's reservation auth so concurrent test cells don't
 race on the crash dir. (No script change needed for this bullet beyond
 adopting `crashes`.)

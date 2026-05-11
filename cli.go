@@ -630,7 +630,7 @@ func runScreenshot(args []string) {
 		cliexit.Errorf(cliexit.ExitGeneric, "spyder screenshot: writing %s: %v", output, err)
 	}
 	// Screenshot's true output is the file. Print the path on stdout
-	// so scripts can capture it (`OUT=$(spyder screenshot Pippa)`); the
+	// so scripts can capture it (`OUT=$(spyder screenshot iPad)`); the
 	// human-readable size+mime line goes to stderr only under -v.
 	fmt.Println(output)
 	if verbose(pf) {

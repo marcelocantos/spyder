@@ -14,10 +14,10 @@ import (
 
 const testInventory = `[
   {
-    "alias": "Pippa",
+    "alias": "iPad",
     "platform": "ios",
-    "ios_uuid": "00008103-000D39301A6A201E",
-    "ios_coredevice": "E1A01EA6-8D77-556C-B18D-D470B2909E87"
+    "ios_uuid": "00008103-001122334455667A",
+    "ios_coredevice": "00000000-0000-0000-0000-000000000001"
   },
   {
     "alias": "Raspberry",
@@ -44,7 +44,7 @@ func newTestHandler(t *testing.T) *Handler {
 
 func TestResolveAdapter_InventoryIOS(t *testing.T) {
 	h := newTestHandler(t)
-	adp, platform, id, err := h.resolveAdapter("Pippa")
+	adp, platform, id, err := h.resolveAdapter("iPad")
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
@@ -52,7 +52,7 @@ func TestResolveAdapter_InventoryIOS(t *testing.T) {
 		t.Errorf("platform = %q; want ios", platform)
 	}
 	// iOS picks IOSUUID first.
-	if id != "00008103-000D39301A6A201E" {
+	if id != "00008103-001122334455667A" {
 		t.Errorf("id = %q; want iOS hardware UDID", id)
 	}
 	if adp == nil {
@@ -134,8 +134,8 @@ func TestDispatch_ResolveMissingName(t *testing.T) {
 func TestResolve_Selector(t *testing.T) {
 	h, _ := newHandlerWithReservationsAndDevices(t, []device.Info{
 		{
-			UUID:     "00008103-000D39301A6A201E",
-			Name:     "Pippa",
+			UUID:     "00008103-001122334455667A",
+			Name:     "iPad",
 			Platform: "ios",
 			Model:    "iPad Air",
 			OS:       "17.4",
@@ -148,8 +148,8 @@ func TestResolve_Selector(t *testing.T) {
 		t.Fatalf("resolve with selector should succeed; body=%s", resultText(t, &r))
 	}
 	body := resultText(t, &r)
-	if !strings.Contains(body, "Pippa") {
-		t.Errorf("resolve should return Pippa's entry; got %s", body)
+	if !strings.Contains(body, "iPad") {
+		t.Errorf("resolve should return iPad's entry; got %s", body)
 	}
 }
 
@@ -157,7 +157,7 @@ func TestResolve_Selector(t *testing.T) {
 func TestResolve_SelectorAndNameMutualExclusion(t *testing.T) {
 	h := newTestHandler(t)
 	r := dispatchJSON(t, h, "resolve", map[string]any{
-		"name":     "Pippa",
+		"name":     "iPad",
 		"selector": `{"platform":"ios"}`,
 	})
 	if !r.IsError {

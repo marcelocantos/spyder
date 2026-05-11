@@ -24,7 +24,7 @@ The same code path works when spyder is started in a foreground shell.
 ```
 2026-04-25 23:24:11  INFO  pmd3-bridge starting port=51927 log_level=info pid=62819
 2026-04-25 23:24:15  INFO  bridge app startup complete
-2026-04-25 23:28:07  INFO  screenshot udid=00008130-0009702E1110001C
+2026-04-25 23:28:07  INFO  screenshot udid=00008130-001122334455667B
 2026-04-25 23:28:07  WARN  screenshot FAILED tunneld_unavailable:
     "tunneld unreachable at ('127.0.0.1', 49151): [Errno 65] No route to host"
 2026-04-25 23:28:32  INFO  bridge shutdown (daemon restarted)

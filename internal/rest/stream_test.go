@@ -78,7 +78,7 @@ func TestLogStream_SSE_HappyPath(t *testing.T) {
 	base, teardown := newStreamTestServer(t, lines)
 	defer teardown()
 
-	body, _ := json.Marshal(map[string]any{"device": "00008103-000D39301A6A201E"})
+	body, _ := json.Marshal(map[string]any{"device": "00008103-001122334455667A"})
 	resp, err := http.Post(base+rest.StreamPath, "application/json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatalf("post: %v", err)

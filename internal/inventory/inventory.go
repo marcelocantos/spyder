@@ -1,7 +1,7 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package inventory resolves symbolic device names (e.g. "Pippa") to
+// Package inventory resolves symbolic device names (e.g. "iPad") to
 // platform-specific UUIDs. Backed by a JSON file at ~/.spyder/inventory.json.
 package inventory
 
