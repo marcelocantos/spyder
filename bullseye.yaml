@@ -1,4 +1,4 @@
-schema_version: 3
+schema_version: 4
 targets:
   T1:
     name: Bimodal spyder MCP server registers with Claude Code and dispatches tool calls end-to-end
@@ -43,7 +43,6 @@ targets:
     status: achieved
     value: 3.0
     cost: 2.0
-    showcase: true
     actual_cost: 2.0
     acceptance:
     - spyder serve creates ~/.spyder/spyder.sock with mode 0600
@@ -65,7 +64,6 @@ targets:
     status: achieved
     value: 3.0
     cost: 2.0
-    showcase: true
     actual_cost: 1.0
     acceptance:
     - invoking spyder with no args and piping an MCP `initialize` request on stdin yields a valid MCP response on stdout
@@ -87,7 +85,6 @@ targets:
     status: achieved
     value: 2.0
     cost: 1.0
-    showcase: true
     actual_cost: 1.0
     acceptance:
     - 'JSON-RPC tools/list via the stdio proxy returns exactly four tools: devices, resolve, keepawake, device_state'
@@ -107,7 +104,6 @@ targets:
     status: achieved
     value: 3.0
     cost: 2.0
-    showcase: true
     actual_cost: 1.0
     acceptance:
     - tools/call devices returns a structured result (may be empty list if inventory unset, but with correct shape)
@@ -129,7 +125,6 @@ targets:
     status: achieved
     value: 5.0
     cost: 1.0
-    showcase: true
     actual_cost: 1.0
     acceptance:
     - '`claude mcp add --scope user spyder -- spyder` registers the server without error'
@@ -150,7 +145,6 @@ targets:
     status: achieved
     value: 13.0
     cost: 5.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - spyder serve supervises every iOS device that tunneld reports as paired, with no flag or allow-list — all iOS/iPadOS devices, all the time
@@ -201,7 +195,6 @@ targets:
     status: achieved
     value: 13.0
     cost: 5.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'Daemon exposes REST endpoints on the same HTTP listener as /mcp covering: devices, resolve, device_state, screenshot, list_apps, launch_app, terminate_app, keepawake, reserve, release, renew, reservations'
@@ -224,7 +217,6 @@ targets:
     status: achieved
     value: 5.0
     cost: 2.0
-    showcase: true
     actual_cost: 2.0
     acceptance:
     - spyder tool rotates an iOS simulator via simctl io <udid> rotate to portrait, landscape-left, landscape-right, portrait-upside-down
@@ -243,7 +235,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 5.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - start/stop recording a video on iOS simulator, iOS device, and Android (device+emu)
@@ -263,7 +254,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - 'iOS: fetch .ips reports via pymobiledevice3 crash-reports (or devicectl equivalent), optionally filtered by since-timestamp and process name'
@@ -283,7 +273,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - 'install_app tool: accepts an .app (iOS) or .apk (Android) path, installs on the reserved device'
@@ -302,7 +291,6 @@ targets:
     status: achieved
     value: 5.0
     cost: 5.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'Named profiles: wifi, 4g, 3g, edge, offline, lossy-<pct>, delay-<ms>'
@@ -322,7 +310,6 @@ targets:
     status: achieved
     value: 5.0
     cost: 8.0
-    showcase: true
     actual_cost: 8.0
     acceptance:
     - 'iOS: list/create/boot/shutdown/delete simulators by type + runtime'
@@ -341,7 +328,6 @@ targets:
     status: achieved
     value: 5.0
     cost: 5.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'Live tail: server-sent events (or chunked REST) streaming filtered log lines to a client'
@@ -361,7 +347,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    showcase: true
     actual_cost: 2.0
     acceptance:
     - ~/.spyder/inventory.json format is documented with at least iPad as a worked example
@@ -383,7 +368,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - Each reservation gets a run-id and a directory ~/.spyder/runs/<run-id>/
@@ -400,7 +384,6 @@ targets:
     status: achieved
     value: 13.0
     cost: 13.0
-    showcase: true
     actual_cost: 8.0
     acceptance:
     - 'Baseline store: ~/.spyder/baselines/<suite>/<case>.{png,manifest.json} with per-device / per-orientation variants'
@@ -459,7 +442,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - IOSAdapter.List shells out to `pymobiledevice3 usbmux list` (USB) and `xcrun devicectl list devices` (CoreDevice) and fuses the two into a single []Info array keyed by UUID
@@ -478,7 +460,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - reserve accepts a `selector` argument as an alternative to a literal `device` — a structured predicate over (platform, model-family, OS-min, OS-max, orientation-capable, tags, and free-form attribute matchers)
@@ -509,7 +490,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'Pool catalogue at ~/.spyder/pool.yaml (or similar) declares stock sim/emu templates: device-type + runtime/system-image + tags + min/max desired-ready counts + per-template linger duration + per-template warm-pool size'
@@ -557,7 +537,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 13.0
     acceptance:
     - 'The iOS KeepAwake companion app and all its supporting machinery are deleted from spyder: the ios/KeepAwake/ project directory, the xcodegen/xcodebuild/devicectl install code path in internal/autoawake/autoawake.go (deployKeepAwake, findBuiltApp, findKeepAwakeProject), device.KeepAwakeBundleID and all references, and the SPYDER_KEEPAWAKE_PROJECT env var. The companion-app concept no longer exists in the codebase.'
@@ -585,7 +564,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - bridge/ Python package (uv-managed, pyproject.toml) with fastapi + uvicorn + pymobiledevice3 as direct deps
@@ -612,7 +590,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - internal/pmd3bridge/ package with a Client that wraps http.Client using a Unix-socket DialContext; one typed method per bridge endpoint (ListDevices, ListApps, LaunchApp, KillApp, PIDForBundle, Battery, Screenshot, CrashReportsList, CrashReportsPull, AcquirePowerAssertion, RefreshPowerAssertion, ReleasePowerAssertion)
@@ -639,7 +616,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - internal/device/ios.go contains zero exec.Command("pymobiledevice3", ...) calls. Every iOS operation (State, Screenshot, ListApps, LaunchApp, TerminateApp, AppPID, Crashes, logs-related) goes through a pmd3bridge.Client injected into IOSAdapter
@@ -665,7 +641,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 2.0
     acceptance:
     - ios/KeepAwake/ directory removed entirely (xcodegen project, Swift sources, provisioning, notes, README)
@@ -690,7 +665,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     actual_cost: 2.0
     acceptance:
     - release.yml CI workflow builds the pmd3-bridge PyInstaller --onedir bundle alongside the spyder binary for each release platform (darwin-arm64, linux-amd64, linux-arm64)
@@ -742,7 +716,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - Bridge binds 127.0.0.1:0 (kernel-assigned ephemeral port) instead of a filesystem socket
     - Bridge writes a single structured ready line on stdout carrying the port and a randomly-generated auth token, e.g. `ready port=NNNNN token=<32-byte-base64>\n`
@@ -766,7 +739,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - 'Per-endpoint bug-detection thresholds are set and named as constants in `internal/pmd3bridge`: list_devices 10 s; acquire/refresh/release_power_assertion 10 s; list_apps/battery/launch_app/kill_app/pid_for_bundle 30 s; screenshot 30 s; ready-handshake 10 s (existing)'
     - Every bridge client call carries a `context.WithTimeout` at its per-endpoint threshold; no call relies on the bare 30 s http.Client ceiling
@@ -791,7 +763,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`crash_reports_list` and the Android crash-equivalent return `Content-Type: application/x-ndjson` with one JSON object per line over chunked transfer encoding'
     - '`crash_reports_pull` returns `Content-Type: application/octet-stream` with chunked transfer encoding; the Go client exposes the response body as an `io.Reader` rather than buffering'
@@ -818,7 +789,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`make test-report` runs the full developer-machine test suite (Go unit, Python unit, integration against real bridge subprocess, optional device tier when devices are attached), refuses to run on a non-empty `git status --porcelain`, records `HEAD` SHA + per-suite outcomes into `TEST-REPORT.json` at the repo root'
     - 'The developer workflow is: commit code → `make test-report` → `git commit --amend --no-edit TEST-REPORT.json` to fold the report into the commit it vouches for'
@@ -850,7 +820,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - Every `client.post()` call emits a DEBUG log with endpoint, duration_ms, outcome (ok / bridge_error:$code / fatal), and the relevant UDID when present
     - Any call whose duration exceeds 0.5 × its endpoint threshold emits a WARN `bridge call slow` regardless of level, naming endpoint, duration_ms, and threshold_ms
@@ -878,7 +847,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - 'Test helpers for resource-axis accounting: process-group fd count (`lsof -g`), Go runtime.NumGoroutine, runtime.ReadMemStats, subprocess-tree descendant count; each exposed via `internal/pmd3bridge/testutil` or equivalent so tests across packages can assert on the same axes'
     - Primitive helper `assertNoResourceLeak(t, fn, iterations, maxDelta)` snapshots the chosen axis before and after running fn N times; fails if delta > maxDelta. Works for any of the axes above via a tiny sampler closure
@@ -901,7 +869,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - '`scripts/hil-verify.sh <scenario>` runs a named HIL scenario and prompts the operator for pass/fail with optional notes. Records outcome into `HIL-REPORT.json` at the repo root with HEAD SHA, operator email (from git config), timestamp, scenario name, duration, device used, and notes'
     - 'Scenario catalogue lives under `scripts/hil-scenarios/<name>.sh`; each is a bash script that prints instructions, runs whatever setup it needs (e.g. launching spyder with autoawake), waits for the operator''s window, then exits. First scenario: `stay-awake` — launches spyder, prompts operator to plug in an iPhone (30 s auto-lock), wait 90 s, confirm screen is still on'
@@ -974,7 +941,6 @@ targets:
     status: achieved
     value: 13.0
     cost: 8.0
-    showcase: true
     actual_cost: 8.0
     acceptance:
     - ios/KeepAwake/ contains a buildable Xcode project producing com.marcelocantos.spyder.KeepAwake
@@ -1044,7 +1010,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - When autoawake detects a new iOS device and LaunchKeepAwake fails because the app is not installed, the supervisor attempts an autonomous install+launch cycle
     - The autonomous path runs silently on success — no user prompt, no blocking. Log shows the normal `KeepAwake foregrounded` line once the app is running
@@ -1070,7 +1035,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - A Swift binary (`spyder-iosbridge`) wraps Apple's CoreDevice.framework and is bundled in the spyder release tar alongside the Go daemon. Swift Package Manager build target lives under `ios-bridge/` (or similar) and is invoked from the spyder Makefile. KeepAwake stays separate (it ships on-device, not host).
     - 'spyder-iosbridge serves the same wire protocol the pmd3-bridge serves today: spawned by the daemon supervisor, ephemeral TCP port + bearer-token handshake over stdio (`ready port=NNNN token=XXXX`), NDJSON streaming where useful, fail-fast on protocol violation. The Go-side `internal/pmd3bridge` package keeps its public Client API; only the bridge implementation language changes.'
@@ -1274,23 +1238,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: |-
-      Five acceptance bullets implemented and exercised against the built binary. Demonstration evidence captured in this session's transcript:
-
-      - `bin/spyder` (no args) lists `is-running` in the device-tools section, alongside the existing `launch-app`/`terminate-app` siblings.
-      - `bin/spyder is-running` (no args) — usage error, exit 2 with `spyder is-running <device> <bundle-id> [--json]` synopsis.
-      - `bin/spyder resolve iPad` — returns the full inventory entry JSON (alias, platform, ios_uuid, ios_coredevice, notes), exit 0.
-      - `bin/spyder resolve "this-is-not-an-alias-or-predicate"` — exit 15 with `"…" is not a known alias and not a parseable selector predicate (no '=' found)`.
-      - `bin/spyder resolve "platform=android,bogus=true"` — exit 15 surfacing the parse error: `selector parse: unknown key "bogus" in "bogus=true"`.
-      - `bin/spyder run --timeout banana -- echo hi` — exit 2 with `--timeout: time: invalid duration "banana"`.
-      - `bin/spyder run --device foo --on "platform=ios" -- echo` — exit 2 with `--device and --on are mutually exclusive`.
-
-      Showcase paper at `docs/papers/t38-cli-rough-edges.md` walks each acceptance bullet with before/after snippets ge's smoke-test.sh and matrix-cell.sh can adopt.
-
-      iOS archived-log query (Bullet 2) was discharged via documentation: `STABILITY.md` §"iOS log live-window contract" codifies the constraint and points callers to `crashes` / `--follow` for the use cases that previously required retrospective queries. A runtime archived-log mode would require a bridge-layer OsTraceService binding pmd3 doesn't expose stably; the spec explicitly allows the documentation alternative.
-
-      `make bullseye` standing invariants pass; TEST-REPORT.json refreshed.
     acceptance:
     - A `spyder is_running --device <device> --bundle-id <id>` (or equivalent) returns exit 0 if the app is running, exit 20 if not installed, exit 22 if installed-but-not-running. Distinct from `device_state.foreground_app` because it works even when the app is backgrounded, and distinct from `launch_app`'s PID-verify because it doesn't require launching anything. iOS implementation can use pmd3's `developer dvt process-id-for-bundle-id` (already used internally by autoawake's `isKeepAwakeRunning`).
     - '`spyder logs` on iOS physical devices supports an archived-log query mode in addition to the current live-window mode, so callers asking ''did this process log anything in the last 5 minutes?'' get a deterministic answer. May require routing through pmd3''s `OsTraceService` or similar; document the constraints in STABILITY.md if a true archived-log query isn''t possible (e.g. ''live tail starting from --since requires --since to be within the live-window grace period'').'
@@ -1333,7 +1280,6 @@ targets:
     status: achieved
     value: 13.0
     cost: 5.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - A wrapper command (subcommand or companion script) runs xcodebuild test/run with arbitrary args, waits for completion, and foregrounds KeepAwake on exit — success or failure
@@ -1558,7 +1504,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - When pmd3-bridge stops accepting TCP connections on its bound port (process listening but unresponsive), the supervisor SIGKILLs the wedged process and respawns it within a bounded number of consecutive failures (e.g. 3)
     - spyder.log no longer grows by 8 'WARN bridge call transport error' lines per minute indefinitely while every MCP tool that touches the bridge times out
@@ -1572,7 +1517,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - mcp__spyder__launch_app on a Wi-Fi-only iOS 17+ device foregrounds the requested bundle without errors
     - mcp__spyder__terminate_app kills the running PID without errors
@@ -1589,7 +1533,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - mcp__spyder__logs against an iOS 17+ device returns at least the os_log lines emitted during the call's since/until window when an active app is logging
     - Calls with `until` more than 5 s in the future actually wait until that deadline (or until the bridge ends the stream), instead of returning [] immediately
@@ -1605,7 +1548,6 @@ targets:
     status: achieved
     value: 5.0
     cost: 8.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - 'device_state({device: "iPad"}) returns battery level (0-100), charging bool, thermal state (nominal/fair/serious/critical), and foreground app bundle ID'
@@ -1628,7 +1570,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
     acceptance:
     - No exception escapes a FastAPI route handler — an outer FastAPI exception handler maps any uncaught Exception to a structured pmd3_error 500 response (type-name + message in body, full traceback in logs). The bridge never returns an unstructured 5xx and never propagates an exception out to uvicorn.
     - 'Every external await is bounded by an asyncio.timeout(): get_tunneld_devices ≤ 5 s, RSD connect/close ≤ 3 s, DTX connect ≤ 10 s, DTX RPC calls ≤ 15 s. On expiry, raise BridgeError("pmd3_timeout", …) with operation name and elapsed time. No external await can hang the bridge indefinitely.'
@@ -1647,8 +1588,6 @@ targets:
     status: set_aside
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: .github/workflows/pr.yml committed in c3354d2 — triggered on pull_request to master, ran scripts/check-test-report-fresh.sh on ubuntu-latest. Demonstrated red/green at the time of merge.
     set_aside_reason: |-
       Superseded 2026-05-02. The SHA-based freshness mechanism the
       workflow enforced kept colliding with squash-merge — the
@@ -1734,8 +1673,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: 'Released v0.32.0 (https://github.com/marcelocantos/spyder/releases/tag/v0.32.0) and verified locally: brew upgrade marcelocantos/tap/spyder reported 0.31.0 -> 0.32.0; /opt/homebrew/bin/spyder symlink intact; `spyder version` prints v0.32.0; brew services restarted and the daemon is listening on :3030. The new convergence rule ships in this build — autoawake reads the bridge''s /v1/foreground_app first and stays passive while a third-party app holds the foreground. Behavioural verification on iPad-mini / iPhone happens through normal use; the multimaze2-style "KeepAwake clobbers MultiMaze" symptom should no longer reproduce.'
     acceptance:
     - spyder launch_app / deploy_app for a non-KeepAwake bundle leaves that bundle foregrounded; subsequent autoawake convergence ticks observe the foreground app and stay passive — they do NOT relaunch KeepAwake.
     - When the device's foreground app is SpringBoard / nothing AND userOptOut is unset, autoawake launches KeepAwake (the only path that surfaces KeepAwake).
@@ -1759,8 +1696,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    showcase: true
-    demonstration: 'Released v0.34.0 (after v0.33.0 hotfix for the iostunnel cwd bug) and verified the user-installed brew service: `brew services restart spyder` spawns spyder v0.34.0 which spawns the bundled `ios tunnel start --userspace` subprocess (PID 6609 in the run), `selfIdentity.plist` lands cleanly in `~/.spyder/iostunnel/`, port 60105 is listening, both iOS devices (iPhone 00008110-001122334455667C and iPad-mini 00008130-001122334455667B) attached and the tunnel started establishing connections to them. No `pmd3-bridge` process, no `pmd3-tunneld` plist, no Python runtime — Cellar size dropped from 88.1 MB → 32.7 MB. Spyder''s logs show `iostunnel: started binary=/opt/homebrew/Cellar/spyder/0.34.0/libexec/spyder/ios pid=6609` followed by `Tunnel server started` and per-device `start tunnel` lines.'
     acceptance:
     - Single Go binary `spyder` (user-space) plus `ios tunnel start` (system LaunchDaemon, root) is the entire runtime. No Python anywhere; no pmd3-bridge subprocess; no `bridge/` Python tree in the repo.
     - All iOS device operations (list, launch, kill, screenshot, syslog, app_state, foreground_app, install, uninstall, crash reports, battery, device_power_state, power assertions) route through `github.com/danielpaulus/go-ios` as a Go module dependency.
@@ -1842,12 +1777,55 @@ targets:
     origin: manual
     discovered: 2026-05-10
     achieved: 2026-05-10
+  T57:
+    name: Bridge supervisor recovers from wedged liveness probe without crashing
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A wedged in-process Go bridge (3 consecutive liveness-probe timeouts at 127.0.0.1:<port>/v1/health) triggers a clean Restart() that brings the bridge back online without the supervisor itself panicking.
+    - Specifically, supervisor.go:207 (Supervisor.Restart) no longer nil-derefs when invoked from livenessProbeAt after a wedge_threshold=3 trip.
+    - After the recovery, /v1/list_devices answers within its normal latency budget and downstream MCP tools (deploy_app, launch_app, screenshot) succeed on iOS devices that were attached the whole time.
+    - Regression covered by a unit / integration test that simulates a wedged bridge state and verifies Restart() completes without panic.
+    - Existing devices remain visible in spyder devices --platform ios after the auto-recovery — no manual brew services restart spyder needed.
+    context: |-
+      Observed 2026-05-13 while deploying multimaze2 builds to Jevons (iPad mini A17 Pro, iOS 26.4.2) and the Minicades Test iPhone (iPhone 13, iOS 26.4.2). adb-backed Android deploys kept working; both iOS devices reported "Device not found. Is it attached to the machine?" via spyder deploy_app, even though Xcode could see them and they hadn't been touched since the previous successful deploy hours earlier.
+
+      Diagnosed via ~/.spyder/daemon.log. The relevant tail:
+
+      ```
+      2026/05/10 16:01:11 WARN bridge call transport error — daemon stays up, supervisor will recover error="pmd3bridge: /v1/health: transport error after 5s: Post \"http://127.0.0.1:52473/v1/health\": context deadline exceeded"
+      2026/05/10 16:01:11 WARN bridge liveness: probe failed error="..." consecutive_fail=2 wedge_threshold=3 last_duration_ms=5001
+      2026/05/10 16:01:41 WARN bridge liveness: probe failed error="..." consecutive_fail=3 wedge_threshold=3 last_duration_ms=5000
+      2026/05/10 16:01:41 ERROR bridge liveness: wedge detected — restarting bridge consecutive_fail=3
+      panic: runtime error: invalid memory address or nil pointer dereference
+      [signal SIGSEGV: segmentation violation code=0x2 addr=0x0 pc=0x102b1cc58]
+
+      goroutine 28 [running]:
+      github.com/marcelocantos/spyder/internal/pmd3bridge.(*Supervisor).Restart(0x9d91df20170?, {0x10339e4b0?, 0x9d91dff0540?})
+          github.com/marcelocantos/spyder/internal/pmd3bridge/supervisor.go:207 +0x28
+      github.com/marcelocantos/spyder/internal/pmd3bridge.livenessProbeAt({0x10339e4b0, 0x9d91dff0540}, 0x9d91e03c000, {0x10339ae40, 0x0}, 0x6fc23ac00)
+          github.com/marcelocantos/spyder/internal/pmd3bridge/supervisor.go:607 +0x4e8
+      created by github.com/marcelocantos/spyder/internal/daemon.Run in goroutine 1
+          github.com/marcelocantos/spyder/internal/daemon/daemon.go:90 +0x310
+      ```
+
+      The wedge itself (the underlying stall in the Go bridge — pmd3bridge name is vestigial; spyder migrated to its own in-process Go bridge) is a separate concern. This target is narrowly about the recovery path being more broken than the thing it's recovering: the supervisor's own Restart() crashes when invoked from the liveness-probe path, leaving the bridge dead forever and the daemon's port (52473) unbound. lsof -iTCP:52473 confirms nothing listens.
+
+      User impact: every iOS device operation fails until brew services restart spyder is run manually. Two days in a row across multiple deploy cycles; not transient. Daemon was left running for further diagnosis at user's request.
+
+      spyder version: v0.34.0 (Homebrew).
+    tags:
+    - bug
+    - reliability
+    - ios
+    origin: manual
+    discovered: 2026-05-13
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved
     value: 8.0
     cost: 2.0
-    showcase: true
     actual_cost: 2.0
     acceptance:
     - devices tool lists Android devices via adb, annotated with inventory alias when matched, alongside iOS devices in a single call
@@ -1871,7 +1849,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - AndroidAdapter.List shells out to `adb devices -l` and returns one Info per attached device with UUID=serial, Platform=android, and Model/OS populated where available
@@ -1891,7 +1868,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 5.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - AndroidAdapter.State shells out to `adb -s <serial> shell dumpsys battery` and `dumpsys activity activities` (or equivalent) to populate BatteryLevel, Charging, and ForegroundApp
@@ -1915,7 +1891,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 8.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - spyder detects and health-probes an externally-managed tunneld on startup (default 127.0.0.1:49151) and logs the paired-device count on success
@@ -1936,7 +1911,6 @@ targets:
     status: achieved
     value: 8.0
     cost: 3.0
-    showcase: true
     actual_cost: 3.0
     acceptance:
     - New `screenshot` MCP tool accepts {device} and returns the screen as an image content block (base64 PNG) usable by mcp clients without intermediate files
@@ -1960,7 +1934,6 @@ targets:
     status: achieved
     value: 5.0
     cost: 5.0
-    showcase: true
     actual_cost: 5.0
     acceptance:
     - '`list_apps({device})` returns installed third-party apps with bundle id, name, and version. iOS: `pymobiledevice3 apps list` (no DDI needed). Android: `adb shell pm list packages -3` + `cmd package dump <pkg>` for names'
