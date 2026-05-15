@@ -1363,7 +1363,7 @@ targets:
     - The 'lockdown failed udid=... err=' empty-error log artefact (see 🎯T43) is gone for these endpoints — failures here are routed through the RSD path's structured error handling.
     - An integration test (env-gated with SPYDER_DEVICES=1) drives one full lifecycle (device_state → launch_app → is_running → terminate_app) against an iOS 17+ device and asserts every step returns a successful structured response.
     context: |-
-      Surfaced 2026-04-26 ~23:00 local while the user was driving spyder from a ipad-mini MCP session against iPad-mini (iPad mini A17 Pro, UDID 00008130-001122334455667B, iOS 26.4.1). Symptoms captured in the ipad-mini transcript at /Users/marcelo/.claude/projects/-Users-marcelo-work-github-com-marcelocantos-ipad-mini/11191d31-...jsonl around 22:55-23:05:
+      Surfaced 2026-04-26 ~23:00 local while the user was driving spyder from a jevons MCP session against iPad-mini (iPad mini A17 Pro, UDID 00008130-001122334455667B, iOS 26.4.1). Symptoms captured in the jevons transcript at /Users/marcelo/.claude/projects/-Users-marcelo-work-github-com-marcelocantos-jevons/11191d31-...jsonl around 22:55-23:05:
 
       1. `mcp__spyder__devices` returned iPad-mini + Test iPhone (00008110-...) cleanly.
       2. `mcp__spyder__terminate_app device=iPad-mini bundle_id=com.marcelocantos.jevon` → `device not connected: iPad-mini`.
@@ -1430,7 +1430,7 @@ targets:
     - Verified by an integration test (env-gated, e.g. SPYDER_LIFECYCLE=1) that starts `spyder serve`, sends SIGKILL to the parent, and asserts within 1s that the bridge subprocess from that run is gone. A second test exercises the panic path via a fault-injection hook and asserts the same.
     - 'Documented in STABILITY.md under the bridge supervisor section so the lifecycle invariant is part of the public contract: "the bridge subprocess does not outlive its spyder parent under any exit path; the parent''s stdin pipe is the liveness channel and guarantees this without any polling."'
     context: |-
-      Surfaced 2026-04-26 ~23:05 local in the ipad-mini MCP session: the user reported "Kill them all" referring to orphaned pmd3-bridge processes accumulated across multiple spyder daemon panics. The user manually cleaned them up.
+      Surfaced 2026-04-26 ~23:05 local in the jevons MCP session: the user reported "Kill them all" referring to orphaned pmd3-bridge processes accumulated across multiple spyder daemon panics. The user manually cleaned them up.
 
       Background. The bridge supervisor (internal/pmd3bridge/supervisor.go) spawns a `pmd3-bridge` subprocess and tracks its lifecycle. Clean shutdown paths (SIGINT/SIGTERM via signal.NotifyContext) call the supervisor's Stop() which sends SIGTERM to the child and waits for exit. **Panic paths bypass this entirely.** The 🎯T41 panic path was a representative example: `c.fire(err)` → `panic(err)` → goroutine unwinds → process exits → launchd respawns the daemon — and the prior `pmd3-bridge` child is now orphaned (its parent PID becomes 1). It keeps running, holds its listener port, holds whatever fd's it had open against tunneld, and the next daemon's supervisor spawns a fresh one. Across multiple panic cycles, you accumulate zombie children. Each holds a few thousand fd's via pmd3, and the user-visible symptom is degraded performance plus port collisions.
 
@@ -1789,7 +1789,7 @@ targets:
     - Regression covered by a unit / integration test that simulates a wedged bridge state and verifies Restart() completes without panic.
     - Existing devices remain visible in spyder devices --platform ios after the auto-recovery — no manual brew services restart spyder needed.
     context: |-
-      Observed 2026-05-13 while deploying multimaze2 builds to Jevons (iPad mini A17 Pro, iOS 26.4.2) and the Minicades Test iPhone (iPhone 13, iOS 26.4.2). adb-backed Android deploys kept working; both iOS devices reported "Device not found. Is it attached to the machine?" via spyder deploy_app, even though Xcode could see them and they hadn't been touched since the previous successful deploy hours earlier.
+      Observed 2026-05-13 while deploying multimaze2 builds to iPad-mini (iPad mini A17 Pro, iOS 26.4.2) and the Test iPhone (iPhone 13, iOS 26.4.2). adb-backed Android deploys kept working; both iOS devices reported "Device not found. Is it attached to the machine?" via spyder deploy_app, even though Xcode could see them and they hadn't been touched since the previous successful deploy hours earlier.
 
       Diagnosed via ~/.spyder/daemon.log. The relevant tail:
 
