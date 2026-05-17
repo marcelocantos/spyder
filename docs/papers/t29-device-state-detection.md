@@ -1,7 +1,7 @@
 # T29: Device-State Detection — Investigation Notes
 
 **Target:** 🎯T29 — Automated device-state detection: mechanical signal
-for "device is currently asleep/awake" queryable from pmd3-bridge.
+for "device is currently asleep/awake" queryable from the Python bridge.
 
 **Date:** 2026-04-26
 **Status:** Prototype implemented (ScreenshotService path); mechanical
@@ -35,13 +35,13 @@ path is ruled out.
 the device is awake and fails when the display is off or the device is
 asleep.
 
-**Code path:** `bridge/src/pmd3_bridge/services.py` → `screenshot(udid)`
-→ pmd3's DVT `Screenshot` instrument over a tunneld RSD connection.
+**Code path:** `bridge/src/bridge/services.py` → `screenshot(udid)`
+→ the Python bridge's DVT `Screenshot` instrument over a tunneld RSD connection.
 
 **Mechanism:** The DVT `Screenshot` service requires an active framebuffer.
 When the display is off (device locked/sleeping), the framebuffer is
 either powered down or in a low-power state that DVT does not expose.
-pmd3's `Screenshot.get_screenshot()` call either times out or raises an
+the Python bridge's `Screenshot.get_screenshot()` call either times out or raises an
 exception when the display is off.
 
 **Non-observation criterion:** Screenshot does **not** write to IOPMrootDomain
@@ -52,7 +52,7 @@ should satisfy the non-observation requirement.
 **Implementation:** `/v1/device_power_state` calls `screenshot()` and
 classifies the outcome:
 - Success (PNG returned) → `"awake"` (display on, framebuffer readable)
-- BridgeError `"pmd3_error"` with display-off heuristic → `"display_off"` or `"asleep"`
+- BridgeError `"bridge_error"` with display-off heuristic → `"display_off"` or `"asleep"`
 - BridgeError `"tunneld_unavailable"` → `"unknown"` (cannot determine)
 - BridgeError `"developer_mode_disabled"` → `"unknown"` (prerequisite missing)
 
@@ -69,9 +69,9 @@ asleep transitions. HIL verification steps:
    physically; optionally check System Idle Seconds via DiagnosticsService
    before and after — the spike value should not reset)
 
-**Risk:** Some pmd3 exception shapes are not yet catalogued for the
+**Risk:** Some the Python bridge exception shapes are not yet catalogued for the
 "display off" case. The endpoint currently returns `"unknown"` for
-unrecognised pmd3_error messages, which is safe. As HIL testing populates
+unrecognised bridge_error messages, which is safe. As HIL testing populates
 the real exception strings, the heuristic matchers in `services.py` can
 be tightened.
 
@@ -79,7 +79,7 @@ be tightened.
 
 ### 2. OsTraceService / syslog for IOPMrootDomain sleep transitions (NOT IMPLEMENTED)
 
-**Idea:** Subscribe to the device syslog stream via pmd3's `OsTraceService`
+**Idea:** Subscribe to the device syslog stream via the Python bridge's `OsTraceService`
 and filter for `IOPMrootDomain` messages that indicate `"sleep"` /
 `"wake"` transitions.
 
@@ -102,10 +102,10 @@ push notification path if the ScreenshotService approach proves too slow
 
 ### 3. SpringBoardService lock-state queries (NOT TESTED)
 
-**Idea:** pmd3 has a `SpringBoardServicesService` that can query lock
+**Idea:** the Python bridge has a `SpringBoardServicesService` that can query lock
 state. Possible keys: `SBGetScreenLockStatus`, `SBGetActivationState`.
 
-**Code location:** `pymobiledevice3.services.springboard` (if it exists in
+**Code location:** `the Python bridge.services.springboard` (if it exists in
 the installed version).
 
 **Problem:** SpringBoard queries go through lockdown. The concern from

@@ -205,7 +205,7 @@ iOS device support is in-process via the bundled
 [go-ios](https://github.com/danielpaulus/go-ios) Go library; the
 `bin/ios` binary that `make build` produces is the same project's CLI
 and is spawned by spyder as a userspace tunnel daemon at runtime.
-No Python, no `pymobiledevice3`, no system LaunchDaemon.
+No Python, no system LaunchDaemon.
 
 ## Licence
 

@@ -9,10 +9,10 @@
 //
 // We start the tunnel in --userspace mode so it doesn't need root —
 // userspace mode handles the L3 routing in user space rather than
-// installing a kernel TUN device, eliminating the sudo requirement
-// that pmd3-tunneld used to carry. Trade-off: marginally higher
-// per-packet overhead in exchange for a vastly simpler deployment
-// story (no system LaunchDaemon, no privilege boundary).
+// installing a kernel TUN device, eliminating any sudo requirement.
+// Trade-off: marginally higher per-packet overhead in exchange for
+// a vastly simpler deployment story (no system LaunchDaemon, no
+// privilege boundary).
 //
 // The supervisor is intentionally minimal: spawn, log, wait, kill.
 // No readiness handshake (the registry is just-an-HTTP-server, comes

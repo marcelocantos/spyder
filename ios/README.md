@@ -4,8 +4,8 @@ Minimal SwiftUI companion app. Single responsibility: set
 `UIApplication.shared.isIdleTimerDisabled = true` while foregrounded; unset on
 background. This is the sole iOS mechanism that reliably prevents display
 auto-lock, which is why spyder's autoawake foregrounds this app rather than
-attempting pmd3 `PowerAssertion` calls (those turned out to be a no-op for
-display sleep; see 🎯T31).
+attempting lower-level power-assertion calls (those turned out to be a
+no-op for display sleep; see 🎯T31).
 
 - **Bundle ID**: `com.marcelocantos.spyder.KeepAwake`
 - **Targets**: iOS 18+ (iPhone + iPad)

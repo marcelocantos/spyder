@@ -814,8 +814,8 @@ func (s *Supervisor) Status() map[string]string {
 	return out
 }
 
-// summariseErr returns a brief error string with pmd3 / xcodebuild
-// traceback decorations stripped for log readability.
+// summariseErr returns a brief error string with xcodebuild traceback
+// decorations stripped for log readability.
 func summariseErr(err error) string {
 	if err == nil {
 		return ""

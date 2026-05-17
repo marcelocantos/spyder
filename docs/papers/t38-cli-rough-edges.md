@@ -61,7 +61,7 @@ and `ExitAppNotRunning` for `is-running`. Both mean "the app is not
 running" — sharing one code keeps script branching simple. See
 `STABILITY.md` exit-codes table.
 
-**iOS implementation:** `pmd3 dvt process-id-for-bundle-id` (already
+**iOS implementation:** `the Python bridge dvt process-id-for-bundle-id` (already
 used internally by `autoawake.isKeepAwakeRunning`). Same call path that
 the autoawake supervisor relies on for stay-awake convergence.
 **Android implementation:** `adb shell pidof <pkg>`. Both adapters fall
@@ -82,7 +82,7 @@ recent_crashes=$(find ~/Library/Logs/CrashReporter/MobileDevice/iPad \
 ```
 
 **After:** This bullet was discharged via documentation rather than a
-runtime change. `pymobiledevice3` does not expose `OsTraceService` or an
+runtime change. the Python bridge does not expose `OsTraceService` or an
 equivalent through a stable CLI surface that spyder can consume
 reliably; a runtime archived-log mode is not feasible without a meaningful
 investment in the bridge layer.
@@ -103,7 +103,7 @@ through the daemon's reservation auth so concurrent test cells don't
 race on the crash dir. (No script change needed for this bullet beyond
 adopting `crashes`.)
 
-This contract may relax post-1.0 if pmd3 stabilises an OsTraceService
+This contract may relax post-1.0 if the Python bridge stabilises an OsTraceService
 binding that spyder can wrap.
 
 ---

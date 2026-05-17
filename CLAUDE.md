@@ -81,7 +81,7 @@ JSON array at `~/.spyder/inventory.json`:
 ]
 ```
 
-`ios_uuid` — from `pymobiledevice3 usbmux list` or `xcrun xctrace list devices`.
+`ios_uuid` — from `ios list` (go-ios) or `xcrun xctrace list devices`.
 `ios_coredevice` — from `devicectl list devices` (iOS 17+).
 
 ## Convention Notes

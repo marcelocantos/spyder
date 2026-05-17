@@ -35,8 +35,8 @@ test-report:
 	@./scripts/test-report.sh
 
 # test-integration is reserved for HIL / integration tests that
-# require real devices or external services. Currently a no-op stub
-# now that the pmd3-bridge bulkhead tests are gone (🎯T56).
+# require real devices or external services. Currently a no-op stub —
+# HIL coverage runs through the SPYDER_LIVE_UDID-gated _Live tests.
 test-integration:
 	@echo "no integration tier configured; HIL tests run via SPYDER_LIVE_UDID-gated _Live tests"
 

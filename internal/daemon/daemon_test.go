@@ -133,9 +133,9 @@ func TestBuild_ToolsListHasAllTools(t *testing.T) {
 }
 
 // TestExePathReal_FollowsSymlink verifies that exePathReal resolves a
-// Homebrew-style symlink to the real binary path. This is the core of
-// T35: without EvalSymlinks, resolveBridgeBinary computes
-// /opt/homebrew/libexec/… instead of the Cellar's libexec sibling.
+// Homebrew-style symlink to the real binary path. Without EvalSymlinks,
+// resolveIOSTunnelBinary computes /opt/homebrew/libexec/… instead of the
+// Cellar's libexec sibling and fails to find the bundled `ios` binary.
 func TestExePathReal_FollowsSymlink(t *testing.T) {
 	rawTmp := t.TempDir()
 	// Resolve /var → /private/var (macOS) so path comparisons don't fail.
@@ -145,11 +145,11 @@ func TestExePathReal_FollowsSymlink(t *testing.T) {
 	}
 
 	// Simulate Homebrew Cellar layout:
-	//   <tmp>/Cellar/spyder/1.0.0/bin/spyder  (real binary — just a file)
-	//   <tmp>/bin/spyder                       (symlink → Cellar path)
-	//   <tmp>/Cellar/spyder/1.0.0/libexec/pmd3-bridge/pmd3-bridge
+	//   <tmp>/Cellar/spyder/1.0.0/bin/spyder       (real binary — just a file)
+	//   <tmp>/bin/spyder                            (symlink → Cellar path)
+	//   <tmp>/Cellar/spyder/1.0.0/libexec/spyder/ios
 	cellarBin := filepath.Join(tmp, "Cellar", "spyder", "1.0.0", "bin")
-	cellarLibexec := filepath.Join(tmp, "Cellar", "spyder", "1.0.0", "libexec", "pmd3-bridge")
+	cellarLibexec := filepath.Join(tmp, "Cellar", "spyder", "1.0.0", "libexec", "spyder")
 	flatBin := filepath.Join(tmp, "bin")
 
 	for _, dir := range []string{cellarBin, cellarLibexec, flatBin} {
@@ -164,10 +164,10 @@ func TestExePathReal_FollowsSymlink(t *testing.T) {
 		t.Fatalf("write real exe: %v", err)
 	}
 
-	// Bridge binary in the Cellar's libexec.
-	bridgeBin := filepath.Join(cellarLibexec, "pmd3-bridge")
-	if err := os.WriteFile(bridgeBin, []byte("bridge"), 0o755); err != nil {
-		t.Fatalf("write bridge bin: %v", err)
+	// ios binary in the Cellar's libexec.
+	iosBin := filepath.Join(cellarLibexec, "ios")
+	if err := os.WriteFile(iosBin, []byte("ios"), 0o755); err != nil {
+		t.Fatalf("write ios bin: %v", err)
 	}
 
 	// Symlink: flat bin/ → real Cellar binary.
@@ -188,17 +188,17 @@ func TestExePathReal_FollowsSymlink(t *testing.T) {
 		t.Fatalf("EvalSymlinks(%q) = %q; want %q", symlink, resolved, realExe)
 	}
 
-	// Computing the bridge path from the resolved exe must point at the
-	// Cellar's libexec, not the flat-bin's sibling.
-	candidate := filepath.Join(filepath.Dir(resolved), "..", "libexec", "pmd3-bridge", "pmd3-bridge")
+	// Computing the ios-binary path from the resolved exe must point at
+	// the Cellar's libexec, not the flat-bin's sibling.
+	candidate := filepath.Join(filepath.Dir(resolved), "..", "libexec", "spyder", "ios")
 	candidate = filepath.Clean(candidate)
-	if candidate != bridgeBin {
-		t.Errorf("bridge candidate from resolved exe = %q; want %q", candidate, bridgeBin)
+	if candidate != iosBin {
+		t.Errorf("ios candidate from resolved exe = %q; want %q", candidate, iosBin)
 	}
 
 	// Sanity: candidate computed from the *unresolved* symlink would miss.
 	wrongCandidate := filepath.Clean(
-		filepath.Join(filepath.Dir(symlink), "..", "libexec", "pmd3-bridge", "pmd3-bridge"),
+		filepath.Join(filepath.Dir(symlink), "..", "libexec", "spyder", "ios"),
 	)
 	if _, err := os.Stat(wrongCandidate); err == nil {
 		t.Errorf("expected wrong-candidate %q to be absent, but it exists", wrongCandidate)

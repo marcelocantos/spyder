@@ -335,29 +335,12 @@ func TestStateCache_ReturnsWithinTTL(t *testing.T) {
 	}
 }
 
-// --- LogRange deadline / window tests (🎯T49) ---------------------------------
-
-// TestLogRange_WaitsForDeadline verifies that LogRange actually waits until the
-// `until` deadline and collects entries emitted during the window. This pins
-// the regression reported in 🎯T49: LogRange was returning [] immediately on
-// any `since/until` window — the root cause was that the bridge emitted
-// timezone-naive timestamps which Go's RFC3339Nano parser discarded as
-// zero-time, causing all entries to fail the since/until filter.
-//
-// The test uses a fake /v1/syslog server that emits 5 entries spaced 20 ms
-// apart (total span ~100 ms). LogRange is called with a 200 ms window
-// (since=now, until=now+200ms). All 5 entries have timestamps within the
-// window, so the call must both wait and accumulate them.
-// TestLogRange behaviour previously covered here was tightly coupled to
-// the pmd3-bridge HTTP layer (fake /v1/syslog NDJSON server, timezone-
-// aware RFC3339 parsing, deadline math validated against streamed
-// entries). The go-ios syslog path doesn't expose a similar injection
-// surface — `goios_syslog.New` opens a live device connection. The
-// deadline-math contract is preserved structurally (LogRange still
-// uses context.WithDeadline + a select branch in streamSyslog), but
-// the behavioural test that proved it has been retired with the bridge.
-// Coverage for the parser (BSD-syslog → LogLine) is preserved by the
-// remaining ParseIOSSyslogLine_* tests in logs_test.go.
+// LogRange's deadline-math contract (context.WithDeadline + the select
+// branch in streamSyslog) is preserved structurally, but no in-process
+// behavioural test exists: `goios_syslog.New` opens a live device
+// connection and has no injection surface. Parser coverage (BSD-syslog
+// → LogLine) is preserved by the ParseIOSSyslogLine_* tests in
+// logs_test.go.
 
 // TestStateCache_MissDialsBattery verifies that an expired cache entry
 // causes the adapter to dial go-ios for battery data, and that

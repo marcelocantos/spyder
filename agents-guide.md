@@ -829,10 +829,10 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
 `spyder serve` runs an always-on supervisor that keeps attached iOS devices
 awake by foregrounding the on-device **KeepAwake** companion app. KeepAwake
 sets `UIApplication.isIdleTimerDisabled = true` while foregrounded — the
-canonical iOS mechanism for preventing display auto-lock. (The pre-v0.9.0
-attempts to use pmd3's `PowerAssertionService` as a drop-in replacement
-turned out to be no-ops for display sleep; v0.9.0 reverted to the companion
-app, 🎯T31.)
+canonical iOS mechanism for preventing display auto-lock. (Lower-level
+power-assertion services were evaluated in v0.6.0–v0.8.0 but turned out
+to be no-ops for display sleep; v0.9.0 settled on the companion-app
+approach, 🎯T31.)
 
 When a new paired iOS device appears the supervisor:
 
@@ -881,17 +881,6 @@ reboots the device).
 - **`alerter`** — persistent macOS notifications for the locked-device prompt
   (fallbacks: `terminal-notifier`, `osascript`).
 
-The previous architecture (a Python `pmd3-bridge` FastAPI subprocess
-plus a system-level `pmd3-tunneld` LaunchDaemon) was retired in
-v0.33 (🎯T56). If you upgraded from a pre-0.33 install and had the
-manual `com.marcelocantos.pmd3-tunneld` LaunchDaemon, it's safe to
-remove now — the bundled `ios` binary supersedes it:
-
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist 2>/dev/null
-sudo rm -f /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist
-```
-
 ## Configuration
 
 ```bash
@@ -935,8 +924,8 @@ event.
   <dest.mp4>`.
 - **iOS physical device**: Not supported. `record_start` returns an immediate
   error: `"screen recording is not supported on iOS physical devices; use a
-  simulator"`. This is a platform limitation — `pymobiledevice3` and
-  `devicectl` do not expose a recording API at this time.
+  simulator"`. This is a platform limitation — go-ios and `devicectl` do
+  not expose a recording API at this time.
 - **Android device / emulator**: Uses `adb shell screenrecord --bit-rate
   4000000 /sdcard/spyder-recording.mp4`. The file is pulled to a local temp
   path on `record_stop`. Maximum native recording duration is 180 s per
@@ -949,11 +938,12 @@ owner's reservation is released.
 
 ## Common gotchas
 
-- **"tunneld unavailable"** in a tool error → start
-  `sudo pymobiledevice3 remote tunneld` (or the systemd/launchd service
-  that wraps it) and retry. Required on iOS 17+ for `screenshot` and
-  for stable device enumeration; iOS <17 devices keep working over
-  USBMux even without tunneld.
+- **"tunneld unavailable"** in a tool error → the bundled `ios tunnel
+  start --userspace` child process is meant to be running. If spyder
+  started it but it crashed, `brew services restart spyder` brings it
+  back up. Required on iOS 17+ for `screenshot` and for stable device
+  enumeration; iOS <17 devices keep working over USBMux even without
+  the tunnel.
 - **"Developer Mode is not enabled"** in a tool error (iOS 17+) → on
   the device, **Settings → Privacy & Security → Developer Mode**, toggle
   on. The device reboots; trust the developer cert again afterwards if
