@@ -60,8 +60,8 @@ func TestLookup_AliasCaseInsensitive(t *testing.T) {
 func TestLookup_ByUUID(t *testing.T) {
 	s := withInventory(t, sampleInventory)
 	cases := map[string]string{
-		"00008103-001122334455667A":            "iPad",     // iOS hardware UDID
-		"00000000-0000-0000-0000-000000000001": "iPad",     // iOS CoreDevice UUID
+		"00008103-001122334455667A":            "iPad",      // iOS hardware UDID
+		"00000000-0000-0000-0000-000000000001": "iPad",      // iOS CoreDevice UUID
 		"R5CR112X76K":                          "Raspberry", // Android serial
 	}
 	for id, wantAlias := range cases {
