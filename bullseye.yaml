@@ -1,4 +1,4 @@
-schema_version: 4
+schema_version: 5
 targets:
   T1:
     name: Bimodal spyder MCP server registers with Claude Code and dispatches tool calls end-to-end
@@ -1713,7 +1713,6 @@ targets:
     achieved: 2026-05-10
   T56.1:
     name: go-ios + ios tunnel start verified working on iOS 26 (iPad-mini + iPhone iPhone)
-    kind: verify
     status: achieved
     value: 0.0
     cost: 0.0
@@ -1723,8 +1722,6 @@ targets:
     - 'DTX-based operations (screenshot, process control / launch_app, app state) round-trip cleanly against at least one iOS 26 device. We have working go-ios calls for: list_devices, launch_app, kill_app, screenshot, app_state-equivalent, foreground-equivalent.'
     - go/no-go decision recorded as a comment on T56 (or a docs/papers/t56-spike.md note) with the measured numbers and any blockers.
     context: 'Cheap empirical check before committing to the full migration. The risk: go-ios''s tunnel might have the same iOS 26 RSD InvalidService noise we see today (in which case the migration''s net win is just "bridge wedge fix", which is real but smaller), or it might handle it materially better (in which case the migration is double-justified). Either way the answer changes our follow-on planning: keep T56.2 / T56.3 as planned vs file a separate "investigate iOS 26 RSD intermittency" target.'
-    verifies:
-    - T56
     tags:
     - spike
     - ios
@@ -1779,9 +1776,15 @@ targets:
     achieved: 2026-05-10
   T57:
     name: Bridge supervisor recovers from wedged liveness probe without crashing
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: |-
+      Superseded 2026-05-17 by 🎯T56's architectural rewrite. The crash this target named (`internal/pmd3bridge/supervisor.go:207` nil-deref in `Supervisor.Restart`, invoked from `livenessProbeAt` after `wedge_threshold=3`) is in code that no longer exists: 🎯T56 (commit 1f8505c, merged 2026-05-10) decommissioned the entire `pmd3bridge` package — there is no Supervisor.Restart, no liveness probe, no wedge_threshold anywhere on master. The remaining `internal/iostunnel/supervisor.go` deliberately documents "no liveness probes (a wedged tunnel surfaces as call-level errors in goios.Resolver.Session, where the cache invalidation already drives recovery)" — the recovery path T57 wanted to harden was designed out, not reimplemented.
+
+      Timeline confirms the diagnosis: the panic log lines are dated 2026/05/10 16:01, which is *before* T56 merged at 16:56 the same day. The user observed the iOS-unreachable symptom on 2026-05-13 against v0.34.0 (Homebrew), but v0.34.0 cannot produce that stack frame. The most plausible reading is that the daemon process under launchctl / brew-services was still the pre-T56 binary, never restarted after the upgrade — a `brew services restart spyder` would have brought up the new architecture in which this specific failure mode does not exist.
+
+      If a wedge-recovery failure recurs on the new in-process go-ios path, the right action is a fresh target scoped to the new architecture, not a revival of T57.
     acceptance:
     - A wedged in-process Go bridge (3 consecutive liveness-probe timeouts at 127.0.0.1:<port>/v1/health) triggers a clean Restart() that brings the bridge back online without the supervisor itself panicking.
     - Specifically, supervisor.go:207 (Supervisor.Restart) no longer nil-derefs when invoked from livenessProbeAt after a wedge_threshold=3 trip.
