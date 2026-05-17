@@ -381,9 +381,11 @@ The `logs` MCP tool returns a bounded JSON array of `LogLine` records. It
 accepts:
 
 - `device` (required) — alias or UUID.
-- `since` / `until` — RFC3339 timestamps (e.g. `2026-04-19T14:00:00Z`). Both
-  optional. When `since` is omitted, iOS collects from a short live window
-  (≤5 s); Android uses `-d` (dump buffer then exit).
+- `since` / `until` — window bounds. Each accepts either an RFC3339 absolute
+  (e.g. `2026-04-19T14:00:00Z`) or a Go duration relative to now (e.g.
+  `since=-2m` for "the last two minutes", `since=-1h`, `until=+30s`,
+  `until=now`). Both optional. When `since` is omitted, iOS collects from a
+  short live window (≤5 s); Android uses `-d` (dump buffer then exit).
 - `process` — filter by process name (iOS: matched against `image_name` server-side; Android: tag match).
 - `subsystem` — iOS only (matched against `SyslogLabel.subsystem` server-side, e.g. `com.apple.network`). Ignored on Android.
 - `tag` — Android logcat tag (e.g. `MyApp`). Ignored on iOS.
@@ -404,7 +406,8 @@ Or via the CLI:
 ```bash
 spyder log iPad --follow                          # live tail
 spyder log iPad --follow --process MyApp          # process filter
-spyder log iPad --since 2026-04-19T00:00:00Z     # bounded range
+spyder log iPad --since -2m                       # the last two minutes
+spyder log iPad --since 2026-04-19T00:00:00Z     # bounded range, absolute
 spyder log iPad --regex "crash|panic"             # regex on message
 ```
 
@@ -711,6 +714,7 @@ spyder emu shutdown emulator-5554
 spyder emu create Pixel6_API34 \
   --image 'system-images;android-34;google_apis;arm64-v8a' --device pixel_6
 spyder emu delete Pixel6_API34
+spyder log iPad --since -2m --json               # last two minutes
 spyder log iPad --since 2026-04-19T00:00:00Z --json
 spyder log iPad --follow --process MyApp         # live SSE tail
 ```
