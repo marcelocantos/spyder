@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-05-18T09:51:53Z",
+  "generated_at": "2026-05-18T11:14:37Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "go test ./...",
-      "duration_s": 7,
+      "duration_s": 6,
       "status": "pass"
     },
     {
