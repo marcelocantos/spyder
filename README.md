@@ -91,7 +91,8 @@ everything below plus gotchas, device-inventory format, and the full
 | `baselines_list` | List all stored baselines for a suite. |
 | `record_start` / `record_stop` | Start and stop a screen recording (mp4). iOS simulators via `xcrun simctl io recordVideo`; Android via `adb shell screenrecord`. **iOS physical devices are not supported** — use a simulator. |
 | `network` | Apply or clear network condition shaping. Android emulators only — see STABILITY.md for platform limits. |
-| `logs` | Fetch log lines between two timestamps. Filters: `process`, `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
+| `logs` | Fetch log lines between two timestamps. `since` / `until` accept either an RFC3339 absolute or a Go duration relative to now — `since=-2m`, `until=now`. Filters: `process`, `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
+| `crashes` | Fetch crash reports from a device. iOS pulls .ips via go-ios `crashreport`; Android via `adb` tombstones + `logcat -b crash`. `since` accepts RFC3339 or a Go duration (`-15m`, `-1h`). Read-only. |
 | `pool_list` / `pool_warm` / `pool_drain` | Sim/emu pool management. Inspect tier counts, pre-boot instances, or drain idle instances. Requires `~/.spyder/pool.yaml` — see [agents-guide.md](agents-guide.md#simemu-pool). |
 
 ## REST API and live log streaming
@@ -140,6 +141,9 @@ spyder reserve iPad --ttl 600 --note "UI sweep"
 spyder reservations --json
 spyder release iPad
 spyder rotate C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8 --to landscape-left
+spyder log iPad --process MyApp --since -2m       # last 2 minutes
+spyder log iPad --follow --process MyApp          # live SSE tail
+spyder crashes iPad --since -1h --json
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
 spyder runs artefacts 20260419-143022-a3f1b2
