@@ -166,6 +166,144 @@ func TestHandleLogs_ReadOnly(t *testing.T) {
 	}
 }
 
+// --- bundle_id resolution --------------------------------------------
+
+func TestHandleLogs_BundleIDResolved(t *testing.T) {
+	var capturedFilter device.LogFilter
+	ios := &stubAdapter{
+		resolveExecutable: func(id, bundle string) (string, bool, error) {
+			if bundle != "com.squz.multimaze2" {
+				t.Errorf("ResolveExecutable bundle = %q; want com.squz.multimaze2", bundle)
+			}
+			return "MultiMaze2", true, nil
+		},
+		logRange: func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error) {
+			capturedFilter = filter
+			return nil, nil
+		},
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	r := dispatchJSON(t, h, "logs", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.squz.multimaze2",
+	})
+	if r.IsError {
+		t.Fatalf("logs should succeed; body=%s", resultText(t, &r))
+	}
+	if capturedFilter.Process != "MultiMaze2" {
+		t.Errorf("filter.Process = %q; want MultiMaze2 (resolved from bundle_id)", capturedFilter.Process)
+	}
+}
+
+func TestHandleLogs_BundleIDAndProcessRejected(t *testing.T) {
+	h := newTestHandler(t)
+	r := dispatchJSON(t, h, "logs", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.squz.multimaze2",
+		"process":   "MultiMaze2",
+	})
+	if !r.IsError {
+		t.Errorf("expected isError=true when both bundle_id and process set; body=%s", resultText(t, &r))
+	}
+	if !strings.Contains(resultText(t, &r), "mutually exclusive") {
+		t.Errorf("error should mention mutual exclusion; body=%s", resultText(t, &r))
+	}
+}
+
+func TestHandleLogs_BundleIDNotInstalled(t *testing.T) {
+	ios := &stubAdapter{
+		resolveExecutable: func(id, bundle string) (string, bool, error) {
+			return "", false, nil
+		},
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	r := dispatchJSON(t, h, "logs", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.example.ghost",
+	})
+	if !r.IsError {
+		t.Errorf("expected isError=true for uninstalled bundle; body=%s", resultText(t, &r))
+	}
+	if !strings.Contains(resultText(t, &r), "not installed") {
+		t.Errorf("error should mention 'not installed'; body=%s", resultText(t, &r))
+	}
+}
+
+// --- since=launch -----------------------------------------------------
+
+func TestHandleLogs_SinceLaunch(t *testing.T) {
+	var capturedSince time.Time
+	ios := &stubAdapter{
+		resolveExecutable: func(id, bundle string) (string, bool, error) {
+			return "MultiMaze", true, nil
+		},
+		logRange: func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error) {
+			capturedSince = since
+			return nil, nil
+		},
+		launchApp: func(id, bundle string) error { return nil },
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+
+	// First call launch_app to seed launchTimes.
+	before := time.Now()
+	r := dispatchJSON(t, h, "launch_app", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.squz.multimaze2",
+	})
+	if r.IsError {
+		t.Fatalf("launch_app should succeed; body=%s", resultText(t, &r))
+	}
+	after := time.Now()
+
+	// Now logs with since=launch should resolve to the launch time.
+	r = dispatchJSON(t, h, "logs", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.squz.multimaze2",
+		"since":     "launch",
+	})
+	if r.IsError {
+		t.Fatalf("logs should succeed; body=%s", resultText(t, &r))
+	}
+	if capturedSince.Before(before) || capturedSince.After(after) {
+		t.Errorf("since = %v; want between %v and %v", capturedSince, before, after)
+	}
+}
+
+func TestHandleLogs_SinceLaunchRequiresBundleID(t *testing.T) {
+	h := newTestHandler(t)
+	r := dispatchJSON(t, h, "logs", map[string]any{
+		"device": "iPad",
+		"since":  "launch",
+	})
+	if !r.IsError {
+		t.Fatalf("expected isError=true; body=%s", resultText(t, &r))
+	}
+	if !strings.Contains(resultText(t, &r), "bundle_id") {
+		t.Errorf("error should mention bundle_id; body=%s", resultText(t, &r))
+	}
+}
+
+func TestHandleLogs_SinceLaunchUnknown(t *testing.T) {
+	ios := &stubAdapter{
+		resolveExecutable: func(id, bundle string) (string, bool, error) {
+			return "MultiMaze", true, nil
+		},
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	r := dispatchJSON(t, h, "logs", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.squz.multimaze2",
+		"since":     "launch",
+	})
+	if !r.IsError {
+		t.Fatalf("expected isError=true for un-launched bundle; body=%s", resultText(t, &r))
+	}
+	if !strings.Contains(resultText(t, &r), "no launch_app call recorded") {
+		t.Errorf("error should mention missing launch record; body=%s", resultText(t, &r))
+	}
+}
+
 // --- ResolveAdapterForStream ------------------------------------------
 
 func TestResolveAdapterForStream(t *testing.T) {

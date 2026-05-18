@@ -24,8 +24,9 @@ type stubAdapter struct {
 	list           func() ([]device.Info, error)
 	state          func(id string) (device.State, error)
 	screenshot     func(id string) ([]byte, error)
-	listApps       func(id string) ([]device.AppInfo, error)
-	launchApp      func(id, bundle string) error
+	listApps          func(id string) ([]device.AppInfo, error)
+	resolveExecutable func(id, bundle string) (string, bool, error)
+	launchApp         func(id, bundle string) error
 	terminateApp   func(id, bundle string) error
 	rotate         func(id, orientation string) error
 	crashes        func(id string, since time.Time, process string) ([]device.CrashReport, error)
@@ -63,6 +64,12 @@ func (s *stubAdapter) ListApps(id string) ([]device.AppInfo, error) {
 		return nil, nil
 	}
 	return s.listApps(id)
+}
+func (s *stubAdapter) ResolveExecutable(id, bundle string) (string, bool, error) {
+	if s.resolveExecutable == nil {
+		return bundle, true, nil
+	}
+	return s.resolveExecutable(id, bundle)
 }
 func (s *stubAdapter) LaunchApp(id, bundle string) error {
 	if s.launchApp == nil {

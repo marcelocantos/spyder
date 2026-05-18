@@ -67,14 +67,14 @@ func init() {
 		{"reservations", "spyder reservations [--json]", runReservations},
 		{"runs", "spyder runs <list|show|artefacts> [args...]", runRuns},
 		{"rotate", "spyder rotate <device> --to <orientation> [--as OWNER]", runRotate},
-		{"crashes", "spyder crashes <device> [--since RFC3339|-15m|-1h] [--process NAME] [--as OWNER] [--json]", runCrashes},
+		{"crashes", "spyder crashes <device> [--since RFC3339|-15m|-1h|launch] [--bundle-id ID | --process NAME] [--as OWNER] [--json]", runCrashes},
 		{"diff", "spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]", runDiff},
 		{"baseline", "spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]", runBaseline},
 		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
-		{"log", "spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now] [--until TS|now] [--follow]", runLog},
+		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 	}
 }
@@ -1022,7 +1022,7 @@ func runRotate(args []string) {
 }
 
 func runCrashes(args []string) {
-	pf, ctx, cancel := setupCommand("crashes", args, []string{"--since", "--process", "--as"}, []string{"--json"}, clitimeout.DefaultRead)
+	pf, ctx, cancel := setupCommand("crashes", args, []string{"--since", "--process", "--bundle-id", "--as"}, []string{"--json"}, clitimeout.DefaultRead)
 	defer cancel()
 	requirePositional("crashes", pf, 1)
 	a := map[string]any{"device": pf.positional[0]}
@@ -1031,6 +1031,9 @@ func runCrashes(args []string) {
 	}
 	if p := pf.flags["--process"]; p != "" {
 		a["process"] = p
+	}
+	if b := pf.flags["--bundle-id"]; b != "" {
+		a["bundle_id"] = b
 	}
 	if o := pf.flags["--as"]; o != "" {
 		a["owner"] = o
@@ -1254,7 +1257,7 @@ func runLog(args []string) {
 	// here; the live-follow mode replaces the context below if no
 	// explicit --timeout was passed.
 	pf, ctx, cancel := setupCommand("log", args,
-		[]string{"--process", "--subsystem", "--tag", "--regex", "--since", "--until"},
+		[]string{"--process", "--bundle-id", "--subsystem", "--tag", "--regex", "--since", "--until"},
 		[]string{"--follow", "--json"},
 		clitimeout.DefaultRead,
 	)
@@ -1280,6 +1283,9 @@ func runLog(args []string) {
 		if p := pf.flags["--process"]; p != "" {
 			body["process"] = p
 		}
+		if b := pf.flags["--bundle-id"]; b != "" {
+			body["bundle_id"] = b
+		}
 		if s := pf.flags["--subsystem"]; s != "" {
 			body["subsystem"] = s
 		}
@@ -1300,6 +1306,9 @@ func runLog(args []string) {
 			key := strings.TrimPrefix(flag, "--")
 			a[key] = v
 		}
+	}
+	if b := pf.flags["--bundle-id"]; b != "" {
+		a["bundle_id"] = b
 	}
 	dispatchAndExit(ctx, "logs", a, jsonMode, false)
 }

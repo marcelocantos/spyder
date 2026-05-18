@@ -44,6 +44,7 @@ func NewStreamHandler(h *spydermcp.Handler) http.Handler {
 type logStreamRequest struct {
 	Device    string `json:"device"`
 	Process   string `json:"process"`
+	BundleID  string `json:"bundle_id"`
 	Subsystem string `json:"subsystem"`
 	Tag       string `json:"tag"`
 	Regex     string `json:"regex"`
@@ -72,6 +73,10 @@ func (lh *logStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "device is required", http.StatusBadRequest)
 		return
 	}
+	if req.Process != "" && req.BundleID != "" {
+		http.Error(w, "process and bundle_id are mutually exclusive", http.StatusBadRequest)
+		return
+	}
 
 	filter := device.LogFilter{
 		Process:   req.Process,
@@ -84,6 +89,19 @@ func (lh *logStreamHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	if req.BundleID != "" {
+		exe, installed, rerr := adapter.ResolveExecutable(id, req.BundleID)
+		if rerr != nil {
+			http.Error(w, fmt.Sprintf("bundle_id %s: %v", req.BundleID, rerr), http.StatusBadRequest)
+			return
+		}
+		if !installed {
+			http.Error(w, fmt.Sprintf("bundle_id %s not installed on %s", req.BundleID, req.Device), http.StatusBadRequest)
+			return
+		}
+		filter.Process = exe
 	}
 
 	// Set SSE headers before writing the first byte.

@@ -30,7 +30,10 @@ func (s *stubStreamAdapter) List() ([]device.Info, error)                 { retu
 func (s *stubStreamAdapter) State(id string) (device.State, error)        { return device.State{}, nil }
 func (s *stubStreamAdapter) Screenshot(id string) ([]byte, error)         { return nil, nil }
 func (s *stubStreamAdapter) ListApps(id string) ([]device.AppInfo, error) { return nil, nil }
-func (s *stubStreamAdapter) LaunchApp(id, b string) error                 { return nil }
+func (s *stubStreamAdapter) ResolveExecutable(id, b string) (string, bool, error) {
+	return b, true, nil
+}
+func (s *stubStreamAdapter) LaunchApp(id, b string) error    { return nil }
 func (s *stubStreamAdapter) TerminateApp(id, b string) error              { return nil }
 func (s *stubStreamAdapter) InstallApp(id, p string) error                { return nil }
 func (s *stubStreamAdapter) UninstallApp(id, b string) error              { return nil }
