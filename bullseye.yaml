@@ -1824,6 +1824,79 @@ targets:
     - ios
     origin: manual
     discovered: 2026-05-13
+  T58:
+    name: iOS log capture uses OSLog (os_trace_relay), not BSD syslog_relay
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Spyder's iOS LogRange and LogStream paths route through go-ios's `ostrace` package (`com.apple.os_trace_relay` lockdown service), not the legacy `syslog` package.
+    - 'Entries arrive with structured fields: `time.Time` Timestamp, full `ImageName`, `Level`, and optional `Label.Subsystem`. No BSD-format text parsing.'
+    - The 10-hour timezone bug (syslog_relay's BSD format had no timezone metadata, so spyder parsed local-time strings as UTC) is gone — `since` / `until` filters compare on real instants.
+    - The `subsystem` filter on the `logs` MCP tool is honoured server-side (matches against `entry.Label.Subsystem`); previously documented as 'NOT supported' on the go-ios path.
+    - BSD-syslog parser (`iosSyslogLineRE`, `iosSyslogTimestampLayouts`, `ParseIOSSyslogLine`, `parseIOSSyslogTimestamp`, `goiosSyslogToLogLine`) and their tests are removed.
+    - 'An unfiltered 5-second window over an attached iOS-17+ device surfaces strictly more entries than the old syslog_relay path: ~80+ distinct ImageName values (including framework paths like `/System/Library/PrivateFrameworks/RunningBoardServices`) vs the old ~50 short daemon names. System-daemon coverage already in place is preserved.'
+    context: |-
+      Refiled 2026-05-18 after on-device investigation. The original T58 acceptance required third-party app entries (e.g. MultiMaze2's `T17 marble[...]` lines) to surface in the spyder log stream. That turns out to require the DTX `activitytracetap` channel, which is the path Xcode's Console.app uses. Both `syslog_relay` (legacy) and `os_trace_relay` (modern) are *lockdown* services that on iOS 17+ are hardened against third-party app output regardless of routing — verified live on Jevons (iPad mini, iOS 26.4.2) running com.squz.multimaze2 at pid 702: zero ostrace entries with a `/private/var/containers/Bundle/Application/...` process path appear in any window, with either `MessageFilterLogMessage` or `MessageFilterAll`. Tracked separately as 🎯T58.1.
+
+      What this target now delivers:
+      - internal/device/ios.go LogRange / LogStream now construct `ostrace.Connection` via `ostrace.New(dev, -1, MessageFilterLogMessage, StreamFlagsAll)`.
+      - `ostraceEntryToLogLine` is a trivial field copy from `ostrace.LogEntry` (PID, Timestamp, Level, ImageName, Message, Label) to `device.LogLine`.
+      - The old BSD-syslog parser path (regex over `MMM D HH:MM:SS host process[pid] <level>: message`) is deleted, along with the timezone hack that suppressed per-entry since/until filtering.
+      - Subsystem filter (`filter.Subsystem != ""`) now matches against `entry.Label.Subsystem` via `strings.Contains`.
+      - Tool description on `logs` MCP tool no longer carries the 'Subsystem: NOT supported' caveat.
+
+      Verified by live smoke against Jevons:
+      - Unfiltered `logs(since=-2s, until=+3s)` returns 1.66 MB of structured entries in 5s (vs ~97 KB on the old path).
+      - Process paths include CoreFoundation, RunningBoardServices, DTXConnectionServices, UserActivity/useractivityd, and other framework paths previously invisible — strictly a superset.
+      - Timestamps include device timezone offset (`2026-05-18T21:08:09.236967+10:00`), and `since`/`until` comparisons now work correctly. No more 10h drift.
+
+      Files touched: internal/device/ios.go (~80 lines deleted from the BSD-parser block + ~140 lines rewritten in the stream path), internal/device/ios_test.go (deleted obsolete ParseIOSSyslogLine tests), internal/device/logs_test.go (deleted obsolete ParseIOSSyslogLine tests; replaced with a comment pointing at the upstream go-ios test coverage), internal/mcp/server.go ('Subsystem: NOT supported' caveat removed), agents-guide.md ('iOS subsystem filter' caveat replaced with the corrected go-ios routing description).
+    tags:
+    - bug
+    - ios
+    - logs
+    - observability
+    - go-ios
+    origin: manual
+    discovered: 2026-05-18
+    achieved: 2026-05-18
+  T58.1:
+    name: Third-party iOS app log entries surface in spyder via DTX activitytracetap
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A third-party app running on an iOS 17+ device that emits log entries via SPDLOG, libc syslog(3), and/or os_log has those entries appear in `spyder logs(bundle_id=<id>, since=launch)` output within ~5s of the emit.
+    - 'Concretely reproducible: launching MultiMaze2 (`com.squz.multimaze2`) on the Test iPhone, tilting right through level 1, and calling `logs(bundle_id=com.squz.multimaze2, since=launch)` returns the corresponding `T17 marble[...]` lines.'
+    - Unfiltered `logs(device=<id>, since=-10s)` over any 10-second window with a foregrounded app present returns at least one entry whose `process` (ImageName) points at a `/private/var/containers/Bundle/Application/<UUID>/<App>.app/<Binary>` path — i.e. a third-party app's own emissions, not just system-framework entries that mention them.
+    - DTX `com.apple.instruments.server.services.activitytracetap` channel is wired up over the existing instruments DTX service (the same service `screenshot` / `launch_app` / `processcontrol` already use). DDI requirements are documented — if the developer disk image isn't mounted, the call returns a clear error pointing at `xcrun devicectl device process unmount` / `mount` semantics.
+    - Spyder falls back to the ostrace_relay path (delivered in 🎯T58) for system-process coverage when the DTX channel can't be opened (e.g. DDI not mounted, iOS <17), with a slog warning explaining the degraded mode.
+    context: |-
+      Spun off 2026-05-18 from 🎯T58. The original T58 acceptance asked for third-party app entries to surface; investigation showed that both lockdown-level services (`syslog_relay` and `os_trace_relay`) are hardened against third-party app output on iOS 17+. T58 was narrowed to the ostrace-relay switch (correct timestamps, structured fields, subsystem filter) that's strictly an improvement; this target captures the deeper work needed for third-party-app coverage.
+
+      Background: Xcode's Console.app live device-log capture uses the `com.apple.instruments.server.services.activitytracetap` channel over the `instruments` DTX service. go-ios v1.0.213 defines the channel name in `ios/instruments/instruments_channels.go:activityTraceTapChannel` but has no high-level wrapper. The marcelocantos fork override at v1.0.214-... doesn't add one either.
+
+      Surface area:
+
+      - Likely a new `internal/device/oslog/` package (or extension to internal/goios) that opens the instruments DTX service, makes a channel request for activitytracetap, and parses the binary OSLog records the channel emits. Reference implementation: pymobiledevice3's `OsTraceService` (Python — its DTX path predates os_trace_relay) and Xcode Instruments' XPC traffic captured via dtx_codec.
+      - internal/device/ios.go's LogRange / LogStream: try DTX first, fall back to ostrace_relay (current T58 path) if DTX fails.
+      - May need a fork-side wrapper if the parsing is non-trivial. The `instruments.LogMessage`/etc Apple binary format is what the channel ships.
+      - DDI requirements: the developer disk image must be mounted for instruments services. Spyder already exercises this via screenshot / launch_app — if those work for a device, activitytracetap should be openable too.
+
+      User impact: this is what unblocks the dominant test workflow — `launch_app` then `logs(bundle_id=..., since=launch)` for a third-party app. With T58 alone, only system-framework entries that mention the app surface, not the app's own log calls.
+
+      Estimated scope: multi-session. The DTX RPC + binary format parsing is the bulk; once that's working, plumbing it into LogRange/LogStream is small.
+    depends_on:
+    - T58
+    tags:
+    - bug
+    - ios
+    - logs
+    - dtx
+    - go-ios
+    origin: manual
+    discovered: 2026-05-18
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved
