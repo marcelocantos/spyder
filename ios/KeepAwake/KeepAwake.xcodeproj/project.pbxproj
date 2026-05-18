@@ -7,11 +7,13 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		2ABCDEF1100000000000A55E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 1ABCDEF1100000000000A55E /* Assets.xcassets */; };
 		777914FB0B4F2337F66A80B2 /* KeepAwakeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86501DB5D41CD80E0AA2522E /* KeepAwakeApp.swift */; };
 		92F1A014568F67CD7988B0BD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21A0DEF5B1B2181C11F9E19B /* ContentView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		1ABCDEF1100000000000A55E /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		21A0DEF5B1B2181C11F9E19B /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		4FEB62EAE484684E3887256F /* KeepAwake.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = KeepAwake.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		86501DB5D41CD80E0AA2522E /* KeepAwakeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeepAwakeApp.swift; sourceTree = "<group>"; };
@@ -31,6 +33,7 @@
 			isa = PBXGroup;
 			children = (
 				20466934466611FAE45EF97B /* Sources */,
+				1ABCDEF1100000000000A55E /* Assets.xcassets */,
 				A9936382A5A4538D3CD21447 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -51,6 +54,7 @@
 			buildConfigurationList = 0765867C3A215FB2F461C26C /* Build configuration list for PBXNativeTarget "KeepAwake" */;
 			buildPhases = (
 				5E18007E7BCD06BD2E63999F /* Sources */,
+				3ABCDEF1100000000000A55E /* Resources */,
 			);
 			buildRules = (
 			);
@@ -96,6 +100,17 @@
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		3ABCDEF1100000000000A55E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				2ABCDEF1100000000000A55E /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		5E18007E7BCD06BD2E63999F /* Sources */ = {
@@ -160,7 +175,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.2.1;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -271,7 +286,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.2.1;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
