@@ -8,73 +8,10 @@ import (
 	"time"
 )
 
-// --- iOS syslog parser -----------------------------------------------
-
-func TestParseIOSSyslogLine_HappyPath(t *testing.T) {
-	// Typical iOS BSD syslog line surfaced by go-ios's syslog_relay.
-	line := "Mar 15 14:23:01.123 iPad MyApp[1234] <Error>: crash happened"
-	ll, ok := ParseIOSSyslogLine(line)
-	if !ok {
-		t.Fatalf("ParseIOSSyslogLine returned ok=false for valid line")
-	}
-	if ll.Process != "MyApp" {
-		t.Errorf("Process = %q; want MyApp", ll.Process)
-	}
-	if ll.Level != "Error" {
-		t.Errorf("Level = %q; want Error", ll.Level)
-	}
-	if ll.Message != "crash happened" {
-		t.Errorf("Message = %q; want 'crash happened'", ll.Message)
-	}
-	// Timestamp must be non-zero and in the current year.
-	if ll.Timestamp.IsZero() {
-		t.Error("Timestamp is zero")
-	}
-	if ll.Timestamp.Year() < 2026 {
-		t.Errorf("Timestamp year = %d; want >= 2026", ll.Timestamp.Year())
-	}
-}
-
-func TestParseIOSSyslogLine_WithSubsystem(t *testing.T) {
-	// Process field can contain a subsystem in parentheses before the pid bracket.
-	line := "Apr  5 09:00:00.000 iPad com.apple.network[42] <Debug>: interface up"
-	ll, ok := ParseIOSSyslogLine(line)
-	if !ok {
-		t.Fatalf("ParseIOSSyslogLine returned ok=false for subsystem line")
-	}
-	if ll.Level != "Debug" {
-		t.Errorf("Level = %q; want Debug", ll.Level)
-	}
-	if ll.Message != "interface up" {
-		t.Errorf("Message = %q; want 'interface up'", ll.Message)
-	}
-}
-
-func TestParseIOSSyslogLine_MessageWithColon(t *testing.T) {
-	// Message body may contain colons — only the first one after <Level> is the separator.
-	line := "Jan  1 00:00:00.000 Dev Foo[99] <Info>: key: value: extra"
-	ll, ok := ParseIOSSyslogLine(line)
-	if !ok {
-		t.Fatalf("ParseIOSSyslogLine returned ok=false")
-	}
-	if ll.Message != "key: value: extra" {
-		t.Errorf("Message = %q; want 'key: value: extra'", ll.Message)
-	}
-}
-
-func TestParseIOSSyslogLine_Junk(t *testing.T) {
-	junk := []string{
-		"",
-		"not a log line",
-		"--- some separator ---",
-		"Timestamp without enough fields",
-	}
-	for _, s := range junk {
-		if _, ok := ParseIOSSyslogLine(s); ok {
-			t.Errorf("ParseIOSSyslogLine(%q) = ok=true; want false", s)
-		}
-	}
-}
+// iOS log parsing is now handled inside go-ios's `ostrace` package
+// (structured os_log_relay records, not BSD syslog text). Coverage for
+// the parser lives there. The mapping ostrace.LogEntry → device.LogLine
+// in ostraceEntryToLogLine is a trivial field copy.
 
 // --- Android logcat parser -------------------------------------------
 

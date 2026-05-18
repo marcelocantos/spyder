@@ -427,15 +427,14 @@ spyder log iPad --regex "crash|panic"                      # regex on message
   window. This is adequate for post-hoc debugging but is not a true
   archived-log query. For long-span queries run multiple short windows
   or use `--follow` and let the stream run while reproducing.
-- **iOS timestamps** come from go-ios's BSD-syslog parser (`MMM D
-  HH:MM:SS`) and are surfaced as ISO-formatted strings without a
-  timezone. The classic BSD format doesn't carry timezone metadata,
-  so the per-entry since/until filter is suppressed on iOS — use the
-  call-level deadline (the ~5s default cap on a missing `until`) to
-  bound the window.
-- **iOS subsystem filter** is unsupported on the go-ios path: the
-  syslog_relay parser only surfaces classic BSD fields (process, pid,
-  level, message). A non-empty subsystem filter drops everything.
+- **iOS log capture** routes through go-ios's `os_trace_relay`
+  service — the same OSLog channel Xcode's Console.app uses. Each
+  entry arrives with structured fields (timestamp as `time.Time`,
+  image name, OSLog subsystem label, message), so `subsystem`
+  filtering and per-entry since/until comparisons both work
+  correctly. (Previously routed through `syslog_relay`, which on
+  iOS 17+ filters out all third-party app output and emits BSD-style
+  text without timezone metadata — see 🎯T58.)
 - **Android tag filter** — logcat `-s <tag>:V *:S` suppresses all other tags.
   Combining tag + regex is the most targeted approach.
 - **Android process filter** — there is no direct process-name filter in logcat;

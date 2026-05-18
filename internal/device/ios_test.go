@@ -268,34 +268,6 @@ func TestIOSAdapter_EmptyID(t *testing.T) {
 	})
 }
 
-// --- ParseIOSSyslogLine ----------------------------------------------------
-
-func TestParseIOSSyslogLine(t *testing.T) {
-	line := "Mar 15 14:23:01.123 iPad MyApp[1234] <Error>: crash happened"
-	ll, ok := ParseIOSSyslogLine(line)
-	if !ok {
-		t.Fatalf("ParseIOSSyslogLine(%q) = false; want true", line)
-	}
-	if ll.Process != "MyApp" {
-		t.Errorf("Process = %q; want MyApp", ll.Process)
-	}
-	if ll.Level != "Error" {
-		t.Errorf("Level = %q; want Error", ll.Level)
-	}
-	if ll.Message != "crash happened" {
-		t.Errorf("Message = %q; want 'crash happened'", ll.Message)
-	}
-}
-
-func TestParseIOSSyslogLine_NoMatch(t *testing.T) {
-	if _, ok := ParseIOSSyslogLine("not a syslog line"); ok {
-		t.Error("expected no match on arbitrary string")
-	}
-	if _, ok := ParseIOSSyslogLine(""); ok {
-		t.Error("expected no match on empty string")
-	}
-}
-
 // --- isSimulatorID ---------------------------------------------------------
 
 func TestIsSimulatorID(t *testing.T) {

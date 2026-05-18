@@ -24,7 +24,7 @@ import (
 	"github.com/danielpaulus/go-ios/ios/crashreport"
 	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
-	goios_syslog "github.com/danielpaulus/go-ios/ios/syslog"
+	"github.com/danielpaulus/go-ios/ios/ostrace"
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -1143,79 +1143,23 @@ func (a *IOSAdapter) ClearNetwork(_ string) error {
 	)
 }
 
-// iosSyslogLineRE matches an iOS syslog line in classic BSD format,
-// as surfaced by go-ios's syslog_relay parser:
-//
-//	<Timestamp> <Device> <Process>(<subsystem>) [<level>] <Message>
-//
-// Example:
-//
-//	Mar 15 14:23:01.123 iPad MyApp(com.example.app)[1234] <Error>: crash happened
-//
-// The regex is intentionally permissive to handle variations (missing
-// subsystem, different bracket styles, etc.).
-var iosSyslogLineRE = regexp.MustCompile(
-	`^(\w{3}\s+\d+\s+[\d:.]+)\s+\S+\s+(\S+?)\[` + // timestamp + device + process[pid
-		`\d+\]\s+<(\w+)>:\s+(.*)$`, // level: message
-)
-
-// iosSyslogTimestampLayouts are tried in order when parsing iOS syslog
-// timestamps. The relay emits dates without a year, so we parse them
-// relative to the current year.
-var iosSyslogTimestampLayouts = []string{
-	"Jan  2 15:04:05.000",
-	"Jan _2 15:04:05.000",
-	"Jan 2 15:04:05.000",
-	"Jan  2 15:04:05",
-	"Jan _2 15:04:05",
-	"Jan 2 15:04:05",
-}
-
-// ParseIOSSyslogLine parses a single iOS syslog line in BSD format.
-// Exported for testing; internal callers use parseIOSSyslogLine.
-func ParseIOSSyslogLine(line string) (LogLine, bool) {
-	m := iosSyslogLineRE.FindStringSubmatch(line)
-	if m == nil {
-		return LogLine{}, false
-	}
-	ts := parseIOSSyslogTimestamp(m[1])
-	return LogLine{
-		Timestamp: ts,
-		Process:   m[2],
-		Level:     m[3],
-		Message:   m[4],
-	}, true
-}
-
-// parseIOSSyslogTimestamp parses a syslog timestamp string, appending the
-// current year since the relay does not include it.
-func parseIOSSyslogTimestamp(s string) time.Time {
-	year := time.Now().Year()
-	s = strings.TrimSpace(s)
-	for _, layout := range iosSyslogTimestampLayouts {
-		if t, err := time.Parse(layout, s); err == nil {
-			return t.AddDate(year, 0, 0)
-		}
-	}
-	return time.Time{}
-}
-
-// LogRange returns syslog lines from the device between since and
-// until, streamed through go-ios's syslog_relay (RSD-shimmed on
-// iOS-17+). The device exposes only a live tail — there's no stable
-// API to query archived logs by timestamp — so this drains the live
-// stream and keeps entries inside the window. Callers should provide
-// a reasonable upper bound; absent one we cap at 5s to bound the call.
+// LogRange returns log entries from the device between since and
+// until, streamed through go-ios's `os_trace_relay` (RSD-shimmed on
+// iOS-17+) — the same Apple service Xcode's Console.app uses. The
+// device exposes only a live tail (no stable API to query archived
+// entries by timestamp), so this drains the live stream and keeps
+// entries whose Timestamp lies inside the window. Callers should
+// provide a reasonable upper bound; absent one we cap at 5s.
 //
 // Filter fields:
 //
 //   - Process: matched client-side against the parsed image_name
-//   - Regex: matched client-side against Message
-//   - Subsystem: NOT supported. go-ios's syslog_relay parser surfaces
-//     only the classic BSD-style fields (Timestamp, Device, Process,
-//     PID, Level, Message) — the structured OSLog subsystem label is
-//     not exposed. A non-empty Subsystem filter is honoured by
-//     dropping all entries (since none have a subsystem to match).
+//     (CFBundleExecutable for third-party apps; daemon binary name
+//     for system processes).
+//   - Subsystem: matched server-side against `entry.Label.Subsystem`
+//     (the OSLog subsystem registered by the emitter, e.g.
+//     `com.apple.network`).
+//   - Regex: matched client-side against Message.
 func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
@@ -1243,18 +1187,14 @@ func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Tim
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 
-	// Since/until filter caveat (go-ios path): go-ios's syslog parser
-	// timestamps lines in UTC even though iOS emits them in the device's
-	// local timezone. That makes per-entry timestamp comparisons
-	// unreliable across timezones — an entry from a +10:00 device
-	// appears 10h in the future to UTC-naive comparisons. To keep the
-	// behaviour predictable we honour the deadline (set above from
-	// until) for stream termination but skip the per-entry since/until
-	// drop. Callers that need strict windowing should rely on the
-	// deadline, not on filtered-out entries.
 	var lines []LogLine
-	_ = since
-	err = a.streamSyslog(ctx, id, filter, regexFilter, func(ll LogLine) bool {
+	err = a.streamOSTrace(ctx, id, filter, regexFilter, func(ll LogLine) bool {
+		if !since.IsZero() && ll.Timestamp.Before(since) {
+			return true
+		}
+		if !until.IsZero() && ll.Timestamp.After(until) {
+			return true
+		}
 		lines = append(lines, ll)
 		return true
 	})
@@ -1264,10 +1204,9 @@ func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Tim
 	return lines, nil
 }
 
-// LogStream pumps live syslog lines from the device through go-ios's
-// syslog_relay into out until ctx is cancelled. Filter semantics
-// match LogRange — see its docstring for the Subsystem caveat on
-// the go-ios path.
+// LogStream pumps live log entries from the device through go-ios's
+// `os_trace_relay` service into out until ctx is cancelled. Filter
+// semantics match LogRange.
 func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
@@ -1276,7 +1215,7 @@ func (a *IOSAdapter) LogStream(ctx context.Context, id string, filter LogFilter,
 	if err != nil {
 		return err
 	}
-	err = a.streamSyslog(ctx, id, filter, regexFilter, func(ll LogLine) bool {
+	err = a.streamOSTrace(ctx, id, filter, regexFilter, func(ll LogLine) bool {
 		select {
 		case out <- ll:
 			return true
@@ -1301,76 +1240,81 @@ func compileLogRegex(s string) (*regexp.Regexp, error) {
 	return r, nil
 }
 
-// streamSyslog opens a go-ios syslog connection and drives lines
-// through the parser + filters into emit. emit returns false to stop
-// the stream early (e.g. ctx cancellation in LogStream's send branch).
-// The connection is closed when emit returns false or ctx fires.
-func (a *IOSAdapter) streamSyslog(ctx context.Context, id string, filter LogFilter,
+// streamOSTrace opens an os_trace_relay connection (the same service
+// Xcode's Console.app uses) and drives parsed LogEntry records through
+// the filters into emit. emit returns false to stop the stream early
+// (e.g. ctx cancellation in LogStream's send branch). The connection
+// is closed when emit returns false or ctx fires.
+//
+// We previously used go-ios's `syslog_relay` service. On iOS 17+ that
+// service is hardened — third-party app log output is filtered out at
+// the device side, leaving only system daemons reaching the stream
+// (🎯T58). os_trace_relay is the modern OSLog channel and surfaces
+// third-party app entries with their full structured metadata (PID,
+// timestamp as time.Time, image name, subsystem label, message).
+func (a *IOSAdapter) streamOSTrace(ctx context.Context, id string, filter LogFilter,
 	regexFilter *regexp.Regexp, emit func(LogLine) bool) error {
 	dev, err := a.goios.Session(id)
 	if err != nil {
-		return fmt.Errorf("syslog: %w", err)
+		return fmt.Errorf("ostrace: %w", err)
 	}
-	conn, err := goios_syslog.New(dev)
+	// pid=-1: all processes. MessageFilterLogMessage: only os_log
+	// entries (skip ActivityCreate/Transition/Signpost record types
+	// the caller didn't ask for). StreamFlagsAll: emit every severity
+	// the device exposes (Default, Info, Debug, Error, Fault).
+	conn, err := ostrace.New(dev, -1,
+		ostrace.MessageFilterLogMessage,
+		ostrace.StreamFlagsAll)
 	if err != nil {
 		a.goios.Invalidate(id)
-		return fmt.Errorf("syslog on %s: %w", id, err)
+		return fmt.Errorf("ostrace on %s: %w", id, err)
 	}
 	defer conn.Close()
 
-	// Cancel the underlying read by closing the connection when ctx fires
-	// — go-ios's blocking ReadLogMessage doesn't honour context directly.
+	// Cancel the blocking read by closing the connection when ctx fires
+	// — ReadEntry doesn't honour context directly.
 	go func() {
 		<-ctx.Done()
 		_ = conn.Close()
 	}()
 
-	parser := goios_syslog.Parser()
-	subsystemRequested := filter.Subsystem != ""
-	var read, parsed int
+	var read, emitted int
 	for {
-		raw, err := conn.ReadLogMessage()
+		entry, err := conn.ReadEntry()
 		if err != nil {
-			slog.Debug("syslog stream end", "device", id,
-				"read", read, "parsed", parsed, "err", err.Error())
-			// EOF after Close() is the normal shutdown path.
+			slog.Debug("ostrace stream end", "device", id,
+				"read", read, "emitted", emitted, "err", err.Error())
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("syslog read on %s: %w", id, err)
+			return fmt.Errorf("ostrace read on %s: %w", id, err)
 		}
 		read++
-		entry, perr := parser(raw)
-		if perr != nil {
-			// Lines that don't match BSD-syslog format (e.g. multi-
-			// line continuation) are dropped silently; they're noise.
+		if filter.Process != "" && entry.ImageName != filter.Process {
 			continue
 		}
-		parsed++
-		if filter.Process != "" && entry.Process != filter.Process {
+		if filter.Subsystem != "" {
+			if entry.Label == nil ||
+				!strings.Contains(entry.Label.Subsystem, filter.Subsystem) {
+				continue
+			}
+		}
+		if regexFilter != nil && !regexFilter.MatchString(entry.Message) {
 			continue
 		}
-		if subsystemRequested {
-			// Subsystem isn't surfaced by go-ios's syslog parser —
-			// no entry can match a non-empty Subsystem filter.
-			continue
-		}
-		ll := goiosSyslogToLogLine(entry)
-		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			continue
-		}
+		ll := ostraceEntryToLogLine(entry)
+		emitted++
 		if !emit(ll) {
 			return ctx.Err()
 		}
 	}
 }
 
-func goiosSyslogToLogLine(e *goios_syslog.LogEntry) LogLine {
-	ts, _ := time.Parse("2006-01-02T15:04:05", e.Timestamp)
+func ostraceEntryToLogLine(e ostrace.LogEntry) LogLine {
 	return LogLine{
-		Timestamp: ts,
-		Process:   e.Process,
-		Level:     e.Level,
+		Timestamp: e.Timestamp,
+		Process:   e.ImageName,
+		Level:     e.Level.String(),
 		Message:   e.Message,
 	}
 }
