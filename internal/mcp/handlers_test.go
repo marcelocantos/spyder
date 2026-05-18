@@ -203,7 +203,7 @@ func dispatchJSON(t *testing.T, h *Handler, name string, args map[string]any) ca
 
 func TestHandleDevices_All_BothOK(t *testing.T) {
 	ios := &stubAdapter{list: func() ([]device.Info, error) {
-		return []device.Info{{UUID: "00008103-000D39301A6A201E", Platform: "ios"}}, nil
+		return []device.Info{{UUID: "00008103-001122334455667A", Platform: "ios"}}, nil
 	}}
 	android := &stubAdapter{list: func() ([]device.Info, error) {
 		return []device.Info{{UUID: "R5CR112X76K", Platform: "android"}}, nil
@@ -216,11 +216,11 @@ func TestHandleDevices_All_BothOK(t *testing.T) {
 	}
 	// The "all" with no errors returns the array directly (not wrapped).
 	text := resultText(t, &r)
-	if !strings.Contains(text, "00008103-000D39301A6A201E") || !strings.Contains(text, "R5CR112X76K") {
+	if !strings.Contains(text, "00008103-001122334455667A") || !strings.Contains(text, "R5CR112X76K") {
 		t.Errorf("missing expected UDIDs; body=%s", text)
 	}
 	// Alias annotation should come in from testInventory.
-	if !strings.Contains(text, `"alias": "Pippa"`) {
+	if !strings.Contains(text, `"alias": "iPad"`) {
 		t.Errorf("iOS alias not annotated from inventory; body=%s", text)
 	}
 }
@@ -263,16 +263,16 @@ func TestHandleDevices_IOSOnly_HardFailOnError(t *testing.T) {
 
 func TestHandleResolve_Known(t *testing.T) {
 	h := newTestHandler(t)
-	r := dispatchJSON(t, h, "resolve", map[string]any{"name": "Pippa"})
+	r := dispatchJSON(t, h, "resolve", map[string]any{"name": "iPad"})
 	if r.IsError {
-		t.Fatalf("resolve Pippa should succeed; body=%s", resultText(t, &r))
+		t.Fatalf("resolve iPad should succeed; body=%s", resultText(t, &r))
 	}
 	text := resultText(t, &r)
-	if !strings.Contains(text, "00008103-000D39301A6A201E") {
-		t.Errorf("resolve Pippa body missing iOS UDID; body=%s", text)
+	if !strings.Contains(text, "00008103-001122334455667A") {
+		t.Errorf("resolve iPad body missing iOS UDID; body=%s", text)
 	}
-	if !strings.Contains(text, "E1A01EA6-8D77-556C-B18D-D470B2909E87") {
-		t.Errorf("resolve Pippa body missing CoreDevice UUID; body=%s", text)
+	if !strings.Contains(text, "00000000-0000-0000-0000-000000000001") {
+		t.Errorf("resolve iPad body missing CoreDevice UUID; body=%s", text)
 	}
 }
 
@@ -298,7 +298,7 @@ func TestHandleDeviceState(t *testing.T) {
 		return device.State{BatteryLevel: &battery, Charging: &charging}, nil
 	}}
 	h := newHandlerWithStubs(t, ios, nil)
-	r := dispatchJSON(t, h, "device_state", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "device_state", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("device_state should succeed; body=%s", resultText(t, &r))
 	}
@@ -318,7 +318,7 @@ func TestHandleScreenshot_ReturnsImage(t *testing.T) {
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
 	h := newHandlerWithStubs(t, ios, nil)
 
-	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("screenshot should succeed; body=%v", r)
 	}
@@ -351,7 +351,7 @@ func TestHandleListApps(t *testing.T) {
 		}, nil
 	}}
 	h := newHandlerWithStubs(t, ios, nil)
-	r := dispatchJSON(t, h, "list_apps", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "list_apps", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("list_apps should succeed; body=%s", resultText(t, &r))
 	}
@@ -368,7 +368,7 @@ func TestHandleLaunchApp_IOS(t *testing.T) {
 		return nil
 	}}
 	h := newHandlerWithStubs(t, ios, nil)
-	r := dispatchJSON(t, h, "launch_app", map[string]any{"device": "Pippa", "bundle_id": "com.foo"})
+	r := dispatchJSON(t, h, "launch_app", map[string]any{"device": "iPad", "bundle_id": "com.foo"})
 	if r.IsError {
 		t.Fatalf("launch_app iOS should succeed; body=%s", resultText(t, &r))
 	}
@@ -431,14 +431,14 @@ func TestHandleInstallApp_Success(t *testing.T) {
 	called := false
 	ios := &stubAdapter{installApp: func(id, path string) error {
 		called = true
-		if id != "00008103-000D39301A6A201E" {
+		if id != "00008103-001122334455667A" {
 			t.Errorf("id = %q; want iOS UDID", id)
 		}
 		return nil
 	}}
 	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "install_app", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"path":   appPath,
 	})
 	if r.IsError {
@@ -455,7 +455,7 @@ func TestHandleInstallApp_Success(t *testing.T) {
 func TestHandleInstallApp_TraversalRejected(t *testing.T) {
 	h := newTestHandler(t)
 	r := dispatchJSON(t, h, "install_app", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"path":   "/tmp/../etc/passwd",
 	})
 	if !r.IsError {
@@ -466,7 +466,7 @@ func TestHandleInstallApp_TraversalRejected(t *testing.T) {
 func TestHandleInstallApp_NonexistentPathRejected(t *testing.T) {
 	h := newTestHandler(t)
 	r := dispatchJSON(t, h, "install_app", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"path":   "/nonexistent/path/MyApp.app",
 	})
 	if !r.IsError {
@@ -476,7 +476,7 @@ func TestHandleInstallApp_NonexistentPathRejected(t *testing.T) {
 
 func TestHandleInstallApp_MissingPath(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("install_app", map[string]any{"device": "Pippa"})
+	_, err := h.Dispatch("install_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(install_app without path) returned nil; want error")
 	}
@@ -511,7 +511,7 @@ func TestHandleUninstallApp_Success(t *testing.T) {
 
 func TestHandleUninstallApp_MissingBundleID(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("uninstall_app", map[string]any{"device": "Pippa"})
+	_, err := h.Dispatch("uninstall_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(uninstall_app without bundle_id) returned nil; want error")
 	}
@@ -547,7 +547,7 @@ func TestHandleDeployApp_Success(t *testing.T) {
 	}
 	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "deploy_app", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"path":      appPath,
 		"bundle_id": "com.example.app",
 	})
@@ -586,7 +586,7 @@ func TestHandleDeployApp_InstallFailFast(t *testing.T) {
 	}
 	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "deploy_app", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"path":      appPath,
 		"bundle_id": "com.example.app",
 	})
@@ -604,7 +604,7 @@ func TestHandleDeployApp_InstallFailFast(t *testing.T) {
 func TestHandleDeployApp_TraversalRejected(t *testing.T) {
 	h := newTestHandler(t)
 	r := dispatchJSON(t, h, "deploy_app", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"path":      "../../etc/passwd",
 		"bundle_id": "com.example.app",
 	})
@@ -701,7 +701,7 @@ targetSdkVersion:'34'
 
 func TestHandleLaunchApp_MissingBundleID(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("launch_app", map[string]any{"device": "Pippa"})
+	_, err := h.Dispatch("launch_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(launch_app without bundle_id) returned nil; want error")
 	}

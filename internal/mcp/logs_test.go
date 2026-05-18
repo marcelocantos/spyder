@@ -25,7 +25,7 @@ func TestHandleLogs_HappyPath(t *testing.T) {
 	}
 	h := newHandlerWithStubs(t, ios, nil)
 
-	r := dispatchJSON(t, h, "logs", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "logs", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("logs should succeed; body=%s", resultText(t, &r))
 	}
@@ -46,7 +46,7 @@ func TestHandleLogs_EmptyResult(t *testing.T) {
 	}
 	h := newHandlerWithStubs(t, ios, nil)
 
-	r := dispatchJSON(t, h, "logs", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "logs", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("logs with empty result should succeed; body=%s", resultText(t, &r))
 	}
@@ -68,7 +68,7 @@ func TestHandleLogs_MissingDevice(t *testing.T) {
 func TestHandleLogs_InvalidSince(t *testing.T) {
 	h := newTestHandler(t)
 	r := dispatchJSON(t, h, "logs", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"since":  "not-a-timestamp",
 	})
 	if !r.IsError {
@@ -79,7 +79,7 @@ func TestHandleLogs_InvalidSince(t *testing.T) {
 func TestHandleLogs_InvalidUntil(t *testing.T) {
 	h := newTestHandler(t)
 	r := dispatchJSON(t, h, "logs", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"until":  "2026/04/19",
 	})
 	if !r.IsError {
@@ -98,7 +98,7 @@ func TestHandleLogs_FilterPassthrough(t *testing.T) {
 	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "logs", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"process":   "MyApp",
 		"subsystem": "com.example",
 		"regex":     "error.*",
@@ -131,7 +131,7 @@ func TestHandleLogs_TimestampPassthrough(t *testing.T) {
 	sinceStr := "2026-04-19T00:00:00Z"
 	untilStr := "2026-04-19T01:00:00Z"
 	r := dispatchJSON(t, h, "logs", map[string]any{
-		"device": "Pippa",
+		"device": "iPad",
 		"since":  sinceStr,
 		"until":  untilStr,
 	})
@@ -157,10 +157,10 @@ func TestHandleLogs_ReadOnly(t *testing.T) {
 		},
 	}
 	h, s := newHandlerWithReservations(t, ios, nil)
-	_, _ = s.Acquire("Pippa", "someone-else", 0, "testing")
+	_, _ = s.Acquire("iPad", "someone-else", 0, "testing")
 
 	// logs should proceed even though the device is reserved by someone else.
-	r := dispatchJSON(t, h, "logs", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "logs", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("logs should be read-only and unaffected by reservations; body=%s", resultText(t, &r))
 	}
@@ -170,14 +170,14 @@ func TestHandleLogs_ReadOnly(t *testing.T) {
 
 func TestResolveAdapterForStream(t *testing.T) {
 	h := newTestHandler(t)
-	adapter, id, err := h.ResolveAdapterForStream("Pippa")
+	adapter, id, err := h.ResolveAdapterForStream("iPad")
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
 	if adapter == nil {
 		t.Error("adapter is nil")
 	}
-	if id != "00008103-000D39301A6A201E" {
+	if id != "00008103-001122334455667A" {
 		t.Errorf("id = %q; want iOS UDID", id)
 	}
 }

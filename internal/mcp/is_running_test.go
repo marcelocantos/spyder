@@ -24,7 +24,7 @@ func TestIsRunning_Running(t *testing.T) {
 	}
 	h := newHandlerWithStubs(t, stub, nil)
 	res := dispatchJSON(t, h, "is_running", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"bundle_id": "com.example.app",
 	})
 	if res.IsError {
@@ -55,7 +55,7 @@ func TestIsRunning_NotRunning_Installed(t *testing.T) {
 	}
 	h := newHandlerWithStubs(t, stub, nil)
 	res := dispatchJSON(t, h, "is_running", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"bundle_id": "com.example.app",
 	})
 	if res.IsError {
@@ -86,7 +86,7 @@ func TestIsRunning_NotInstalled(t *testing.T) {
 	}
 	h := newHandlerWithStubs(t, stub, nil)
 	res := dispatchJSON(t, h, "is_running", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"bundle_id": "com.example.app",
 	})
 	if res.IsError {
@@ -114,7 +114,7 @@ func TestIsRunning_ListAppsError(t *testing.T) {
 	}
 	h := newHandlerWithStubs(t, stub, nil)
 	res := dispatchJSON(t, h, "is_running", map[string]any{
-		"device":    "Pippa",
+		"device":    "iPad",
 		"bundle_id": "com.example.app",
 	})
 	if !res.IsError {
@@ -128,7 +128,7 @@ func TestIsRunning_MissingArgs(t *testing.T) {
 	if _, err := h.Dispatch("is_running", map[string]any{}); err == nil {
 		t.Error("missing device should error")
 	}
-	if _, err := h.Dispatch("is_running", map[string]any{"device": "Pippa"}); err == nil {
+	if _, err := h.Dispatch("is_running", map[string]any{"device": "iPad"}); err == nil {
 		t.Error("missing bundle_id should error")
 	}
 }

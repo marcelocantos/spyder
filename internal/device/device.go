@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package device defines the cross-platform adapter interface for mobile
-// devices. Concrete implementations shell out to platform-specific tooling
-// (pymobiledevice3, devicectl, adb).
+// devices. The iOS adapter runs in-process via the go-ios library (with
+// `xcrun devicectl` for install / uninstall); the Android adapter shells
+// out to `adb`.
 package device
 
 import (
@@ -84,20 +85,21 @@ type Adapter interface {
 	State(id string) (State, error)
 
 	// Screenshot captures the current screen as PNG bytes. iOS uses
-	// pymobiledevice3 developer dvt (requires tunneld); Android uses
-	// adb shell screencap.
+	// the in-process go-ios DTX `screenshotr` service (requires the
+	// bundled tunnel); Android uses adb shell screencap.
 	Screenshot(id string) ([]byte, error)
 
 	// ListApps returns installed third-party apps.
 	ListApps(id string) ([]AppInfo, error)
 
-	// LaunchApp foregrounds an arbitrary app by bundle id. iOS needs
-	// tunneld (dvt launch); Android uses adb monkey.
+	// LaunchApp foregrounds an arbitrary app by bundle id. iOS uses
+	// the in-process go-ios `appservice` launch (requires the bundled
+	// tunnel); Android uses adb monkey.
 	LaunchApp(id, bundleID string) error
 
-	// TerminateApp stops a running app by bundle id. iOS needs
-	// tunneld (dvt process-id-for-bundle-id + kill); Android uses
-	// adb am force-stop.
+	// TerminateApp stops a running app by bundle id. iOS uses the
+	// in-process go-ios DTX `processcontrol` service (bundle→pid +
+	// kill, requires the bundled tunnel); Android uses adb am force-stop.
 	TerminateApp(id, bundleID string) error
 
 	// Rotate sets the screen orientation of a simulator or emulator.
@@ -109,8 +111,9 @@ type Adapter interface {
 	// report to include (zero means all); process filters by process name
 	// (empty means all). Reports are returned newest-first.
 	//
-	// iOS: pulls .ips files via pymobiledevice3 crash-reports. Each
-	// report's first-line JSON header is parsed for structured metadata.
+	// iOS: pulls .ips files via the in-process go-ios `crashreport`
+	// service. Each report's first-line JSON header is parsed for
+	// structured metadata.
 	//
 	// Android: attempts tombstones via adb from /data/tombstones/
 	// (root-capable devices only). Falls back to `adb logcat -b crash`
@@ -146,8 +149,8 @@ type Adapter interface {
 
 	// AppPID returns the process id of a running app identified by its
 	// bundle id / package name, or an error if the app is not running.
-	// iOS uses pymobiledevice3 developer dvt process-id-for-bundle-id
-	// (requires tunneld); Android uses adb shell pidof.
+	// iOS uses the in-process go-ios DTX `processcontrol` service
+	// (requires the bundled tunnel); Android uses adb shell pidof.
 	AppPID(id, bundleID string) (int, error)
 
 	// ApplyNetwork shapes network conditions on the device according to
@@ -166,12 +169,13 @@ type Adapter interface {
 	// LogRange returns log lines between since and until (inclusive).
 	// A zero since means "from the beginning of available logs"; a zero
 	// until means "up to now". The returned slice may be empty when no
-	// lines match. iOS uses pymobiledevice3 syslog; Android uses adb logcat.
+	// lines match. iOS uses the in-process go-ios `syslog` service;
+	// Android uses adb logcat.
 	LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error)
 
 	// LogStream streams filtered log lines from the device into out until
 	// ctx is cancelled. The caller is responsible for closing out after
-	// LogStream returns. iOS uses `pymobiledevice3 syslog live`; Android
-	// uses `adb logcat`. Returns nil when ctx is cancelled normally.
+	// LogStream returns. iOS uses the in-process go-ios `syslog` service;
+	// Android uses `adb logcat`. Returns nil when ctx is cancelled normally.
 	LogStream(ctx context.Context, id string, filter LogFilter, out chan<- LogLine) error
 }

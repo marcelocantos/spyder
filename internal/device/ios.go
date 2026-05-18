@@ -38,15 +38,15 @@ var ErrLocked = errors.New("device is locked")
 // KeepAwakeBundleID is the bundle identifier of the ios/KeepAwake companion
 // app. The app's only job is to set UIApplication.isIdleTimerDisabled=true
 // while foregrounded, which is the sole iOS mechanism that reliably prevents
-// display auto-lock (🎯T31). pmd3's PowerAssertionService looked like a
-// replacement but turned out to be a no-op for display sleep; see T31's
+// display auto-lock (🎯T31). Lower-level power-assertion services were
+// evaluated but turned out to be no-ops for display sleep; see T31's
 // context for the investigation.
 const KeepAwakeBundleID = "com.marcelocantos.spyder.KeepAwake"
 
-// AppState* are the values returned by KeepAwakeState (and by the
-// underlying bridge AppState endpoint). The bridge collapses iOS's
-// fine-grained BackBoard taxonomy onto these three buckets — enough
-// for autoawake to decide between converged / opt-out / launch.
+// AppState* are the values returned by KeepAwakeState. The taxonomy
+// collapses iOS's fine-grained BackBoard process-state values onto
+// three buckets — enough for autoawake to decide between converged /
+// opt-out / launch.
 const (
 	AppStateRunning      = "running"
 	AppStateBackgrounded = "backgrounded"
@@ -146,8 +146,7 @@ func (a *IOSAdapter) KeepAwakeInstalledVersion(id string) (string, error) {
 
 // ForegroundApp returns the bundle id (or .app folder name) of the
 // foregrounded third-party app on the device, or "" when SpringBoard
-// (the home screen) is showing. Routes through the pmd3 bridge's
-// /v1/foreground_app endpoint, which scans the same BackBoard
+// (the home screen) is showing. Scans the BackBoard
 // applicationStateNotification: enumeration that AppState uses and
 // returns the entry whose state_description is "Running".
 //
@@ -177,9 +176,9 @@ func (a *IOSAdapter) ForegroundApp(id string) (string, error) {
 
 	// Drain BackBoard's initial state-enumeration burst into a buffered
 	// channel so the deadline below isn't wedged by recv()'s blocking
-	// read. The 750ms drain matches pmd3's 0.5s window with a touch of
-	// slack for slow tunnels — BackBoard delivers the typical burst
-	// (~14-30 entries) in <100ms once the channel is open.
+	// read. 750ms gives slow tunnels enough slack — BackBoard delivers
+	// the typical burst (~14-30 entries) in <100ms once the channel is
+	// open.
 	type recvResult struct {
 		data map[string]interface{}
 		err  error
@@ -340,9 +339,10 @@ const (
 	devicectlTimeout        = (devicectlTimeoutSeconds + 2) * time.Second
 )
 
-// IOSAdapter talks to iOS devices via in-process go-ios calls
-// (🎯T56). The pmd3 Python bridge subprocess and xcrun devicectl
-// dependencies it used to carry are gone.
+// IOSAdapter talks to iOS devices via in-process go-ios calls.
+// `xcrun devicectl` is still used for install / uninstall (where
+// devicectl's signing and provisioning handling is hard to replace);
+// everything else runs in-process.
 type IOSAdapter struct {
 	goios *goios.Resolver
 	mu    sync.Mutex
@@ -367,26 +367,25 @@ func NewIOSAdapter() *IOSAdapter {
 // List returns iOS devices that are currently reachable. The set is the
 // intersection of:
 //
-//   - The pmd3 bridge's /v1/list_devices (tunneld registry + USBMux).
+//   - go-ios's USBMux enumeration (with per-device lockdown enrichment
+//     for the human-friendly fields).
 //   - `xcrun devicectl list devices` filtered for tunnelState=connected
 //     OR a USB connection (USBMux-only iOS-<17 devices count too).
 //
-// Devices the bridge knows about but devicectl reports as `unavailable`
-// are dropped — they're paired but not currently usable, and including
-// them produces useless install/launch attempts (autoawake's
-// convergence loop would fire `xcrun devicectl ... launch` per tick
-// for each ghost device, all returning "No provider was found"). When
-// neither source is available the function returns an empty list
-// rather than an error — matching the Android adapter's behaviour
-// when adb is absent.
+// Devices USBMux knows about but devicectl reports as `unavailable` are
+// dropped — they're paired but not currently usable, and including them
+// produces useless install/launch attempts (autoawake's convergence
+// loop would fire `xcrun devicectl ... launch` per tick for each ghost
+// device, all returning "No provider was found"). When neither source
+// is available the function returns an empty list rather than an
+// error — matching the Android adapter's behaviour when adb is absent.
 func (a *IOSAdapter) List() ([]Info, error) {
 	connected, _ := devicectlConnectedIOSDevices()
 
 	var devices []Info
 
 	// Primary source: go-ios's usbmux enumeration, with per-device
-	// lockdown enrichment for the human-friendly fields. Replaces the
-	// previous pmd3-bridge /v1/list_devices call (🎯T56).
+	// lockdown enrichment for the human-friendly fields.
 	if devList, err := goios_ios.ListDevices(); err == nil {
 		for _, dev := range devList.DeviceList {
 			udid := dev.Properties.SerialNumber
@@ -626,8 +625,8 @@ func (a *IOSAdapter) State(id string) (State, error) {
 // runCapture runs a command and returns stdout, stderr, and the run error.
 // Unlike exec.Cmd.Output/CombinedOutput, this keeps stdout and stderr
 // separate so callers can parse JSON from stdout while still inspecting
-// human-readable diagnostics from stderr (pymobiledevice3 sometimes logs
-// errors to stderr with exit code 0).
+// human-readable diagnostics from stderr (some CLIs log errors to
+// stderr while exiting 0).
 func runCapture(name string, args ...string) (stdout, stderr []byte, err error) {
 	return runCaptureCtx(context.Background(), name, args...)
 }
@@ -969,7 +968,7 @@ type ipsHeader struct {
 //
 // Hardware UDID format: exactly 8 hex + "-" + 16 hex, e.g.
 //
-//	00008103-000D39301A6A201E
+//	00008103-001122334455667A
 //
 // Simulator UUIDs follow the standard UUID4 shape (8-4-4-4-12 hex groups),
 // matching devicectl / xcrun simctl output, e.g.
@@ -1113,14 +1112,14 @@ func (a *IOSAdapter) ClearNetwork(_ string) error {
 	)
 }
 
-// iosSyslogLineRE matches a line produced by `pymobiledevice3 syslog live`
-// in its default text format:
+// iosSyslogLineRE matches an iOS syslog line in classic BSD format,
+// as surfaced by go-ios's syslog_relay parser:
 //
 //	<Timestamp> <Device> <Process>(<subsystem>) [<level>] <Message>
 //
 // Example:
 //
-//	Mar 15 14:23:01.123 Pippa MyApp(com.example.app)[1234] <Error>: crash happened
+//	Mar 15 14:23:01.123 iPad MyApp(com.example.app)[1234] <Error>: crash happened
 //
 // The regex is intentionally permissive to handle variations (missing
 // subsystem, different bracket styles, etc.).
@@ -1129,9 +1128,9 @@ var iosSyslogLineRE = regexp.MustCompile(
 		`\d+\]\s+<(\w+)>:\s+(.*)$`, // level: message
 )
 
-// iosSyslogTimestampLayouts are tried in order when parsing timestamps from
-// `pymobiledevice3 syslog live` output. The tool emits dates without a year,
-// so we parse them relative to the current year.
+// iosSyslogTimestampLayouts are tried in order when parsing iOS syslog
+// timestamps. The relay emits dates without a year, so we parse them
+// relative to the current year.
 var iosSyslogTimestampLayouts = []string{
 	"Jan  2 15:04:05.000",
 	"Jan _2 15:04:05.000",
@@ -1141,8 +1140,8 @@ var iosSyslogTimestampLayouts = []string{
 	"Jan 2 15:04:05",
 }
 
-// ParseIOSSyslogLine parses a single line from `pymobiledevice3 syslog live`
-// output. Exported for testing; internal callers use parseIOSSyslogLine.
+// ParseIOSSyslogLine parses a single iOS syslog line in BSD format.
+// Exported for testing; internal callers use parseIOSSyslogLine.
 func ParseIOSSyslogLine(line string) (LogLine, bool) {
 	m := iosSyslogLineRE.FindStringSubmatch(line)
 	if m == nil {
@@ -1158,7 +1157,7 @@ func ParseIOSSyslogLine(line string) (LogLine, bool) {
 }
 
 // parseIOSSyslogTimestamp parses a syslog timestamp string, appending the
-// current year since pymobiledevice3 does not include it.
+// current year since the relay does not include it.
 func parseIOSSyslogTimestamp(s string) time.Time {
 	year := time.Now().Year()
 	s = strings.TrimSpace(s)
@@ -1181,11 +1180,10 @@ func parseIOSSyslogTimestamp(s string) time.Time {
 //
 //   - Process: matched client-side against the parsed image_name
 //   - Regex: matched client-side against Message
-//   - Subsystem: NOT supported on the go-ios path. The legacy
-//     pmd3 path filtered server-side via OSLog's structured label
-//     metadata; go-ios's syslog_relay parser surfaces only the
-//     classic BSD-style fields (Timestamp, Device, Process, PID,
-//     Level, Message). A non-empty Subsystem filter is honoured by
+//   - Subsystem: NOT supported. go-ios's syslog_relay parser surfaces
+//     only the classic BSD-style fields (Timestamp, Device, Process,
+//     PID, Level, Message) — the structured OSLog subsystem label is
+//     not exposed. A non-empty Subsystem filter is honoured by
 //     dropping all entries (since none have a subsystem to match).
 func (a *IOSAdapter) LogRange(id string, filter LogFilter, since, until time.Time) ([]LogLine, error) {
 	if id == "" {

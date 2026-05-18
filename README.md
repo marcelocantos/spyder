@@ -91,7 +91,8 @@ everything below plus gotchas, device-inventory format, and the full
 | `baselines_list` | List all stored baselines for a suite. |
 | `record_start` / `record_stop` | Start and stop a screen recording (mp4). iOS simulators via `xcrun simctl io recordVideo`; Android via `adb shell screenrecord`. **iOS physical devices are not supported** — use a simulator. |
 | `network` | Apply or clear network condition shaping. Android emulators only — see STABILITY.md for platform limits. |
-| `logs` | Fetch log lines between two timestamps. Filters: `process`, `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
+| `logs` | Fetch log lines between two timestamps. `since` / `until` accept either an RFC3339 absolute or a Go duration relative to now — `since=-2m`, `until=now`. Filters: `process`, `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
+| `crashes` | Fetch crash reports from a device. iOS pulls .ips via go-ios `crashreport`; Android via `adb` tombstones + `logcat -b crash`. `since` accepts RFC3339 or a Go duration (`-15m`, `-1h`). Read-only. |
 | `pool_list` / `pool_warm` / `pool_drain` | Sim/emu pool management. Inspect tier counts, pre-boot instances, or drain idle instances. Requires `~/.spyder/pool.yaml` — see [agents-guide.md](agents-guide.md#simemu-pool). |
 
 ## REST API and live log streaming
@@ -118,7 +119,7 @@ For live log tailing, use the SSE endpoint:
 # Stream filtered log lines until Ctrl-C.
 curl -N -X POST http://127.0.0.1:3030/api/v1/log_stream \
   -H 'Content-Type: application/json' \
-  -d '{"device":"Pippa","process":"MyApp","regex":"error"}'
+  -d '{"device":"iPad","process":"MyApp","regex":"error"}'
 ```
 
 Each SSE event is `data: <JSON LogLine>` on a single line, followed by a
@@ -135,11 +136,14 @@ the default `http://127.0.0.1:3030`.
 
 ```bash
 spyder devices --platform ios --json
-spyder screenshot Pippa --output /tmp/pippa.png
-spyder reserve Pippa --ttl 600 --note "UI sweep"
+spyder screenshot iPad --output /tmp/ipad.png
+spyder reserve iPad --ttl 600 --note "UI sweep"
 spyder reservations --json
-spyder release Pippa
+spyder release iPad
 spyder rotate C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8 --to landscape-left
+spyder log iPad --process MyApp --since -2m       # last 2 minutes
+spyder log iPad --follow --process MyApp          # live SSE tail
+spyder crashes iPad --since -1h --json
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
 spyder runs artefacts 20260419-143022-a3f1b2
@@ -152,7 +156,7 @@ shells get a sensible reservation identity without ceremony.
 
 ```bash
 spyder run -- xcodebuild -project MyApp.xcodeproj \
-  -scheme MyApp -destination 'id=00008103-000D39301A6A201E' test
+  -scheme MyApp -destination 'id=00008103-001122334455667A' test
 ```
 
 Runs the command, waits for it to exit, then releases the device reservation
@@ -205,7 +209,7 @@ iOS device support is in-process via the bundled
 [go-ios](https://github.com/danielpaulus/go-ios) Go library; the
 `bin/ios` binary that `make build` produces is the same project's CLI
 and is spawned by spyder as a userspace tunnel daemon at runtime.
-No Python, no `pymobiledevice3`, no system LaunchDaemon.
+No Python, no system LaunchDaemon.
 
 ## Licence
 

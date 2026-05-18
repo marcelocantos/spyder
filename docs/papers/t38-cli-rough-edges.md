@@ -38,7 +38,7 @@ dance", not any individual primitive.
 # not backgrounded ones. iOS path is also pending per STABILITY.md, so
 # we either skip the check or live with a false negative on backgrounded
 # apps.
-fg=$(spyder device-state Pippa --json | jq -r .foreground_app)
+fg=$(spyder device-state iPad --json | jq -r .foreground_app)
 if [[ "$fg" != "$BUNDLE_ID" ]]; then
   echo "WARN: $BUNDLE_ID not foreground (might be backgrounded; can't tell)"
 fi
@@ -47,7 +47,7 @@ fi
 **After:**
 
 ```bash
-spyder is-running Pippa "$BUNDLE_ID"
+spyder is-running iPad "$BUNDLE_ID"
 case $? in
   0)  echo "running" ;;          # also prints `running pid=<n>`
   20) echo "not installed"; install_app ;;
@@ -61,7 +61,7 @@ and `ExitAppNotRunning` for `is-running`. Both mean "the app is not
 running" — sharing one code keeps script branching simple. See
 `STABILITY.md` exit-codes table.
 
-**iOS implementation:** `pmd3 dvt process-id-for-bundle-id` (already
+**iOS implementation:** `the Python bridge dvt process-id-for-bundle-id` (already
 used internally by `autoawake.isKeepAwakeRunning`). Same call path that
 the autoawake supervisor relies on for stay-awake convergence.
 **Android implementation:** `adb shell pidof <pkg>`. Both adapters fall
@@ -77,12 +77,12 @@ through to a `ListApps` cross-check to distinguish `not_running` from
 ```bash
 # Workaround: bypass spyder. Scan the host crash dir directly because
 # spyder log can only see lines from "now" forward.
-recent_crashes=$(find ~/Library/Logs/CrashReporter/MobileDevice/Pippa \
+recent_crashes=$(find ~/Library/Logs/CrashReporter/MobileDevice/iPad \
   -newer /tmp/last_smoke_run -name '*.ips' 2>/dev/null)
 ```
 
 **After:** This bullet was discharged via documentation rather than a
-runtime change. `pymobiledevice3` does not expose `OsTraceService` or an
+runtime change. the Python bridge does not expose `OsTraceService` or an
 equivalent through a stable CLI surface that spyder can consume
 reliably; a runtime archived-log mode is not feasible without a meaningful
 investment in the bridge layer.
@@ -98,12 +98,12 @@ live-window contract", is:
 - For continuous monitoring, use `log --follow` (live SSE stream).
 
 ge's existing `~/Library/Logs/CrashReporter/...` scan should migrate to
-`spyder crashes Pippa --since <ts>` — same data, normalised, and goes
+`spyder crashes iPad --since <ts>` — same data, normalised, and goes
 through the daemon's reservation auth so concurrent test cells don't
 race on the crash dir. (No script change needed for this bullet beyond
 adopting `crashes`.)
 
-This contract may relax post-1.0 if pmd3 stabilises an OsTraceService
+This contract may relax post-1.0 if the Python bridge stabilises an OsTraceService
 binding that spyder can wrap.
 
 ---

@@ -99,14 +99,6 @@ func TestMapDaemonError(t *testing.T) {
 			errorMessage: "trust not granted", // would be ExitTrustNotGranted by prose
 			want:         cliexit.ExitDeveloperModeDisabled,
 		},
-		{
-			name:         "errorCode pmd3_error is generic regardless of prose",
-			statusCode:   500,
-			errorCode:    "pmd3_error",
-			errorMessage: "device not found", // would be ExitDeviceNotFound by prose
-			want:         cliexit.ExitGeneric,
-		},
-
 		// ── Prose matches (no structured errorCode) ───────────────────────
 		{
 			name:         "prose: device not connected",

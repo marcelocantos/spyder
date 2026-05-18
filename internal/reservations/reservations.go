@@ -10,8 +10,8 @@
 // Read-only operations are unaffected.
 //
 // Device identity is normalized through a caller-supplied Normalizer
-// (typically the inventory alias) so reserving "Pippa" also blocks
-// operations against Pippa's raw UDID and vice versa.
+// (typically the inventory alias) so reserving "iPad" also blocks
+// operations against iPad's raw UDID and vice versa.
 package reservations
 
 import (

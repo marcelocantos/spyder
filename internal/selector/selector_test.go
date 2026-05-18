@@ -13,8 +13,8 @@ import (
 // testCandidates is a small canned set used across multiple tests.
 var testCandidates = []Candidate{
 	{
-		Info:  device.Info{UUID: "ipad-uuid", Name: "Pippa", Platform: "ios", Model: "iPad Air", OS: "17.4"},
-		Entry: inventory.Entry{Alias: "Pippa", Platform: "ios", Tags: []string{"ipad", "arm64"}},
+		Info:  device.Info{UUID: "ipad-uuid", Name: "iPad", Platform: "ios", Model: "iPad Air", OS: "17.4"},
+		Entry: inventory.Entry{Alias: "iPad", Platform: "ios", Tags: []string{"ipad", "arm64"}},
 	},
 	{
 		Info:  device.Info{UUID: "iphone-uuid", Name: "Mini", Platform: "ios", Model: "iPhone 15 Mini", OS: "17.2"},

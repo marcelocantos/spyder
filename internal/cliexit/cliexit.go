@@ -101,8 +101,6 @@ func MapDaemonError(statusCode int, errorCode, errorMessage string) int {
 		return ExitAppNotInstalled
 	case "developer_mode_disabled":
 		return ExitDeveloperModeDisabled
-	case "pmd3_error":
-		return ExitGeneric
 	}
 
 	// 4. Prose match on errorMessage (case-insensitive).

@@ -24,7 +24,7 @@ func TestHandleRotate_IOSSimulator(t *testing.T) {
 	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "rotate", map[string]any{
-		"device":      "Pippa",
+		"device":      "iPad",
 		"orientation": "landscape-left",
 	})
 	if r.IsError {
@@ -33,15 +33,15 @@ func TestHandleRotate_IOSSimulator(t *testing.T) {
 	if !called {
 		t.Error("Rotate was not called on the adapter")
 	}
-	// Pippa resolves to ios_uuid 00008103-000D39301A6A201E.
-	if calledID != "00008103-000D39301A6A201E" {
+	// iPad resolves to ios_uuid 00008103-001122334455667A.
+	if calledID != "00008103-001122334455667A" {
 		t.Errorf("Rotate called with id=%q; want iOS hardware UDID", calledID)
 	}
 	if calledOrientation != "landscape-left" {
 		t.Errorf("Rotate called with orientation=%q; want landscape-left", calledOrientation)
 	}
 	text := resultText(t, &r)
-	if !strings.Contains(text, "Pippa") || !strings.Contains(text, "landscape-left") {
+	if !strings.Contains(text, "iPad") || !strings.Contains(text, "landscape-left") {
 		t.Errorf("success message missing device/orientation; body=%s", text)
 	}
 }
@@ -60,7 +60,7 @@ func TestHandleRotate_MissingDevice(t *testing.T) {
 // when orientation is not provided.
 func TestHandleRotate_MissingOrientation(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("rotate", map[string]any{"device": "Pippa"})
+	_, err := h.Dispatch("rotate", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(rotate without orientation) returned nil; want error")
 	}
@@ -75,7 +75,7 @@ func TestHandleRotate_AdapterError(t *testing.T) {
 	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "rotate", map[string]any{
-		"device":      "Pippa",
+		"device":      "iPad",
 		"orientation": "portrait",
 	})
 	if !r.IsError {
@@ -96,14 +96,14 @@ func TestHandleRotate_ReservationGated(t *testing.T) {
 	}}
 	h, resv, _ := newHandlerWithRuns(t, ios, nil)
 
-	// Someone else reserves Pippa.
-	_, err := resv.Acquire("Pippa", "other-owner", 0, "blocking")
+	// Someone else reserves iPad.
+	_, err := resv.Acquire("iPad", "other-owner", 0, "blocking")
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 
 	r := dispatchJSON(t, h, "rotate", map[string]any{
-		"device":      "Pippa",
+		"device":      "iPad",
 		"orientation": "portrait",
 		"owner":       "my-owner",
 	})

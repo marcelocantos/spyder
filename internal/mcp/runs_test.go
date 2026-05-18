@@ -43,20 +43,20 @@ func TestReserve_OpensRun(t *testing.T) {
 	h, _, r := newHandlerWithRuns(t, nil, nil)
 
 	res := dispatchJSON(t, h, "reserve", map[string]any{
-		"device": "Pippa", "owner": "tiltbuggy", "note": "ui sweep",
+		"device": "iPad", "owner": "tiltbuggy", "note": "ui sweep",
 	})
 	if res.IsError {
 		t.Fatalf("reserve: %s", resultText(t, &res))
 	}
 
-	active, err := r.Active("Pippa", "tiltbuggy")
+	active, err := r.Active("iPad", "tiltbuggy")
 	if err != nil {
 		t.Fatalf("runs.Active: %v", err)
 	}
 	if active == nil {
 		t.Fatal("no active run after reserve")
 	}
-	if active.Device != "Pippa" || active.Owner != "tiltbuggy" || active.Note != "ui sweep" {
+	if active.Device != "iPad" || active.Owner != "tiltbuggy" || active.Note != "ui sweep" {
 		t.Errorf("unexpected run: %+v", active)
 	}
 }
@@ -64,8 +64,8 @@ func TestReserve_OpensRun(t *testing.T) {
 func TestReserve_SameOwnerReuseDoesNotStackRuns(t *testing.T) {
 	h, _, r := newHandlerWithRuns(t, nil, nil)
 
-	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "Pippa", "owner": "tiltbuggy"})
-	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "Pippa", "owner": "tiltbuggy"})
+	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "iPad", "owner": "tiltbuggy"})
+	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "iPad", "owner": "tiltbuggy"})
 
 	list, err := r.List()
 	if err != nil {
@@ -73,7 +73,7 @@ func TestReserve_SameOwnerReuseDoesNotStackRuns(t *testing.T) {
 	}
 	var active []runs.Run
 	for _, run := range list {
-		if run.ClosedAt == nil && run.Device == "Pippa" && run.Owner == "tiltbuggy" {
+		if run.ClosedAt == nil && run.Device == "iPad" && run.Owner == "tiltbuggy" {
 			active = append(active, run)
 		}
 	}
@@ -84,14 +84,14 @@ func TestReserve_SameOwnerReuseDoesNotStackRuns(t *testing.T) {
 
 func TestRelease_ClosesRun(t *testing.T) {
 	h, _, r := newHandlerWithRuns(t, nil, nil)
-	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "Pippa", "owner": "tiltbuggy"})
+	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "iPad", "owner": "tiltbuggy"})
 
-	res := dispatchJSON(t, h, "release", map[string]any{"device": "Pippa", "owner": "tiltbuggy"})
+	res := dispatchJSON(t, h, "release", map[string]any{"device": "iPad", "owner": "tiltbuggy"})
 	if res.IsError {
 		t.Fatalf("release: %s", resultText(t, &res))
 	}
 
-	active, _ := r.Active("Pippa", "tiltbuggy")
+	active, _ := r.Active("iPad", "tiltbuggy")
 	if active != nil {
 		t.Errorf("run still active after release: %+v", active)
 	}
@@ -101,10 +101,10 @@ func TestScreenshot_ArchivedInActiveRun(t *testing.T) {
 	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x42, 0x42, 0x42, 0x42}
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
 	h, _, r := newHandlerWithRuns(t, ios, nil)
-	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "Pippa", "owner": "tiltbuggy"})
+	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "iPad", "owner": "tiltbuggy"})
 
 	res := dispatchJSON(t, h, "screenshot", map[string]any{
-		"device": "Pippa", "owner": "tiltbuggy",
+		"device": "iPad", "owner": "tiltbuggy",
 	})
 	if res.IsError {
 		t.Fatalf("screenshot: %s", resultText(t, &res))
@@ -129,7 +129,7 @@ func TestScreenshot_ArchivedInActiveRun(t *testing.T) {
 	}
 
 	// Manifest captured the artefact.
-	active, err := r.Active("Pippa", "tiltbuggy")
+	active, err := r.Active("iPad", "tiltbuggy")
 	if err != nil {
 		t.Fatalf("Active: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestScreenshot_NoRunStore_StillReturnsImage(t *testing.T) {
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
 	h := newHandlerWithStubs(t, ios, nil)
 
-	res := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
+	res := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
 	if res.IsError {
 		t.Fatalf("screenshot should succeed without runs store; body=%s", resultText(t, &res))
 	}
@@ -165,7 +165,7 @@ func TestScreenshot_NoActiveRun_NotArchived(t *testing.T) {
 	png := []byte{0x89, 0x50, 0x4e, 0x47}
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
 	h, _, r := newHandlerWithRuns(t, ios, nil)
-	res := dispatchJSON(t, h, "screenshot", map[string]any{"device": "Pippa"})
+	res := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
 	if res.IsError {
 		t.Fatalf("screenshot should succeed without reservation; body=%s", resultText(t, &res))
 	}
@@ -177,7 +177,7 @@ func TestScreenshot_NoActiveRun_NotArchived(t *testing.T) {
 
 func TestRunsList_RoundTripsManifest(t *testing.T) {
 	h, _, _ := newHandlerWithRuns(t, nil, nil)
-	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "Pippa", "owner": "tiltbuggy", "note": "sweep"})
+	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "iPad", "owner": "tiltbuggy", "note": "sweep"})
 
 	res := dispatchJSON(t, h, "runs_list", map[string]any{})
 	if res.IsError {

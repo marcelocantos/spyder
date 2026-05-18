@@ -67,14 +67,14 @@ func init() {
 		{"reservations", "spyder reservations [--json]", runReservations},
 		{"runs", "spyder runs <list|show|artefacts> [args...]", runRuns},
 		{"rotate", "spyder rotate <device> --to <orientation> [--as OWNER]", runRotate},
-		{"crashes", "spyder crashes <device> [--since RFC3339] [--process NAME] [--as OWNER] [--json]", runCrashes},
+		{"crashes", "spyder crashes <device> [--since RFC3339|-15m|-1h] [--process NAME] [--as OWNER] [--json]", runCrashes},
 		{"diff", "spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]", runDiff},
 		{"baseline", "spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]", runBaseline},
 		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
-		{"log", "spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow]", runLog},
+		{"log", "spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now] [--until TS|now] [--follow]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 	}
 }
@@ -630,7 +630,7 @@ func runScreenshot(args []string) {
 		cliexit.Errorf(cliexit.ExitGeneric, "spyder screenshot: writing %s: %v", output, err)
 	}
 	// Screenshot's true output is the file. Print the path on stdout
-	// so scripts can capture it (`OUT=$(spyder screenshot Pippa)`); the
+	// so scripts can capture it (`OUT=$(spyder screenshot iPad)`); the
 	// human-readable size+mime line goes to stderr only under -v.
 	fmt.Println(output)
 	if verbose(pf) {

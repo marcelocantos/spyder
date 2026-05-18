@@ -28,13 +28,12 @@ in principle, but `adb` itself is cross-platform; spyder doesn't add value
 to adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.33.0` — the iOS path was migrated from a Python
-`pmd3-bridge` FastAPI subprocess + `pmd3-tunneld` system LaunchDaemon
-onto the in-process [go-ios](https://github.com/danielpaulus/go-ios)
-Go library plus a bundled `ios` userspace tunnel daemon spawned as a
-spyder child process (🎯T56). All operations that previously required
-the Python bridge or the privileged tunneld now route directly through
-go-ios in-process, with no subprocess crossing for the data path.
+Snapshot as of `v0.33.0` — the iOS path runs entirely on the in-process
+[go-ios](https://github.com/danielpaulus/go-ios) Go library, plus a
+bundled `ios` userspace tunnel daemon spawned as a spyder child process
+(🎯T56). The data path crosses no subprocess boundary: every iOS
+operation (list, lockdown queries, DTX, syslog, crash reports,
+installation) runs in-process.
 
 ## Interaction surface catalogue
 
@@ -363,7 +362,7 @@ Open runs are never pruned — they represent in-flight reservations.
 Path: `~/.spyder/baselines/<suite>/<variant>/<case>.{png,manifest.json}`.
 
 A variant key encodes per-device / per-orientation context as a URL-safe
-string, e.g. `pippa-landscape`. The store is opaque to the key's content.
+string, e.g. `ipad-landscape`. The store is opaque to the key's content.
 Writes are atomic (write-to-temp then rename).
 
 Diff report shape (`visualdiff.Report`):
@@ -416,16 +415,14 @@ builds. **Stable.**
   Name/version parity via per-package `dumpsys` is feasible but deferred.
 - **Android thermal state.** Not yet wired — `dumpsys thermalservice` is
   available, just not parsed.
-- **iOS bridge dependency** (resolved in 🎯T56). The previous
-  `internal/pmd3bridge` package and its bundled `pmd3-bridge` Python
-  subprocess have been removed. iOS device operations now run
-  in-process via the [go-ios](https://github.com/danielpaulus/go-ios)
-  Go module (`installationproxy`, `instruments`, `appservice`,
-  `screenshotr`, `crashreport`, `syslog_relay`, `zipconduit`, plus
-  the lockdown / DTX / RSD foundation). The only remaining iOS
-  child process is the bundled `ios tunnel start --userspace`
-  daemon (also go-ios), spawned by spyder at startup and reaped on
-  shutdown — no privileged LaunchDaemon required.
+- **iOS subprocess dependency.** iOS device operations run in-process
+  via the [go-ios](https://github.com/danielpaulus/go-ios) Go module
+  (`installationproxy`, `instruments`, `appservice`, `screenshotr`,
+  `crashreport`, `syslog_relay`, `zipconduit`, plus the lockdown /
+  DTX / RSD foundation). The only iOS child process is the bundled
+  `ios tunnel start --userspace` daemon (also go-ios), spawned by
+  spyder at startup and reaped on shutdown — no privileged
+  LaunchDaemon required.
 - **iOS keep-awake via on-device companion app.** The `ios/KeepAwake/`
   SwiftUI app sets `UIApplication.isIdleTimerDisabled = true` while
   foregrounded and exits on `batteryState == .unplugged` so iOS reclaims
@@ -448,9 +445,9 @@ builds. **Stable.**
   Wi-Fi-reachable devices are excluded so they don't fight
   KeepAwake's unplugged self-exit in a relaunch loop. Per-developer
   signing identity required (free-tier Apple ID suffices).
-  Historical note: pmd3's `PowerAssertionService` was attempted as a
-  drop-in replacement in v0.6.0–v0.8.0 but is a no-op for display
-  sleep on iOS; reverted in v0.9.0 (🎯T31). **Build-version drift
+  Lower-level power-assertion services were evaluated in v0.6.0–v0.8.0
+  but are no-ops for display sleep on iOS; reverted in v0.9.0 (🎯T31).
+  **Build-version drift
   detection (v0.24.0):** every convergence tick compares the
   on-device bundle's `CFBundleShortVersionString` (via go-ios's
   `installation_proxy.BrowseAllApps`) to the
@@ -506,12 +503,12 @@ builds. **Stable.**
 - Windows host support.
 - Full UI automation (tap/swipe/type) — that's deliberately mobile-mcp's
   territory.
-- Screen-recording on **iOS physical devices** — `pymobiledevice3` and
-  `devicectl` do not expose a clean CLI path for video capture on real
-  devices at this time. `record_start` on a physical iOS device returns an
-  immediate error: `"screen recording is not supported on iOS physical
-  devices; use a simulator"`. Use `xcrun simctl list devices` to pick a
-  simulator UDID instead.
+- Screen-recording on **iOS physical devices** — go-ios and
+  `devicectl` do not expose a clean path for video capture on real
+  devices at this time. `record_start` on a physical iOS device returns
+  an immediate error: `"screen recording is not supported on iOS
+  physical devices; use a simulator"`. Use `xcrun simctl list devices`
+  to pick a simulator UDID instead.
 - Wireless-ADB pairing / discovery — assumed set up externally (spyder
   inherits `adb devices`).
 - Auto-install of a companion app on Android — Android handles stay-awake

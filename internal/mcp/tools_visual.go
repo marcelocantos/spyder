@@ -218,7 +218,7 @@ func visualDefinitions() []mcpgo.Tool {
 				mcpgo.Description("Test case name within the suite (e.g. 'main-screen')"),
 			),
 			mcpgo.WithString("variant",
-				mcpgo.Description("Per-device/orientation variant key (e.g. 'pippa-landscape'). Defaults to 'default'."),
+				mcpgo.Description("Per-device/orientation variant key (e.g. 'ipad-landscape'). Defaults to 'default'."),
 			),
 			mcpgo.WithString("screenshot_path",
 				mcpgo.Description("Absolute or relative path to the PNG screenshot to store as the baseline."),

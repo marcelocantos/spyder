@@ -45,16 +45,16 @@ func (h *Handler) handleLogsRange(args map[string]any) (*mcpgo.CallToolResult, e
 
 	var since, until time.Time
 	if s := optString(args, "since"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseTimeArg(s)
 		if err != nil {
-			return toolErr("since: invalid RFC3339 timestamp: %v", err)
+			return toolErr("since: %v", err)
 		}
 		since = t
 	}
 	if u := optString(args, "until"); u != "" {
-		t, err := time.Parse(time.RFC3339, u)
+		t, err := parseTimeArg(u)
 		if err != nil {
-			return toolErr("until: invalid RFC3339 timestamp: %v", err)
+			return toolErr("until: %v", err)
 		}
 		until = t
 	}
@@ -88,6 +88,30 @@ func requireString(args map[string]any, key string) (string, error) {
 func optString(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return v
+}
+
+// parseTimeArg parses a `since` / `until` style argument. The string may
+// be either an RFC3339 absolute timestamp (e.g. "2026-05-17T16:43:24Z")
+// or a Go duration relative to now (e.g. "-2m" for "two minutes ago",
+// "+10s" for "ten seconds from now"); the bare word "now" is shorthand
+// for "0s". Tries the relative form first (cheaper, unambiguous against
+// RFC3339 because the latter starts with a four-digit year and no
+// duration suffix), then falls back to RFC3339.
+func parseTimeArg(s string) (time.Time, error) {
+	s = strings.TrimSpace(s)
+	if s == "now" {
+		return time.Now(), nil
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		return time.Now().Add(d), nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}, fmt.Errorf(
+			"not a Go duration (e.g. \"-2m\") or RFC3339 timestamp (e.g. \"2026-05-17T16:43:24Z\"): %w",
+			err)
+	}
+	return t, nil
 }
 
 // toolErr wraps a user-facing error as a non-nil CallToolResult with
@@ -1050,9 +1074,9 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 
 	var since time.Time
 	if s := optString(args, "since"); s != "" {
-		t, err := time.Parse(time.RFC3339, s)
+		t, err := parseTimeArg(s)
 		if err != nil {
-			return toolErr("since: invalid RFC3339 timestamp %q: %v", s, err)
+			return toolErr("since: %v", err)
 		}
 		since = t
 	}

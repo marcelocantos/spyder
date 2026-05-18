@@ -34,11 +34,11 @@ func newHandlerWithReservationsAndDevices(t *testing.T, iosDevices []device.Info
 }
 
 func TestHandleReserve_SelectorIOS(t *testing.T) {
-	// Live device: Pippa from the testInventory, with hardware UDID.
+	// Live device: iPad from the testInventory, with hardware UDID.
 	liveDevices := []device.Info{
 		{
-			UUID:     "00008103-000D39301A6A201E",
-			Name:     "Pippa",
+			UUID:     "00008103-001122334455667A",
+			Name:     "iPad",
 			Platform: "ios",
 			Model:    "iPad Air",
 			OS:       "17.4",
@@ -54,8 +54,8 @@ func TestHandleReserve_SelectorIOS(t *testing.T) {
 		t.Fatalf("reserve with selector should succeed; body=%s", resultText(t, &r))
 	}
 	body := resultText(t, &r)
-	// Should contain the device (alias "Pippa" or UUID).
-	if !strings.Contains(body, "Pippa") && !strings.Contains(body, "00008103") {
+	// Should contain the device (alias "iPad" or UUID).
+	if !strings.Contains(body, "iPad") && !strings.Contains(body, "00008103") {
 		t.Errorf("reserve result should name the resolved device; got %s", body)
 	}
 }
@@ -86,7 +86,7 @@ func TestHandleReserve_SelectorAndDevice_BothError(t *testing.T) {
 	h.reservations, _ = reservations.New("")
 
 	r := dispatchJSON(t, h, "reserve", map[string]any{
-		"device":   "Pippa",
+		"device":   "iPad",
 		"selector": `{"platform":"ios"}`,
 		"owner":    "tiltbuggy",
 	})

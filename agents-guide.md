@@ -72,10 +72,10 @@ map symbolic aliases to platform-specific identifiers:
 ```json
 [
   {
-    "alias": "Pippa",
+    "alias": "iPad",
     "platform": "ios",
-    "ios_uuid": "00008103-000D39301A6A201E",
-    "ios_coredevice": "E1A01EA6-8D77-556C-B18D-D470B2909E87",
+    "ios_uuid": "00008103-001122334455667A",
+    "ios_coredevice": "00000000-0000-0000-0000-000000000001",
     "notes": "Preferred iPad test device"
   }
 ]
@@ -348,7 +348,7 @@ Manifests are JSON objects with this shape:
 
 ```bash
 # 1. Capture a reference screenshot and store as baseline.
-spyder screenshot Pippa --output login.png
+spyder screenshot iPad --output login.png
 spyder baseline update login-flow/main-screen login.png
 
 # 2. Later, compare a new screenshot against the baseline.
@@ -360,8 +360,8 @@ spyder baseline update login-flow/main-screen login.png manifest.json
 spyder diff login-flow/main-screen new-screenshot.png new-manifest.json
 
 # 4. Use --variant for per-device or per-orientation separation:
-spyder baseline update login-flow/main-screen login.png --variant pippa-landscape
-spyder diff login-flow/main-screen new-screenshot.png --variant pippa-landscape
+spyder baseline update login-flow/main-screen login.png --variant ipad-landscape
+spyder diff login-flow/main-screen new-screenshot.png --variant ipad-landscape
 ```
 
 Via MCP, the same operations are:
@@ -381,9 +381,11 @@ The `logs` MCP tool returns a bounded JSON array of `LogLine` records. It
 accepts:
 
 - `device` (required) — alias or UUID.
-- `since` / `until` — RFC3339 timestamps (e.g. `2026-04-19T14:00:00Z`). Both
-  optional. When `since` is omitted, iOS collects from a short live window
-  (≤5 s); Android uses `-d` (dump buffer then exit).
+- `since` / `until` — window bounds. Each accepts either an RFC3339 absolute
+  (e.g. `2026-04-19T14:00:00Z`) or a Go duration relative to now (e.g.
+  `since=-2m` for "the last two minutes", `since=-1h`, `until=+30s`,
+  `until=now`). Both optional. When `since` is omitted, iOS collects from a
+  short live window (≤5 s); Android uses `-d` (dump buffer then exit).
 - `process` — filter by process name (iOS: matched against `image_name` server-side; Android: tag match).
 - `subsystem` — iOS only (matched against `SyslogLabel.subsystem` server-side, e.g. `com.apple.network`). Ignored on Android.
 - `tag` — Android logcat tag (e.g. `MyApp`). Ignored on iOS.
@@ -396,16 +398,17 @@ REST SSE endpoint instead:
 # Live tail — server-sent events, each line is a JSON LogLine.
 curl -N -X POST http://127.0.0.1:3030/api/v1/log_stream \
   -H 'Content-Type: application/json' \
-  -d '{"device":"Pippa","process":"MyApp","regex":"error"}'
+  -d '{"device":"iPad","process":"MyApp","regex":"error"}'
 ```
 
 Or via the CLI:
 
 ```bash
-spyder log Pippa --follow                          # live tail
-spyder log Pippa --follow --process MyApp          # process filter
-spyder log Pippa --since 2026-04-19T00:00:00Z     # bounded range
-spyder log Pippa --regex "crash|panic"             # regex on message
+spyder log iPad --follow                          # live tail
+spyder log iPad --follow --process MyApp          # process filter
+spyder log iPad --since -2m                       # the last two minutes
+spyder log iPad --since 2026-04-19T00:00:00Z     # bounded range, absolute
+spyder log iPad --regex "crash|panic"             # regex on message
 ```
 
 **Platform quirks:**
@@ -443,7 +446,7 @@ naming the holder if someone else is holding the device. Read tools
 Pin a specific device by alias or UUID:
 
 ```json
-{"name": "reserve", "arguments": {"device": "Pippa", "owner": "tiltbuggy", "ttl_seconds": 3600, "note": "UI regression run"}}
+{"name": "reserve", "arguments": {"device": "iPad", "owner": "tiltbuggy", "ttl_seconds": 3600, "note": "UI regression run"}}
 ```
 
 ### Fuzzy reservation (selector)
@@ -483,9 +486,9 @@ can now carry these optional fields:
 
 ```json
 {
-  "alias": "Pippa",
+  "alias": "iPad",
   "platform": "ios",
-  "ios_uuid": "00008103-000D39301A6A201E",
+  "ios_uuid": "00008103-001122334455667A",
   "tags": ["ipad", "arm64"],
   "attrs": {"env": "ci", "zone": "lab-a"}
 }
@@ -548,7 +551,7 @@ spyder reserve --platform ios --model ipad --as tiltbuggy
 spyder reserve --platform android --tag arm64 --tag ci --as tiltbuggy
 
 # Literal device (unchanged)
-spyder reserve Pippa --as tiltbuggy
+spyder reserve iPad --as tiltbuggy
 ```
 
 Agents don't *have* to reserve: if the device is free, mutating calls just
@@ -561,7 +564,7 @@ common test-run pattern.
 To pass owner-authentication on a mutating call while someone else holds
 the device, pass `"owner": "<your-owner>"` in the arguments map. The
 server resolves canonical identity via the inventory, so reserving
-"Pippa" also blocks operations on her raw UDID and vice versa.
+"iPad" also blocks operations on her raw UDID and vice versa.
 
 ## Run-artefact store
 
@@ -691,11 +694,11 @@ the local daemon and render the result:
 
 ```bash
 spyder devices --platform ios --json
-spyder screenshot Pippa --output /tmp/pippa.png
-spyder reserve Pippa --ttl 600 --note "UI sweep"
-spyder list-apps Pippa --json
-spyder is-running Pippa com.example.app   # exit 0 / 20 / 22
-spyder release Pippa
+spyder screenshot iPad --output /tmp/ipad.png
+spyder reserve iPad --ttl 600 --note "UI sweep"
+spyder list-apps iPad --json
+spyder is-running iPad com.example.app   # exit 0 / 20 / 22
+spyder release iPad
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
 spyder sim list --json
@@ -711,8 +714,9 @@ spyder emu shutdown emulator-5554
 spyder emu create Pixel6_API34 \
   --image 'system-images;android-34;google_apis;arm64-v8a' --device pixel_6
 spyder emu delete Pixel6_API34
-spyder log Pippa --since 2026-04-19T00:00:00Z --json
-spyder log Pippa --follow --process MyApp         # live SSE tail
+spyder log iPad --since -2m --json               # last two minutes
+spyder log iPad --since 2026-04-19T00:00:00Z --json
+spyder log iPad --follow --process MyApp         # live SSE tail
 ```
 
 `--as OWNER` defaults to `filepath.Base(cwd)` (same convention as
@@ -817,10 +821,10 @@ or failure):
 
 ```bash
 spyder run -- xcodebuild -project MyApp.xcodeproj \
-  -scheme MyApp -destination 'id=00008103-000D39301A6A201E' test
+  -scheme MyApp -destination 'id=00008103-001122334455667A' test
 ```
 
-- Default device is `Pippa`. Override with `--device <alias-or-uuid>`.
+- Default device is `iPad`. Override with `--device <alias-or-uuid>`.
 - The wrapper forwards stdin/stdout/stderr and the command's exit code.
 - Release failures are logged but do not mask the test's exit code.
 
@@ -829,10 +833,10 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
 `spyder serve` runs an always-on supervisor that keeps attached iOS devices
 awake by foregrounding the on-device **KeepAwake** companion app. KeepAwake
 sets `UIApplication.isIdleTimerDisabled = true` while foregrounded — the
-canonical iOS mechanism for preventing display auto-lock. (The pre-v0.9.0
-attempts to use pmd3's `PowerAssertionService` as a drop-in replacement
-turned out to be no-ops for display sleep; v0.9.0 reverted to the companion
-app, 🎯T31.)
+canonical iOS mechanism for preventing display auto-lock. (Lower-level
+power-assertion services were evaluated in v0.6.0–v0.8.0 but turned out
+to be no-ops for display sleep; v0.9.0 settled on the companion-app
+approach, 🎯T31.)
 
 When a new paired iOS device appears the supervisor:
 
@@ -881,17 +885,6 @@ reboots the device).
 - **`alerter`** — persistent macOS notifications for the locked-device prompt
   (fallbacks: `terminal-notifier`, `osascript`).
 
-The previous architecture (a Python `pmd3-bridge` FastAPI subprocess
-plus a system-level `pmd3-tunneld` LaunchDaemon) was retired in
-v0.33 (🎯T56). If you upgraded from a pre-0.33 install and had the
-manual `com.marcelocantos.pmd3-tunneld` LaunchDaemon, it's safe to
-remove now — the bundled `ios` binary supersedes it:
-
-```bash
-sudo launchctl bootout system /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist 2>/dev/null
-sudo rm -f /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist
-```
-
 ## Configuration
 
 ```bash
@@ -935,8 +928,8 @@ event.
   <dest.mp4>`.
 - **iOS physical device**: Not supported. `record_start` returns an immediate
   error: `"screen recording is not supported on iOS physical devices; use a
-  simulator"`. This is a platform limitation — `pymobiledevice3` and
-  `devicectl` do not expose a recording API at this time.
+  simulator"`. This is a platform limitation — go-ios and `devicectl` do
+  not expose a recording API at this time.
 - **Android device / emulator**: Uses `adb shell screenrecord --bit-rate
   4000000 /sdcard/spyder-recording.mp4`. The file is pulled to a local temp
   path on `record_stop`. Maximum native recording duration is 180 s per
@@ -949,11 +942,12 @@ owner's reservation is released.
 
 ## Common gotchas
 
-- **"tunneld unavailable"** in a tool error → start
-  `sudo pymobiledevice3 remote tunneld` (or the systemd/launchd service
-  that wraps it) and retry. Required on iOS 17+ for `screenshot` and
-  for stable device enumeration; iOS <17 devices keep working over
-  USBMux even without tunneld.
+- **"tunneld unavailable"** in a tool error → the bundled `ios tunnel
+  start --userspace` child process is meant to be running. If spyder
+  started it but it crashed, `brew services restart spyder` brings it
+  back up. Required on iOS 17+ for `screenshot` and for stable device
+  enumeration; iOS <17 devices keep working over USBMux even without
+  the tunnel.
 - **"Developer Mode is not enabled"** in a tool error (iOS 17+) → on
   the device, **Settings → Privacy & Security → Developer Mode**, toggle
   on. The device reboots; trust the developer cert again afterwards if

@@ -137,10 +137,5 @@ jobs:
                 spyder spawns a bundled `ios` binary (go-ios) as a child
                 process for iOS-17+ device discovery. No system LaunchDaemon
                 or sudo is required — the tunnel runs in user-space mode.
-
-                Upgrading from a pre-0.33 install? The old pmd3-tunneld
-                LaunchDaemon (if you installed it manually) can be removed:
-                  sudo launchctl bootout system /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist
-                  sudo rm /Library/LaunchDaemons/com.marcelocantos.pmd3-tunneld.plist
               EOS
             end

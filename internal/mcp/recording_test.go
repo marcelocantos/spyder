@@ -30,7 +30,7 @@ func newRecordingHandler(t *testing.T) *Handler {
 
 func TestHandleRecordStart_HappyPath(t *testing.T) {
 	h := newRecordingHandler(t)
-	r := dispatchJSON(t, h, "record_start", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "record_start", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("record_start should succeed; body=%s", resultText(t, &r))
 	}
@@ -46,12 +46,12 @@ func TestHandleRecordStart_HappyPath(t *testing.T) {
 func TestHandleRecordStart_Conflict(t *testing.T) {
 	h := newRecordingHandler(t)
 	// First call succeeds.
-	r1 := dispatchJSON(t, h, "record_start", map[string]any{"device": "Pippa"})
+	r1 := dispatchJSON(t, h, "record_start", map[string]any{"device": "iPad"})
 	if r1.IsError {
 		t.Fatalf("first record_start should succeed; body=%s", resultText(t, &r1))
 	}
 	// Second call on same device should conflict.
-	r2 := dispatchJSON(t, h, "record_start", map[string]any{"device": "Pippa"})
+	r2 := dispatchJSON(t, h, "record_start", map[string]any{"device": "iPad"})
 	if !r2.IsError {
 		t.Fatalf("second record_start on same device should fail; body=%s", resultText(t, &r2))
 	}
@@ -63,12 +63,12 @@ func TestHandleRecordStart_Conflict(t *testing.T) {
 func TestHandleRecordStop_HappyPath(t *testing.T) {
 	h := newRecordingHandler(t)
 	// Start first.
-	r1 := dispatchJSON(t, h, "record_start", map[string]any{"device": "Pippa"})
+	r1 := dispatchJSON(t, h, "record_start", map[string]any{"device": "iPad"})
 	if r1.IsError {
 		t.Fatalf("record_start failed; body=%s", resultText(t, &r1))
 	}
 	// Stop.
-	r2 := dispatchJSON(t, h, "record_stop", map[string]any{"device": "Pippa"})
+	r2 := dispatchJSON(t, h, "record_stop", map[string]any{"device": "iPad"})
 	if r2.IsError {
 		t.Fatalf("record_stop should succeed; body=%s", resultText(t, &r2))
 	}
@@ -79,7 +79,7 @@ func TestHandleRecordStop_HappyPath(t *testing.T) {
 
 func TestHandleRecordStop_WithoutStart(t *testing.T) {
 	h := newRecordingHandler(t)
-	r := dispatchJSON(t, h, "record_stop", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "record_stop", map[string]any{"device": "iPad"})
 	if !r.IsError {
 		t.Fatalf("record_stop without prior record_start should fail; body=%s", resultText(t, &r))
 	}
@@ -94,7 +94,7 @@ func TestHandleRecordStart_IOSPhysicalDeviceError(t *testing.T) {
 		},
 	}
 	h := newHandlerWithStubs(t, ios, nil)
-	r := dispatchJSON(t, h, "record_start", map[string]any{"device": "Pippa"})
+	r := dispatchJSON(t, h, "record_start", map[string]any{"device": "iPad"})
 	if !r.IsError {
 		t.Fatalf("expected isError=true for iOS physical device; body=%s", resultText(t, &r))
 	}
@@ -106,9 +106,9 @@ func TestHandleRecordStart_IOSPhysicalDeviceError(t *testing.T) {
 func TestHandleRecordStop_AfterSecondStartSucceeds(t *testing.T) {
 	// After a stop, starting again on the same device should work.
 	h := newRecordingHandler(t)
-	dispatchJSON(t, h, "record_start", map[string]any{"device": "Pippa"})
-	dispatchJSON(t, h, "record_stop", map[string]any{"device": "Pippa"})
-	r := dispatchJSON(t, h, "record_start", map[string]any{"device": "Pippa"})
+	dispatchJSON(t, h, "record_start", map[string]any{"device": "iPad"})
+	dispatchJSON(t, h, "record_stop", map[string]any{"device": "iPad"})
+	r := dispatchJSON(t, h, "record_start", map[string]any{"device": "iPad"})
 	if r.IsError {
 		t.Fatalf("record_start after stop should succeed; body=%s", resultText(t, &r))
 	}

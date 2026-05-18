@@ -29,11 +29,11 @@ func newTestStore(t *testing.T, path string, now *time.Time) *Store {
 func TestAcquire_Free(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	r, err := s.Acquire("Pippa", "tiltbuggy", 0, "testing")
+	r, err := s.Acquire("iPad", "tiltbuggy", 0, "testing")
 	if err != nil {
 		t.Fatalf("Acquire err = %v", err)
 	}
-	if r.Owner != "tiltbuggy" || r.Device != "Pippa" {
+	if r.Owner != "tiltbuggy" || r.Device != "iPad" {
 		t.Errorf("unexpected reservation: %+v", r)
 	}
 	wantExpiry := now.Add(DefaultTTL)
@@ -45,8 +45,8 @@ func TestAcquire_Free(t *testing.T) {
 func TestAcquire_ConflictWithDifferentOwner(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
-	_, err := s.Acquire("Pippa", "otherproj", 0, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
+	_, err := s.Acquire("iPad", "otherproj", 0, "")
 	if err == nil {
 		t.Fatal("expected Conflict; got nil")
 	}
@@ -58,8 +58,8 @@ func TestAcquire_ConflictWithDifferentOwner(t *testing.T) {
 func TestAcquire_SameOwnerUpgradesExisting(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 10*time.Minute, "initial")
-	r, err := s.Acquire("Pippa", "tiltbuggy", 60*time.Minute, "extended run")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 10*time.Minute, "initial")
+	r, err := s.Acquire("iPad", "tiltbuggy", 60*time.Minute, "extended run")
 	if err != nil {
 		t.Fatalf("same-owner Acquire should renew: %v", err)
 	}
@@ -75,10 +75,10 @@ func TestAcquire_SameOwnerUpgradesExisting(t *testing.T) {
 func TestAcquire_ExpiredSlotReusable(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 5*time.Minute, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 5*time.Minute, "")
 	now = now.Add(10 * time.Minute) // past the 5-min TTL
 	// A different owner can now acquire, no Conflict.
-	_, err := s.Acquire("Pippa", "otherproj", 0, "")
+	_, err := s.Acquire("iPad", "otherproj", 0, "")
 	if err != nil {
 		t.Fatalf("expired slot should be reusable; got %v", err)
 	}
@@ -87,19 +87,19 @@ func TestAcquire_ExpiredSlotReusable(t *testing.T) {
 func TestRelease_OnlyOwnerCanRelease(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
 
-	if err := s.Release("Pippa", "otherproj"); !IsConflict(err) {
+	if err := s.Release("iPad", "otherproj"); !IsConflict(err) {
 		t.Errorf("Release by non-owner: got %v; want Conflict", err)
 	}
 	// Hold still active.
-	if _, ok := s.Get("Pippa"); !ok {
+	if _, ok := s.Get("iPad"); !ok {
 		t.Error("reservation was cleared by non-owner release")
 	}
-	if err := s.Release("Pippa", "tiltbuggy"); err != nil {
+	if err := s.Release("iPad", "tiltbuggy"); err != nil {
 		t.Errorf("owner Release err = %v", err)
 	}
-	if _, ok := s.Get("Pippa"); ok {
+	if _, ok := s.Get("iPad"); ok {
 		t.Error("reservation still present after owner release")
 	}
 }
@@ -115,10 +115,10 @@ func TestRelease_FreeDeviceIsNoOp(t *testing.T) {
 func TestRelease_ExpiredIsNoOp(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 5*time.Minute, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 5*time.Minute, "")
 	now = now.Add(10 * time.Minute)
 	// Non-owner can release an expired reservation cleanly.
-	if err := s.Release("Pippa", "otherproj"); err != nil {
+	if err := s.Release("iPad", "otherproj"); err != nil {
 		t.Errorf("Release on expired: got %v; want nil", err)
 	}
 }
@@ -126,9 +126,9 @@ func TestRelease_ExpiredIsNoOp(t *testing.T) {
 func TestRenew(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 10*time.Minute, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 10*time.Minute, "")
 	now = now.Add(5 * time.Minute)
-	r, err := s.Renew("Pippa", "tiltbuggy", 30*time.Minute)
+	r, err := s.Renew("iPad", "tiltbuggy", 30*time.Minute)
 	if err != nil {
 		t.Fatalf("Renew err = %v", err)
 	}
@@ -141,8 +141,8 @@ func TestRenew(t *testing.T) {
 func TestRenew_NonOwnerConflict(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
-	_, err := s.Renew("Pippa", "otherproj", 0)
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
+	_, err := s.Renew("iPad", "otherproj", 0)
 	if !IsConflict(err) {
 		t.Errorf("Renew by non-owner: got %v; want Conflict", err)
 	}
@@ -151,9 +151,9 @@ func TestRenew_NonOwnerConflict(t *testing.T) {
 func TestRenew_ExpiredReturnsError(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 5*time.Minute, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 5*time.Minute, "")
 	now = now.Add(10 * time.Minute)
-	_, err := s.Renew("Pippa", "tiltbuggy", 30*time.Minute)
+	_, err := s.Renew("iPad", "tiltbuggy", 30*time.Minute)
 	if err == nil {
 		t.Fatal("Renew on expired reservation should fail")
 	}
@@ -167,22 +167,22 @@ func TestAuthorize(t *testing.T) {
 	s := newTestStore(t, "", &now)
 
 	// Free device: any owner (including empty) authorized.
-	if err := s.Authorize("Pippa", ""); err != nil {
+	if err := s.Authorize("iPad", ""); err != nil {
 		t.Errorf("free Authorize should be nil; got %v", err)
 	}
-	if err := s.Authorize("Pippa", "anybody"); err != nil {
+	if err := s.Authorize("iPad", "anybody"); err != nil {
 		t.Errorf("free Authorize should be nil; got %v", err)
 	}
 
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
 
-	if err := s.Authorize("Pippa", "tiltbuggy"); err != nil {
+	if err := s.Authorize("iPad", "tiltbuggy"); err != nil {
 		t.Errorf("holder Authorize err = %v", err)
 	}
-	if err := s.Authorize("Pippa", "otherproj"); !IsConflict(err) {
+	if err := s.Authorize("iPad", "otherproj"); !IsConflict(err) {
 		t.Errorf("non-holder Authorize: got %v; want Conflict", err)
 	}
-	if err := s.Authorize("Pippa", ""); !IsConflict(err) {
+	if err := s.Authorize("iPad", ""); !IsConflict(err) {
 		t.Errorf("anonymous Authorize on held device: got %v; want Conflict", err)
 	}
 }
@@ -210,7 +210,7 @@ func TestPersistence(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 	s1 := newTestStore(t, path, &now)
-	if _, err := s1.Acquire("Pippa", "tiltbuggy", time.Hour, "live"); err != nil {
+	if _, err := s1.Acquire("iPad", "tiltbuggy", time.Hour, "live"); err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
 
@@ -229,7 +229,7 @@ func TestPersistence(t *testing.T) {
 
 	// Fresh store at same path reads the existing entry.
 	s2 := newTestStore(t, path, &now)
-	r, ok := s2.Get("Pippa")
+	r, ok := s2.Get("iPad")
 	if !ok {
 		t.Fatal("reservation did not persist")
 	}
@@ -245,7 +245,7 @@ func TestPersistence_ExpiredPrunedOnLoad(t *testing.T) {
 
 	// Create and acquire in one clock era.
 	s1 := newTestStore(t, path, &now)
-	_, _ = s1.Acquire("Pippa", "tiltbuggy", 5*time.Minute, "")
+	_, _ = s1.Acquire("iPad", "tiltbuggy", 5*time.Minute, "")
 
 	// Time travel past expiry, load fresh.
 	later := now.Add(1 * time.Hour)
@@ -253,17 +253,17 @@ func TestPersistence_ExpiredPrunedOnLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, ok := s2.Get("Pippa"); ok {
+	if _, ok := s2.Get("iPad"); ok {
 		t.Error("expired reservation should have been pruned on load")
 	}
 }
 
 func TestNormalizer(t *testing.T) {
-	// Simulates inventory.AliasFor: maps UDIDs to "Pippa" and leaves
+	// Simulates inventory.AliasFor: maps UDIDs to "iPad" and leaves
 	// unknown inputs untouched.
 	norm := func(ref string) string {
-		if ref == "00008103-000D39301A6A201E" || ref == "Pippa" {
-			return "Pippa"
+		if ref == "00008103-001122334455667A" || ref == "iPad" {
+			return "iPad"
 		}
 		return ref
 	}
@@ -274,23 +274,23 @@ func TestNormalizer(t *testing.T) {
 	}
 
 	// Reserve by alias, conflict-check by raw UDID.
-	_, _ = s.Acquire("Pippa", "tiltbuggy", 0, "")
-	if err := s.Authorize("00008103-000D39301A6A201E", "otherproj"); !IsConflict(err) {
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
+	if err := s.Authorize("00008103-001122334455667A", "otherproj"); !IsConflict(err) {
 		t.Errorf("normalizer should have caught raw UDID; got %v", err)
 	}
 
 	// Reserve by raw UDID, release by alias.
-	_, _ = s.Acquire("00008103-000D39301A6A201E", "tiltbuggy2", 0, "")
-	// Already held by tiltbuggy under key Pippa — the above should
+	_, _ = s.Acquire("00008103-001122334455667A", "tiltbuggy2", 0, "")
+	// Already held by tiltbuggy under key iPad — the above should
 	// renew rather than conflict. Owner is different though → conflict.
-	// But we just acquired Pippa for tiltbuggy; a second Acquire with
+	// But we just acquired iPad for tiltbuggy; a second Acquire with
 	// owner="tiltbuggy2" conflicts.
 	// That's fine — in that case we need to release first.
-	_ = s.Release("Pippa", "tiltbuggy")
-	if _, err := s.Acquire("00008103-000D39301A6A201E", "tiltbuggy2", 0, ""); err != nil {
+	_ = s.Release("iPad", "tiltbuggy")
+	if _, err := s.Acquire("00008103-001122334455667A", "tiltbuggy2", 0, ""); err != nil {
 		t.Errorf("Acquire by raw UDID after Release by alias: %v", err)
 	}
-	if _, ok := s.Get("Pippa"); !ok {
+	if _, ok := s.Get("iPad"); !ok {
 		t.Error("reservation should be visible under alias key")
 	}
 }
@@ -314,16 +314,16 @@ func TestList_PrunesExpired(t *testing.T) {
 func TestAcquire_OwnerRequired(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	s := newTestStore(t, "", &now)
-	if _, err := s.Acquire("Pippa", "", 0, ""); err == nil {
+	if _, err := s.Acquire("iPad", "", 0, ""); err == nil {
 		t.Error("Acquire with empty owner should error")
 	}
 }
 
 func TestConflictError(t *testing.T) {
-	r := Reservation{Device: "Pippa", Owner: "X", ExpiresAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Note: "n"}
+	r := Reservation{Device: "iPad", Owner: "X", ExpiresAt: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), Note: "n"}
 	c := &Conflict{Reservation: r}
 	msg := c.Error()
-	for _, want := range []string{"Pippa", "X", "2026-01-01", "(note:"} {
+	for _, want := range []string{"iPad", "X", "2026-01-01", "(note:"} {
 		if !stringsContains(msg, want) {
 			t.Errorf("Conflict.Error() missing %q: %s", want, msg)
 		}

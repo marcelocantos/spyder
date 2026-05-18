@@ -15,6 +15,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	goios_ios "github.com/danielpaulus/go-ios/ios"
+	"github.com/danielpaulus/go-ios/ios/imagemounter"
 )
 
 // Helpers for autoawake's transparent KeepAwake install flow (🎯T32).
@@ -125,30 +128,21 @@ func DetectCodesigningTeam() (string, error) {
 // ── Developer Mode probe ─────────────────────────────────────────────────────
 
 // DetectDeveloperMode queries the device's Developer Mode state via
-// pymobiledevice3. Returns (true, nil) when enabled, (false, nil) when
-// disabled, and (false, error) when the probe itself fails (e.g.
-// pmd3 missing, device unreachable). Callers that get a probe error
-// should fall back to optimistic-install rather than blocking.
+// the in-process go-ios image-mounter service (QueryDeveloperModeStatus
+// over com.apple.mobile.mobile_image_mounter). Returns (true, nil) when
+// enabled, (false, nil) when disabled, and (false, error) when the probe
+// itself fails (device unreachable, lockdown error). Callers that get a
+// probe error should fall back to optimistic-install rather than blocking.
 func DetectDeveloperMode(udid string) (bool, error) {
-	cmd := exec.Command("pymobiledevice3", "amfi", "developer-mode-status",
-		"--udid", udid)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return false, fmt.Errorf("developer-mode-status: %w\n%s",
-			err, strings.TrimSpace(stderr.String()))
+	dev, err := goios_ios.GetDevice(udid)
+	if err != nil {
+		return false, fmt.Errorf("developer-mode-status: get device %s: %w", udid, err)
 	}
-	// pmd3 prints "true" / "false" with trailing newline.
-	output := strings.TrimSpace(stdout.String())
-	switch strings.ToLower(output) {
-	case "true":
-		return true, nil
-	case "false":
-		return false, nil
-	default:
-		return false, fmt.Errorf("unexpected developer-mode-status output: %q", output)
+	enabled, err := imagemounter.IsDevModeEnabled(dev)
+	if err != nil {
+		return false, fmt.Errorf("developer-mode-status: %w", err)
 	}
+	return enabled, nil
 }
 
 // ── KeepAwake build (cached per daemon lifetime) ─────────────────────────────

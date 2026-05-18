@@ -298,7 +298,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("resolve",
-			mcpgo.WithDescription("Resolve a symbolic device name (e.g. 'Pippa') to its platform-specific UUIDs for use with xcodebuild, devicectl, pymobiledevice3, or adb. Supply exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`'s selector). With `selector`, returns the inventory entry of the first matching live device. (🎯T38.3)"),
+			mcpgo.WithDescription("Resolve a symbolic device name (e.g. 'iPad') to its platform-specific UUIDs for use with xcodebuild, devicectl, or adb. Supply exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`'s selector). With `selector`, returns the inventory entry of the first matching live device. (🎯T38.3)"),
 			mcpgo.WithString("name",
 				mcpgo.Description("Symbolic name or raw UUID from the device inventory (mutually exclusive with selector)"),
 			),
@@ -316,7 +316,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("screenshot",
-			mcpgo.WithDescription("Capture a PNG screenshot of the device. Returns the image inline for the agent to inspect. iOS uses pymobiledevice3 developer dvt (requires tunneld); Android uses adb shell screencap. Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithDescription("Capture a PNG screenshot of the device. Returns the image inline for the agent to inspect. iOS uses the in-process go-ios DTX `screenshotr` service (requires the bundled tunnel); Android uses adb shell screencap. Strictly enforced: rejects if the device is reserved by a different owner."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -335,7 +335,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("launch_app",
-			mcpgo.WithDescription("Foreground an app by bundle id. iOS uses pymobiledevice3 dvt launch (requires tunneld); Android uses adb monkey with the LAUNCHER intent. Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithDescription("Foreground an app by bundle id. iOS uses the in-process go-ios `appservice` launch (requires the bundled tunnel); Android uses adb monkey with the LAUNCHER intent. Strictly enforced: rejects if the device is reserved by a different owner."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -350,7 +350,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("is_running",
-			mcpgo.WithDescription("Report whether an app is currently running on the device, without forcing a launch. Returns JSON {state, pid?} where state ∈ {running, not_running, not_installed}. Distinct from device_state.foreground_app (only sees the foreground app, not backgrounded ones) and from launch_app's PID-verify (which would force a launch). iOS uses pmd3 dvt process-id-for-bundle-id; Android uses adb shell pidof, with a list_apps cross-check to distinguish not_running from not_installed. Read-only; not subject to reservations. (🎯T38.1)"),
+			mcpgo.WithDescription("Report whether an app is currently running on the device, without forcing a launch. Returns JSON {state, pid?} where state ∈ {running, not_running, not_installed}. Distinct from device_state.foreground_app (only sees the foreground app, not backgrounded ones) and from launch_app's PID-verify (which would force a launch). iOS uses the in-process go-ios DTX `processcontrol` service for bundle→pid; Android uses adb shell pidof, with a list_apps cross-check to distinguish not_running from not_installed. Read-only; not subject to reservations. (🎯T38.1)"),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -598,13 +598,13 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("crashes",
-			mcpgo.WithDescription("Fetch crash reports from a device. iOS pulls .ips files via pymobiledevice3 crash-reports and parses the first-line JSON header for process, reason, and timestamp. Android attempts tombstones via adb pull /data/tombstones/ (requires root) and falls back to `adb logcat -b crash`. Read-only; not reservation-gated. Pass owner to archive reports into the active run."),
+			mcpgo.WithDescription("Fetch crash reports from a device. iOS pulls .ips files via the in-process go-ios `crashreport` service and parses the first-line JSON header for process, reason, and timestamp. Android attempts tombstones via adb pull /data/tombstones/ (requires root) and falls back to `adb logcat -b crash`. `since` accepts either an RFC3339 absolute timestamp or a Go duration relative to now (e.g. `-15m`, `-1h`). Read-only; not reservation-gated. Pass owner to archive reports into the active run."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
 			),
 			mcpgo.WithString("since",
-				mcpgo.Description("Return only reports newer than this RFC3339 timestamp (e.g. 2026-04-19T00:00:00Z). Omit to return all available reports."),
+				mcpgo.Description("Return only reports newer than this point. RFC3339 absolute (e.g. `2026-04-19T00:00:00Z`) or Go duration relative to now (e.g. `-15m`, `-1h`). Omit to return all available reports."),
 			),
 			mcpgo.WithString("process",
 				mcpgo.Description("Filter by process name (case-insensitive). Omit to return crashes from all processes."),
@@ -668,7 +668,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 
 		mcpgo.NewTool("logs",
 			mcpgo.WithDescription("Fetch log lines from a device between two timestamps. "+
-				"iOS uses pymobiledevice3 syslog live; Android uses adb logcat. "+
+				"iOS uses the in-process go-ios `syslog` service; Android uses adb logcat. "+
+				"`since` and `until` each accept either an RFC3339 absolute timestamp "+
+				"(e.g. `2026-05-17T16:43:24Z`) or a Go duration relative to now "+
+				"(e.g. `since=-2m` for \"the last two minutes\", `until=+30s`, `until=now`). "+
 				"For live streaming (--follow), use the REST SSE endpoint POST /api/v1/log_stream instead — "+
 				"MCP transport does not support streaming. Read-only."),
 			mcpgo.WithString("device",
@@ -676,10 +679,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 				mcpgo.Description("Device alias or UUID"),
 			),
 			mcpgo.WithString("since",
-				mcpgo.Description("Start timestamp (RFC3339, e.g. 2026-04-19T14:00:00Z). Defaults to recent output."),
+				mcpgo.Description("Start of the window. RFC3339 absolute (e.g. `2026-04-19T14:00:00Z`) or Go duration relative to now (e.g. `-2m` for two minutes ago, `now`). Defaults to recent output."),
 			),
 			mcpgo.WithString("until",
-				mcpgo.Description("End timestamp (RFC3339). Defaults to now."),
+				mcpgo.Description("End of the window. RFC3339 absolute or Go duration relative to now (e.g. `now`, `+30s`). Defaults to now."),
 			),
 			mcpgo.WithString("process",
 				mcpgo.Description("Filter by process name (iOS: --procname; Android: tag/process contains match)"),

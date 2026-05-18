@@ -49,10 +49,10 @@ func TestPutGet_WithManifest(t *testing.T) {
 			{ID: "app/screen/btn", Kind: "button", BBox: [4]int{10, 20, 100, 40}},
 		},
 	}
-	if err := s.Put("suite", "case1", "pippa-portrait", png, m); err != nil {
+	if err := s.Put("suite", "case1", "ipad-portrait", png, m); err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	b, err := s.Get("suite", "case1", "pippa-portrait")
+	b, err := s.Get("suite", "case1", "ipad-portrait")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
@@ -95,9 +95,9 @@ func TestPut_AtomicOverwrite(t *testing.T) {
 func TestList(t *testing.T) {
 	s := newStore(t)
 	pngs := map[string]string{
-		"c1": "pippa-portrait",
-		"c2": "pippa-portrait",
-		"c3": "pippa-landscape",
+		"c1": "ipad-portrait",
+		"c2": "ipad-portrait",
+		"c3": "ipad-landscape",
 	}
 	for c, v := range pngs {
 		if err := s.Put("mysuite", c, v, []byte("png"), nil); err != nil {

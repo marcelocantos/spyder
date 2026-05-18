@@ -1,7 +1,7 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package inventory resolves symbolic device names (e.g. "Pippa") to
+// Package inventory resolves symbolic device names (e.g. "iPad") to
 // platform-specific UUIDs. Backed by a JSON file at ~/.spyder/inventory.json.
 package inventory
 
@@ -15,8 +15,8 @@ import (
 	"github.com/marcelocantos/spyder/internal/paths"
 )
 
-// iOS hardware UDID: 8 hex, dash, 16 hex. Emitted by pymobiledevice3 and
-// xcrun xctrace list devices.
+// iOS hardware UDID: 8 hex, dash, 16 hex. Emitted by `ios list` (go-ios)
+// and `xcrun xctrace list devices`.
 var iosHardwareUDID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{16}$`)
 
 // Standard UUID (8-4-4-4-12). iOS 17+ CoreDevice UUIDs from devicectl
@@ -27,7 +27,7 @@ var standardUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f
 type Entry struct {
 	Alias         string            `json:"alias"`
 	Platform      string            `json:"platform"`                 // "ios" or "android"
-	IOSUUID       string            `json:"ios_uuid,omitempty"`       // pymobiledevice3 / xctrace
+	IOSUUID       string            `json:"ios_uuid,omitempty"`       // go-ios / xctrace
 	IOSCoreDevice string            `json:"ios_coredevice,omitempty"` // devicectl
 	AndroidSerial string            `json:"android_serial,omitempty"` // adb
 	Notes         string            `json:"notes,omitempty"`

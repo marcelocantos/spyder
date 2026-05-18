@@ -12,7 +12,7 @@ When spyder runs under `brew services start spyder`, MCP screenshot calls fail:
 
 ```
 tunneld unreachable at ('127.0.0.1', 49151): [Errno 65] No route to host;
-start it with `sudo pymobiledevice3 remote tunneld`
+start it with `sudo the Python bridge remote tunneld`
 ```
 
 The same code path works when spyder is started in a foreground shell.
@@ -22,9 +22,9 @@ The same code path works when spyder is started in a foreground shell.
 ## Evidence from `/opt/homebrew/var/log/spyder.log`
 
 ```
-2026-04-25 23:24:11  INFO  pmd3-bridge starting port=51927 log_level=info pid=62819
+2026-04-25 23:24:11  INFO  the Python bridge starting port=51927 log_level=info pid=62819
 2026-04-25 23:24:15  INFO  bridge app startup complete
-2026-04-25 23:28:07  INFO  screenshot udid=00008130-0009702E1110001C
+2026-04-25 23:28:07  INFO  screenshot udid=00008130-001122334455667B
 2026-04-25 23:28:07  WARN  screenshot FAILED tunneld_unavailable:
     "tunneld unreachable at ('127.0.0.1', 49151): [Errno 65] No route to host"
 2026-04-25 23:28:32  INFO  bridge shutdown (daemon restarted)
@@ -68,7 +68,7 @@ situations:
 2. A **pf firewall rule** blocks connections to the port. No evidence of this
    in the environment; subsequent attempts succeed without any rule change.
 
-The more plausible scenario: tunneld (run via `sudo pymobiledevice3 remote
+The more plausible scenario: tunneld (run via `sudo the Python bridge remote
 tunneld`, parented by launchd PID 1 after the terminal closed) was briefly
 unavailable — either restarting after a device reconnect or mid-tunnel
 negotiation — exactly when the first screenshot arrived. The bridge made a
@@ -83,7 +83,7 @@ surfaces the 503 to the agent, which is the only report the user sees.
 
 ## Fix applied
 
-**`bridge/src/pmd3_bridge/services.py` — `_tunneld_rsd_for`**
+**`bridge/src/bridge/services.py` — `_tunneld_rsd_for`**
 
 Added a retry loop (up to 3 attempts, 0.5 s backoff) around the
 `get_tunneld_devices` call. Only retried on transient transport errors
@@ -91,7 +91,7 @@ Added a retry loop (up to 3 attempts, 0.5 s backoff) around the
 structured `TunneldConnectionError` (tunneld not started at all) is still
 retried so a briefly-restarting tunneld doesn't cause a hard failure.
 
-**`bridge/src/pmd3_bridge/services.py` — `list_devices` tunneld probe**
+**`bridge/src/bridge/services.py` — `list_devices` tunneld probe**
 
 Same retry applied to the `requests.get` call in `list_devices` so the
 autoawake 2 s polling loop doesn't flood the log with debug-level errors
@@ -105,7 +105,7 @@ during the few seconds after daemon startup when tunneld isn't up yet.
   plist already has the correct PATH and no sandbox restrictions.
 - The Go daemon — no change needed. The 503 / `tunneld_unavailable` error
   code is the correct signal; the fix is in the bridge retry layer.
-- The `sudo pymobiledevice3 remote tunneld` management — out of scope for
+- The `sudo the Python bridge remote tunneld` management — out of scope for
   spyder. Users must run this separately (or add a LaunchDaemon plist for it).
 
 ---

@@ -14,7 +14,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   and `--help-agent` flag. Rewrote README for the HTTP architecture
   that replaced the original bimodal mcpbridge scaffold mid-cycle.
   Auto-awake + persistent locked-device alerts via `alerter` verified
-  end-to-end across Pippa (iPad Air 5) and a Samsung S23 Ultra.
+  end-to-end across iPad (iPad Air 5) and a Samsung S23 Ultra.
 
 ## 2026-04-19 — /release v0.2.0
 
@@ -37,13 +37,13 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Outcome**: Service-polish release. Fixed the v0.2.0 Homebrew
   formula so the launchd service inherits a usable PATH (covers
   /opt/homebrew/bin and system dirs) — v0.2.0's install was silently
-  broken when spyder ran as `brew services` because pymobiledevice3 /
+  broken when spyder ran as `brew services` because the Python bridge /
   alerter / xcodegen / adb weren't resolvable. Added a persistent
-  macOS alert when auto-awake hits pymobiledevice3's `'Security'`
+  macOS alert when auto-awake hits the Python bridge's `'Security'`
   DvtException (developer profile not trusted on device) so users
   aren't hunting through logs to diagnose the Trust-on-device step.
   Documented brew-services env-var requirements in agents-guide.md,
-  with a launchctl setenv snippet for non-Homebrew pymobiledevice3
+  with a launchctl setenv snippet for non-Homebrew the Python bridge
   installs and a note that SPYDER_KEEPAWAKE_PROJECT is slated for
   removal once the KeepAwake Xcode project is go:embedded into the
   binary. Published for darwin-arm64, linux-amd64, linux-arm64.
@@ -53,14 +53,14 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **PR**: #21 (T23/T24), #22 (T25)
 - **Outcome**: Architectural release. Shipped 🎯T23 (fuzzy reservation via
   selector predicates), 🎯T24 (sim/emu pool with two readiness tiers and
-  server-owned linger-on-release), and 🎯T25 (bundled pmd3 bridge —
+  server-owned linger-on-release), and 🎯T25 (bundled the Python bridge bridge —
   Python FastAPI over Unix socket + Go supervisor + typed client;
-  replaces every `exec.Command("pymobiledevice3", ...)` in the daemon;
-  keep-awake is held via pmd3's `PowerAssertionService`, retiring the
+  replaces every `exec.Command("the Python bridge", ...)` in the daemon;
+  keep-awake is held via the Python bridge's `PowerAssertionService`, retiring the
   on-device KeepAwake companion app + its xcodegen/xcodebuild/devicectl
   deploy pipeline). Deleted `internal/tunneld/` (supervision absorbed
   into the bridge); `--tunneld-addr` flag removed from `spyder serve`.
-  Release tarballs now ship `bin/spyder` + `libexec/pmd3-bridge/` so
+  Release tarballs now ship `bin/spyder` + `libexec/the Python bridge/` so
   `brew services start spyder` works on a fresh machine without any
   `launchctl setenv PATH` surgery. Published for darwin-arm64,
   linux-amd64, linux-arm64.
@@ -87,7 +87,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Outcome**: Small feature + security + correctness release.
   🎯T22 fixed the long-standing `devices({platform:"ios"})` stub
   (shipped broken across v0.1.0–v0.3.0, masked by the partial-
-  results wrapper); iOS enumeration now fuses pymobiledevice3
+  results wrapper); iOS enumeration now fuses the Python bridge
   usbmux list and xcrun devicectl list devices by hardware UDID.
   Default HTTP bind changed to 127.0.0.1:3030 (loopback only) —
   the MCP endpoint is unauthenticated and a wildcard bind on
@@ -102,7 +102,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 ## 2026-04-22 — /release v0.7.0
 
 - **PR**: #25 (T26 umbrella: T26.1–T26.5)
-- **Outcome**: Hardening release on the daemon↔pmd3-bridge pairing.
+- **Outcome**: Hardening release on the daemon↔the Python bridge pairing.
   Bridge transport moved to ephemeral loopback TCP + bearer token
   over stdio (🎯T26.1) — no more filesystem socket. Fail-fast model
   replaced retry/restart machinery; bridge unresponsiveness (transport
@@ -111,7 +111,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   exact class of bug that stranded a device on v0.6.0. Streaming for
   crash-report list (NDJSON) and pull (octet-stream) with a typed
   inter-packet stall error. Comprehensive logging across Go + Python:
-  every MCP dispatch, shell-out, state transition, and pmd3 operation
+  every MCP dispatch, shell-out, state transition, and the Python bridge operation
   leaves a breadcrumb. Tiered developer test suite with committed
   `TEST-REPORT.json`; pre-push hook and `make bullseye` invariant
   reject stale reports. Retired fault-injection mocks (the bridge is
@@ -124,10 +124,10 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **PR**: #27 (fd-leak hotfix + 🎯T27)
 - **Outcome**: Stability hotfix after v0.7.0 stranded attached devices
   ~4 min into a session. Root cause: services._lockdown callers
-  never closed the pymobiledevice3 lockdown client, leaking a
+  never closed the the Python bridge lockdown client, leaking a
   usbmux socket per call. autoawake polls list_devices every 2 s,
   so with 2 devices attached the bridge hit EMFILE within minutes;
-  list_devices then returned pmd3_error (correctly classified as a
+  list_devices then returned bridge_error (correctly classified as a
   structured BridgeError by the T26.2 fail-fast model, which
   logged+skipped rather than panicked), refreshes stopped, and
   device-side assertions timed out. Fixed by introducing
@@ -149,7 +149,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 
 - **PR**: #29 (T31 KeepAwake restore)
 - **Outcome**: Keep-awake-actually-works release. T25 (v0.6.0) deleted
-  the KeepAwake companion app on the assumption that pmd3's
+  the KeepAwake companion app on the assumption that the Python bridge's
   PowerAssertionService was a drop-in replacement; this release cycle
   empirically confirmed it wasn't. Every assertion type accessible via
   iOS's com.apple.mobile.assertion_agent (PreventUserIdleSystemSleep,
@@ -173,14 +173,14 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Commit**: `497b436`
 - **Outcome**: T30 (iOS 17+ screenshot) and T32 (transparent autoawake)
   brought to working state via two structural changes. Screenshot
-  rewired to use pmd3's DVT instrument over a tunneld-mediated RSD
+  rewired to use the Python bridge's DVT instrument over a tunneld-mediated RSD
   connection, replacing the legacy `com.apple.mobile.screenshotr`
   lockdown service that Apple deprecated in iOS 17 (the bridge had been
   returning `InvalidServiceError` on every modern device for months).
-  HIL-verified against Pippa (iPad, iOS 26.3.1), Jevons (iPhone, iOS
-  26.4.1), and Minicades (iPhone, iOS 26.2) — all three return real
+  HIL-verified against iPad (iPad, iOS 26.3.1), iPad-mini (iPhone, iOS
+  26.4.1), and iPhone (iPhone, iOS 26.2) — all three return real
   PNGs. Bridge `list_devices` now reads tunneld's HTTP registry as
-  canonical so iOS 17+ enumeration is no longer subject to `pmd3 usbmux
+  canonical so iOS 17+ enumeration is no longer subject to `the Python bridge usbmux
   list`'s random drops. Autoawake redesigned from a one-shot trigger-
   based model into a convergence loop — every 15 s it observes each
   connected device's KeepAwake-running and KeepAwake-installed state
@@ -226,7 +226,7 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Commit**: `66aaac0`
 - **Outcome**: Hotfix release for 🎯T35. Post-v0.11.0 MCP testing surfaced
   that every `brew install marcelocantos/tap/spyder` ran with the
-  bundled pmd3-bridge undiscoverable: the daemon's `resolveBridgeBinary`
+  bundled the Python bridge undiscoverable: the daemon's `resolveBridgeBinary`
   computed the bridge path relative to `os.Executable()`, which on
   macOS / Linux Homebrew installs returns the symlink path (e.g.
   `/opt/homebrew/bin/spyder`) rather than the resolved Cellar path.
@@ -255,7 +255,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   refuse the next launch with "App Is No Longer Available" once the
   profile expired (and devicectl would emit `CoreDeviceError 1002 No
   provider was found` on the host side). Surfaced from a yesterday's
-  HIL screenshot of Jevons that captured the iOS dialog directly. Fix
+  HIL screenshot of iPad-mini that captured the iOS dialog directly. Fix
   (PR #44): invert the preference so paid teams win first; free
   Personal Team stays as the second-pass fallback for users who only
   have one of those. Live-keychain test added to keepawake_test.go.
@@ -287,7 +287,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   line installs that directory into the Cellar; `findRepoRoot` probes
   `<real-exe-dir>/../libexec/spyder-source` first via EvalSymlinks
   (same symlink-resolution trick T35 uses for the bridge). Foreground
-  spyder rebuilt KeepAwake on Jevons / Minicades / Pippa with
+  spyder rebuilt KeepAwake on iPad-mini / iPhone / iPad with
   team=SWA3H3N7TW (paid Squz Pty Ltd) and installed cleanly on all
   three; simulated Homebrew layout in /tmp/ confirms the libexec
   source path is found through the bin/spyder symlink. Published for
@@ -298,13 +298,13 @@ maintenance activities. Append-only — newest entries at the bottom.
 - **Commit**: `859416b`
 - **Outcome**: Hotfix bounding every `xcrun devicectl ...` invocation
   with a 30-second timeout. Surfaced live during v0.14.0 verification:
-  Minicades had been force-restarted and was mid-DDI-personalization
-  under Xcode's "Preparing Minicades Test iPhone" spinner.
+  iPhone had been force-restarted and was mid-DDI-personalization
+  under Xcode's "Preparing Test iPhone" spinner.
   autoawake's per-device convergence step called
   `devicectl device info processes` against it, which hangs
   indefinitely on a device whose DVT/DDI subsystem isn't ready. With
   no timeout, the call held the per-device inFlight lock for 6+
-  minutes; subsequent 15s convergence ticks skipped Minicades silently
+  minutes; subsequent 15s convergence ticks skipped iPhone silently
   and KeepAwake never got rebuilt + reinstalled. PR #50 introduces a
   new `runDevicectl(args...)` helper that wraps every devicectl call
   with `context.WithTimeout(32s)` plus passes devicectl's own
@@ -320,7 +320,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   calls return promptly and the device advances normally. Worst-case
   latency from "device healthy" to "KeepAwake foregrounded" is one
   convergeInterval (~15s) plus one round of devicectl probes. HIL
-  evidence: the Minicades scenario where v0.14.0 wedged for 6+ minutes
+  evidence: the iPhone scenario where v0.14.0 wedged for 6+ minutes
   would now retry every 15s with bounded probe duration. Published for
   darwin-arm64, linux-amd64, linux-arm64.
 
@@ -366,7 +366,7 @@ maintenance activities. Append-only — newest entries at the bottom.
     success unless `-v` / `--verbose` is set; failure always prints
     to stderr with the appropriate exit code. `screenshot` prints
     just the file path (script-friendly `OUT=$(spyder screenshot
-    Pippa)`); the human-readable size+mime line moves to stderr
+    iPad)`); the human-readable size+mime line moves to stderr
     behind `-v`. Read commands continue printing as before — they ARE
     the data.
   - **🎯T37.6 hermeticity.** New `TestCLIHermeticity` exercises
@@ -402,7 +402,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   one PR per the user's "build the whole thing end-to-end" pacing.
   Four targets retired (🎯T30, 🎯T34, 🎯T35, 🎯T36); 🎯T29 stays
   active with the prototype landed but the device-tier test still
-  skipped pending HIL on Pippa.
+  skipped pending HIL on iPad.
   - **🎯T35 (retired) — Homebrew bridge resolution.** The
     `exePathReal` helper that calls `filepath.EvalSymlinks` on
     `os.Executable()` was already present in `daemon.go` from an
@@ -428,7 +428,7 @@ maintenance activities. Append-only — newest entries at the bottom.
     new tests via the extracted `iosAdapter` interface verify (a)
     `UninstallApp` is called on the stale-install path, and (b)
     repeated failures fall through to `classOther` rather than
-    looping indefinitely. Pippa's stuck v0.10.0–v0.12.0 install
+    looping indefinitely. iPad's stuck v0.10.0–v0.12.0 install
     now drives to converged within two convergence ticks (≤30s).
   - **🎯T36 (retired) — brew-services tunneld reachability.** The
     launchd-sandbox / Local-Network-privacy / IPv4-vs-IPv6
@@ -443,18 +443,18 @@ maintenance activities. Append-only — newest entries at the bottom.
     renegotiating a device tunnel. A foreground-shell user retries
     naturally; under MCP the single failure is all the agent saw.
     Fix: 3-attempt retry loop (0.5s backoff) in
-    `bridge/src/pmd3_bridge/services.py::_tunneld_rsd_for` and the
+    `bridge/src/bridge/services.py::_tunneld_rsd_for` and the
     `list_devices` tunneld probe. Permanently-down tunneld still
     surfaces `tunneld_unavailable` after all attempts with at most
     ~1s added latency.
   - **🎯T30 (retired) — iOS 17+ DVT screenshot.** Most of the
-    work — `bridge/src/pmd3_bridge/services.py` switching from the
+    work — `bridge/src/bridge/services.py` switching from the
     deprecated `com.apple.mobile.screenshotr` to the DVT
     `Screenshot` instrument over tunneld-mediated RSD, the
     `developer_mode_disabled` BridgeError, the device-tier
     `TestDevice_Screenshot_WorksOniOS17Plus` (`//go:build device`,
     `SPYDER_DEVICES=1`) — landed in v0.11.0 and was end-to-end
-    verified against Jevons (iOS 26.4.1). This release closes the
+    verified against iPad-mini (iOS 26.4.1). This release closes the
     target with a `STABILITY.md` refresh: explicit iOS-version
     range (17+) on the `screenshot` row, pre-iOS-17 limitation
     documented, both BridgeError HTTP statuses listed, and the
@@ -474,10 +474,10 @@ maintenance activities. Append-only — newest entries at the bottom.
     `docs/papers/t29-device-state-detection.md` evaluates 5
     candidate paths and the IOKit properties that distinguish
     them. The device-tier `TestDevice_StaysAwake_Mechanical`
-    contract is written but `t.Skip`-ed pending HIL on Pippa to
+    contract is written but `t.Skip`-ed pending HIL on iPad to
     (a) confirm the screenshot call does not in fact reset the
     idle timer over a 60-second wait, (b) capture the exact
-    `pmd3_error` exception string for display-off so it lands in
+    `bridge_error` exception string for display-off so it lands in
     `_ASLEEP_PATTERNS`. Target stays active until those land.
 
   Bundling rationale: T29/T30/T34/T35/T36 are all post-v0.16.0
@@ -510,7 +510,7 @@ maintenance activities. Append-only — newest entries at the bottom.
   observed the data plane (tunneld + devicectl) while KeepAwake
   observed the power plane (`UIDevice.batteryState`); the two
   only coincide with a normal data+power cable to the dev laptop.
-  Verified end-to-end on Pippa: with cable unplugged but on
+  Verified end-to-end on iPad: with cable unplugged but on
   Wi-Fi the supervisor ignores her; plugging in attaches +
   foregrounds KeepAwake within one converge tick. Added a
   `parseDevicectlConnectedIOSDevices` unit test covering wired,
@@ -523,17 +523,17 @@ maintenance activities. Append-only — newest entries at the bottom.
 ## 2026-04-26 — /release v0.19.0
 
 - **Commit**: `6e39d78`
-- **Outcome**: Released v0.19.0. Closes the v0.18-candidate ge-feedback bundle (🎯T38, five acceptance bullets) plus a one-line MCP reliability fix (🎯T40). New CLI surface: `spyder is-running <device> <bundle-id>` for passive app-state checks (exit 0/20/22), `spyder run --on PREDICATE` for atomic resolve+reserve+run, `spyder run --timeout DURATION` for cell budgets (exit 30 on deadline), and `spyder resolve` selector mode (--on or auto-detect on `=`, exit 15 for inputs that are neither alias nor parseable predicate). New MCP tools `is_running` and the `selector` argument on `resolve`. iOS archived-log query was discharged via documentation in STABILITY.md §"iOS log live-window contract" — pmd3 does not expose OsTraceService stably, so callers wanting retrospective queries are routed to `crashes` or `--follow`. T40 adds `server.WithHeartbeatInterval(30*time.Second)` to the streamable HTTP server construction; without it, idle Claude Code sessions disconnected after ~3 minutes (same root cause and fix as mnemo master 4057332). Showcase paper at docs/papers/t38-cli-rough-edges.md walks each acceptance bullet with before/after snippets ge can adopt. All changes additive — no existing CLI flag, exit code, MCP tool, or REST endpoint removed or repurposed. Published for darwin-arm64, linux-amd64, linux-arm64.
+- **Outcome**: Released v0.19.0. Closes the v0.18-candidate ge-feedback bundle (🎯T38, five acceptance bullets) plus a one-line MCP reliability fix (🎯T40). New CLI surface: `spyder is-running <device> <bundle-id>` for passive app-state checks (exit 0/20/22), `spyder run --on PREDICATE` for atomic resolve+reserve+run, `spyder run --timeout DURATION` for cell budgets (exit 30 on deadline), and `spyder resolve` selector mode (--on or auto-detect on `=`, exit 15 for inputs that are neither alias nor parseable predicate). New MCP tools `is_running` and the `selector` argument on `resolve`. iOS archived-log query was discharged via documentation in STABILITY.md §"iOS log live-window contract" — the Python bridge does not expose OsTraceService stably, so callers wanting retrospective queries are routed to `crashes` or `--follow`. T40 adds `server.WithHeartbeatInterval(30*time.Second)` to the streamable HTTP server construction; without it, idle Claude Code sessions disconnected after ~3 minutes (same root cause and fix as mnemo master 4057332). Showcase paper at docs/papers/t38-cli-rough-edges.md walks each acceptance bullet with before/after snippets ge can adopt. All changes additive — no existing CLI flag, exit code, MCP tool, or REST endpoint removed or repurposed. Published for darwin-arm64, linux-amd64, linux-arm64.
 
 ## 2026-04-26 — /release v0.20.0
 
 - **Commit**: `2c23f71`
-- **Outcome**: Released v0.20.0. Reliability bundle that closes the user-visible "spyder MCP keeps disconnecting" complaint plus the iOS 17+ "device not connected" symptom. 🎯T41: bridge transport errors no longer panic the daemon — they log WARN and return to the caller; the supervisor restarts the bridge subprocess transparently. Decode/unstructured-error/marshal-failure paths still panic so genuine bugs surface immediately. 🎯T42: completes the 🎯T30 migration — `device_state`, `launch_app`, `terminate_app`, `list_apps`, `is_running`, `logs`, `crashes` now use a `_service_provider_ctx` that prefers tunneld RSD for iOS 17+ devices, falling back to USBMux only when tunneld is unavailable or the device isn't in its registry. 🎯T44: pmd3-bridge subprocess is now strictly bound to the daemon's lifetime via fd 0 — the Go side passes the read end of `os.Pipe()` as the bridge's stdin and the bridge runs a daemon thread doing `os.read(0, 1)` that triggers `os._exit(0)` on EOF. Kernel-guaranteed; no orphans on panic, SIGKILL, OOM, or any other parent death. No startup reaper or pidfile needed. 🎯T43: `err=%s` → `err=%r` at the two lockdown-warning log sites so empty-message exceptions still leave a useful breadcrumb (`err=DeviceNotFoundError(...)`); made 🎯T42 diagnosis tractable. All additive — no CLI flag, exit code, MCP tool, or REST endpoint removed. Verified end-to-end: full `go test ./...` green, all 28 bridge Python tests pass, env-gated `SPYDER_LIFECYCLE=1` integration test confirms parent-death → child-exit within 1s. Published for darwin-arm64, linux-amd64, linux-arm64.
+- **Outcome**: Released v0.20.0. Reliability bundle that closes the user-visible "spyder MCP keeps disconnecting" complaint plus the iOS 17+ "device not connected" symptom. 🎯T41: bridge transport errors no longer panic the daemon — they log WARN and return to the caller; the supervisor restarts the bridge subprocess transparently. Decode/unstructured-error/marshal-failure paths still panic so genuine bugs surface immediately. 🎯T42: completes the 🎯T30 migration — `device_state`, `launch_app`, `terminate_app`, `list_apps`, `is_running`, `logs`, `crashes` now use a `_service_provider_ctx` that prefers tunneld RSD for iOS 17+ devices, falling back to USBMux only when tunneld is unavailable or the device isn't in its registry. 🎯T44: the Python bridge subprocess is now strictly bound to the daemon's lifetime via fd 0 — the Go side passes the read end of `os.Pipe()` as the bridge's stdin and the bridge runs a daemon thread doing `os.read(0, 1)` that triggers `os._exit(0)` on EOF. Kernel-guaranteed; no orphans on panic, SIGKILL, OOM, or any other parent death. No startup reaper or pidfile needed. 🎯T43: `err=%s` → `err=%r` at the two lockdown-warning log sites so empty-message exceptions still leave a useful breadcrumb (`err=DeviceNotFoundError(...)`); made 🎯T42 diagnosis tractable. All additive — no CLI flag, exit code, MCP tool, or REST endpoint removed. Verified end-to-end: full `go test ./...` green, all 28 bridge Python tests pass, env-gated `SPYDER_LIFECYCLE=1` integration test confirms parent-death → child-exit within 1s. Published for darwin-arm64, linux-amd64, linux-arm64.
 
 ## 2026-04-27 — /release v0.21.0
 
 - **Commit**: `b6eee72`
-- **Outcome**: Released v0.21.0. 🎯T46 closes a launchd-only failure mode in iOS log streaming. `IOSAdapter.LogRange`/`LogStream` (and the `logs` MCP tool, `spyder log` CLI, and REST `/api/v1/log_stream` SSE endpoint that build on them) used to call `exec.LookPath("pymobiledevice3")` then `exec.Command` — fine under an interactive shell but failing under launchd-supervised daemons (`brew services start spyder`) where the inherited PATH does not include the venv where `pymobiledevice3` lives. They now route through the bundled pmd3 bridge, the same way screenshot/launch/state already do, so no iOS operation depends on `pymobiledevice3` being on PATH at runtime any more. New `/v1/syslog` NDJSON endpoint wraps `OsTraceService.syslog` with server-side `image_name` and `SyslogLabel.subsystem` filters; the Go `pmd3bridge.Client.Syslog` method gets stall-watchdog-protected streaming with no outer end-to-end timeout (so follow-style streams aren't capped at 30 minutes — the previous `postStream` cap is now an opt-in parameter). iOS log timestamps now come straight from pmd3's `SyslogEntry.timestamp` (RFC3339, device-local timezone preserved) instead of being reconstructed from the year-less text format — the "near-midnight on New Year's may be misclassified by one year" hazard is gone. STABILITY.md's iOS-log-live-window contract section and pmd3-bridge gap entry updated to reflect the routing change. agents-guide.md `logs` row + filter descriptions + platform-quirk bullets refreshed. All additive at the CLI / MCP / REST surface. Verified: `go test ./...` green, `make test-integration` green, bridge pytest 30/4-skip (incl. two new `/v1/syslog` tests). Published for darwin-arm64.
+- **Outcome**: Released v0.21.0. 🎯T46 closes a launchd-only failure mode in iOS log streaming. `IOSAdapter.LogRange`/`LogStream` (and the `logs` MCP tool, `spyder log` CLI, and REST `/api/v1/log_stream` SSE endpoint that build on them) used to call `exec.LookPath("the Python bridge")` then `exec.Command` — fine under an interactive shell but failing under launchd-supervised daemons (`brew services start spyder`) where the inherited PATH does not include the venv where the Python bridge lives. They now route through the bundled the Python bridge bridge, the same way screenshot/launch/state already do, so no iOS operation depends on the Python bridge being on PATH at runtime any more. New `/v1/syslog` NDJSON endpoint wraps `OsTraceService.syslog` with server-side `image_name` and `SyslogLabel.subsystem` filters; the Go `bridge.Client.Syslog` method gets stall-watchdog-protected streaming with no outer end-to-end timeout (so follow-style streams aren't capped at 30 minutes — the previous `postStream` cap is now an opt-in parameter). iOS log timestamps now come straight from the Python bridge's `SyslogEntry.timestamp` (RFC3339, device-local timezone preserved) instead of being reconstructed from the year-less text format — the "near-midnight on New Year's may be misclassified by one year" hazard is gone. STABILITY.md's iOS-log-live-window contract section and the Python bridge gap entry updated to reflect the routing change. agents-guide.md `logs` row + filter descriptions + platform-quirk bullets refreshed. All additive at the CLI / MCP / REST surface. Verified: `go test ./...` green, `make test-integration` green, bridge pytest 30/4-skip (incl. two new `/v1/syslog` tests). Published for darwin-arm64.
 
 ## 2026-04-27 — /release v0.22.0
 
@@ -548,19 +548,19 @@ maintenance activities. Append-only — newest entries at the bottom.
 ## 2026-04-27 — /release v0.24.0
 
 - **Commit**: `50bd099`
-- **Outcome**: Released v0.24.0. Adds KeepAwake build-version drift detection (🎯T47): autoawake's per-tick convergence now reads the bundled `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`'s `MARKETING_VERSION` (parsed via a permissive regex that captures any non-`;` payload, so semver / semver-with-suffix / date-based version strings all work) and compares it to the on-device `CFBundleShortVersionString` returned by `devicectl info apps`. On mismatch — and provided the user hasn't opted out — `attemptReinstall` fires (uninstall → `ResetKeepAwakeBuild()` → fresh xcodebuild → reinstall → relaunch), so a manual `MARKETING_VERSION` bump in the pbxproj propagates to all attached devices on the next tick. Versioning is deliberately manual: bump both Debug and Release buildSettings entries in the pbxproj whenever `ios/KeepAwake/Sources/` changes in a way that should be redeployed. New `IOSAdapter.KeepAwakeInstalledVersion` adapter method shares one `devicectl info apps` query with the existing `KeepAwakeInstalled` probe via a private `inspectKeepAwakeApp` helper, so per-tick cost stays at one devicectl call. New `device.ExpectedKeepAwakeVersion()` (sync.Once-cached) reads the source pbxproj — looked up via the same `findRepoRoot()` resolution chain (extended with a cwd-walk-up step so `go test` from any package directory finds the source). `attemptReinstall` parameterised with an `errorClass` reason argument so the existing `classStaleInstall` path (stale provisioning profile, `ErrNoProviderFound`) and the new `classStaleBuild` path (source-version drift) share the same uninstall+rebuild+relaunch flow with distinct log lines. `MARKETING_VERSION` bumped 0.1.0 → 0.2.0 in both Debug and Release configs of the pbxproj — the slow-drift KeepAwake change shipped in v0.22.0 hadn't reached the on-device installs (Jevons reported 0.1.0 prior to this release), so the bump triggers redeploy on next convergence tick. 4 new unit tests cover stale → reinstall, fresh → no-action, opt-out beats stale, and the regex variant matrix; `TestExpectedKeepAwakeVersion_FromBundledPbxproj` validates the parser end-to-end. End-to-end smoke-tested on Jevons (00008130-…) + Minicades Test iPhone (00008110-…) — both converge through the new path; staleness check completes in <100 ms on top of the existing devicectl apps probe; zero ERROR/TypeError lines. STABILITY.md keep-awake gap entry refreshed; catalogue snapshot bumped to v0.24.0. No public MCP / CLI / REST surface changes — staleness check is internal to autoawake. Published for darwin-arm64, linux-amd64, linux-arm64.
+- **Outcome**: Released v0.24.0. Adds KeepAwake build-version drift detection (🎯T47): autoawake's per-tick convergence now reads the bundled `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`'s `MARKETING_VERSION` (parsed via a permissive regex that captures any non-`;` payload, so semver / semver-with-suffix / date-based version strings all work) and compares it to the on-device `CFBundleShortVersionString` returned by `devicectl info apps`. On mismatch — and provided the user hasn't opted out — `attemptReinstall` fires (uninstall → `ResetKeepAwakeBuild()` → fresh xcodebuild → reinstall → relaunch), so a manual `MARKETING_VERSION` bump in the pbxproj propagates to all attached devices on the next tick. Versioning is deliberately manual: bump both Debug and Release buildSettings entries in the pbxproj whenever `ios/KeepAwake/Sources/` changes in a way that should be redeployed. New `IOSAdapter.KeepAwakeInstalledVersion` adapter method shares one `devicectl info apps` query with the existing `KeepAwakeInstalled` probe via a private `inspectKeepAwakeApp` helper, so per-tick cost stays at one devicectl call. New `device.ExpectedKeepAwakeVersion()` (sync.Once-cached) reads the source pbxproj — looked up via the same `findRepoRoot()` resolution chain (extended with a cwd-walk-up step so `go test` from any package directory finds the source). `attemptReinstall` parameterised with an `errorClass` reason argument so the existing `classStaleInstall` path (stale provisioning profile, `ErrNoProviderFound`) and the new `classStaleBuild` path (source-version drift) share the same uninstall+rebuild+relaunch flow with distinct log lines. `MARKETING_VERSION` bumped 0.1.0 → 0.2.0 in both Debug and Release configs of the pbxproj — the slow-drift KeepAwake change shipped in v0.22.0 hadn't reached the on-device installs (iPad-mini reported 0.1.0 prior to this release), so the bump triggers redeploy on next convergence tick. 4 new unit tests cover stale → reinstall, fresh → no-action, opt-out beats stale, and the regex variant matrix; `TestExpectedKeepAwakeVersion_FromBundledPbxproj` validates the parser end-to-end. End-to-end smoke-tested on iPad-mini (00008130-…) + Test iPhone (00008110-…) — both converge through the new path; staleness check completes in <100 ms on top of the existing devicectl apps probe; zero ERROR/TypeError lines. STABILITY.md keep-awake gap entry refreshed; catalogue snapshot bumped to v0.24.0. No public MCP / CLI / REST surface changes — staleness check is internal to autoawake. Published for darwin-arm64, linux-amd64, linux-arm64.
 
 ## 2026-04-27 — /release v0.23.0
 
 - **Commit**: `240c61b`
-- **Outcome**: Released v0.23.0. Fixes a long-standing autoawake bug where convergence treated "KeepAwake foregrounded" as the only acceptable state — when a user launched another app via `launch_app` or swiped to home, autoawake re-foregrounded KeepAwake within 15 s and kicked them out. The redesign reframes the convergence target as "the user has not expressed a preference for the device to sleep": a `Running → backgrounded` transition for KeepAwake (whether from a swipe-to-home or a deliberate launch of another app) is now treated as the user's opt-out signal, and autoawake stays passive — even if iOS later reaps the suspended KeepAwake — until the user re-foregrounds KeepAwake or unplugs the device. Implementation: new bridge endpoint `/v1/app_state` (`AppStateRequest` / `AppStateResponse` schemas) backed by DVT `mobilenotifications` service drains the BackBoard initial-state burst and returns the matching app's state collapsed onto `running` / `backgrounded` / `terminated`; new Go bridge client `Client.AppState` and `IOSAdapter.KeepAwakeState` route through it; autoawake's converge loop is rewritten around the new probe with `classUserOptOut` added and `lastKAState` / `userOptOut` tracked per-device. Cosmetic pmd3 channel-cleanup `TypeError` (Python 3.11's `asyncio.Queue` lacks `.shutdown()`, added in 3.13) silenced via `notif.service.on_closed = lambda *_args, **_kwargs: None` so the autoawake convergence cadence doesn't flood the daemon log. 7 new unit tests cover every transition (KA→home sets opt-out, BG→running clears, fresh-attach steady-state backgrounded does not flip, terminated+optedOut blocks launch, terminated+!optedOut launches, probe error skips silently, `Status()` projection). End-to-end smoke-tested on Jevons — `KeepAwake foregrounded` after ~2 s cold app_state probe, ~700 ms warm, zero ERROR/TypeError lines. STABILITY.md keep-awake gap entry refreshed to document the opt-out semantics; catalogue snapshot bumped to v0.23.0. No public MCP / CLI / REST surface changes — `app_state` is internal bridge plumbing. Published for darwin-arm64, linux-amd64, linux-arm64.
+- **Outcome**: Released v0.23.0. Fixes a long-standing autoawake bug where convergence treated "KeepAwake foregrounded" as the only acceptable state — when a user launched another app via `launch_app` or swiped to home, autoawake re-foregrounded KeepAwake within 15 s and kicked them out. The redesign reframes the convergence target as "the user has not expressed a preference for the device to sleep": a `Running → backgrounded` transition for KeepAwake (whether from a swipe-to-home or a deliberate launch of another app) is now treated as the user's opt-out signal, and autoawake stays passive — even if iOS later reaps the suspended KeepAwake — until the user re-foregrounds KeepAwake or unplugs the device. Implementation: new bridge endpoint `/v1/app_state` (`AppStateRequest` / `AppStateResponse` schemas) backed by DVT `mobilenotifications` service drains the BackBoard initial-state burst and returns the matching app's state collapsed onto `running` / `backgrounded` / `terminated`; new Go bridge client `Client.AppState` and `IOSAdapter.KeepAwakeState` route through it; autoawake's converge loop is rewritten around the new probe with `classUserOptOut` added and `lastKAState` / `userOptOut` tracked per-device. Cosmetic the Python bridge channel-cleanup `TypeError` (Python 3.11's `asyncio.Queue` lacks `.shutdown()`, added in 3.13) silenced via `notif.service.on_closed = lambda *_args, **_kwargs: None` so the autoawake convergence cadence doesn't flood the daemon log. 7 new unit tests cover every transition (KA→home sets opt-out, BG→running clears, fresh-attach steady-state backgrounded does not flip, terminated+optedOut blocks launch, terminated+!optedOut launches, probe error skips silently, `Status()` projection). End-to-end smoke-tested on iPad-mini — `KeepAwake foregrounded` after ~2 s cold app_state probe, ~700 ms warm, zero ERROR/TypeError lines. STABILITY.md keep-awake gap entry refreshed to document the opt-out semantics; catalogue snapshot bumped to v0.23.0. No public MCP / CLI / REST surface changes — `app_state` is internal bridge plumbing. Published for darwin-arm64, linux-amd64, linux-arm64.
 
 ## 2026-04-28 — /release v0.26.0
 
 - **Commit**: `eba2d10`
-- **Outcome**: Released v0.26.0. Bridge wedge fix bundle. 🎯T48: `launch_app` / `terminate_app` / `pid_for_bundle` no longer fail with `pmd3_error (500): not connected — use 'async with' or await connect()`. The bridge was constructing pmd3's `ProcessControl` and `DvtDeviceInfo` as plain objects, but both are `DtxService` subclasses requiring their own `connect()`. Wrapping them in `async with` brings them in line with `Screenshot` and `Notifications` (which already worked). Affected every iOS 17+ launch/kill on Wi-Fi-only devices in v0.24.0 / v0.25.0. 🎯T49: `logs` MCP tool no longer returns `[]` for any since/until window. The bridge was emitting timezone-less ISO strings from pmd3's naive `datetime.fromtimestamp()`, which Go's RFC3339Nano parser rejected, leaving every entry with a zero timestamp that the since/until filter dropped. Fixed by promoting timestamps via `.astimezone()` before serialisation. The Go-side `LogRange` deadline cap also relaxed from 5 s to 5 minutes for explicit `until`. 🎯T47: `Supervisor.Restart()` — when the bridge subprocess becomes unresponsive (process listening but not answering /v1/* requests), `LivenessProbe` now SIGKILLs the wedged subprocess and respawns it after 3 consecutive transport failures (~90 s). The supervisor moved to a per-generation state model so each subprocess incarnation owns its own (cmd, port, token, channels), and a planned-restart watchdog flag suppresses the unexpected-exit panic. In-flight Client calls retry transparently against the new bridge — MCP tools recover without spyder-daemon restart. 🎯T50 (raised, partially shipped): bridge resilience policy. The acceptance criteria require every handler to be a bulkhead — bounded timeouts, structured errors, isolated connections, dedicated liveness endpoint. This release lands the high-value subset: outer FastAPI exception handler that converts any uncaught Exception into a structured `pmd3_error` 500 with a correlation ID; `asyncio.timeout(5s)` around `get_tunneld_devices()` so a wedged tunneld becomes structured `tunneld_unavailable` rather than a hang; new `/v1/health` endpoint touching no device state for liveness probes. The remaining items (per-handler concurrency semaphore, full per-await timeout coverage, cleanup audit) stay tracked under T50 for follow-on work. New tests: 5 bridge resilience cases (test_resilience.py), 1 syslog timestamp shape (test_syslog_timestamps.py), 5 DTX context-manager cases (test_dtx_context_manager.py), 4 Restart/LivenessProbe cases (restart_test.go), 3 syslog-entry timestamp parser cases (logs_test.go). All additive — no public MCP / CLI / REST surface change. STABILITY.md catalogue snapshot bumped to v0.26.0. Published for darwin-arm64, linux-amd64, linux-arm64.
+- **Outcome**: Released v0.26.0. Bridge wedge fix bundle. 🎯T48: `launch_app` / `terminate_app` / `pid_for_bundle` no longer fail with `bridge_error (500): not connected — use 'async with' or await connect()`. The bridge was constructing the Python bridge's `ProcessControl` and `DvtDeviceInfo` as plain objects, but both are `DtxService` subclasses requiring their own `connect()`. Wrapping them in `async with` brings them in line with `Screenshot` and `Notifications` (which already worked). Affected every iOS 17+ launch/kill on Wi-Fi-only devices in v0.24.0 / v0.25.0. 🎯T49: `logs` MCP tool no longer returns `[]` for any since/until window. The bridge was emitting timezone-less ISO strings from the Python bridge's naive `datetime.fromtimestamp()`, which Go's RFC3339Nano parser rejected, leaving every entry with a zero timestamp that the since/until filter dropped. Fixed by promoting timestamps via `.astimezone()` before serialisation. The Go-side `LogRange` deadline cap also relaxed from 5 s to 5 minutes for explicit `until`. 🎯T47: `Supervisor.Restart()` — when the bridge subprocess becomes unresponsive (process listening but not answering /v1/* requests), `LivenessProbe` now SIGKILLs the wedged subprocess and respawns it after 3 consecutive transport failures (~90 s). The supervisor moved to a per-generation state model so each subprocess incarnation owns its own (cmd, port, token, channels), and a planned-restart watchdog flag suppresses the unexpected-exit panic. In-flight Client calls retry transparently against the new bridge — MCP tools recover without spyder-daemon restart. 🎯T50 (raised, partially shipped): bridge resilience policy. The acceptance criteria require every handler to be a bulkhead — bounded timeouts, structured errors, isolated connections, dedicated liveness endpoint. This release lands the high-value subset: outer FastAPI exception handler that converts any uncaught Exception into a structured `bridge_error` 500 with a correlation ID; `asyncio.timeout(5s)` around `get_tunneld_devices()` so a wedged tunneld becomes structured `tunneld_unavailable` rather than a hang; new `/v1/health` endpoint touching no device state for liveness probes. The remaining items (per-handler concurrency semaphore, full per-await timeout coverage, cleanup audit) stay tracked under T50 for follow-on work. New tests: 5 bridge resilience cases (test_resilience.py), 1 syslog timestamp shape (test_syslog_timestamps.py), 5 DTX context-manager cases (test_dtx_context_manager.py), 4 Restart/LivenessProbe cases (restart_test.go), 3 syslog-entry timestamp parser cases (logs_test.go). All additive — no public MCP / CLI / REST surface change. STABILITY.md catalogue snapshot bumped to v0.26.0. Published for darwin-arm64, linux-amd64, linux-arm64.
 
 ## 2026-04-30 — /release v0.27.0
 
 - **Commit**: `8d95b7a`
-- **Outcome**: Released v0.27.0. Closes the rest of 🎯T50 (pmd3-bridge bulkhead) and 🎯T51 (PR-time CI). 🎯T50 AC2 extends `_bounded` to RSD connect/close (3 s) and DTX `__aenter__` (10 s) on every DTX entry point — DvtProvider/ProcessControl/Screenshot/Notifications all enter under bounded timeouts now, with new env-var overrides `SPYDER_BRIDGE_RSD_TIMEOUT_S`, `SPYDER_BRIDGE_DTX_CONNECT_TIMEOUT_S`, and a retro-fitted `SPYDER_BRIDGE_TUNNELD_TIMEOUT_S` joining the existing `SPYDER_BRIDGE_DTX_CONCURRENCY`. AC3 (cleanup audit) records each handler's resource-release discipline at the top of `services.py` — one line per handler, mechanical to diff. AC4 (`os._exit` audit) confirms the only caller is the stdin-EOF parent-liveness watcher in `__main__.py`, annotated inline. AC7 (per-call lifecycle no-regress test) pins distinct provider instances across concurrent calls. New regression tests cover the RSD-connect, DTX-connect, and tunneld timeout paths plus the no-shared-state contract. 🎯T51 ships `.github/workflows/pr.yml` — runs `scripts/check-test-report-fresh.sh` on `ubuntu-latest` (jq + git only, no devices, no Go toolchain) on every `pull_request` to `master`. Closes the gap surfaced on PR #80 where merging a feature branch produced an empty `statusCheckRollup`. The freshness script itself was bug-fixed: it used to recommend `git commit --amend --no-edit TEST-REPORT.json`, which orphans the report's recorded SHA on amend (local pre-push works via reflog, CI fails with "references unknown commit"). Updated to a separate commit on top of the vouched-for one — recorded SHA stays reachable from the branch tip, source-path diff between SHA and HEAD is empty (only TEST-REPORT.json changed). All additive at the public MCP / CLI / REST surface. STABILITY.md catalogue snapshot bumped to v0.27.0. Published for darwin-arm64, linux-amd64, linux-arm64.
+- **Outcome**: Released v0.27.0. Closes the rest of 🎯T50 (the Python bridge bulkhead) and 🎯T51 (PR-time CI). 🎯T50 AC2 extends `_bounded` to RSD connect/close (3 s) and DTX `__aenter__` (10 s) on every DTX entry point — DvtProvider/ProcessControl/Screenshot/Notifications all enter under bounded timeouts now, with new env-var overrides `SPYDER_BRIDGE_RSD_TIMEOUT_S`, `SPYDER_BRIDGE_DTX_CONNECT_TIMEOUT_S`, and a retro-fitted `SPYDER_BRIDGE_TUNNELD_TIMEOUT_S` joining the existing `SPYDER_BRIDGE_DTX_CONCURRENCY`. AC3 (cleanup audit) records each handler's resource-release discipline at the top of `services.py` — one line per handler, mechanical to diff. AC4 (`os._exit` audit) confirms the only caller is the stdin-EOF parent-liveness watcher in `__main__.py`, annotated inline. AC7 (per-call lifecycle no-regress test) pins distinct provider instances across concurrent calls. New regression tests cover the RSD-connect, DTX-connect, and tunneld timeout paths plus the no-shared-state contract. 🎯T51 ships `.github/workflows/pr.yml` — runs `scripts/check-test-report-fresh.sh` on `ubuntu-latest` (jq + git only, no devices, no Go toolchain) on every `pull_request` to `master`. Closes the gap surfaced on PR #80 where merging a feature branch produced an empty `statusCheckRollup`. The freshness script itself was bug-fixed: it used to recommend `git commit --amend --no-edit TEST-REPORT.json`, which orphans the report's recorded SHA on amend (local pre-push works via reflog, CI fails with "references unknown commit"). Updated to a separate commit on top of the vouched-for one — recorded SHA stays reachable from the branch tip, source-path diff between SHA and HEAD is empty (only TEST-REPORT.json changed). All additive at the public MCP / CLI / REST surface. STABILITY.md catalogue snapshot bumped to v0.27.0. Published for darwin-arm64, linux-amd64, linux-arm64.

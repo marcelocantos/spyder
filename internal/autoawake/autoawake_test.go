@@ -19,7 +19,7 @@ import (
 // --- aliasOf -----------------------------------------------------------
 
 func TestAliasOf_FromInventory(t *testing.T) {
-	// Set up a temp HOME with Pippa registered so inventory.AliasFor
+	// Set up a temp HOME with iPad registered so inventory.AliasFor
 	// matches. Use the public New to exercise the production path.
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
@@ -27,12 +27,12 @@ func TestAliasOf_FromInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(tmp, ".spyder/inventory.json"),
-		[]byte(`[{"alias":"Pippa","platform":"ios","ios_uuid":"00008103-000D39301A6A201E"}]`), 0o600); err != nil {
+		[]byte(`[{"alias":"iPad","platform":"ios","ios_uuid":"00008103-001122334455667A"}]`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	s := New() // bridge nil; aliasOf doesn't use it
-	if got := s.aliasOf("00008103-000D39301A6A201E"); got != "Pippa" {
-		t.Errorf("aliasOf(Pippa UDID) = %q; want Pippa", got)
+	if got := s.aliasOf("00008103-001122334455667A"); got != "iPad" {
+		t.Errorf("aliasOf(iPad UDID) = %q; want iPad", got)
 	}
 }
 
@@ -41,7 +41,7 @@ func TestAliasOf_UnknownShortens(t *testing.T) {
 	t.Setenv("HOME", tmp) // no inventory file
 	s := New()
 
-	if got := s.aliasOf("00008103-000D39301A6A201E"); got != "00008103…" {
+	if got := s.aliasOf("00008103-001122334455667A"); got != "00008103…" {
 		t.Errorf("aliasOf(unknown long) = %q; want 00008103…", got)
 	}
 	// Shorter than the cutoff: passes through unchanged.

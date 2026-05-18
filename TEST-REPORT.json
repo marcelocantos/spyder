@@ -1,31 +1,20 @@
 {
-  "schema_version": 1,
-  "commit": "ae989db23c6ae09bd2ddd89cd37eeb152b8681c4",
-  "generated_at": "2026-05-02T09:35:39Z",
+  "schema_version": 2,
+  "generated_at": "2026-05-18T07:37:04Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "go test ./...",
-      "duration_s": 1,
+      "duration_s": 5,
       "status": "pass"
     },
     {
-      "name": "bridge-python-unit",
-      "cmd": "cd bridge && uv run --project . --extra dev pytest tests/",
-      "duration_s": 2,
+      "name": "live",
+      "cmd": "go test -run '_Live$' ./internal/device/...",
+      "duration_s": 0,
       "status": "pass"
-    },
-    {
-      "name": "integration",
-      "status": "skipped",
-      "reason": "set SPYDER_INTEGRATION=1 to run (harness lands incrementally)"
-    },
-    {
-      "name": "device",
-      "status": "skipped",
-      "reason": "set SPYDER_DEVICES=1 to run; requires a paired device"
     }
   ],
-  "overall": "partial"
+  "overall": "pass"
 }

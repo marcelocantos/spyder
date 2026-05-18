@@ -17,25 +17,25 @@ func TestParseDevicectlList(t *testing.T) {
 		"result": {
 			"devices": [
 				{
-					"identifier": "E1A01EA6-8D77-556C-B18D-D470B2909E87",
+					"identifier": "00000000-0000-0000-0000-000000000001",
 					"hardwareProperties": {
-						"udid": "00008103-000D39301A6A201E",
+						"udid": "00008103-001122334455667A",
 						"marketingName": "iPad Air (5th generation)",
 						"productType": "iPad13,16"
 					},
 					"deviceProperties": {
-						"name": "Pippa",
+						"name": "iPad",
 						"osVersionNumber": "26.3.1"
 					}
 				},
 				{
-					"identifier": "CD2E3380-F1AB-5D03-BBA8-E5A68ADB3261",
+					"identifier": "00000000-0000-0000-0000-000000000003",
 					"hardwareProperties": {
-						"udid": "00008110-0014182E0AC2801E",
+						"udid": "00008110-001122334455667C",
 						"marketingName": "iPhone 13"
 					},
 					"deviceProperties": {
-						"name": "Minicades Test iPhone",
+						"name": "Test iPhone",
 						"osVersionNumber": "26.2"
 					}
 				}
@@ -49,7 +49,7 @@ func TestParseDevicectlList(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d; want 2", len(got))
 	}
-	if got[0].UUID != "00008103-000D39301A6A201E" {
+	if got[0].UUID != "00008103-001122334455667A" {
 		t.Errorf("UDID preferred over CoreDevice UUID: %q", got[0].UUID)
 	}
 	if got[0].Model != "iPad Air (5th generation)" {
@@ -129,7 +129,7 @@ func TestMergeIOSDevices_OverlayByUDID(t *testing.T) {
 		{UUID: "B", Name: "only-in-usbmux", Model: "iPhone14,5", Platform: "ios"},
 	}
 	overlay := []Info{
-		{UUID: "A", Name: "Pippa", Model: "iPad Air (5th generation)", OS: "iOS 26.3.1", Platform: "ios"},
+		{UUID: "A", Name: "iPad", Model: "iPad Air (5th generation)", OS: "iOS 26.3.1", Platform: "ios"},
 		{UUID: "C", Name: "only-in-devicectl", Model: "iPad mini (A17 Pro)", Platform: "ios"},
 	}
 	got := mergeIOSDevices(base, overlay)
@@ -140,7 +140,7 @@ func TestMergeIOSDevices_OverlayByUDID(t *testing.T) {
 	for _, d := range got {
 		switch d.UUID {
 		case "A":
-			if d.Name != "Pippa" || d.Model != "iPad Air (5th generation)" {
+			if d.Name != "iPad" || d.Model != "iPad Air (5th generation)" {
 				t.Errorf("A not upgraded: %+v", d)
 			}
 		case "B":
@@ -271,7 +271,7 @@ func TestIOSAdapter_EmptyID(t *testing.T) {
 // --- ParseIOSSyslogLine ----------------------------------------------------
 
 func TestParseIOSSyslogLine(t *testing.T) {
-	line := "Mar 15 14:23:01.123 Pippa MyApp[1234] <Error>: crash happened"
+	line := "Mar 15 14:23:01.123 iPad MyApp[1234] <Error>: crash happened"
 	ll, ok := ParseIOSSyslogLine(line)
 	if !ok {
 		t.Fatalf("ParseIOSSyslogLine(%q) = false; want true", line)
@@ -300,7 +300,7 @@ func TestParseIOSSyslogLine_NoMatch(t *testing.T) {
 
 func TestIsSimulatorID(t *testing.T) {
 	// Hardware UDID (8 hex + hyphen + 16 hex)
-	if isSimulatorID("00008103-000D39301A6A201E") {
+	if isSimulatorID("00008103-001122334455667A") {
 		t.Error("hardware UDID mistakenly classified as simulator")
 	}
 	// Standard UUID (simulator / CoreDevice)
@@ -335,29 +335,12 @@ func TestStateCache_ReturnsWithinTTL(t *testing.T) {
 	}
 }
 
-// --- LogRange deadline / window tests (🎯T49) ---------------------------------
-
-// TestLogRange_WaitsForDeadline verifies that LogRange actually waits until the
-// `until` deadline and collects entries emitted during the window. This pins
-// the regression reported in 🎯T49: LogRange was returning [] immediately on
-// any `since/until` window — the root cause was that the bridge emitted
-// timezone-naive timestamps which Go's RFC3339Nano parser discarded as
-// zero-time, causing all entries to fail the since/until filter.
-//
-// The test uses a fake /v1/syslog server that emits 5 entries spaced 20 ms
-// apart (total span ~100 ms). LogRange is called with a 200 ms window
-// (since=now, until=now+200ms). All 5 entries have timestamps within the
-// window, so the call must both wait and accumulate them.
-// TestLogRange behaviour previously covered here was tightly coupled to
-// the pmd3-bridge HTTP layer (fake /v1/syslog NDJSON server, timezone-
-// aware RFC3339 parsing, deadline math validated against streamed
-// entries). The go-ios syslog path doesn't expose a similar injection
-// surface — `goios_syslog.New` opens a live device connection. The
-// deadline-math contract is preserved structurally (LogRange still
-// uses context.WithDeadline + a select branch in streamSyslog), but
-// the behavioural test that proved it has been retired with the bridge.
-// Coverage for the parser (BSD-syslog → LogLine) is preserved by the
-// remaining ParseIOSSyslogLine_* tests in logs_test.go.
+// LogRange's deadline-math contract (context.WithDeadline + the select
+// branch in streamSyslog) is preserved structurally, but no in-process
+// behavioural test exists: `goios_syslog.New` opens a live device
+// connection and has no injection surface. Parser coverage (BSD-syslog
+// → LogLine) is preserved by the ParseIOSSyslogLine_* tests in
+// logs_test.go.
 
 // TestStateCache_MissDialsBattery verifies that an expired cache entry
 // causes the adapter to dial go-ios for battery data, and that
