@@ -67,14 +67,14 @@ func init() {
 		{"reservations", "spyder reservations [--json]", runReservations},
 		{"runs", "spyder runs <list|show|artefacts> [args...]", runRuns},
 		{"rotate", "spyder rotate <device> --to <orientation> [--as OWNER]", runRotate},
-		{"crashes", "spyder crashes <device> [--since RFC3339|-15m|-1h] [--bundle-id ID | --process NAME] [--as OWNER] [--json]", runCrashes},
+		{"crashes", "spyder crashes <device> [--since RFC3339|-15m|-1h|launch] [--bundle-id ID | --process NAME] [--as OWNER] [--json]", runCrashes},
 		{"diff", "spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]", runDiff},
 		{"baseline", "spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]", runBaseline},
 		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
-		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now] [--until TS|now] [--follow]", runLog},
+		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 	}
 }

@@ -384,8 +384,13 @@ accepts:
 - `since` / `until` — window bounds. Each accepts either an RFC3339 absolute
   (e.g. `2026-04-19T14:00:00Z`) or a Go duration relative to now (e.g.
   `since=-2m` for "the last two minutes", `since=-1h`, `until=+30s`,
-  `until=now`). Both optional. When `since` is omitted, iOS collects from a
-  short live window (≤5 s); Android uses `-d` (dump buffer then exit).
+  `until=now`). Additionally, `since=launch` is shorthand for "everything
+  since spyder last called `launch_app` for `bundle_id` on this device" — it
+  requires `bundle_id` and errors if no such call was recorded in this
+  daemon's lifetime (so it's not a substitute for absolute times if the
+  daemon has restarted or the app was foregrounded via SpringBoard). Both
+  optional. When `since` is omitted, iOS collects from a short live window
+  (≤5 s); Android uses `-d` (dump buffer then exit).
 - `bundle_id` — filter by app bundle id (e.g. `com.example.app`). The server resolves this to the iOS `CFBundleExecutable` (via `installation_proxy`) or the Android package name before applying the process filter, so callers don't need to know the executable name. Mutually exclusive with `process`.
 - `process` — filter by raw process name (iOS: matched against `image_name` server-side; Android: tag/process match). Use when you already know the image name and don't want to pay the resolution round-trip. Mutually exclusive with `bundle_id`.
 - `subsystem` — iOS only (matched against `SyslogLabel.subsystem` server-side, e.g. `com.apple.network`). Ignored on Android.
@@ -410,6 +415,7 @@ spyder log iPad --follow --bundle-id com.example.app       # filter by app
 spyder log iPad --follow --process MyApp                   # filter by executable name
 spyder log iPad --since -2m                                # the last two minutes
 spyder log iPad --bundle-id com.example.app --since -2m    # last 2 min, just this app
+spyder log iPad --bundle-id com.example.app --since launch # everything since the last launch_app
 spyder log iPad --since 2026-04-19T00:00:00Z              # bounded range, absolute
 spyder log iPad --regex "crash|panic"                      # regex on message
 ```

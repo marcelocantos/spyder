@@ -91,7 +91,7 @@ everything below plus gotchas, device-inventory format, and the full
 | `baselines_list` | List all stored baselines for a suite. |
 | `record_start` / `record_stop` | Start and stop a screen recording (mp4). iOS simulators via `xcrun simctl io recordVideo`; Android via `adb shell screenrecord`. **iOS physical devices are not supported** — use a simulator. |
 | `network` | Apply or clear network condition shaping. Android emulators only — see STABILITY.md for platform limits. |
-| `logs` | Fetch log lines between two timestamps. `since` / `until` accept either an RFC3339 absolute or a Go duration relative to now — `since=-2m`, `until=now`. Filter by app with `bundle_id` (resolved server-side to the iOS `CFBundleExecutable` / Android package name) or by raw `process` name; the two are mutually exclusive. Also: `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
+| `logs` | Fetch log lines between two timestamps. `since` / `until` accept either an RFC3339 absolute or a Go duration relative to now — `since=-2m`, `until=now`. `since=launch` is shorthand for "everything since spyder last called `launch_app` for `bundle_id`". Filter by app with `bundle_id` (resolved server-side to the iOS `CFBundleExecutable` / Android package name) or by raw `process` name; the two are mutually exclusive. Also: `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
 | `crashes` | Fetch crash reports from a device. iOS pulls .ips via go-ios `crashreport`; Android via `adb` tombstones + `logcat -b crash`. `since` accepts RFC3339 or a Go duration (`-15m`, `-1h`). Filter by app with `bundle_id` or by raw `process` name (mutually exclusive). Read-only. |
 | `pool_list` / `pool_warm` / `pool_drain` | Sim/emu pool management. Inspect tier counts, pre-boot instances, or drain idle instances. Requires `~/.spyder/pool.yaml` — see [agents-guide.md](agents-guide.md#simemu-pool). |
 
@@ -142,6 +142,7 @@ spyder reservations --json
 spyder release iPad
 spyder rotate C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8 --to landscape-left
 spyder log iPad --bundle-id com.example.app --since -2m   # filter by bundle id
+spyder log iPad --bundle-id com.example.app --since launch # everything since the last launch_app
 spyder log iPad --process MyApp --since -2m               # filter by executable name
 spyder log iPad --follow --bundle-id com.example.app      # live SSE tail
 spyder crashes iPad --bundle-id com.example.app --since -1h --json

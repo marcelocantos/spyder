@@ -49,16 +49,21 @@ func (h *Handler) handleLogsRange(args map[string]any) (*mcpgo.CallToolResult, e
 		Regex:     optString(args, "regex"),
 	}
 
+	sinceArg := optString(args, "since")
+	untilArg := optString(args, "until")
+	if sinceArg == "launch" && bundleArg == "" {
+		return toolErr("since=launch requires bundle_id")
+	}
 	var since, until time.Time
-	if s := optString(args, "since"); s != "" {
-		t, err := parseTimeArg(s)
+	if sinceArg != "" && sinceArg != "launch" {
+		t, err := parseTimeArg(sinceArg)
 		if err != nil {
 			return toolErr("since: %v", err)
 		}
 		since = t
 	}
-	if u := optString(args, "until"); u != "" {
-		t, err := parseTimeArg(u)
+	if untilArg != "" {
+		t, err := parseTimeArg(untilArg)
 		if err != nil {
 			return toolErr("until: %v", err)
 		}
@@ -82,6 +87,16 @@ func (h *Handler) handleLogsRange(args map[string]any) (*mcpgo.CallToolResult, e
 			return toolErr("bundle_id %s not installed on %s", bundleArg, dev)
 		}
 		filter.Process = exe
+	}
+
+	if sinceArg == "launch" {
+		h.mu.Lock()
+		t, ok := h.launchTimes[launchKey{deviceID: id, bundleID: bundleArg}]
+		h.mu.Unlock()
+		if !ok {
+			return toolErr("since=launch: no launch_app call recorded for %s on %s in this daemon's lifetime", bundleArg, dev)
+		}
+		since = t
 	}
 
 	lines, err := adapter.LogRange(id, filter, since, until)
@@ -388,6 +403,7 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 	if err := adapter.LaunchApp(id, bundleID); err != nil {
 		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
 	}
+	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
 	return toolText(fmt.Sprintf("launched %s on %s", bundleID, dev))
 }
 
@@ -1089,18 +1105,23 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 	}
 	owner := optString(args, "owner")
 
-	var since time.Time
-	if s := optString(args, "since"); s != "" {
-		t, err := parseTimeArg(s)
-		if err != nil {
-			return toolErr("since: %v", err)
-		}
-		since = t
-	}
+	sinceArg := optString(args, "since")
 	process := optString(args, "process")
 	bundleArg := optString(args, "bundle_id")
 	if process != "" && bundleArg != "" {
 		return toolErr("process and bundle_id are mutually exclusive — pass one or the other")
+	}
+	if sinceArg == "launch" && bundleArg == "" {
+		return toolErr("since=launch requires bundle_id")
+	}
+
+	var since time.Time
+	if sinceArg != "" && sinceArg != "launch" {
+		t, err := parseTimeArg(sinceArg)
+		if err != nil {
+			return toolErr("since: %v", err)
+		}
+		since = t
 	}
 
 	h.mu.Lock()
@@ -1120,6 +1141,14 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 			return toolErr("bundle_id %s not installed on %s", bundleArg, dev)
 		}
 		process = exe
+	}
+
+	if sinceArg == "launch" {
+		t, ok := h.launchTimes[launchKey{deviceID: id, bundleID: bundleArg}]
+		if !ok {
+			return toolErr("since=launch: no launch_app call recorded for %s on %s in this daemon's lifetime", bundleArg, dev)
+		}
+		since = t
 	}
 
 	reports, err := adapter.Crashes(id, since, process)
