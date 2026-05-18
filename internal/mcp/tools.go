@@ -36,8 +36,14 @@ func (h *Handler) handleLogsRange(args map[string]any) (*mcpgo.CallToolResult, e
 		return nil, err
 	}
 
+	processArg := optString(args, "process")
+	bundleArg := optString(args, "bundle_id")
+	if processArg != "" && bundleArg != "" {
+		return toolErr("process and bundle_id are mutually exclusive — pass one or the other")
+	}
+
 	filter := device.LogFilter{
-		Process:   optString(args, "process"),
+		Process:   processArg,
 		Subsystem: optString(args, "subsystem"),
 		Tag:       optString(args, "tag"),
 		Regex:     optString(args, "regex"),
@@ -65,6 +71,17 @@ func (h *Handler) handleLogsRange(args map[string]any) (*mcpgo.CallToolResult, e
 
 	if adapterErr != nil {
 		return toolErr("%v", adapterErr)
+	}
+
+	if bundleArg != "" {
+		exe, installed, err := adapter.ResolveExecutable(id, bundleArg)
+		if err != nil {
+			return toolErr("bundle_id %s on %s: %v", bundleArg, dev, err)
+		}
+		if !installed {
+			return toolErr("bundle_id %s not installed on %s", bundleArg, dev)
+		}
+		filter.Process = exe
 	}
 
 	lines, err := adapter.LogRange(id, filter, since, until)
@@ -1081,6 +1098,10 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 		since = t
 	}
 	process := optString(args, "process")
+	bundleArg := optString(args, "bundle_id")
+	if process != "" && bundleArg != "" {
+		return toolErr("process and bundle_id are mutually exclusive — pass one or the other")
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -1088,6 +1109,17 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
+	}
+
+	if bundleArg != "" {
+		exe, installed, rerr := adapter.ResolveExecutable(id, bundleArg)
+		if rerr != nil {
+			return toolErr("bundle_id %s on %s: %v", bundleArg, dev, rerr)
+		}
+		if !installed {
+			return toolErr("bundle_id %s not installed on %s", bundleArg, dev)
+		}
+		process = exe
 	}
 
 	reports, err := adapter.Crashes(id, since, process)

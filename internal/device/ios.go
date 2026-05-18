@@ -727,13 +727,44 @@ func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
 	apps := make([]AppInfo, 0, len(raw))
 	for _, app := range raw {
 		apps = append(apps, AppInfo{
-			BundleID: app.CFBundleIdentifier(),
-			Name:     app.CFBundleName(),
-			Version:  app.CFBundleShortVersionString(),
+			BundleID:   app.CFBundleIdentifier(),
+			Name:       app.CFBundleName(),
+			Executable: app.CFBundleExecutable(),
+			Version:    app.CFBundleShortVersionString(),
 		})
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
 	return apps, nil
+}
+
+// ResolveExecutable maps an iOS bundle id to its CFBundleExecutable —
+// the string the device's syslog stream uses to identify the app in
+// the `process` column. Returns ("", false, nil) when the bundle isn't
+// installed.
+func (a *IOSAdapter) ResolveExecutable(id, bundleID string) (string, bool, error) {
+	if id == "" || bundleID == "" {
+		return "", false, errors.New("device id and bundle_id are required")
+	}
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return "", false, fmt.Errorf("resolve_executable: %w", err)
+	}
+	conn, err := installationproxy.New(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return "", false, fmt.Errorf("installation_proxy on %s: %w", id, err)
+	}
+	defer conn.Close()
+	apps, err := conn.BrowseAllApps()
+	if err != nil {
+		return "", false, fmt.Errorf("browse apps on %s: %w", id, err)
+	}
+	for _, app := range apps {
+		if app.CFBundleIdentifier() == bundleID {
+			return app.CFBundleExecutable(), true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // LaunchApp foregrounds an arbitrary app via go-ios's appservice

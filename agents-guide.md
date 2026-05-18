@@ -386,7 +386,8 @@ accepts:
   `since=-2m` for "the last two minutes", `since=-1h`, `until=+30s`,
   `until=now`). Both optional. When `since` is omitted, iOS collects from a
   short live window (≤5 s); Android uses `-d` (dump buffer then exit).
-- `process` — filter by process name (iOS: matched against `image_name` server-side; Android: tag match).
+- `bundle_id` — filter by app bundle id (e.g. `com.example.app`). The server resolves this to the iOS `CFBundleExecutable` (via `installation_proxy`) or the Android package name before applying the process filter, so callers don't need to know the executable name. Mutually exclusive with `process`.
+- `process` — filter by raw process name (iOS: matched against `image_name` server-side; Android: tag/process match). Use when you already know the image name and don't want to pay the resolution round-trip. Mutually exclusive with `bundle_id`.
 - `subsystem` — iOS only (matched against `SyslogLabel.subsystem` server-side, e.g. `com.apple.network`). Ignored on Android.
 - `tag` — Android logcat tag (e.g. `MyApp`). Ignored on iOS.
 - `regex` — regex applied to the message body (both platforms, client-side).
@@ -404,11 +405,13 @@ curl -N -X POST http://127.0.0.1:3030/api/v1/log_stream \
 Or via the CLI:
 
 ```bash
-spyder log iPad --follow                          # live tail
-spyder log iPad --follow --process MyApp          # process filter
-spyder log iPad --since -2m                       # the last two minutes
-spyder log iPad --since 2026-04-19T00:00:00Z     # bounded range, absolute
-spyder log iPad --regex "crash|panic"             # regex on message
+spyder log iPad --follow                                   # live tail
+spyder log iPad --follow --bundle-id com.example.app       # filter by app
+spyder log iPad --follow --process MyApp                   # filter by executable name
+spyder log iPad --since -2m                                # the last two minutes
+spyder log iPad --bundle-id com.example.app --since -2m    # last 2 min, just this app
+spyder log iPad --since 2026-04-19T00:00:00Z              # bounded range, absolute
+spyder log iPad --regex "crash|panic"                      # regex on message
 ```
 
 **Platform quirks:**

@@ -58,10 +58,18 @@ type State struct {
 }
 
 // AppInfo summarises an installed third-party application.
+//
+// Executable is the executable name as it appears in device log streams
+// — `CFBundleExecutable` on iOS, the package name on Android. Use this
+// (not Name) to match log entries to an app: an app with bundle id
+// `com.example.foo` and display Name "Foo App" typically logs under
+// Executable `Foo` (CFBundleExecutable strips the space), and a
+// substring match on Name "Foo App" would miss its log lines.
 type AppInfo struct {
-	BundleID string `json:"bundle_id"`
-	Name     string `json:"name,omitempty"`
-	Version  string `json:"version,omitempty"`
+	BundleID   string `json:"bundle_id"`
+	Name       string `json:"name,omitempty"`
+	Executable string `json:"executable,omitempty"`
+	Version    string `json:"version,omitempty"`
 }
 
 // CrashReport summarises a single crash event. Path points to the local
@@ -91,6 +99,15 @@ type Adapter interface {
 
 	// ListApps returns installed third-party apps.
 	ListApps(id string) ([]AppInfo, error)
+
+	// ResolveExecutable maps a bundle id to the executable name that
+	// appears in device log streams. On iOS this is `CFBundleExecutable`
+	// from the installation proxy; on Android the bundle id (package
+	// name) is the process name and the lookup is an identity function.
+	// Returns the resolved name and (bundleInstalled, error). When the
+	// bundle isn't installed, returns ("", false, nil) — the caller can
+	// decide whether to surface that as a user-facing error or carry on.
+	ResolveExecutable(id, bundleID string) (executable string, installed bool, err error)
 
 	// LaunchApp foregrounds an arbitrary app by bundle id. iOS uses
 	// the in-process go-ios `appservice` launch (requires the bundled

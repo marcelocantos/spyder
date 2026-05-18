@@ -598,7 +598,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("crashes",
-			mcpgo.WithDescription("Fetch crash reports from a device. iOS pulls .ips files via the in-process go-ios `crashreport` service and parses the first-line JSON header for process, reason, and timestamp. Android attempts tombstones via adb pull /data/tombstones/ (requires root) and falls back to `adb logcat -b crash`. `since` accepts either an RFC3339 absolute timestamp or a Go duration relative to now (e.g. `-15m`, `-1h`). Read-only; not reservation-gated. Pass owner to archive reports into the active run."),
+			mcpgo.WithDescription("Fetch crash reports from a device. iOS pulls .ips files via the in-process go-ios `crashreport` service and parses the first-line JSON header for process, reason, and timestamp. Android attempts tombstones via adb pull /data/tombstones/ (requires root) and falls back to `adb logcat -b crash`. `since` accepts either an RFC3339 absolute timestamp or a Go duration relative to now (e.g. `-15m`, `-1h`). To filter by app, pass `bundle_id` (resolved to the iOS `CFBundleExecutable` server-side) or `process` (the raw image-name filter) — not both. Read-only; not reservation-gated. Pass owner to archive reports into the active run."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -607,7 +607,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 				mcpgo.Description("Return only reports newer than this point. RFC3339 absolute (e.g. `2026-04-19T00:00:00Z`) or Go duration relative to now (e.g. `-15m`, `-1h`). Omit to return all available reports."),
 			),
 			mcpgo.WithString("process",
-				mcpgo.Description("Filter by process name (case-insensitive). Omit to return crashes from all processes."),
+				mcpgo.Description("Filter by process name (case-insensitive). Mutually exclusive with `bundle_id`. Omit both to return crashes from all processes."),
+			),
+			mcpgo.WithString("bundle_id",
+				mcpgo.Description("Filter by app bundle id. The server resolves to the iOS `CFBundleExecutable` (or Android package name) before filtering. Mutually exclusive with `process`."),
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Description("Reservation owner; when present and a run is active, crash report content is archived into the run."),
@@ -672,6 +675,9 @@ func allBaseDefinitions() []mcpgo.Tool {
 				"`since` and `until` each accept either an RFC3339 absolute timestamp "+
 				"(e.g. `2026-05-17T16:43:24Z`) or a Go duration relative to now "+
 				"(e.g. `since=-2m` for \"the last two minutes\", `until=+30s`, `until=now`). "+
+				"To filter by app, pass `bundle_id` (resolved to the iOS `CFBundleExecutable` "+
+				"server-side); `process` is the raw image-name filter for callers who already "+
+				"know it. Specify one or the other, not both. "+
 				"For live streaming (--follow), use the REST SSE endpoint POST /api/v1/log_stream instead — "+
 				"MCP transport does not support streaming. Read-only."),
 			mcpgo.WithString("device",
@@ -685,7 +691,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 				mcpgo.Description("End of the window. RFC3339 absolute or Go duration relative to now (e.g. `now`, `+30s`). Defaults to now."),
 			),
 			mcpgo.WithString("process",
-				mcpgo.Description("Filter by process name (iOS: --procname; Android: tag/process contains match)"),
+				mcpgo.Description("Filter by process name (iOS image_name; Android tag/process contains match). Mutually exclusive with `bundle_id`."),
+			),
+			mcpgo.WithString("bundle_id",
+				mcpgo.Description("Filter by app bundle id (e.g. `com.example.app`). The server resolves to the iOS `CFBundleExecutable` (or Android package name) before filtering. Use this when you started the app via `launch_app` and want its logs without having to know the executable name. Mutually exclusive with `process`."),
 			),
 			mcpgo.WithString("subsystem",
 				mcpgo.Description("Filter by iOS subsystem (e.g. com.apple.networking). Ignored on Android."),

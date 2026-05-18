@@ -228,11 +228,34 @@ func (a *AndroidAdapter) ListApps(id string) ([]AppInfo, error) {
 	for line := range strings.SplitSeq(string(out), "\n") {
 		line = strings.TrimSpace(line)
 		if pkg, ok := strings.CutPrefix(line, "package:"); ok {
-			apps = append(apps, AppInfo{BundleID: pkg})
+			// On Android the package name *is* the process name used
+			// in `logcat`'s process column, so the executable is the
+			// bundle id.
+			apps = append(apps, AppInfo{BundleID: pkg, Executable: pkg})
 		}
 	}
 	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
 	return apps, nil
+}
+
+// ResolveExecutable maps an Android bundle id (package name) to the
+// process name used in `logcat`. On Android these are identical, so
+// the lookup is an identity function gated on the package being
+// installed (verified via `adb shell pm list packages`).
+func (a *AndroidAdapter) ResolveExecutable(id, bundleID string) (string, bool, error) {
+	if id == "" || bundleID == "" {
+		return "", false, errors.New("device id and bundle_id are required")
+	}
+	apps, err := a.ListApps(id)
+	if err != nil {
+		return "", false, err
+	}
+	for _, app := range apps {
+		if app.BundleID == bundleID {
+			return bundleID, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // LaunchApp foregrounds an app via `adb shell monkey -p <pkg> -c LAUNCHER 1`.
