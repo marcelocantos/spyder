@@ -148,12 +148,21 @@ func TestLogRangeThirdPartyApp_Live(t *testing.T) {
 		t.Skipf("bundle %s not installed on %s; skipping", bundleID, udid)
 	}
 
+	// Terminate first so the subsequent launch forces a cold start
+	// — the SwiftUI scene-phase / UIKit lifecycle transitions are
+	// the most reliable signal that a quiescent companion app
+	// produces. If the app is already foregrounded, LaunchApp is a
+	// no-op and the window's filtered stream stays empty even
+	// though the DTX path is healthy. TerminateApp errors are
+	// non-fatal — the app may not currently be running.
+	_ = adapter.TerminateApp(udid, bundleID)
+
 	if err := adapter.LaunchApp(udid, bundleID); err != nil {
 		t.Fatalf("LaunchApp(%s): %v", bundleID, err)
 	}
 
 	// 5s window — long enough to capture UIKit/SwiftUI lifecycle
-	// entries that fire on launch, even for a quiescent app.
+	// entries that fire on launch.
 	lines, err := adapter.LogRange(udid,
 		LogFilter{Process: exe},
 		time.Time{}, time.Now().Add(5*time.Second))
