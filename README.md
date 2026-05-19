@@ -2,9 +2,8 @@
 
 HTTP-based MCP server for cross-platform mobile development workflow
 orchestration. Spyder owns device inventory, live device facts (battery,
-charging, foreground app), screenshots, app lifecycle, and a transparent
-keep-awake supervisor that auto-installs and foregrounds the bundled
-KeepAwake companion app on attached iOS devices.
+charging, foreground app), screenshots, app lifecycle, and reservations
+that serialise concurrent agent sessions on the same physical device.
 
 Not a replacement for
 [mobile-mcp](https://github.com/mobile-next/mobile-mcp) (UI automation via
@@ -170,19 +169,6 @@ command's lifetime (owner defaults to `filepath.Base(cwd)` — pass
 mutate the same device via MCP will get a clean conflict error
 naming the current holder. Opportunistic renewal keeps long runs
 alive; release on exit is guaranteed.
-
-## Auto-awake supervisor
-
-`spyder serve` keeps attached iOS devices awake by foregrounding the
-bundled **KeepAwake** companion app — the only iOS mechanism that
-reliably prevents display auto-lock. The supervisor auto-installs the
-app on first sight when it can (codesigning identity + Developer Mode +
-trust granted) and prompts the user with a specific actionable macOS
-notification when a human gate is hit (locked screen, trust not granted,
-Developer Mode disabled). See `agents-guide.md` for the full state
-machine and the iOS keep-awake history; see `STABILITY.md` for the
-1.0-prerequisite gaps. Per-developer signing identity is required (free-
-tier Apple ID suffices).
 
 ## Device inventory
 

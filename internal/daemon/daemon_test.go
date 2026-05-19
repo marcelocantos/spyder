@@ -208,16 +208,14 @@ func TestExePathReal_FollowsSymlink(t *testing.T) {
 func TestRun_ShutsDownOnContextCancel(t *testing.T) {
 	// Verifies Run returns promptly after context cancellation
 	// (the happy-path for signal-driven shutdown). Uses ":0" so the
-	// kernel picks a free port. DisableAutoAwake keeps the test from
-	// poking real tunneld.
+	// kernel picks a free port.
 	t.Setenv("HOME", t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
 		done <- Run(ctx, Config{
-			Addr:             ":0",
-			Version:          "test",
-			DisableAutoAwake: true,
+			Addr:    ":0",
+			Version: "test",
 		})
 	}()
 

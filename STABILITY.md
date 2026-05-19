@@ -131,7 +131,7 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | Invocation | Behaviour | Stability |
 |---|---|---|
 | `spyder` (no args) | Prints usage to stdout. | Stable |
-| `spyder serve [--addr :PORT]` | HTTP MCP server + autoawake KeepAwake supervisor + bundled `ios tunnel start --userspace` subprocess. Blocks until SIGINT/SIGTERM. | Stable |
+| `spyder serve [--addr :PORT]` | HTTP MCP server + bundled `ios tunnel start --userspace` subprocess. Blocks until SIGINT/SIGTERM. | Stable |
 | `spyder run [--device ALIAS\|-d ALIAS\|--on PREDICATE] [--as OWNER] [--timeout DURATION] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. `--on PREDICATE` resolves+reserves atomically via the daemon (closing the resolve→release→re-acquire race window). `--timeout DURATION` (e.g. `5m`) bounds the wrapped child invocation; on deadline, exits 30 (`ExitTimeout`) instead of forwarding the child's signal-induced exit. `--device` and `--on` are mutually exclusive. | Stable (🎯T38.4 + 🎯T38.5) |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |
@@ -404,10 +404,11 @@ builds. **Stable.**
 
 ## Gaps and prerequisites for 1.0
 
-- **iOS foreground-app detection.** Surfaces via `ForegroundApp` on the
-  iOS adapter — go-ios's BackBoard `applicationStateNotification:`
-  subscription, taking the first "Running" entry. Used by autoawake's
-  convergence loop. `device_state` doesn't expose it directly yet.
+- **iOS foreground-app detection.** Not currently surfaced — the
+  BackBoard `applicationStateNotification:` subscription was the source
+  before the autoawake removal but pinned the underlying DTX connection
+  via a go-ios `Close()` upstream bug (see 🎯T64). `device_state.foreground_app`
+  is iOS-empty until a leak-free path lands.
 - **iOS thermal state.** `thermal_state` is always empty on iOS 17.4+
   because MobileGestalt was deprecated. Alternative source (`dumpsys
   thermalservice` analog? `sysmon`?) is open research.
@@ -423,43 +424,14 @@ builds. **Stable.**
   `ios tunnel start --userspace` daemon (also go-ios), spawned by
   spyder at startup and reaped on shutdown — no privileged
   LaunchDaemon required.
-- **iOS keep-awake via on-device companion app.** The `ios/KeepAwake/`
-  SwiftUI app sets `UIApplication.isIdleTimerDisabled = true` while
-  foregrounded and exits on `batteryState == .unplugged` so iOS reclaims
-  the slot when the cable is pulled. Autoawake runs a convergence loop
-  (🎯T32 / 🎯T55): every 15 s it probes the device's foreground app
-  via go-ios's BackBoard `applicationStateNotification:` subscription,
-  re-installs KeepAwake (xcodebuild + go-ios installation_proxy) when
-  absent, launches via go-ios `instruments.ProcessControl` when
-  terminated, and re-tests human-gate states (locked, needs-trust,
-  needs-developer-mode) each tick so user-side resolutions are
-  detected without re-plugging. **Convergence rule (🎯T55):** if the
-  foreground app is KeepAwake → converged; if it's anything else →
-  passive (don't clobber the user's app); only when nothing is
-  foregrounded does autoawake launch KeepAwake. The previous
-  `Running → backgrounded` transition + 30 s recent-launch marker
-  scheme that v0.25 used is gone — the foreground-app probe is the
-  ground truth. The "connected" filter is still wired-only
-  (`devicectl transportType=wired` is consulted by `List` as a
-  cross-check overlay against the go-ios usbmux enumeration);
-  Wi-Fi-reachable devices are excluded so they don't fight
-  KeepAwake's unplugged self-exit in a relaunch loop. Per-developer
-  signing identity required (free-tier Apple ID suffices).
-  Lower-level power-assertion services were evaluated in v0.6.0–v0.8.0
-  but are no-ops for display sleep on iOS; reverted in v0.9.0 (🎯T31).
-  **Build-version drift
-  detection (v0.24.0):** every convergence tick compares the
-  on-device bundle's `CFBundleShortVersionString` (via go-ios's
-  `installation_proxy.BrowseAllApps`) to the
-  source-of-truth `MARKETING_VERSION` parsed from the bundled
-  `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`; on mismatch
-  (and provided the user hasn't opted out) autoawake uninstalls,
-  rebuilds, and reinstalls so a manual version bump propagates to
-  existing devices. Versioning is manual: bump `MARKETING_VERSION` in
-  both Debug and Release buildSettings blocks of the pbxproj whenever
-  `ios/KeepAwake/Sources/` changes in a way that should be
-  redeployed. The string is opaque — semver, semver-with-suffix
-  (`0.2.0-rc1`), date-based (`2026.04.27`), all work.
+- **iOS keep-awake.** Removed in v0.40.0. The previous on-device
+  KeepAwake companion app + autoawake convergence supervisor were
+  ripped out because go-ios's `instruments.ListenAppStateNotifications`
+  `Close()` doesn't actually close the underlying DTX connection,
+  leaking a TCP connection per convergence cycle and eventually
+  wedging the daemon. The leak is upstream and spyder has no
+  workaround surface. Use OS-level never-sleep settings instead. See
+  🎯T64 for the investigation-and-reinstate target.
 - **Tunnel daemon lifecycle.** iOS 17+ DVT operations
   (screenshot, app_state, foreground_app, ProcessControl, etc.)
   need an active RSD tunnel per device. spyder spawns the bundled
@@ -477,9 +449,6 @@ builds. **Stable.**
   will fail noisily there. Either restrict the binary to Darwin or
   gracefully degrade iOS-related tools with a clear "host does not support
   iOS" error.
-- **Rate-limiting / retry policy.** Auto-awake retries lock failures every
-  10 s for up to 5 minutes. Not user-configurable. Fine for v0.x but should
-  surface a knob before 1.0.
 - **Network shaping for iOS simulator.** `network` returns an error on iOS
   simulator and physical devices. Apple's Link Conditioner is host-level (not
   per-simulator); driving it via a CLI requires private CoreSimulator APIs.

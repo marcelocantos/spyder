@@ -2,8 +2,8 @@
 
 Spyder is an HTTP-based MCP server that owns session state for real-device mobile
 development: symbolic device aliases, live device facts (battery, charging,
-foreground app), screenshots, app lifecycle, and the autoawake KeepAwake
-supervisor that prevents iOS device screen auto-lock.
+foreground app), screenshots, app lifecycle, and reservations that serialise
+parallel agent sessions on the same physical device.
 
 Spyder sits *above* [mobile-mcp](https://github.com/mobile-next/mobile-mcp) and
 [XcodeBuildMCP](https://github.com/getsentry/XcodeBuildMCP): those tools drive
@@ -839,46 +839,18 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
 - The wrapper forwards stdin/stdout/stderr and the command's exit code.
 - Release failures are logged but do not mask the test's exit code.
 
-## Auto-awake supervisor
+## Keeping iOS devices awake
 
-`spyder serve` runs an always-on supervisor that keeps attached iOS devices
-awake by foregrounding the on-device **KeepAwake** companion app. KeepAwake
-sets `UIApplication.isIdleTimerDisabled = true` while foregrounded — the
-canonical iOS mechanism for preventing display auto-lock. (Lower-level
-power-assertion services were evaluated in v0.6.0–v0.8.0 but turned out
-to be no-ops for display sleep; v0.9.0 settled on the companion-app
-approach, 🎯T31.)
+There is no in-spyder keep-awake supervisor. The previous KeepAwake
+companion-app + autoawake convergence loop was removed in v0.40.0 —
+the underlying go-ios `instruments.ListenAppStateNotifications.Close()`
+doesn't actually close the DTX connection, which leaked a TCP
+connection per convergence cycle and eventually wedged the daemon.
+The leak is upstream and there's no spyder-side workaround.
 
-When a new paired iOS device appears the supervisor:
-
-1. Tries to launch KeepAwake via `xcrun devicectl device process launch`.
-2. If KeepAwake isn't installed, attempts a **transparent install** (🎯T32):
-   builds `ios/KeepAwake.xcodeproj` via `xcodebuild` with the user's detected
-   codesigning identity and `DEVELOPMENT_TEAM`, installs the resulting bundle
-   via devicectl, then re-launches. Silent on success.
-3. If a precondition is missing (no codesigning identity, Developer Mode
-   disabled, trust not yet granted on this device, or the device is locked
-   mid-launch) the supervisor logs a specific actionable message and — for
-   the lock and trust cases — fires a persistent macOS notification asking
-   the user to perform the exact tap required. State is tracked per-device
-   so the same prompt isn't re-issued every poll.
-4. Re-foregrounds KeepAwake every 15 s on every healthy device so manual
-   task-switching / backgrounding self-heals before the next auto-lock fires.
-
-A codesigning identity is required. Autoawake reads
-`defaults read com.apple.dt.Xcode IDEProvisioningTeams` and prefers
-a paid Developer Program team (`isFreeProvisioningTeam = 0`) over a
-free Personal Team — paid-team profiles last ~1 year, free-team
-profiles expire after 7 days. A free-tier Apple ID still works as a
-fallback, but autoawake will rebuild + reinstall KeepAwake on each
-weekly expiration cycle until 🎯T34 (auto-recovery on stale install)
-lands. If you have a paid seat, sign in to Xcode → Settings →
-Accounts and confirm the team is registered.
-First-time install of a developer's certificate on a device requires a one-
-time Trust tap in **Settings → VPN & Device Management** on the device. On
-iOS 17+ the device's **Developer Mode** toggle must be enabled too — visible
-under **Settings → Privacy & Security → Developer Mode** (toggling it
-reboots the device).
+Until the upstream is fixed (🎯T64 tracks the investigation +
+reinstate work), use the device's OS-level **never-lock** setting:
+**Settings → Display & Brightness → Auto-Lock → Never**.
 
 ## Environment and dependencies
 
@@ -970,13 +942,10 @@ owner's reservation is released.
 - **`launch_app` / `terminate_app` return `'Security'` DvtException** → the
   app's developer profile isn't trusted on this device. Go to Settings →
   General → VPN & Device Management → tap the developer name → Trust. Only
-  applies to side-loaded / developer-signed apps. Auto-awake fires a
-  persistent macOS alert for this case so you're not hunting through
-  logs. Note: iOS discards the developer entry when the *only* app from
-  that developer is uninstalled — reinstalling will require another
-  Trust tap.
+  applies to side-loaded / developer-signed apps. Note: iOS discards the
+  developer entry when the *only* app from that developer is uninstalled —
+  reinstalling will require another Trust tap.
 - **`launch_app` returns `'Locked'` DvtException on iOS** → unlock the device.
-  Auto-awake fires a persistent macOS alert in this case.
 - **`deploy_app` bundle_id auto-derivation (iOS)** → requires `plutil` (ships
   with macOS). Fails if the .app bundle has no `Info.plist` or
   `CFBundleIdentifier` is empty. Pass `bundle_id` explicitly to skip.
