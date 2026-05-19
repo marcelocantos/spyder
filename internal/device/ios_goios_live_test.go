@@ -112,6 +112,70 @@ func TestLogRange_Live(t *testing.T) {
 	}
 }
 
+// TestLogRangeThirdPartyApp_Live is the headline-feature regression
+// guard for 🎯T58.1: a client that has just called launch_app for a
+// third-party app must be able to fetch that app's own log emissions
+// via LogRange filtered by its executable name. This is the exact
+// workflow the v0.36–v0.38 features were sold on.
+//
+// Uses KeepAwake (com.marcelocantos.spyder.KeepAwake) by default —
+// autoawake deploys it to every paired device, so it's reliably
+// installed and emits SwiftUI / UIKit lifecycle entries on launch.
+// Override with SPYDER_LIVE_BUNDLE_ID for a different target app.
+// Skips (not fails) if the chosen bundle id isn't installed, so this
+// test stays useful on devices where KeepAwake hasn't been deployed.
+//
+// Pre-T58.1, this test would have caught the empty-stream regression
+// that motivated the whole DTX activitytracetap port — the lockdown
+// `os_trace_relay` path used to return zero entries for any third-
+// party process filter on iOS 17+.
+func TestLogRangeThirdPartyApp_Live(t *testing.T) {
+	udid := os.Getenv("SPYDER_LIVE_UDID")
+	if udid == "" {
+		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
+	}
+	bundleID := os.Getenv("SPYDER_LIVE_BUNDLE_ID")
+	if bundleID == "" {
+		bundleID = "com.marcelocantos.spyder.KeepAwake"
+	}
+
+	adapter := NewIOSAdapter()
+	exe, installed, err := adapter.ResolveExecutable(udid, bundleID)
+	if err != nil {
+		t.Fatalf("ResolveExecutable(%s): %v", bundleID, err)
+	}
+	if !installed {
+		t.Skipf("bundle %s not installed on %s; skipping", bundleID, udid)
+	}
+
+	// Terminate first so the subsequent launch forces a cold start
+	// — the SwiftUI scene-phase / UIKit lifecycle transitions are
+	// the most reliable signal that a quiescent companion app
+	// produces. If the app is already foregrounded, LaunchApp is a
+	// no-op and the window's filtered stream stays empty even
+	// though the DTX path is healthy. TerminateApp errors are
+	// non-fatal — the app may not currently be running.
+	_ = adapter.TerminateApp(udid, bundleID)
+
+	if err := adapter.LaunchApp(udid, bundleID); err != nil {
+		t.Fatalf("LaunchApp(%s): %v", bundleID, err)
+	}
+
+	// 5s window — long enough to capture UIKit/SwiftUI lifecycle
+	// entries that fire on launch.
+	lines, err := adapter.LogRange(udid,
+		LogFilter{Process: exe},
+		time.Time{}, time.Now().Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("LogRange filtered by %s (exe=%s): %v", bundleID, exe, err)
+	}
+	if len(lines) == 0 {
+		t.Errorf("expected >=1 log line emitted by %s (exe=%s) within 5s of launch; got 0 — third-party app log capture is broken", bundleID, exe)
+	} else {
+		t.Logf("LogRange(%s, process=%s): %d lines (first: %+v)", udid, exe, len(lines), lines[0])
+	}
+}
+
 func firstOrEmpty(lines []LogLine) any {
 	if len(lines) == 0 {
 		return "<no lines>"
