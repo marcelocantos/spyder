@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -74,7 +75,7 @@ func init() {
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
-		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow]", runLog},
+		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow | --capture [--ttl-sec N] [--max-bytes N] [--max-lines N] [--as OWNER] | --capture-get SID | --capture-stop SID | --capture-list]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 	}
 }
@@ -1250,23 +1251,73 @@ func runNet(args []string) {
 }
 
 func runLog(args []string) {
-	// `log` has two modes: bounded range query (DefaultRead) and live
-	// follow (DefaultLogStream = 0, no timeout). Pick the per-mode
-	// default after parsing — setupCommand only sets one ceiling, and
-	// the user-supplied --timeout always wins anyway. Use DefaultRead
-	// here; the live-follow mode replaces the context below if no
-	// explicit --timeout was passed.
+	// `log` has multiple modes:
+	//   - bounded range query (default; DefaultRead timeout)
+	//   - live follow (--follow; DefaultLogStream = 0, no timeout)
+	//   - managed capture sessions (--capture / --capture-get /
+	//     --capture-stop / --capture-list; 🎯T60)
+	// Pick the per-mode default after parsing — setupCommand only sets
+	// one ceiling, and the user-supplied --timeout always wins anyway.
 	pf, ctx, cancel := setupCommand("log", args,
-		[]string{"--process", "--bundle-id", "--subsystem", "--tag", "--regex", "--since", "--until"},
-		[]string{"--follow", "--json"},
+		[]string{"--process", "--bundle-id", "--subsystem", "--tag", "--regex",
+			"--since", "--until",
+			"--capture-get", "--capture-stop",
+			"--ttl-sec", "--max-bytes", "--max-lines", "--as"},
+		[]string{"--follow", "--json", "--capture", "--capture-list"},
 		clitimeout.DefaultRead,
 	)
 	defer cancel()
-	requirePositional("log", pf, 1)
 
+	jsonMode := pf.bools["--json"]
+
+	// log_capture_* dispatch — these don't require a positional device
+	// because the session_id encodes the binding.
+	if sid := pf.flags["--capture-get"]; sid != "" {
+		dispatchAndExit(ctx, "log_capture_get", map[string]any{"session_id": sid}, jsonMode, false)
+		return
+	}
+	if sid := pf.flags["--capture-stop"]; sid != "" {
+		dispatchAndExit(ctx, "log_capture_stop", map[string]any{"session_id": sid}, jsonMode, false)
+		return
+	}
+	if pf.bools["--capture-list"] {
+		dispatchAndExit(ctx, "log_capture_list", map[string]any{}, jsonMode, false)
+		return
+	}
+
+	requirePositional("log", pf, 1)
 	dev := pf.positional[0]
 	follow := pf.bools["--follow"]
-	jsonMode := pf.bools["--json"]
+
+	if pf.bools["--capture"] {
+		a := map[string]any{"device": dev, "owner": deriveOwner(pf.flags["--as"])}
+		for src, dst := range map[string]string{
+			"--bundle-id": "bundle_id",
+			"--process":   "process",
+			"--subsystem": "subsystem",
+			"--tag":       "tag",
+			"--regex":     "regex",
+		} {
+			if v := pf.flags[src]; v != "" {
+				a[dst] = v
+			}
+		}
+		for src, dst := range map[string]string{
+			"--ttl-sec":   "ttl_sec",
+			"--max-bytes": "max_bytes",
+			"--max-lines": "max_lines",
+		} {
+			if v := pf.flags[src]; v != "" {
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					cliexit.Errorf(cliexit.ExitGeneric, "spyder log: %s: %v", src, err)
+				}
+				a[dst] = n
+			}
+		}
+		dispatchAndExit(ctx, "log_capture_start", a, jsonMode, false)
+		return
+	}
 
 	if follow {
 		// Live follow: drop the read-timeout unless the user explicitly

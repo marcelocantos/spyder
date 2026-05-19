@@ -29,7 +29,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"math/big"
 )
 
 // Opcode constants, in the high byte of each 16-bit word.
@@ -244,16 +243,17 @@ func (r *frameReader) readWord() (uint16, error) {
 // readImmediate consumes a variable-length push that started at `first`.
 // Each contributing word carries 14 payload bits in its low 14; the
 // terminator is signalled by the high two bits being 0b11. The
-// accumulated value is left-padded with zero bits to byte alignment
-// and emitted as a big-endian byte slice (matching the on-wire
-// representation downstream consumers expect for strings / ints /
-// uuids etc.).
+// accumulated bit-stream is emitted MSB-first as a big-endian byte
+// slice, padded with zero bits at the LSB end to byte-align.
 //
-// Uses math/big.Int for the accumulator — pushes can run dozens of
-// chunks and produce > 64-bit values (path-like strings stored in
-// wide fixed buffers are routinely 100+ bytes). A uint64 accumulator
-// overflows silently and the high bits — the leading bytes of the
-// value — vanish, truncating strings from the front.
+// Implementation: a sliding-window bit buffer drains full bytes off
+// the top as soon as enough bits accumulate. The window never holds
+// more than 14 (incoming) + 7 (carry-over) = 21 bits, so a uint64
+// accumulator has comfortable headroom. The pre-v0.40 path used
+// math/big.Int to "be safe" against long pushes, but the encoding is
+// concatenation, not arithmetic — there's no value in arbitrary
+// precision once you flush bytes out the top of the window as they
+// complete.
 func readImmediate(r *frameReader, first uint16) ([]byte, error) {
 	const tailMask = 0xC000
 
@@ -261,47 +261,32 @@ func readImmediate(r *frameReader, first uint16) ([]byte, error) {
 		return nil, fmt.Errorf("oslog: unexpected push word prefix 0x%04x", first)
 	}
 
-	imm := new(big.Int)
-	chunk := new(big.Int)
-	bits := 0
+	var out []byte
+	var bits uint64 // sliding window, low-aligned
+	var n int       // bit count currently in window
+
 	word := first
-	for word&tailMask != 0xC000 {
-		imm.Lsh(imm, 14)
-		chunk.SetUint64(uint64(word & 0x3FFF))
-		imm.Or(imm, chunk)
-		bits += 14
+	for {
+		bits = (bits << 14) | uint64(word&0x3FFF)
+		n += 14
+		for n >= 8 {
+			n -= 8
+			out = append(out, byte(bits>>n))
+			bits &= (1 << n) - 1
+		}
+		if word&tailMask == 0xC000 {
+			break
+		}
 		next, err := r.readWord()
 		if err != nil {
 			return nil, fmt.Errorf("oslog: truncated push: %w", err)
 		}
 		word = next
 	}
-	// Terminator word — include its 14 payload bits too.
-	imm.Lsh(imm, 14)
-	chunk.SetUint64(uint64(word & 0x3FFF))
-	imm.Or(imm, chunk)
-	bits += 14
-
-	// Byte-align by shifting left.
-	pad := (8 - bits%8) % 8
-	imm.Lsh(imm, uint(pad))
-	bits += pad
-
-	nbytes := bits / 8
-	raw := imm.Bytes() // big-endian, no leading zero bytes
-	if len(raw) >= nbytes {
-		// big.Int.Bytes already drops leading-zero bytes, so the
-		// result might be shorter than nbytes when the encoded
-		// value's MSB byte was zero. Pad on the left to recover.
-		if len(raw) > nbytes {
-			// Theoretically unreachable given our left-shift, but
-			// guard against runaway buffers.
-			return raw[len(raw)-nbytes:], nil
-		}
-		return raw, nil
+	// Pad remaining bits to a byte boundary (zeros at the LSB end).
+	if n > 0 {
+		out = append(out, byte(bits<<(8-n)))
 	}
-	out := make([]byte, nbytes)
-	copy(out[nbytes-len(raw):], raw)
 	return out, nil
 }
 

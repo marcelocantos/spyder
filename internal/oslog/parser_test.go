@@ -6,40 +6,41 @@ package oslog
 import (
 	"bytes"
 	"encoding/binary"
-	"math/big"
 	"strings"
 	"testing"
 )
 
 // encodeImmediate is the inverse of readImmediate: it produces the
 // wire bytes for a variable-length push of `data`. Used by the round-
-// trip tests below. The encoder packs `data` MSB-first into chunks of
-// 14 bits; the last chunk is padded with zero bits at the LSB end to
-// fill 14 bits, and its word carries the 0b11 terminator prefix.
+// trip tests below. Packs the input bit-stream MSB-first into 14-bit
+// chunks; the final chunk is right-padded with zero bits and carries
+// the 0b11 terminator. Mirrors the decoder's sliding-window pattern.
 func encodeImmediate(data []byte) []byte {
-	bits := len(data) * 8
-	if bits == 0 {
+	if len(data) == 0 {
 		return nil
 	}
-	nchunks := (bits + 13) / 14 // ceil(bits/14)
-	totalBits := nchunks * 14
-	padBits := totalBits - bits
 
-	// Treat data as a big-endian arbitrary-precision integer, then
-	// left-shift by padBits to align the data to the chunk boundary.
-	acc := new(big.Int).SetBytes(data)
-	acc.Lsh(acc, uint(padBits))
+	var chunks []uint16
+	var bits uint64
+	var n int
+	for _, b := range data {
+		bits = (bits << 8) | uint64(b)
+		n += 8
+		if n >= 14 {
+			n -= 14
+			chunks = append(chunks, uint16((bits>>n)&0x3FFF))
+			bits &= (1 << n) - 1
+		}
+	}
+	// Pad the trailing fractional chunk with zeros at the LSB end.
+	if n > 0 {
+		chunks = append(chunks, uint16((bits<<(14-n))&0x3FFF))
+	}
 
-	// Emit chunks from MSB to LSB. The terminator is the last chunk.
-	out := make([]byte, 0, nchunks*2)
-	mask := new(big.Int).SetUint64(0x3FFF)
-	chunkVal := new(big.Int)
-	for i := 0; i < nchunks; i++ {
-		shift := uint(14 * (nchunks - 1 - i))
-		chunkVal.Rsh(acc, shift)
-		chunkVal.And(chunkVal, mask)
-		word := uint16(chunkVal.Uint64()) & 0x3FFF
-		if i == nchunks-1 {
+	out := make([]byte, 0, len(chunks)*2)
+	for i, c := range chunks {
+		word := c & 0x3FFF
+		if i == len(chunks)-1 {
 			word |= 0xC000 // terminator: top 2 bits = 0b11
 		} else {
 			word |= 0x8000 // continuation: top 2 bits = 0b10
