@@ -13,8 +13,6 @@ often fails; Android is supported via `adb`.
 
 - Device inventory (symbolic names → platform UUIDs)
 - Device state snapshots (battery, charging, thermal, foreground app)
-- KeepAwake foreground-app supervisor (prevents iOS device auto-lock — a
-  tiny SwiftUI app stays foregrounded with `isIdleTimerDisabled=true`)
 - Session-aware test-run orchestration (`spyder run --` wraps the
   test command under an auto-acquired device reservation)
 - A bundled `ios` tunnel daemon (the go-ios CLI, spawned as a child
@@ -92,24 +90,6 @@ JSON array at `~/.spyder/inventory.json`:
 - Tool names are unprefixed (`devices`, not `spyder_devices`); MCP clients
   add the server-name prefix at their end.
 
-## KeepAwake versioning
-
-**Whenever `ios/KeepAwake/Sources/` changes, bump
-`MARKETING_VERSION` in `ios/KeepAwake/KeepAwake.xcodeproj/project.pbxproj`
-in BOTH the Debug and Release `buildSettings` blocks.** This is
-the only signal autoawake has to detect that the on-device build
-is stale and trigger a redeploy (uninstall → rebuild → reinstall →
-relaunch on the next convergence tick). Without a bump, source
-changes sit in the repo with no path out to existing devices.
-
-- PATCH bump for behaviour-preserving tweaks (drift speed, colours).
-- MINOR bump for behavioural changes (new lifecycle hook, new
-  exit condition).
-- Independent of spyder's release version — the iOS app's version
-  is its own.
-- The string is opaque to spyder: semver, semver-with-suffix
-  (`0.2.0-rc1`), date-based (`2026.04.27`) all work.
-
 ## TODO
 
 See [docs/TODO.md](docs/TODO.md).
@@ -122,7 +102,7 @@ go test ./...
 
 **Tests run on the laptop, not in CI.** spyder's value surface (real
 iOS/Android devices via go-ios + `adb`, the bundled tunnel daemon's
-RSD path, KeepAwake xcodebuild, on-device DTX) can't be reproduced in
+RSD path, on-device DTX) can't be reproduced in
 any hosted CI runner. The only GitHub Actions workflow is
 `release.yml`, which builds + packages on tag push; there is no
 per-PR CI.

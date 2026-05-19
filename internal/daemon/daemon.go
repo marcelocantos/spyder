@@ -21,7 +21,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/marcelocantos/spyder/internal/autoawake"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
@@ -43,10 +42,9 @@ const (
 
 // Config configures a spyder server instance.
 type Config struct {
-	Addr             string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
-	Version          string // emitted in serverInfo
-	TunneldAddr      string // Deprecated: tunneld is no longer used; field retained for backward compat.
-	DisableAutoAwake bool   // tests set this to avoid the supervisor starting
+	Addr        string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
+	Version     string // emitted in serverInfo
+	TunneldAddr string // Deprecated: tunneld is no longer used; field retained for backward compat.
 }
 
 // Start creates the MCP server, registers all spyder tools, wraps it in
@@ -63,16 +61,13 @@ func Start(cfg Config) error {
 // embedders that want to own signal handling.
 func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
-		"addr", cfg.Addr, "version", cfg.Version,
-		"disable_autoawake", cfg.DisableAutoAwake)
-	handler, resvStore, _ := Build(cfg)
+		"addr", cfg.Addr, "version", cfg.Version)
+	handler, _, _ := Build(cfg)
 
 	// Bundled go-ios tunnel daemon. Spawned as a child process so its
-	// lifecycle is tied to spyder's — start before autoawake (which
-	// needs the registry endpoint to do RSD lookups for iOS-17+
-	// devices), stop on shutdown. Missing binary is non-fatal —
-	// degraded mode where iOS DTX-dependent tools fail per-call but
-	// the daemon stays up.
+	// lifecycle is tied to spyder's — stop on shutdown. Missing binary
+	// is non-fatal — degraded mode where iOS DTX-dependent tools fail
+	// per-call but the daemon stays up.
 	var tunnelSup *iostunnel.Supervisor
 	if binPath := resolveIOSTunnelBinary(); binPath != "" {
 		tunnelSup = iostunnel.New(binPath)
@@ -80,15 +75,6 @@ func Run(ctx context.Context, cfg Config) error {
 			slog.Warn("iostunnel: start failed; iOS tools degraded", "error", err)
 			tunnelSup = nil
 		}
-	}
-
-	if !cfg.DisableAutoAwake {
-		awakeOpts := []autoawake.Option{}
-		if resvStore != nil {
-			awakeOpts = append(awakeOpts, autoawake.WithReservations(resvStore))
-		}
-		sv := autoawake.New(awakeOpts...)
-		go sv.Run(ctx)
 	}
 
 	slog.Info("spyder listening",

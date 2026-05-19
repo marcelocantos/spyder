@@ -214,8 +214,6 @@ func TestIOSAdapter_NoSuchDevice_GoIOSMethods(t *testing.T) {
 		{"LaunchApp", func() error { return a.LaunchApp("UDID", "com.example.app") }},
 		{"TerminateApp", func() error { return a.TerminateApp("UDID", "com.example.app") }},
 		{"AppPID", func() error { _, err := a.AppPID("UDID", "com.example.app"); return err }},
-		{"ForegroundApp", func() error { _, err := a.ForegroundApp("UDID"); return err }},
-		{"KeepAwakeInstalled", func() error { _, err := a.KeepAwakeInstalled("UDID"); return err }},
 		{"Crashes", func() error { _, err := a.Crashes("UDID", time.Time{}, ""); return err }},
 	}
 	for _, tc := range cases {

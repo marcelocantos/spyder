@@ -94,27 +94,22 @@ func TestMultiDevice_LogRange_Live(t *testing.T) {
 	}
 }
 
-// TestMultiDevice_ResolveExecutable_Live calls ResolveExecutable for
-// "com.marcelocantos.spyder.KeepAwake" on each paired device. It asserts that
-// the call itself returns no error and logs whether KeepAwake is installed —
-// but does not fail when it is absent, since not every device may have
-// autoawake deployed.
+// TestMultiDevice_ResolveExecutable_Live calls ResolveExecutable for a
+// well-known system bundle on each paired device, asserting the call
+// itself returns no error. Uses com.apple.TestFlight since it's
+// pre-installed on developer-paired devices.
 func TestMultiDevice_ResolveExecutable_Live(t *testing.T) {
-	const keepAwakeBundleID = "com.marcelocantos.spyder.KeepAwake"
+	const probeBundleID = "com.apple.TestFlight"
 
 	udids := enumerateDevices(t)
 	adapter := NewIOSAdapter()
 
 	for _, udid := range udids {
-		exe, installed, err := adapter.ResolveExecutable(udid, keepAwakeBundleID)
+		exe, installed, err := adapter.ResolveExecutable(udid, probeBundleID)
 		if err != nil {
-			t.Errorf("ResolveExecutable(%s, %s): %v", udid, keepAwakeBundleID, err)
+			t.Errorf("ResolveExecutable(%s, %s): %v", udid, probeBundleID, err)
 			continue
 		}
-		if installed {
-			t.Logf("ResolveExecutable(%s): KeepAwake installed, executable=%q", udid, exe)
-		} else {
-			t.Logf("ResolveExecutable(%s): KeepAwake not installed (autoawake may not have deployed yet)", udid)
-		}
+		t.Logf("ResolveExecutable(%s, %s): installed=%v executable=%q", udid, probeBundleID, installed, exe)
 	}
 }

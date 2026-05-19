@@ -1898,6 +1898,43 @@ targets:
     origin: manual
     discovered: 2026-05-18
     achieved: 2026-05-19
+  T59:
+    name: iOS log capture surfaces all entries from a target app's PID, not only those from named-subsystem loggers
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 2.0
+    acceptance:
+    - '`spyder log <udid> --process <bundle-executable> --follow` captures entries logged via `os_log(OS_LOG_DEFAULT, ...)` and `NSLog(...)` from the target app, not only entries logged via `os_log_create(<subsystem>, <category>)` named loggers.'
+    - The underlying go-ios capture path uses OSLogStore predicate filtering on the target process's PID (resolved server-side from `--process` or `--bundle-id`) rather than relying on subsystem labels that may be absent.
+    - 'Verified end-to-end against a real iOS 17+ device: a third-party app emitting only `os_log(OS_LOG_DEFAULT, "hello %{public}s", "world")` shows up in `spyder log --follow` output. Today such entries are filtered out by the `os_trace_relay` channel.'
+    - 'Backward-compatible: existing flows that filter by named subsystem (`spyder log --subsystem com.example.app`) keep working. The new capture is strictly more permissive, not a different scope.'
+    - 'Documented in spyder help-agent under the iOS log capture section: the PID-predicate path is described and the previous "named subsystem required" constraint is marked as no longer applicable.'
+    context: |-
+      Discovered during multimaze2's 🎯T17 ball-strike audio calibration push (2026-05-17 → 2026-05-19) on iOS 26.4.2. The instrumented build called `os_log(OS_LOG_DEFAULT, "T17 marble[%{public}d] v=%{public}.3f ...", ...)` for every Box2D contact-hit event on level 1, expecting `spyder log --follow` to surface them. They never appeared. The 622-line `--process MultiMaze` capture showed plenty of OS-framework chatter (Accelerometer, surfaceID, etc.) but zero entries from the app's own `os_log` calls.
+
+      Workaround that *does* work today: file-scope `os_log_t logger = os_log_create("com.example.app", "Category");` then `os_log(logger, ...)`. The named-subsystem path goes through to the `os_trace_relay` stream; the default-subsystem path is filtered out somewhere between Apple's privacy machinery and the stream consumer.
+
+      This is a usability cliff for consumers: the obvious code path (call `os_log` with defaults) silently produces no visible output, while the discoverable solution (`os_log_create`) is buried in WWDC talks and rarely-read Apple docs. Until spyder captures regardless of subsystem, every consumer rediscovers this the hard way (as multimaze2 did over ~2 days).
+
+      Better mechanism: spyder already resolves bundle-id → PID for `terminate_app`. The same resolution applied to a logarchive / OSLogStore query — `OSLogEntry.processIdentifier == <pid>` — captures *every* entry from the app's process, ignoring subsystem entirely. That's what Xcode Console does when you filter by process; replicating it in go-ios closes this gap.
+
+      **Out of scope**: log archive export (full logarchive download), historical query beyond what OSLogStore exposes, multi-app capture in a single stream.
+
+      **Companion targets**:
+      - (this repo, separate target) Fix `--bundle-id <id> --follow` EOF on iOS 26.4.
+      - (this repo, separate target) Server-side managed capture sessions to replace `--follow + background shell + kill`.
+      - (squz/ge 🎯T66) Cross-platform spdlog sink — relies on this filter relaxation for the iOS path to work for `OS_LOG_DEFAULT` emissions out of the box. (If this target lands, ge can use the default logger; if not, ge must call `os_log_create` itself, which is fine but more boilerplate.)
+    tags:
+    - ios
+    - logs
+    - os-log
+    - go-ios
+    - dev-experience
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-05-19
+    achieved: 2026-05-19
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved
@@ -1963,6 +2000,167 @@ targets:
     origin: forked-from T6 (reframing 2026-04-18)
     discovered: 2026-04-18
     achieved: 2026-04-18
+  T60:
+    name: Server-side managed log capture sessions replace the agent-side --follow + background-shell + kill dance
+    status: set_aside
+    value: 0.0
+    cost: 0.0
+    set_aside_reason: Deferred — separated from 🎯T62's release acceptance on 2026-05-19. The bash-dance for agent-driven log capture is ergonomically poor but functional, so it doesn't block consumer adoption of the iOS log path. Reinstate this target standalone when there's a concrete agent-UX pain point that the existing --follow stream can't address. Original spec preserved in the acceptance list for future pickup.
+    acceptance:
+    - 'New MCP tools `log_capture_start` and `log_capture_stop`. `log_capture_start({device, bundle_id?, process?, subsystem?, regex?, owner?})` returns `{session_id, started_at}` and begins streaming into a server-managed buffer immediately. `log_capture_stop({session_id})` returns `{captured_lines: [...], stopped_at, dropped_lines?}` and tears the session down. Sessions are owned by the caller and auto-expire (configurable TTL, default 5 min) if not stopped.'
+    - 'Companion CLI: `spyder log <device> --capture` starts a session and prints `session_id`; `spyder log --capture-stop <session_id>` retrieves the lines. The existing `--follow` SSE stream stays in place for human-driven tailing; the new tools are the agent-friendly path.'
+    - An optional `log_capture_get({session_id})` returns whatever lines are currently buffered without stopping the session — useful for incremental progress checks during long captures.
+    - Server-side buffer is bounded (configurable, default 50 MB / 100 k lines per session) with FIFO eviction; `dropped_lines` is non-zero in the return payload when eviction occurred so the caller knows the capture wasn't lossless.
+    - 'Sessions are persisted across daemon restarts only loosely: a graceful daemon shutdown drains active sessions to a temp file; a crash drops them (documented). Re-attaching to a session_id after daemon restart returns a clear error.'
+    - 'Documented in help-agent and the MCP tool descriptions: the session lifecycle, when to prefer `log_capture_*` over `--follow`, and the buffer-bound trade-offs.'
+    context: |-
+      Current agent-driven log capture against an iOS device goes:
+
+      1. `spyder log --follow --process X > /tmp/cap.log 2>&1 &` (in bash, background)
+      2. Save the shell PID; sleep briefly to confirm it's running.
+      3. Ask the user to reproduce the scenario.
+      4. User says "done".
+      5. `kill <pid>` to stop the tail.
+      6. `grep` the file for the wanted regex.
+
+      This is brittle in practice (observed during multimaze2's 🎯T17 calibration push, 2026-05-17 → 2026-05-19):
+
+      - The agent must use shell tooling — there's no MCP-native way to start a bounded capture, leaving capture state outside the MCP protocol.
+      - Background-process management is shell-fragile: kill signals don't always flush stdio, stale PIDs accumulate, multiple concurrent captures collide on the temp file name.
+      - `--follow` is SSE-streaming; some clients (and the agent's curl in MCP-host environments) buffer aggressively and drop final lines on disconnect.
+      - For multi-minute captures with intermittent activity, there's no clean way to peek at progress without stopping the stream.
+      - Restarting the daemon mid-capture silently kills the tail with no recovery.
+
+      A server-managed session model fixes all of this. The session_id is the durable handle. start / stop are normal MCP RPC calls. The agent doesn't touch shell or file paths. The server handles buffering, eviction, expiry, and concurrent-session isolation.
+
+      This composes nicely with the bundle-id-fix and PID-predicate targets — the start call accepts the same filter set as `log` today, and benefits from any filter-correctness improvements landing in parallel.
+
+      **Out of scope**: persisting capture artifacts to long-term storage, distributed/cross-host sessions, log archive export.
+    tags:
+    - logs
+    - mcp
+    - dev-experience
+    - agent-ux
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-05-19
+  T61:
+    name: spyder log --bundle-id &lt;id&gt; --follow works on iOS 26.4 (currently EOFs immediately)
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 1.0
+    acceptance:
+    - '`spyder log <udid> --follow --bundle-id <bundle-id>` on iOS 26.4+ keeps the SSE stream open and emits log lines from the target app, identically to the working `--process <CFBundleExecutable>` path. Today it returns `Post "http://127.0.0.1:3030/api/v1/log_stream": EOF` within ~1 s of starting.'
+    - The MCP `logs` tool with `bundle_id=<id>` returns the same set of LogLine records that `process=<CFBundleExecutable>` returns (modulo the resolution step). No filter-killing-the-stream behaviour.
+    - 'Documented in help-agent: bundle-id and process filters are mutually exclusive and equivalent in effect on iOS (one resolves to the other server-side); pick whichever the caller naturally has.'
+    context: |-
+      Observed during multimaze2's 🎯T17 instrumentation push on 2026-05-19 with spyder v0.37.0 against the Minicades Test iPhone (00008110-0014182E0AC2801E, iOS 26.4.2):
+
+      ```
+      $ spyder log 00008110-0014182E0AC2801E --follow --bundle-id com.squz.multimaze2 > /tmp/cap.log
+      spyder log: Post "http://127.0.0.1:3030/api/v1/log_stream": EOF
+      ```
+
+      Connection drops within ~1 s; zero log lines captured. The same invocation with `--process MultiMaze` (the resolved CFBundleExecutable) works cleanly and streams hundreds of lines per second.
+
+      Likely root cause: the bundle-id → CFBundleExecutable resolution step on the server returns an error or empty result for some reason (perhaps the installation_proxy lookup fails for this bundle, or the resolved executable name has trailing whitespace, or the filter logic doesn't bind correctly into the SSE handler). The EOF is the symptom, not the cause.
+
+      Small ergonomic bug — the `--process` workaround is fine if you know the executable name (which differs from the bundle id by `2` in multimaze2's case: bundle `com.squz.multimaze2` → executable `MultiMaze`). But agents and humans reach for bundle-id first because that's the identifier spyder asks for everywhere else (`deploy_app`, `launch_app`, `terminate_app` all take bundle-id). Failing for the canonical identifier is a usability cliff.
+
+      **Out of scope**: anything other than the EOF behaviour for bundle-id filter on iOS.
+    tags:
+    - ios
+    - logs
+    - bug
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-05-19
+    achieved: 2026-05-19
+  T62:
+    name: iOS app-log capture is reliable and ergonomic enough that consumers reach for it as their default diagnostic channel
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 3.0
+    acceptance:
+    - A consumer-app developer (or agent) emitting a plain os_log() call (named-subsystem or OS_LOG_DEFAULT) from a third-party iOS app sees the line surface in `spyder log` within seconds, no per-app os_log_create ceremony required — the DTX activitytracetap path is permissive by default.
+    - 'Bundle-id is the canonical filter on iOS: `spyder log <udid> --bundle-id <id> --follow` (and the MCP equivalent) works identically to `--process <executable>` — no EOFs, no silent drops, no need for the caller to know the CFBundleExecutable.'
+    - 'Documentation in help-agent under the iOS log capture section is accurate: it explains the DTX capture mechanism and the filter semantics. The previous "named subsystem required" claim is gone.'
+    context: |-
+      Filed 2026-05-19 after a multi-day stall on multimaze2's 🎯T17 (ball-strike audio calibration). Three independent gaps in spyder's iOS log path surfaced: OS_LOG_DEFAULT entries silently dropped (🎯T59), `--bundle-id --follow` EOF on iOS 26.4 (🎯T61), no MCP-native session capture (🎯T60).
+
+      **Re-scoped 2026-05-19 evening**: 🎯T60 (managed sessions) split off as deferred-future work — the bash-dance is ergonomically poor but functional, and the underlying log-quality issues (🎯T59, 🎯T61) are the consumer-impacting half. T60 lives on as a standalone improvement target without blocking this umbrella's retirement.
+
+      Resolved by v0.38.0's DTX activitytracetap rewrite (🎯T58.1): the DTX path uses a `messageType == default OR info OR debug OR error OR fault` predicate which is permissive across all third-party app emissions, and the bundle-id resolution path the SSE handler runs no longer goes through the brittle lockdown `os_trace_relay` filter that was killing the stream on iOS 26.4.
+
+      Out of scope: Android log capture (already reliable via logcat), simulator log capture (different code path), historical log archive export, multi-app simultaneous capture in one stream.
+    depends_on:
+    - T59
+    - T61
+    tags:
+    - ios
+    - logs
+    - umbrella
+    - dev-experience
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-05-19
+    achieved: 2026-05-19
+  T63:
+    name: autoawake / KeepAwake supervisor removed; daemon survives an indefinite uptime
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - internal/autoawake/, internal/notify/, internal/device/keepawake.go, internal/device/keepawake_test.go, and ios/KeepAwake/ are gone from the tree.
+    - spyder serve has no --no-autoawake flag and Config.DisableAutoAwake is gone. Daemon startup is a fixed cost (tunnel spawn + HTTP listen), with no per-device convergence ticker.
+    - Daemon running with two real iOS devices attached holds steady connection count to the bundled `ios` tunnel (no monotonic growth at the 15s/2s autoawake convergence cadence). devices and log RPCs respond promptly throughout.
+    - Docs/README/STABILITY.md/agents-guide.md explain the removal and point at the OS-level Auto-Lock=Never workaround. 🎯T64 tracks reinstatement after the upstream go-ios `Close()` leak is fixed.
+    context: |-
+      **Root cause**: go-ios v1.0.213's `instruments.ListenAppStateNotifications` returns a `Close()` that does `closeChannel <- struct{}{}` with a 5s timeout — it never calls `conn.Close()` on the underlying DTX connection. Each autoawake convergence cycle (every 15s, per attached device) opened a new ListenAppStateNotifications, and Close() left the TCP socket ESTABLISHED. With two devices attached we observed monotonic accumulation at ~8 connections/min; after ~5 min the daemon would stop responding to /api/v1/devices despite a clean stack (all goroutines idle in cond_wait — symptom is downstream of the leak, likely mutex starvation inside go-ios's connection pool).
+
+      **Why rip-out instead of fix**: the leak is upstream and spyder has no closeable handle on `conn` (ListenAppStateNotifications doesn't return it). A spyder-side goroutine-leak fix in `ForegroundApp` was attempted but didn't move the needle — connections still grew at the same rate, because the leak isn't in the goroutine, it's in go-ios's Close() being a no-op for the socket. Per user direction (2026-05-19): "if the fix doesn't work, rip it all out." Devices are now set to Auto-Lock=Never at the OS level, which obviates the original problem KeepAwake solved.
+
+      **What was removed**: the entire `internal/autoawake/` supervisor; its `internal/notify/` companion (only used for the autoawake macOS alerts); `internal/device/keepawake.go` (xcodebuild + version detection); `internal/device/keepawake_test.go`; the `ios/KeepAwake/` Swift project; all KeepAwake-specific code in `internal/device/ios.go` (KeepAwakeBundleID, inspectKeepAwakeApp, KeepAwakeInstalled, KeepAwakeInstalledVersion, ForegroundApp, appNameFromExec, IsKeepAwakeForeground, LaunchKeepAwake, ErrKeepAwakeNotInstalled, classifyKeepAwakeLaunchErr, the launch-error regexes); the `--no-autoawake` flag added during investigation; the `DisableAutoAwake` Config field; the daemon's supervisor goroutine spawn; the doc sections.
+    tags:
+    - ios
+    - autoawake
+    - removal
+    - go-ios-upstream-bug
+    - stability
+    origin: manual
+    discovered: 2026-05-19
+    achieved: 2026-05-19
+  T64:
+    name: Investigate go-ios DTX connection leak and reinstate iOS keep-awake supervisor
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Root cause of the go-ios `instruments.ListenAppStateNotifications.Close()` leak documented — either confirmed in current upstream (https://github.com/danielpaulus/go-ios) or determined that newer versions ship a fixed Close(). Reproducer recorded.
+    - Either (a) an upstream PR is open / merged that makes Close() actually tear down the DTX conn, or (b) spyder vendors a forked go-ios with the fix, or (c) spyder uses a different go-ios API that doesn't have the bug, or (d) we conclude the leak is fundamental and document a different keep-awake mechanism.
+    - 'An iOS keep-awake mechanism — restored KeepAwake supervisor or alternative — works end-to-end against a real device for ≥30 min without leaking tunnel connections (verified via lsof: no monotonic growth at the convergence cadence).'
+    - 'If reinstating KeepAwake: source is recovered from git history (the v0.39.0 era — pre-removal). Tests cover the leak-free path (goroutine + connection accounting in an integration test if feasible).'
+    context: |-
+      Filed 2026-05-19 alongside 🎯T63's removal. The KeepAwake / autoawake supervisor was ripped out because its per-convergence-tick `instruments.ListenAppStateNotifications` call leaked a TCP connection to the bundled `ios` tunnel daemon every 15s per attached device — go-ios's `Close()` does `closeChannel <- struct{}{}` (a no-op channel send) instead of `conn.Close()` on the underlying DTX connection, so the socket stays ESTABLISHED and pinned by the captured recv closure. After ~5 min the daemon would stop responding to HTTP entirely.
+
+      **Where to start the investigation**:
+      - File: `~/go/pkg/mod/github.com/danielpaulus/go-ios@v1.0.213/ios/instruments/instruments_notifications.go` — the buggy `Close()` is at the bottom.
+      - Pinned version: see `go.mod` for the current go-ios pin.
+      - The upstream repo is https://github.com/danielpaulus/go-ios.
+
+      **Don't worry about source preservation**: per user (2026-05-19), recover the deleted KeepAwake Swift source / autoawake package from git history when ready to reinstate — the v0.39.0 commit (b11ef81) is the last with everything in place.
+
+      Do not start this work without explicit user ask — the user has explicitly deprioritised KeepAwake (per ~/.claude memory `project_keepawake_deprioritised`) and the OS-level Auto-Lock=Never workaround they're using today is fine.
+    tags:
+    - ios
+    - autoawake
+    - go-ios-upstream
+    - deferred
+    - investigation
+    origin: manual
+    discovered: 2026-05-19
   T7:
     name: spyder supervises the Python bridge tunneld for reliable iOS DVT access
     status: achieved
