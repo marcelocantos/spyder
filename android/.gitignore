@@ -1,0 +1,10 @@
+# Gradle build outputs and local config
+**/build/
+**/.gradle/
+**/local.properties
+**/*.iml
+.idea/
+
+# Generated APKs
+**/*.apk
+**/*.aab
