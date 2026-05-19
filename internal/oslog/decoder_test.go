@@ -32,14 +32,6 @@ func pushString(s string) []byte {
 	return encodeImmediate(append([]byte(s), 0))
 }
 
-// pushLE32 encodes a uint32 as 4 little-endian bytes then wraps it in
-// an immediate push.
-func pushLE32(v uint32) []byte {
-	b := make([]byte, 4)
-	binary.LittleEndian.PutUint32(b, v)
-	return encodeImmediate(b)
-}
-
 // defineTableFrame builds a frame that defines a table with the given
 // name and column names.
 //
