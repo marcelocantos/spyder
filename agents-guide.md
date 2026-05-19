@@ -839,6 +839,51 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
 - The wrapper forwards stdin/stdout/stderr and the command's exit code.
 - Release failures are logged but do not mask the test's exit code.
 
+## Managed log-capture sessions (🎯T60)
+
+Agent-driven log capture used to require shell glue: `spyder log --follow > /tmp/cap &`, save the pid, ask the user to reproduce, `kill <pid>`, grep the file. Fragile, requires shell tooling that some MCP hosts don't have, drops trailing lines on disconnect, no peek-during-capture, no recovery if the daemon restarts mid-capture.
+
+The managed-session API replaces all of that. The lifecycle:
+
+1. **Start a session.** Pick whichever filter set the existing `logs` tool would have used (bundle_id, process, subsystem, regex). Returns a `session_id` plus `expires_at`.
+   ```
+   log_capture_start({device: "iPhone", bundle_id: "com.example.app", owner: "calibration-loop"})
+   → {"session_id": "a1b2c3d4e5f6...", "started_at": "...", "expires_at": "..."}
+   ```
+2. **Reproduce the scenario.** The server buffers lines into a per-session ring (default 50 MB / 100k lines, FIFO eviction). The agent does whatever else it needs to in the meantime.
+3. **(Optional) Peek incrementally.** `log_capture_get` returns whatever is currently buffered and **clears the buffer** so subsequent calls see only new lines. Capture continues. Useful for "wait for marker X, then keep waiting for marker Y."
+   ```
+   log_capture_get({session_id: "a1b2c3d4e5f6..."})
+   → {"lines": [...], "dropped_lines": 0}
+   ```
+4. **Stop and drain.** `log_capture_stop` returns the remaining buffer and tears the session down. Subsequent get/stop calls on the same session_id return an error.
+   ```
+   log_capture_stop({session_id: "a1b2c3d4e5f6..."})
+   → {"lines": [...], "stopped_at": "...", "dropped_lines": 0}
+   ```
+
+**Eviction policy.** When the buffer hits either bound (configurable via `max_bytes` / `max_lines`), the oldest entry is dropped and `dropped_lines` is incremented. Non-zero `dropped_lines` in a get/stop response means the capture wasn't lossless across that interval — increase the bound or peek more often. The counter resets on each get/stop drain so it tracks "drops since last drain," not cumulative drops.
+
+**TTL.** Sessions auto-expire after `ttl_sec` of no get/stop activity (default 5 min, max 24 h). The sweeper runs every 30 s; an idle session is torn down silently and a subsequent get/stop call reports "no such session." This guards against forgotten captures pinning device IO indefinitely.
+
+**Per-session isolation.** Each session opens its own underlying tap against the device — there's no shared device-wide capture today (filed as future work in 🎯T65 once it exists). Two agents capturing the same device for two different bundle ids each pay one tap of device load. For 1–2 concurrent sessions this is fine; if you find yourself running many, profile first.
+
+**Inspection.** `log_capture_list` returns metadata for every live session (id, device, owner, started_at, expires_at, buffer_lines, buffer_bytes, dropped_lines, filter) without disturbing any of them — useful when an agent loses track of a session it started earlier in the conversation.
+
+**CLI mirrors.**
+
+```bash
+spyder log <device> --capture [--bundle-id ID | --process P] [--subsystem S] [--regex R] \
+                              [--ttl-sec N] [--max-bytes N] [--max-lines N] [--as OWNER]
+spyder log --capture-get <session-id>
+spyder log --capture-stop <session-id>
+spyder log --capture-list
+```
+
+**Persistence.** Sessions are in-memory only. A daemon restart (graceful or crashed) drops every active session; `log_capture_get` / `log_capture_stop` on a session_id from before the restart returns "no such session." For captures that need to survive a `brew services restart spyder`, use the `--follow` SSE stream piped to a file instead.
+
+**When to prefer `--capture` over `--follow`.** Use `--capture` whenever the agent needs to read the data across more than one turn (most agent workflows), needs to peek without stopping, or runs in a host without easy access to background shell + temp files (most MCP clients). Use `--follow` for human-driven tailing on the terminal or for very long captures where you want SSE-style streaming straight into a file.
+
 ## Keeping iOS devices awake
 
 There is no in-spyder keep-awake supervisor. The previous KeepAwake

@@ -24,11 +24,16 @@ import (
 func mcpTestServer(t *testing.T) (base string, teardown func()) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	handler, _, _ := Build(Config{
+	handler, _, _, logCapMgr := Build(Config{
 		Version: "test",
 	})
 	ts := httptest.NewServer(handler)
-	return ts.URL, ts.Close
+	return ts.URL, func() {
+		ts.Close()
+		if logCapMgr != nil {
+			logCapMgr.Close()
+		}
+	}
 }
 
 // postJSON sends a POST to url with the given JSON-RPC body and

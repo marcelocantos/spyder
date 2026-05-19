@@ -18,6 +18,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/logcapture"
 	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
@@ -56,6 +57,7 @@ type Handler struct {
 	runs         *runs.Store
 	bls          *baselines.Store
 	recordings   *recording.Registry
+	logCapture   *logcapture.Manager
 	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
 	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
 	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
@@ -135,6 +137,13 @@ func WithPoolResolver(p selector.PoolResolver) HandlerOption {
 // configured" error.
 func WithPoolManager(pm PoolManager) HandlerOption {
 	return func(h *Handler) { h.poolMgr = pm }
+}
+
+// WithLogCapture injects a managed log-capture session manager (🎯T60).
+// When omitted, log_capture_* tools return a "log capture not configured"
+// error.
+func WithLogCapture(m *logcapture.Manager) HandlerOption {
+	return func(h *Handler) { h.logCapture = m }
 }
 
 // NewHandler creates a new spyder tool handler.
@@ -286,6 +295,14 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleNetwork(args)
 	case "logs":
 		return h.handleLogsRange(args)
+	case "log_capture_start":
+		return h.handleLogCaptureStart(args)
+	case "log_capture_get":
+		return h.handleLogCaptureGet(args)
+	case "log_capture_stop":
+		return h.handleLogCaptureStop(args)
+	case "log_capture_list":
+		return h.handleLogCaptureList(args)
 	case "is_running":
 		return h.handleIsRunning(args)
 	// --- pool tools (🎯T24) -----------------------------------------------
@@ -303,9 +320,10 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 }
 
 // Definitions returns the complete MCP tool definition list — core tools
-// plus visual-regression tools.
+// plus visual-regression tools plus log-capture-session tools.
 func Definitions() []mcpgo.Tool {
-	return append(allBaseDefinitions(), visualDefinitions()...)
+	defs := append(allBaseDefinitions(), visualDefinitions()...)
+	return append(defs, logCaptureDefinitions()...)
 }
 
 // allBaseDefinitions returns the core (non-visual) tool definitions.

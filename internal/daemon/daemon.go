@@ -24,6 +24,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
+	"github.com/marcelocantos/spyder/internal/logcapture"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/pool"
@@ -62,7 +63,7 @@ func Start(cfg Config) error {
 func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version)
-	handler, _, _ := Build(cfg)
+	handler, _, _, logCapMgr := Build(cfg)
 
 	// Bundled go-ios tunnel daemon. Spawned as a child process so its
 	// lifecycle is tied to spyder's — stop on shutdown. Missing binary
@@ -94,6 +95,9 @@ func Run(ctx context.Context, cfg Config) error {
 				slog.Warn("daemon: iostunnel stop error", "error", err)
 			}
 		}
+		if logCapMgr != nil {
+			logCapMgr.Close()
+		}
 		slog.Info("daemon: draining http server")
 		_ = srv.Shutdown(shutdownCtx)
 		slog.Info("daemon: shutdown complete")
@@ -117,7 +121,7 @@ func Run(ctx context.Context, cfg Config) error {
 // The returned Supervisor is non-nil when the bridge binary was found and
 // should be started by the caller; it is nil when the bridge is unavailable
 // (graceful degradation).
-func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler) {
+func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *logcapture.Manager) {
 	srv := server.NewMCPServer(
 		"spyder",
 		cfg.Version,
@@ -188,8 +192,11 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler) {
 			"path", poolCfgPath, "error", poolErr)
 	}
 
+	logCapMgr := logcapture.NewManager()
+
 	handlerOpts := []spydermcp.HandlerOption{
 		spydermcp.WithInventory(invStore),
+		spydermcp.WithLogCapture(logCapMgr),
 	}
 	if resvStore != nil {
 		handlerOpts = append(handlerOpts, spydermcp.WithReservations(resvStore))
@@ -236,7 +243,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler) {
 	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv,
 		server.WithHeartbeatInterval(30*time.Second)))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
-	return mux, resvStore, handler
+	return mux, resvStore, handler, logCapMgr
 }
 
 // resolveIOSTunnelBinary returns the path to the bundled `ios` binary
