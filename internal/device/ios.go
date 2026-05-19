@@ -25,6 +25,7 @@ import (
 	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/ostrace"
+	"github.com/marcelocantos/spyder/internal/oslog"
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -1240,24 +1241,35 @@ func compileLogRegex(s string) (*regexp.Regexp, error) {
 	return r, nil
 }
 
-// streamOSTrace opens an os_trace_relay connection (the same service
-// Xcode's Console.app uses) and drives parsed LogEntry records through
-// the filters into emit. emit returns false to stop the stream early
-// (e.g. ctx cancellation in LogStream's send branch). The connection
-// is closed when emit returns false or ctx fires.
+// streamOSTrace surfaces iOS log entries to spyder. It prefers the
+// DTX `activitytracetap` channel (the same path Xcode's Console.app
+// uses, surfaces third-party app emissions) and falls back to the
+// lockdown-level `os_trace_relay` service when DTX isn't available
+// (developer disk image not mounted, iOS <17, etc.). os_trace_relay
+// is hardened against third-party app output on iOS 17+ — fallback
+// produces system-process coverage only.
 //
-// We previously used go-ios's `syslog_relay` service. On iOS 17+ that
-// service is hardened — third-party app log output is filtered out at
-// the device side, leaving only system daemons reaching the stream
-// (🎯T58). os_trace_relay is the modern OSLog channel and surfaces
-// third-party app entries with their full structured metadata (PID,
-// timestamp as time.Time, image name, subsystem label, message).
+// emit returns false to stop the stream early (e.g. ctx cancellation
+// in LogStream's send branch). All resources are released when emit
+// returns false or ctx fires.
 func (a *IOSAdapter) streamOSTrace(ctx context.Context, id string, filter LogFilter,
 	regexFilter *regexp.Regexp, emit func(LogLine) bool) error {
 	dev, err := a.goios.Session(id)
 	if err != nil {
 		return fmt.Errorf("ostrace: %w", err)
 	}
+
+	// Try DTX first.
+	if err := a.streamOSLogDTX(ctx, id, dev, filter, regexFilter, emit); err == nil {
+		return nil
+	} else if ctx.Err() != nil {
+		return ctx.Err()
+	} else {
+		slog.Warn("oslog DTX path unavailable; falling back to lockdown os_trace_relay (no third-party app coverage)",
+			"device", id, "error", err.Error())
+	}
+
+	// Fallback: lockdown os_trace_relay.
 	// pid=-1: all processes. MessageFilterLogMessage: only os_log
 	// entries (skip ActivityCreate/Transition/Signpost record types
 	// the caller didn't ask for). StreamFlagsAll: emit every severity
@@ -1316,6 +1328,59 @@ func ostraceEntryToLogLine(e ostrace.LogEntry) LogLine {
 		Process:   e.ImageName,
 		Level:     e.Level.String(),
 		Message:   e.Message,
+	}
+}
+
+// streamOSLogDTX drains records from spyder's oslog package (a DTX
+// activitytracetap client) into emit. Returns nil when the stream
+// terminates cleanly; non-nil error means the channel couldn't be
+// opened or hit a fatal protocol error — callers should treat that
+// as a signal to fall back to the lockdown os_trace_relay path.
+//
+// Record.Timestamp comes from the device as mach absolute time, which
+// requires a per-device anchor to map onto wall-clock. Rather than
+// chase that anchor, we stamp each LogLine with host-side time.Now()
+// at receive — sufficient for the dominant "since launch" / `-2m`
+// filtering use cases, with skew bounded by the channel's flush rate
+// (the setConfig `ur` parameter, default 500ms).
+func (a *IOSAdapter) streamOSLogDTX(ctx context.Context, id string,
+	dev goios_ios.DeviceEntry, filter LogFilter, regexFilter *regexp.Regexp,
+	emit func(LogLine) bool) error {
+
+	stream, err := oslog.Open(ctx, dev)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case rec, ok := <-stream.Records:
+			if !ok {
+				return nil
+			}
+			if filter.Process != "" && rec.ImageName != filter.Process {
+				continue
+			}
+			if filter.Subsystem != "" &&
+				!strings.Contains(rec.Subsystem, filter.Subsystem) {
+				continue
+			}
+			if regexFilter != nil && !regexFilter.MatchString(rec.Message) {
+				continue
+			}
+			ll := LogLine{
+				Timestamp: time.Now(),
+				Process:   rec.ImageName,
+				Level:     rec.MessageType,
+				Message:   rec.Message,
+			}
+			if !emit(ll) {
+				return ctx.Err()
+			}
+		}
 	}
 }
 

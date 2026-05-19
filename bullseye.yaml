@@ -1863,7 +1863,7 @@ targets:
     achieved: 2026-05-18
   T58.1:
     name: Third-party iOS app log entries surface in spyder via DTX activitytracetap
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -1897,6 +1897,7 @@ targets:
     - go-ios
     origin: manual
     discovered: 2026-05-18
+    achieved: 2026-05-19
   T6:
     name: Android adapter provides feature parity for list and state (keepawake is OS-native, no-op)
     status: achieved
