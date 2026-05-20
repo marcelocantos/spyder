@@ -11,51 +11,33 @@ import (
 )
 
 // enumerateDevices returns the list of iOS UDIDs to exercise in the
-// multi-device live tests. Two opt-in env vars gate the run — the
-// tests skip cleanly when neither is set, matching the single-device
-// gating convention so a plain `go test ./...` against an unrelated
-// CI runner or a dev box with happenstance-attached devices doesn't
-// accidentally fire live RPC traffic at them.
+// multi-device live tests. Multi-device tests are an explicit opt-in
+// — they touch every UDID listed, and a hang on any one stalls the
+// suite. The dedicated SPYDER_LIVE_UDIDS env var is the only trigger;
+// SPYDER_LIVE_UDID (the single-device gate) deliberately does NOT
+// enable these so a normal `TEST_FLAGS=-v make test-report` against
+// a host with happenstance-attached but partially-wedged devices
+// doesn't hang on the unhealthy ones.
 //
-//   - SPYDER_LIVE_UDIDS: comma-separated explicit list. Wins when set.
-//   - SPYDER_LIVE_UDID: single-device opt-in. When set, falls back to
-//     adapter.List() and exercises every paired device. (Reusing the
-//     existing single-device env var keeps the live-tier opt-in story
-//     uniform across the test file.)
-//
-// Skips (not fails) when neither is set or no devices are found.
+// Set SPYDER_LIVE_UDIDS=<udid1>,<udid2>,... to opt in. Skips cleanly
+// otherwise.
 func enumerateDevices(t *testing.T) []string {
 	t.Helper()
-	if raw := os.Getenv("SPYDER_LIVE_UDIDS"); raw != "" {
-		udids := strings.Split(raw, ",")
-		var trimmed []string
-		for _, u := range udids {
-			if s := strings.TrimSpace(u); s != "" {
-				trimmed = append(trimmed, s)
-			}
-		}
-		if len(trimmed) > 0 {
-			t.Logf("SPYDER_LIVE_UDIDS set; using %d explicit device(s)", len(trimmed))
-			return trimmed
+	raw := os.Getenv("SPYDER_LIVE_UDIDS")
+	if raw == "" {
+		t.Skip("SPYDER_LIVE_UDIDS not set; skipping multi-device live test (set to comma-separated UDIDs to enable)")
+	}
+	var trimmed []string
+	for _, u := range strings.Split(raw, ",") {
+		if s := strings.TrimSpace(u); s != "" {
+			trimmed = append(trimmed, s)
 		}
 	}
-	if os.Getenv("SPYDER_LIVE_UDID") == "" {
-		t.Skip("SPYDER_LIVE_UDID / SPYDER_LIVE_UDIDS not set; skipping multi-device live test")
+	if len(trimmed) == 0 {
+		t.Skip("SPYDER_LIVE_UDIDS set but empty after trimming; skipping multi-device live test")
 	}
-
-	adapter := NewIOSAdapter()
-	devs, err := adapter.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(devs) == 0 {
-		t.Skip("no paired iOS devices found; skipping multi-device live test")
-	}
-	udids := make([]string, len(devs))
-	for i, d := range devs {
-		udids[i] = d.UUID
-	}
-	return udids
+	t.Logf("SPYDER_LIVE_UDIDS: %d device(s)", len(trimmed))
+	return trimmed
 }
 
 // TestMultiDevice_Enumerate_Live calls NewIOSAdapter().List(), asserts ≥1
