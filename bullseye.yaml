@@ -2254,6 +2254,42 @@ targets:
     - deferred
     origin: manual
     discovered: 2026-05-20
+  T69:
+    name: Remove spyder doctor --install-sudoers + spyder-killusbmuxd once usbmuxd wedge has a real fix
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - spyder doctor --install-sudoers, spyder doctor --fix, the cmd/spyder-killusbmuxd helper binary, the Makefile rule for it, the agents-guide section, and the /etc/sudoers.d/spyder-killusbmuxd entry pattern are all retired from the tree.
+    - STABILITY.md notes the historical role of the workaround (v0.41-v0.4x era) and points at whatever permanent fix landed (e.g. connection pooling alone, a different go-ios API, an Apple-side fix, a libimobiledevice replacement).
+    - An end-to-end live test on the host can run the full iOS test suite multiple times back-to-back without ever wedging usbmuxd to the point where killall is needed. Verified empirically; documented in the retirement commit.
+    context: |-
+      Filed alongside the workaround itself in v0.41 (this session). The user's explicit framing: this should be a temporary feature while we figure out what's actually wrong with usbmuxd.
+
+      The workaround is real but ugly:
+      - A separate setuid-shaped binary (cmd/spyder-killusbmuxd) that exists solely to be killed by root.
+      - A NOPASSWD sudoers entry granting the user passwordless privilege escalation for that one path.
+      - A doctor subcommand wrapping the whole flow.
+
+      It works, and it's the right pragmatic answer for now (usbmuxd wedges block every iOS RPC and the only known recovery is `killall usbmuxd`). But it's a workaround for something we haven't actually root-caused. Permanent-fix candidates from this session's investigation:
+
+      1. T67 (connection pooling) — empirically determine whether amortising service-connection open/close eliminates the wedge entirely. If yes, the doctor/helper become unnecessary in normal operation.
+      2. T68 (upstream usbmuxd investigation) — dtrace / fs_usage on usbmuxd during a live wedge to identify the specific Mach IPC / state-machine path that breaks. If we can characterise the trigger, we may be able to design around it without ever needing to restart usbmuxd.
+      3. Switch to libimobiledevice's path or another go-ios fork that doesn't hit the same usbmux pattern. Riskier but possible.
+
+      Retire this target (and the workaround) when (1) or (2) demonstrates that the wedge no longer happens — or, failing that, when we've established it's truly unavoidable and the workaround is the documented production answer (in which case revisit the framing rather than the implementation).
+
+      Depends on T67's empirical answer. Don't retire T69 by removing the workaround until T67 has measured frequency-of-wedge with vs without pooling on a real device.
+    depends_on:
+    - T67
+    tags:
+    - ios
+    - usbmuxd
+    - workaround
+    - deferred
+    - code-debt
+    origin: manual
+    discovered: 2026-05-20
   T7:
     name: spyder supervises the Python bridge tunneld for reliable iOS DVT access
     status: achieved
