@@ -2005,7 +2005,6 @@ targets:
     status: achieved
     value: 0.0
     cost: 0.0
-    set_aside_reason: Deferred — separated from 🎯T62's release acceptance on 2026-05-19. The bash-dance for agent-driven log capture is ergonomically poor but functional, so it doesn't block consumer adoption of the iOS log path. Reinstate this target standalone when there's a concrete agent-UX pain point that the existing --follow stream can't address. Original spec preserved in the acceptance list for future pickup.
     acceptance:
     - 'New MCP tools `log_capture_start` and `log_capture_stop`. `log_capture_start({device, bundle_id?, process?, subsystem?, regex?, owner?})` returns `{session_id, started_at}` and begins streaming into a server-managed buffer immediately. `log_capture_stop({session_id})` returns `{captured_lines: [...], stopped_at, dropped_lines?}` and tears the session down. Sessions are owned by the caller and auto-expire (configurable TTL, default 5 min) if not stopped.'
     - 'Companion CLI: `spyder log <device> --capture` starts a session and prints `session_id`; `spyder log --capture-stop <session_id>` retrieves the lines. The existing `--follow` SSE stream stays in place for human-driven tailing; the new tools are the agent-friendly path.'
@@ -2183,9 +2182,10 @@ targets:
     achieved: 2026-05-20
   T66:
     name: spyder doctor detects and recovers wedged usbmuxd via sudo + touchid
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 3.0
     acceptance:
     - '`spyder doctor` subcommand exists. Reports overall health: paired-device count via `xcrun devicectl list devices --quiet --json-output`, paired-device count via `bin/ios list`, and any other quick sanity probes (tunnel running, ~/.spyder paths writable).'
     - When `devicectl` reports N>0 connected iOS devices but `bin/ios list` returns fewer, classify as 'usbmuxd wedged' and surface the specific UDIDs missing from the usbmux view.
@@ -2205,6 +2205,7 @@ targets:
     - macos-fragility
     origin: manual
     discovered: 2026-05-20
+    achieved: 2026-05-20
   T67:
     name: Spyder pools per-device go-ios service connections to reduce usbmuxd churn
     status: identified
