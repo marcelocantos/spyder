@@ -75,15 +75,21 @@ run_suite_skipped() {
 # Set TEST_FLAGS in the environment to add to every `go test` invocation.
 GO_TEST_FLAGS="${TEST_FLAGS:-}"
 
+# Per-suite timeout. A complete run takes ~40s on this host, so 2m is
+# plenty of margin without being stuck for 10 minutes (Go's default)
+# when a device-side hang takes a test out. -timeout goes before
+# TEST_FLAGS so a caller can override with e.g. TEST_FLAGS='-timeout 10m'.
+DEFAULT_TIMEOUT="-timeout 2m"
+
 # ── Tier 1: Go unit ──────────────────────────────────────────────────────────
-run_suite go-unit "go test $GO_TEST_FLAGS ./..."
+run_suite go-unit "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS ./..."
 
 # ── Tier 2: live device tier (go-ios) ────────────────────────────────────────
 # Gated on SPYDER_LIVE_UDID. Requires a paired iOS device + the bundled
 # `ios tunnel start --userspace` running (spyder spawns it; outside spyder
 # you can run `bin/ios tunnel start --userspace` manually).
 if [[ -n "${SPYDER_LIVE_UDID:-}" ]]; then
-  run_suite live "go test $GO_TEST_FLAGS -run '_Live$' ./internal/device/..."
+  run_suite live "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS -run '_Live$' ./internal/device/..."
 else
   run_suite_skipped live "set SPYDER_LIVE_UDID=<udid> to run; requires a paired device"
 fi
