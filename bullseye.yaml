@@ -2310,6 +2310,58 @@ targets:
     origin: research-derived (the Python bridge 8.x study 2026-04-18)
     discovered: 2026-04-18
     achieved: 2026-04-18
+  T70:
+    name: Make the marcelocantos/go-ios spyder-patches rebase workflow Go-module-safe
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - The documented workflow for pulling upstream into spyder-patches no longer risks orphaning SHAs that historical spyder commits pin.
+    - Either (a) every spyder-pinned SHA is tagged in the fork (e.g. `spyder-pin-v0.NN.0`) before the spyder go.mod pin is bumped, with the tag pushed to the fork remote; or (b) spyder-patches uses merge-based updates against upstream/main rather than rebase + force-push.
+    - The chosen approach is documented in spyder's go.mod comment block above the `replace` directive (replacing the current rebase-and-force-push instructions), and exercised at least once end-to-end so the workflow is known-good.
+    context: |-
+      Filed during the v0.41 / live-tests session when wiring marcelocantos/go-ios's spyder-patches branch into spyder's pin.
+
+      The current documented workflow (in spyder's go.mod above the `replace` line) is: rebase spyder-patches onto upstream/main, force-push, bump spyder's pin to the new SHA. This works for forward builds but has a latent risk for historical spyder commits: every spyder pin is a SHA, and after a rebase the OLD spyder-patches tip becomes unreachable from any branch. GitHub eventually garbage-collects unreachable commits. If a historical spyder commit pins an orphaned SHA AND nobody has built it before (so proxy.golang.org hasn't cached it), `go build` of that historical spyder commit fails.
+
+      In practice the risk is small for our use case (single-developer, occasional builds, proxy.golang.org caches anything ever built). But it's a latent foot-gun.
+
+      Two fixes:
+      - Tag each spyder-pinned SHA in the fork before bumping the pin (e.g. `git tag spyder-pin-v0.41.0 <sha> && git push origin spyder-pin-v0.41.0`). Tags are permanent refs; keeps the SHA reachable forever. Cleanest, preserves linear history.
+      - Merge upstream/main into spyder-patches instead of rebasing. No force-push; every old SHA stays reachable via the parent chain. Uglier history (merge commits), but Go-module-proof.
+
+      Defer until either (a) we actually rebase spyder-patches for the first time (most likely trigger), or (b) the historical-rebuild scenario bites us. Until then, the current single-commit state of spyder-patches means there's nothing to lose anyway.
+    tags:
+    - go-ios
+    - fork
+    - go-modules
+    - code-debt
+    - deferred
+    origin: manual
+    discovered: 2026-05-20
+  T71:
+    name: Track upstream go-ios for divergence relevant to spyder's pinned fork
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Periodically (when you next happen to touch the fork for any reason, or at most every few months), fetch upstream and compare against spyder-patches. The check is: `cd /tmp/go-ios-fix && git fetch upstream && git log --oneline upstream/main..spyder-patches` (commits we carry) and `git log --oneline spyder-patches..upstream/main` (commits upstream has that we don''t).'
+    - If commits upstream touch any of the paths spyder actively uses — `ios/dtx_codec/`, `ios/instruments/`, `ios/installationproxy/`, `ios/appservice/`, `ios/ostrace/`, `ios/crashreport/`, `ios/syslog/`, `ios/zipconduit/`, `ios/tunnel/`, `ios/{utils,lockdown}.go` — read them. Decide whether to pull them in via a rebase (see 🎯T70 for the safe workflow) or whether they're irrelevant.
+    - 'If spyder-patches''s single commit (`dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType`) lands upstream verbatim, retire spyder-patches entirely and remove the `replace` directive from spyder''s go.mod — we go back to a clean upstream pin.'
+    context: |-
+      Filed instead of building any active scheduling (cron / GitHub Actions / Slack DM). Considered all of those during the v0.41 session and concluded the realistic upstream-tracking cadence is "when something else makes me touch the fork" — likely every few months, possibly never if spyder-patches stays at one commit and we don't hit any new upstream-bug-of-the-week.
+
+      The fork (https://github.com/marcelocantos/go-ios) currently carries ONE commit beyond upstream/main: `0c634f4 dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType` on the `spyder-patches` branch. Upstream's `main` and our fork's main are otherwise in sync. Three earlier patches (iOS-17+ instruments dispatch fixes) merged upstream before this session and no longer need to ride in the fork.
+
+      When you do check: the spyder paths that matter for divergence are the ones called from `internal/device/ios.go`, `internal/goios/`, `internal/oslog/`. Anything else in upstream go-ios can drift freely — spyder doesn't touch it.
+    tags:
+    - go-ios
+    - fork
+    - maintenance
+    - manual
+    - deferred
+    origin: manual
+    discovered: 2026-05-20
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved
