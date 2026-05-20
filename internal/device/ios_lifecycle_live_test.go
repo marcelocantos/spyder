@@ -12,55 +12,65 @@ import (
 	"time"
 )
 
-// pickThirdPartyIOSApp returns a (bundleID, executable) pair for a
-// user-installed app on the device, or skips the test when no
-// suitable candidate is present. Apple-prefixed bundle ids are
-// excluded since they're typically not user-installed and
-// installation_proxy's BrowseAllApps may not surface them.
-func pickThirdPartyIOSApp(t *testing.T, a *IOSAdapter, udid string) (bundleID, executable string) {
+// TestBouncingBallBundleID is the bundle id of the test fixture
+// app at ios/BouncingBall/. Built + signed via xcodebuild and
+// installed manually on every reference iOS device; emits a steady
+// stream of os_log entries on every wall bounce so the log-capture
+// tests have a guaranteed emitter. Override via SPYDER_LIVE_BUNDLE_ID
+// when an alternative fixture is needed on a specific device.
+const TestBouncingBallBundleID = "com.marcelocantos.spyder.BouncingBall"
+
+// liveIOSLaunchBundle returns the bundle id to use as the
+// launch/terminate target. Prefers SPYDER_LIVE_BUNDLE_ID (caller
+// override), falling back to BouncingBall. Skips the test when
+// neither is installed, since launching arbitrary other apps risks
+// destabilising the device (we observed Jevons disconnecting when
+// jevon's expired profile was repeatedly poked).
+func liveIOSLaunchBundle(t *testing.T, a *IOSAdapter, udid string) string {
 	t.Helper()
-	apps, err := a.ListApps(udid)
+	bundleID := os.Getenv("SPYDER_LIVE_BUNDLE_ID")
+	if bundleID == "" {
+		bundleID = TestBouncingBallBundleID
+	}
+	_, installed, err := a.ResolveExecutable(udid, bundleID)
 	if err != nil {
-		t.Fatalf("ListApps(%s): %v", udid, err)
+		t.Fatalf("ResolveExecutable(%s): %v", bundleID, err)
 	}
-	for _, app := range apps {
-		if app.BundleID == "" || app.Executable == "" {
-			continue
-		}
-		if strings.HasPrefix(app.BundleID, "com.apple.") {
-			continue
-		}
-		return app.BundleID, app.Executable
+	if !installed {
+		t.Skipf("test fixture %s not installed on %s — build ios/BouncingBall and install via `xcrun devicectl device install app` (or set SPYDER_LIVE_BUNDLE_ID to a known-good already-installed app)", bundleID, udid)
 	}
-	t.Skipf("no third-party app installed on %s; skipping (install any user app to enable)", udid)
-	return "", ""
+	return bundleID
 }
 
 // TestIOSLaunchTerminateCycle_Live walks the LaunchApp → AppPID →
-// TerminateApp lifecycle against a third-party app. Contract: launch
-// yields a pid, terminate clears it.
+// TerminateApp lifecycle against the BouncingBall fixture (or a
+// caller-specified bundle via SPYDER_LIVE_BUNDLE_ID). Contract:
+// launch yields a pid, terminate clears it.
 func TestIOSLaunchTerminateCycle_Live(t *testing.T) {
 	udid := os.Getenv("SPYDER_LIVE_UDID")
 	if udid == "" {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live iOS test")
 	}
 	a := NewIOSAdapter()
-	bundleID, _ := pickThirdPartyIOSApp(t, a, udid)
+	bundleID := liveIOSLaunchBundle(t, a, udid)
 
-	// Best-effort cleanup before the test.
+	// Cleanup before the test.
 	_ = a.TerminateApp(udid, bundleID)
 	time.Sleep(500 * time.Millisecond)
 
 	if err := a.LaunchApp(udid, bundleID); err != nil {
-		t.Fatalf("LaunchApp(%s, %s): %v", udid, bundleID, err)
+		if !strings.Contains(err.Error(), "pidFromResponse") {
+			t.Fatalf("LaunchApp(%s, %s): %v", udid, bundleID, err)
+		}
+		t.Logf("LaunchApp returned upstream pidFromResponse quirk; will verify via AppPID")
 	}
 
 	var pid int
 	deadline := time.Now().Add(8 * time.Second)
 	for time.Now().Before(deadline) {
-		var err error
-		pid, err = a.AppPID(udid, bundleID)
-		if err == nil && pid > 0 {
+		p, err := a.AppPID(udid, bundleID)
+		if err == nil && p > 0 {
+			pid = p
 			break
 		}
 		time.Sleep(200 * time.Millisecond)

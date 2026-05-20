@@ -108,7 +108,18 @@ func TestLogRangeThirdPartyApp_Live(t *testing.T) {
 			t.Skipf("bundle %s (from SPYDER_LIVE_BUNDLE_ID) not installed on %s; skipping", bundleID, udid)
 		}
 		exe = e
+		// Cold-start the named app.
+		_ = adapter.TerminateApp(udid, bundleID)
+		time.Sleep(250 * time.Millisecond)
+		if err := adapter.LaunchApp(udid, bundleID); err != nil {
+			t.Fatalf("LaunchApp(%s): %v", bundleID, err)
+		}
 	} else {
+		// Walk the app list, trying each candidate until one launches.
+		// Some apps fail to start (provisioning expired, signing identity
+		// gone) and surface as "pidFromResponse: could not get pid from
+		// response" — go-ios's way of saying the launch RPC didn't get
+		// a pid back. Skip those and try the next.
 		apps, err := adapter.ListApps(udid)
 		if err != nil {
 			t.Fatalf("ListApps: %v", err)
@@ -120,27 +131,23 @@ func TestLogRangeThirdPartyApp_Live(t *testing.T) {
 			if strings.HasPrefix(a.BundleID, "com.apple.") {
 				continue
 			}
+			// Terminate first so the launch forces a cold start —
+			// scene-phase / UIKit lifecycle entries on launch are the
+			// most reliable signal a quiescent app produces.
+			_ = adapter.TerminateApp(udid, a.BundleID)
+			time.Sleep(250 * time.Millisecond)
+			if launchErr := adapter.LaunchApp(udid, a.BundleID); launchErr != nil {
+				t.Logf("candidate %s did not launch: %v; trying next", a.BundleID, launchErr)
+				continue
+			}
 			bundleID = a.BundleID
 			exe = a.Executable
 			break
 		}
 		if bundleID == "" {
-			t.Skipf("no third-party app found on %s; skipping (set SPYDER_LIVE_BUNDLE_ID to override)", udid)
+			t.Skipf("no third-party app on %s could be cold-started; skipping (set SPYDER_LIVE_BUNDLE_ID to override)", udid)
 		}
-		t.Logf("auto-selected test bundle: %s (exe=%s)", bundleID, exe)
-	}
-
-	// Terminate first so the subsequent launch forces a cold start
-	// — the SwiftUI scene-phase / UIKit lifecycle transitions are
-	// the most reliable signal that a quiescent companion app
-	// produces. If the app is already foregrounded, LaunchApp is a
-	// no-op and the window's filtered stream stays empty even
-	// though the DTX path is healthy. TerminateApp errors are
-	// non-fatal — the app may not currently be running.
-	_ = adapter.TerminateApp(udid, bundleID)
-
-	if err := adapter.LaunchApp(udid, bundleID); err != nil {
-		t.Fatalf("LaunchApp(%s): %v", bundleID, err)
+		t.Logf("auto-selected and launched test bundle: %s (exe=%s)", bundleID, exe)
 	}
 
 	// 5s window — long enough to capture UIKit/SwiftUI lifecycle
