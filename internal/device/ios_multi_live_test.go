@@ -10,10 +10,20 @@ import (
 	"time"
 )
 
-// enumerateDevices returns the list of paired iOS devices. If SPYDER_LIVE_UDIDS
-// is set (comma-separated UDIDs) only those devices are returned; otherwise all
-// devices returned by NewIOSAdapter().List() are used. The test is skipped (not
-// failed) when no devices are found.
+// enumerateDevices returns the list of iOS UDIDs to exercise in the
+// multi-device live tests. Two opt-in env vars gate the run — the
+// tests skip cleanly when neither is set, matching the single-device
+// gating convention so a plain `go test ./...` against an unrelated
+// CI runner or a dev box with happenstance-attached devices doesn't
+// accidentally fire live RPC traffic at them.
+//
+//   - SPYDER_LIVE_UDIDS: comma-separated explicit list. Wins when set.
+//   - SPYDER_LIVE_UDID: single-device opt-in. When set, falls back to
+//     adapter.List() and exercises every paired device. (Reusing the
+//     existing single-device env var keeps the live-tier opt-in story
+//     uniform across the test file.)
+//
+// Skips (not fails) when neither is set or no devices are found.
 func enumerateDevices(t *testing.T) []string {
 	t.Helper()
 	if raw := os.Getenv("SPYDER_LIVE_UDIDS"); raw != "" {
@@ -28,6 +38,9 @@ func enumerateDevices(t *testing.T) []string {
 			t.Logf("SPYDER_LIVE_UDIDS set; using %d explicit device(s)", len(trimmed))
 			return trimmed
 		}
+	}
+	if os.Getenv("SPYDER_LIVE_UDID") == "" {
+		t.Skip("SPYDER_LIVE_UDID / SPYDER_LIVE_UDIDS not set; skipping multi-device live test")
 	}
 
 	adapter := NewIOSAdapter()

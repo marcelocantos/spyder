@@ -67,15 +67,19 @@ run_suite_skipped() {
   echo
 }
 
+# Per-suite extra flags (e.g. -v for streamed test names + log output).
+# Set TEST_FLAGS in the environment to add to every `go test` invocation.
+GO_TEST_FLAGS="${TEST_FLAGS:-}"
+
 # ── Tier 1: Go unit ──────────────────────────────────────────────────────────
-run_suite go-unit "go test ./..."
+run_suite go-unit "go test $GO_TEST_FLAGS ./..."
 
 # ── Tier 2: live device tier (go-ios) ────────────────────────────────────────
 # Gated on SPYDER_LIVE_UDID. Requires a paired iOS device + the bundled
 # `ios tunnel start --userspace` running (spyder spawns it; outside spyder
 # you can run `bin/ios tunnel start --userspace` manually).
 if [[ -n "${SPYDER_LIVE_UDID:-}" ]]; then
-  run_suite live "go test -run '_Live$' ./internal/device/..."
+  run_suite live "go test $GO_TEST_FLAGS -run '_Live$' ./internal/device/..."
 else
   run_suite_skipped live "set SPYDER_LIVE_UDID=<udid> to run; requires a paired device"
 fi
