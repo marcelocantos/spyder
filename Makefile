@@ -1,9 +1,17 @@
 .PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean
 
-build: bin/spyder bin/ios
+build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
-bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' 2>/dev/null) go.mod go.sum
+bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum
 	go build -ldflags "-X main.version=dev" -o bin/spyder .
+
+# bin/spyder-killusbmuxd is a single-purpose helper for the doctor's
+# --fix path. It runs `killall usbmuxd` and exits. Built as a
+# separate binary so the operator can grant it NOPASSWD sudo via a
+# sudoers.d entry without giving the main spyder binary any
+# privilege. See cmd/spyder-killusbmuxd/main.go for sudoers setup.
+bin/spyder-killusbmuxd: cmd/spyder-killusbmuxd/main.go
+	go build -o bin/spyder-killusbmuxd ./cmd/spyder-killusbmuxd
 
 # bin/ios is the bundled go-ios CLI / tunnel daemon. spyder spawns
 # `ios tunnel start --userspace` as a subprocess for iOS-17+ RSD

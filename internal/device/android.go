@@ -868,13 +868,20 @@ func ParseAndroidLogcatLine(line string) (LogLine, bool) {
 	}, true
 }
 
-// parseAndroidLogcatTimestamp parses MM-DD HH:MM:SS.mmm (no year). We
-// use the current year since logcat doesn't include it.
+// parseAndroidLogcatTimestamp parses MM-DD HH:MM:SS.mmm (no year, no
+// TZ). Android's logcat emits in the device's local timezone, which in
+// practice matches the host's local timezone (developer phones are
+// typically set to the same TZ as the dev machine, and `adb logcat`
+// doesn't translate). Interpret the parsed value in time.Local and
+// add the current year, since logcat doesn't include either. Without
+// the Local interpretation, a Sydney device's "08:54 local" entry
+// would parse as 08:54 UTC, which is hours ahead of "now Sydney" and
+// would get incorrectly filtered out by an `until = now+3s` window.
 func parseAndroidLogcatTimestamp(s string) time.Time {
 	year := time.Now().Year()
-	t, err := time.Parse("01-02 15:04:05.000", s)
+	t, err := time.ParseInLocation("01-02 15:04:05.000", s, time.Local)
 	if err != nil {
-		t, err = time.Parse("01-02 15:04:05.99", s)
+		t, err = time.ParseInLocation("01-02 15:04:05.99", s, time.Local)
 	}
 	if err != nil {
 		return time.Time{}

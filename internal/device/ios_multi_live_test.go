@@ -10,39 +10,34 @@ import (
 	"time"
 )
 
-// enumerateDevices returns the list of paired iOS devices. If SPYDER_LIVE_UDIDS
-// is set (comma-separated UDIDs) only those devices are returned; otherwise all
-// devices returned by NewIOSAdapter().List() are used. The test is skipped (not
-// failed) when no devices are found.
+// enumerateDevices returns the list of iOS UDIDs to exercise in the
+// multi-device live tests. Multi-device tests are an explicit opt-in
+// — they touch every UDID listed, and a hang on any one stalls the
+// suite. The dedicated SPYDER_LIVE_UDIDS env var is the only trigger;
+// SPYDER_LIVE_UDID (the single-device gate) deliberately does NOT
+// enable these so a normal `TEST_FLAGS=-v make test-report` against
+// a host with happenstance-attached but partially-wedged devices
+// doesn't hang on the unhealthy ones.
+//
+// Set SPYDER_LIVE_UDIDS=<udid1>,<udid2>,... to opt in. Skips cleanly
+// otherwise.
 func enumerateDevices(t *testing.T) []string {
 	t.Helper()
-	if raw := os.Getenv("SPYDER_LIVE_UDIDS"); raw != "" {
-		udids := strings.Split(raw, ",")
-		var trimmed []string
-		for _, u := range udids {
-			if s := strings.TrimSpace(u); s != "" {
-				trimmed = append(trimmed, s)
-			}
-		}
-		if len(trimmed) > 0 {
-			t.Logf("SPYDER_LIVE_UDIDS set; using %d explicit device(s)", len(trimmed))
-			return trimmed
+	raw := os.Getenv("SPYDER_LIVE_UDIDS")
+	if raw == "" {
+		t.Skip("SPYDER_LIVE_UDIDS not set; skipping multi-device live test (set to comma-separated UDIDs to enable)")
+	}
+	var trimmed []string
+	for _, u := range strings.Split(raw, ",") {
+		if s := strings.TrimSpace(u); s != "" {
+			trimmed = append(trimmed, s)
 		}
 	}
-
-	adapter := NewIOSAdapter()
-	devs, err := adapter.List()
-	if err != nil {
-		t.Fatalf("List: %v", err)
+	if len(trimmed) == 0 {
+		t.Skip("SPYDER_LIVE_UDIDS set but empty after trimming; skipping multi-device live test")
 	}
-	if len(devs) == 0 {
-		t.Skip("no paired iOS devices found; skipping multi-device live test")
-	}
-	udids := make([]string, len(devs))
-	for i, d := range devs {
-		udids[i] = d.UUID
-	}
-	return udids
+	t.Logf("SPYDER_LIVE_UDIDS: %d device(s)", len(trimmed))
+	return trimmed
 }
 
 // TestMultiDevice_Enumerate_Live calls NewIOSAdapter().List(), asserts ≥1

@@ -5,6 +5,7 @@ package device
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -76,12 +77,14 @@ func TestLogRange_Live(t *testing.T) {
 // via LogRange filtered by its executable name. This is the exact
 // workflow the v0.36–v0.38 features were sold on.
 //
-// Uses KeepAwake (com.marcelocantos.spyder.KeepAwake) by default —
-// autoawake deploys it to every paired device, so it's reliably
-// installed and emits SwiftUI / UIKit lifecycle entries on launch.
-// Override with SPYDER_LIVE_BUNDLE_ID for a different target app.
-// Skips (not fails) if the chosen bundle id isn't installed, so this
-// test stays useful on devices where KeepAwake hasn't been deployed.
+// Bundle id resolution order:
+//  1. SPYDER_LIVE_BUNDLE_ID env var (explicit caller override).
+//  2. First third-party app from installation_proxy that isn't an
+//     Apple-prefixed bundle. Lets the test run on any paired device
+//     with at least one user app without per-device configuration.
+//
+// Skips (not fails) when no usable bundle is found — keeps the test
+// useful on freshly-provisioned devices.
 //
 // Pre-T58.1, this test would have caught the empty-stream regression
 // that motivated the whole DTX activitytracetap port — the lockdown
@@ -92,31 +95,59 @@ func TestLogRangeThirdPartyApp_Live(t *testing.T) {
 	if udid == "" {
 		t.Skip("SPYDER_LIVE_UDID not set; skipping live device test")
 	}
-	bundleID := os.Getenv("SPYDER_LIVE_BUNDLE_ID")
-	if bundleID == "" {
-		bundleID = "com.marcelocantos.spyder.KeepAwake"
-	}
 
 	adapter := NewIOSAdapter()
-	exe, installed, err := adapter.ResolveExecutable(udid, bundleID)
-	if err != nil {
-		t.Fatalf("ResolveExecutable(%s): %v", bundleID, err)
-	}
-	if !installed {
-		t.Skipf("bundle %s not installed on %s; skipping", bundleID, udid)
-	}
-
-	// Terminate first so the subsequent launch forces a cold start
-	// — the SwiftUI scene-phase / UIKit lifecycle transitions are
-	// the most reliable signal that a quiescent companion app
-	// produces. If the app is already foregrounded, LaunchApp is a
-	// no-op and the window's filtered stream stays empty even
-	// though the DTX path is healthy. TerminateApp errors are
-	// non-fatal — the app may not currently be running.
-	_ = adapter.TerminateApp(udid, bundleID)
-
-	if err := adapter.LaunchApp(udid, bundleID); err != nil {
-		t.Fatalf("LaunchApp(%s): %v", bundleID, err)
+	bundleID := os.Getenv("SPYDER_LIVE_BUNDLE_ID")
+	var exe string
+	if bundleID != "" {
+		e, installed, err := adapter.ResolveExecutable(udid, bundleID)
+		if err != nil {
+			t.Fatalf("ResolveExecutable(%s): %v", bundleID, err)
+		}
+		if !installed {
+			t.Skipf("bundle %s (from SPYDER_LIVE_BUNDLE_ID) not installed on %s; skipping", bundleID, udid)
+		}
+		exe = e
+		// Cold-start the named app.
+		_ = adapter.TerminateApp(udid, bundleID)
+		time.Sleep(250 * time.Millisecond)
+		if err := adapter.LaunchApp(udid, bundleID); err != nil {
+			t.Fatalf("LaunchApp(%s): %v", bundleID, err)
+		}
+	} else {
+		// Walk the app list, trying each candidate until one launches.
+		// Some apps fail to start (provisioning expired, signing identity
+		// gone) and surface as "pidFromResponse: could not get pid from
+		// response" — go-ios's way of saying the launch RPC didn't get
+		// a pid back. Skip those and try the next.
+		apps, err := adapter.ListApps(udid)
+		if err != nil {
+			t.Fatalf("ListApps: %v", err)
+		}
+		for _, a := range apps {
+			if a.BundleID == "" || a.Executable == "" {
+				continue
+			}
+			if strings.HasPrefix(a.BundleID, "com.apple.") {
+				continue
+			}
+			// Terminate first so the launch forces a cold start —
+			// scene-phase / UIKit lifecycle entries on launch are the
+			// most reliable signal a quiescent app produces.
+			_ = adapter.TerminateApp(udid, a.BundleID)
+			time.Sleep(250 * time.Millisecond)
+			if launchErr := adapter.LaunchApp(udid, a.BundleID); launchErr != nil {
+				t.Logf("candidate %s did not launch: %v; trying next", a.BundleID, launchErr)
+				continue
+			}
+			bundleID = a.BundleID
+			exe = a.Executable
+			break
+		}
+		if bundleID == "" {
+			t.Skipf("no third-party app on %s could be cold-started; skipping (set SPYDER_LIVE_BUNDLE_ID to override)", udid)
+		}
+		t.Logf("auto-selected and launched test bundle: %s (exe=%s)", bundleID, exe)
 	}
 
 	// 5s window — long enough to capture UIKit/SwiftUI lifecycle

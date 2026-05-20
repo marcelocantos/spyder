@@ -2002,7 +2002,7 @@ targets:
     achieved: 2026-04-18
   T60:
     name: Server-side managed log capture sessions replace the agent-side --follow + background-shell + kill dance
-    status: set_aside
+    status: achieved
     value: 0.0
     cost: 0.0
     set_aside_reason: Deferred — separated from 🎯T62's release acceptance on 2026-05-19. The bash-dance for agent-driven log capture is ergonomically poor but functional, so it doesn't block consumer adoption of the iOS log path. Reinstate this target standalone when there's a concrete agent-UX pain point that the existing --follow stream can't address. Original spec preserved in the acceptance list for future pickup.
@@ -2044,6 +2044,7 @@ targets:
     - surfaced-by:multimaze2
     origin: manual
     discovered: 2026-05-19
+    achieved: 2026-05-20
   T61:
     name: spyder log --bundle-id &lt;id&gt; --follow works on iOS 26.4 (currently EOFs immediately)
     status: achieved
@@ -2161,6 +2162,134 @@ targets:
     - investigation
     origin: manual
     discovered: 2026-05-19
+  T65:
+    name: oslog parser drops math/big in favour of a sliding-window bit buffer
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - internal/oslog/parser.go's readImmediate uses a uint64 sliding-window accumulator with a byte-drain on overflow, not math/big.Int.
+    - No math/big import remains in the internal/oslog/ package.
+    - All existing round-trip tests in internal/oslog/parser_test.go pass, including the 9-byte / 10-byte / 16-byte cases that motivated the original big.Int introduction.
+    - The test encoder (encodeImmediate) is also math/big-free, using a complementary bit-reader pattern.
+    context: Filed and achieved together with 🎯T60 in v0.41.0. The big.Int path was a mechanical port from pymobiledevice3 (Python ints are arbitrary-precision by default). The encoding is bit-stream concatenation, not arithmetic — every immediate is a finite byte sequence. Replaced with a 21-bit-max uint64 sliding window plus byte-drain on overflow. Identical output, no per-chunk heap allocation, intent reads honestly. Discovered when reviewing the parser implementation prompted by the question "why is the decoder a VM and why does it need math/big?"
+    tags:
+    - ios
+    - oslog
+    - parser
+    - code-quality
+    origin: manual
+    discovered: 2026-05-20
+    achieved: 2026-05-20
+  T66:
+    name: spyder doctor detects and recovers wedged usbmuxd via sudo + touchid
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`spyder doctor` subcommand exists. Reports overall health: paired-device count via `xcrun devicectl list devices --quiet --json-output`, paired-device count via `bin/ios list`, and any other quick sanity probes (tunnel running, ~/.spyder paths writable).'
+    - When `devicectl` reports N>0 connected iOS devices but `bin/ios list` returns fewer, classify as 'usbmuxd wedged' and surface the specific UDIDs missing from the usbmux view.
+    - When wedged, `spyder doctor --fix` shells out to `sudo killall usbmuxd` (launchd respawns it in ~1s). On the user's macOS box, PAM touchid handles the auth prompt — one fingerprint tap, no password typing. Without --fix, only diagnose; don't mutate.
+    - Post-fix, re-probe and confirm the usbmux device count matches devicectl. Exit non-zero if still wedged. Print the recovery action taken so the user has audit trail.
+    context: |-
+      Discovered during the live-test validation push (this session). usbmuxd wedges intermittently under operational churn — its third-party-visible device list desyncs from CoreDevice's view. Observable as: `xcrun devicectl list devices` shows N devices connected; `bin/ios list` shows N-1 or 0; every go-ios RPC against the missing UDIDs returns "Device 'UDID' not found". Recovery requires `sudo killall usbmuxd`.
+
+      This makes spyder operationally fragile on macOS hosts where the user is running heavy device test suites. The user has PAM touchid for sudo, so the recovery is one fingerprint tap once spyder asks for it — no privilege escalation infrastructure needed. The "doctor" pattern (detect + optionally fix) mirrors `brew doctor` and Xcode's first-run checks.
+
+      T67 (connection pooling) and T68 (upstream investigation) are the other prongs of the same problem.
+    tags:
+    - ios
+    - usbmuxd
+    - dev-experience
+    - diagnostics
+    - macos-fragility
+    origin: manual
+    discovered: 2026-05-20
+  T67:
+    name: Spyder pools per-device go-ios service connections to reduce usbmuxd churn
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Per-device connection cache in internal/goios/ for the high-churn services: installation_proxy, appservice, instruments.ProcessControl, instruments.ScreenshotService, oslog DTX channel. Reuse one open connection across operations within a short window instead of open-call-close on every RPC.'
+    - Cache invalidation tied to the existing goios.Resolver.Invalidate path — transport errors drop the cache entry so the next call re-handshakes.
+    - 'Connection lifecycle is bounded: idle TTL configurable (default 60s), max concurrent connections per device configurable (default 4), explicit Close() drains everything.'
+    - 'Measured: a stress test that opens N=200 sequential operations against a real iOS device completes in <10% of the wall-clock baseline of one-connection-per-op AND with usbmuxd remaining healthy throughout (verified via `bin/ios list` after the run).'
+    context: |-
+      Companion to T66. The diagnose-and-fix path is reactive — pooling reduces the rate at which the wedge happens in the first place by amortising the per-RPC usbmux session cost across many operations.
+
+      Today every spyder RPC against an iOS device opens a fresh service connection (installation_proxy, appservice, screenshotr, etc.), uses it once, closes it. The Close() impls in go-ios v1.0.213 close the underlying socket correctly (audited in T63's investigation — only ListenAppStateNotifications has the broken Close, and that's already excised). But the per-RPC connect overhead is real, and usbmuxd's session table seems to react poorly to high churn even when each individual open/close is correct.
+
+      A 60s-TTL per-service cache should eliminate ~90% of connection establishment for typical test runs while staying simple — no thread-safety nightmare since goios.Resolver already serialises per-UDID resolution.
+    tags:
+    - ios
+    - go-ios
+    - usbmuxd
+    - performance
+    - stability
+    origin: manual
+    discovered: 2026-05-20
+  T68:
+    name: Identify the macOS-side trigger that wedges usbmuxd's third-party device list
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Reproducer script in scripts/ that reliably wedges usbmuxd's third-party device visibility within ≤5 minutes against a paired iOS device, without involving Xcode or system reboot.
+    - Either (a) a `dtrace` / `fs_usage` / `nettop` trace captured during the wedge that identifies the offending RPC pattern or kernel transition, or (b) a clear write-up of why the trigger couldn't be isolated and the next investigation step.
+    - Documented in docs/papers/ with the observed behaviour, the recovery path, links to upstream Apple Feedback or known issues if any are found, and the operational implications (e.g. heavy test churn rates that should be avoided in tooling that runs against macOS-paired iOS devices).
+    context: |-
+      The macOS-upstream half of the T66 + T67 work. Spyder's mitigations (doctor + pooling) cover the consequences; this target covers the cause.
+
+      Empirical pattern from the live-test session (2026-05-20): under operational churn from go-ios's test suite (rapid Launch/Terminate, multiple DTX channel open/close, repeated ListDevices), usbmuxd's third-party-visible device list drops entries while macOS's CoreDevice view stays correct. Recovery is `sudo killall usbmuxd` only — in-process recovery via reopening connections doesn't work because usbmuxd genuinely doesn't have the device in its visibility table.
+
+      Without access to Apple's source, isolation has to come from external observation. dtrace probes on usbmuxd (if SIP permits) or on the Mach IPC path. Worth coordinating with the libimobiledevice / pymobiledevice3 communities — they almost certainly have anecdotal evidence of the same wedge.
+
+      Don't start this target without explicit user ask. Open-ended investigation into Apple-side behaviour, useful only if T66 + T67 turn out to be insufficient.
+    tags:
+    - ios
+    - usbmuxd
+    - macos-upstream
+    - investigation
+    - deferred
+    origin: manual
+    discovered: 2026-05-20
+  T69:
+    name: Remove spyder doctor --install-sudoers + spyder-killusbmuxd once usbmuxd wedge has a real fix
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - spyder doctor --install-sudoers, spyder doctor --fix, the cmd/spyder-killusbmuxd helper binary, the Makefile rule for it, the agents-guide section, and the /etc/sudoers.d/spyder-killusbmuxd entry pattern are all retired from the tree.
+    - STABILITY.md notes the historical role of the workaround (v0.41-v0.4x era) and points at whatever permanent fix landed (e.g. connection pooling alone, a different go-ios API, an Apple-side fix, a libimobiledevice replacement).
+    - An end-to-end live test on the host can run the full iOS test suite multiple times back-to-back without ever wedging usbmuxd to the point where killall is needed. Verified empirically; documented in the retirement commit.
+    context: |-
+      Filed alongside the workaround itself in v0.41 (this session). The user's explicit framing: this should be a temporary feature while we figure out what's actually wrong with usbmuxd.
+
+      The workaround is real but ugly:
+      - A separate setuid-shaped binary (cmd/spyder-killusbmuxd) that exists solely to be killed by root.
+      - A NOPASSWD sudoers entry granting the user passwordless privilege escalation for that one path.
+      - A doctor subcommand wrapping the whole flow.
+
+      It works, and it's the right pragmatic answer for now (usbmuxd wedges block every iOS RPC and the only known recovery is `killall usbmuxd`). But it's a workaround for something we haven't actually root-caused. Permanent-fix candidates from this session's investigation:
+
+      1. T67 (connection pooling) — empirically determine whether amortising service-connection open/close eliminates the wedge entirely. If yes, the doctor/helper become unnecessary in normal operation.
+      2. T68 (upstream usbmuxd investigation) — dtrace / fs_usage on usbmuxd during a live wedge to identify the specific Mach IPC / state-machine path that breaks. If we can characterise the trigger, we may be able to design around it without ever needing to restart usbmuxd.
+      3. Switch to libimobiledevice's path or another go-ios fork that doesn't hit the same usbmux pattern. Riskier but possible.
+
+      Retire this target (and the workaround) when (1) or (2) demonstrates that the wedge no longer happens — or, failing that, when we've established it's truly unavoidable and the workaround is the documented production answer (in which case revisit the framing rather than the implementation).
+
+      Depends on T67's empirical answer. Don't retire T69 by removing the workaround until T67 has measured frequency-of-wedge with vs without pooling on a real device.
+    depends_on:
+    - T67
+    tags:
+    - ios
+    - usbmuxd
+    - workaround
+    - deferred
+    - code-debt
+    origin: manual
+    discovered: 2026-05-20
   T7:
     name: spyder supervises the Python bridge tunneld for reliable iOS DVT access
     status: achieved
@@ -2181,6 +2310,58 @@ targets:
     origin: research-derived (the Python bridge 8.x study 2026-04-18)
     discovered: 2026-04-18
     achieved: 2026-04-18
+  T70:
+    name: Make the marcelocantos/go-ios spyder-patches rebase workflow Go-module-safe
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - The documented workflow for pulling upstream into spyder-patches no longer risks orphaning SHAs that historical spyder commits pin.
+    - Either (a) every spyder-pinned SHA is tagged in the fork (e.g. `spyder-pin-v0.NN.0`) before the spyder go.mod pin is bumped, with the tag pushed to the fork remote; or (b) spyder-patches uses merge-based updates against upstream/main rather than rebase + force-push.
+    - The chosen approach is documented in spyder's go.mod comment block above the `replace` directive (replacing the current rebase-and-force-push instructions), and exercised at least once end-to-end so the workflow is known-good.
+    context: |-
+      Filed during the v0.41 / live-tests session when wiring marcelocantos/go-ios's spyder-patches branch into spyder's pin.
+
+      The current documented workflow (in spyder's go.mod above the `replace` line) is: rebase spyder-patches onto upstream/main, force-push, bump spyder's pin to the new SHA. This works for forward builds but has a latent risk for historical spyder commits: every spyder pin is a SHA, and after a rebase the OLD spyder-patches tip becomes unreachable from any branch. GitHub eventually garbage-collects unreachable commits. If a historical spyder commit pins an orphaned SHA AND nobody has built it before (so proxy.golang.org hasn't cached it), `go build` of that historical spyder commit fails.
+
+      In practice the risk is small for our use case (single-developer, occasional builds, proxy.golang.org caches anything ever built). But it's a latent foot-gun.
+
+      Two fixes:
+      - Tag each spyder-pinned SHA in the fork before bumping the pin (e.g. `git tag spyder-pin-v0.41.0 <sha> && git push origin spyder-pin-v0.41.0`). Tags are permanent refs; keeps the SHA reachable forever. Cleanest, preserves linear history.
+      - Merge upstream/main into spyder-patches instead of rebasing. No force-push; every old SHA stays reachable via the parent chain. Uglier history (merge commits), but Go-module-proof.
+
+      Defer until either (a) we actually rebase spyder-patches for the first time (most likely trigger), or (b) the historical-rebuild scenario bites us. Until then, the current single-commit state of spyder-patches means there's nothing to lose anyway.
+    tags:
+    - go-ios
+    - fork
+    - go-modules
+    - code-debt
+    - deferred
+    origin: manual
+    discovered: 2026-05-20
+  T71:
+    name: Track upstream go-ios for divergence relevant to spyder's pinned fork
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Periodically (when you next happen to touch the fork for any reason, or at most every few months), fetch upstream and compare against spyder-patches. The check is: `cd /tmp/go-ios-fix && git fetch upstream && git log --oneline upstream/main..spyder-patches` (commits we carry) and `git log --oneline spyder-patches..upstream/main` (commits upstream has that we don''t).'
+    - If commits upstream touch any of the paths spyder actively uses — `ios/dtx_codec/`, `ios/instruments/`, `ios/installationproxy/`, `ios/appservice/`, `ios/ostrace/`, `ios/crashreport/`, `ios/syslog/`, `ios/zipconduit/`, `ios/tunnel/`, `ios/{utils,lockdown}.go` — read them. Decide whether to pull them in via a rebase (see 🎯T70 for the safe workflow) or whether they're irrelevant.
+    - 'If spyder-patches''s single commit (`dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType`) lands upstream verbatim, retire spyder-patches entirely and remove the `replace` directive from spyder''s go.mod — we go back to a clean upstream pin.'
+    context: |-
+      Filed instead of building any active scheduling (cron / GitHub Actions / Slack DM). Considered all of those during the v0.41 session and concluded the realistic upstream-tracking cadence is "when something else makes me touch the fork" — likely every few months, possibly never if spyder-patches stays at one commit and we don't hit any new upstream-bug-of-the-week.
+
+      The fork (https://github.com/marcelocantos/go-ios) currently carries ONE commit beyond upstream/main: `0c634f4 dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType` on the `spyder-patches` branch. Upstream's `main` and our fork's main are otherwise in sync. Three earlier patches (iOS-17+ instruments dispatch fixes) merged upstream before this session and no longer need to ride in the fork.
+
+      When you do check: the spyder paths that matter for divergence are the ones called from `internal/device/ios.go`, `internal/goios/`, `internal/oslog/`. Anything else in upstream go-ios can drift freely — spyder doesn't touch it.
+    tags:
+    - go-ios
+    - fork
+    - maintenance
+    - manual
+    - deferred
+    origin: manual
+    discovered: 2026-05-20
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved

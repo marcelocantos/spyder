@@ -28,10 +28,14 @@ struct ContentView: View {
     private let ballRadius: CGFloat = 24
 
     var body: some View {
-        GeometryReader { proxy in
-            ZStack {
-                Color.black.ignoresSafeArea()
+        ZStack {
+            // Black background extends edge-to-edge (under the notch /
+            // home indicator) so the screen looks fully dark; the ball's
+            // bounce region below is the safe-area-respecting frame so
+            // the ball can't disappear behind the notch or status bar.
+            Color.black.ignoresSafeArea()
 
+            GeometryReader { proxy in
                 TimelineView(.animation(minimumInterval: 1.0 / 60.0)) { context in
                     Circle()
                         .fill(Color.yellow)
@@ -41,18 +45,17 @@ struct ContentView: View {
                             advance(to: now, in: proxy.size)
                         }
                 }
+            }
 
-                VStack {
-                    Text("BouncingBall · bounces: \(bounceCount)")
-                        .font(.system(.headline, design: .monospaced))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .padding(.top, 20)
-                    Spacer()
-                }
+            VStack {
+                Text("BouncingBall · bounces: \(bounceCount)")
+                    .font(.system(.headline, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.6))
+                    .padding(.top, 20)
+                Spacer()
             }
         }
         .preferredColorScheme(.dark)
-        .ignoresSafeArea()
         .onAppear {
             UIApplication.shared.isIdleTimerDisabled = true
             log.info("scene appear — initial position=\(position.x, privacy: .public),\(position.y, privacy: .public)")

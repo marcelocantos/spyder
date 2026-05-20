@@ -52,6 +52,16 @@ const (
 // everything else runs in-process.
 type IOSAdapter struct {
 	goios *goios.Resolver
+	// ipPool holds one cached installation_proxy connection per UDID.
+	// installation_proxy is the highest-churn service spyder uses
+	// (every ListApps + ResolveExecutable + bundle-id resolution
+	// opens one), and the per-RPC open/close churn appears to be a
+	// trigger for the usbmuxd-wedge symptom (🎯T67). Reusing one
+	// connection per device collapses N opens to 1. Pool serialises
+	// operations on the cached connection — installation_proxy is
+	// not safe for concurrent use anyway.
+	ipPool *goios.ServicePool[*installationproxy.Connection]
+
 	mu    sync.Mutex
 	cache map[string]cachedState
 }
@@ -65,8 +75,20 @@ type cachedState struct {
 // goios.Resolver (127.0.0.1:60105 — the `ios tunnel start --userspace`
 // registry endpoint).
 func NewIOSAdapter() *IOSAdapter {
+	resolver := goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort)
 	return &IOSAdapter{
-		goios: goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort),
+		goios: resolver,
+		ipPool: goios.NewServicePool(
+			resolver,
+			func(dev goios_ios.DeviceEntry) (*installationproxy.Connection, error) {
+				return installationproxy.New(dev)
+			},
+			func(c *installationproxy.Connection) error {
+				c.Close()
+				return nil
+			},
+			60*time.Second,
+		),
 		cache: map[string]cachedState{},
 	}
 }
@@ -413,18 +435,15 @@ func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return nil, fmt.Errorf("list_apps: %w", err)
-	}
-	conn, err := installationproxy.New(dev)
+	conn, release, err := a.ipPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
 		return nil, fmt.Errorf("installation_proxy on %s: %w", id, err)
 	}
-	defer conn.Close()
+	defer release()
 	raw, err := conn.BrowseUserApps()
 	if err != nil {
+		a.ipPool.Invalidate(id)
 		return nil, fmt.Errorf("list_apps on %s: %w", id, err)
 	}
 	apps := make([]AppInfo, 0, len(raw))
@@ -448,18 +467,15 @@ func (a *IOSAdapter) ResolveExecutable(id, bundleID string) (string, bool, error
 	if id == "" || bundleID == "" {
 		return "", false, errors.New("device id and bundle_id are required")
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return "", false, fmt.Errorf("resolve_executable: %w", err)
-	}
-	conn, err := installationproxy.New(dev)
+	conn, release, err := a.ipPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
 		return "", false, fmt.Errorf("installation_proxy on %s: %w", id, err)
 	}
-	defer conn.Close()
+	defer release()
 	apps, err := conn.BrowseAllApps()
 	if err != nil {
+		a.ipPool.Invalidate(id)
 		return "", false, fmt.Errorf("browse apps on %s: %w", id, err)
 	}
 	for _, app := range apps {
@@ -544,7 +560,7 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("resolve pid: %w", err)
 	}
-	appBase, err := installedAppFolder(dev, bundleID)
+	appBase, err := a.installedAppFolder(id, bundleID)
 	if err != nil {
 		a.goios.Invalidate(id)
 		return 0, err
@@ -573,15 +589,17 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 
 // installedAppFolder returns the basename of the .app folder
 // (e.g. "MultiMaze.app") for the given bundle id, queried via
-// installation_proxy. Returns "" when the bundle isn't installed.
-func installedAppFolder(dev goios_ios.DeviceEntry, bundleID string) (string, error) {
-	conn, err := installationproxy.New(dev)
+// installation_proxy through the pooled connection. Returns "" when
+// the bundle isn't installed.
+func (a *IOSAdapter) installedAppFolder(id, bundleID string) (string, error) {
+	conn, release, err := a.ipPool.Acquire(id)
 	if err != nil {
 		return "", fmt.Errorf("installation_proxy: %w", err)
 	}
-	defer conn.Close()
+	defer release()
 	apps, err := conn.BrowseAllApps()
 	if err != nil {
+		a.ipPool.Invalidate(id)
 		return "", fmt.Errorf("browse apps: %w", err)
 	}
 	for _, app := range apps {
@@ -794,17 +812,14 @@ func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return fmt.Errorf("uninstall: %w", err)
-	}
-	conn, err := installationproxy.New(dev)
+	conn, release, err := a.ipPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
 		return fmt.Errorf("installation_proxy on %s: %w", id, err)
 	}
-	defer conn.Close()
+	defer release()
 	if err := conn.Uninstall(bundleID); err != nil {
+		a.ipPool.Invalidate(id)
 		return fmt.Errorf("uninstall %s on %s: %w", bundleID, id, err)
 	}
 	return nil

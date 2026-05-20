@@ -21,9 +21,13 @@ fi
 
 # Refuse to run on a dirty tree. The report's meaning is "these tests
 # ran against this exact tree"; a dirty tree makes that claim incoherent.
-if [[ -n "$(git status --porcelain)" ]]; then
+# Exception: TEST-REPORT.json itself, since we're about to overwrite it
+# and the prior contents (from an earlier completed or killed run)
+# don't reflect anything about the tree we're testing.
+dirty=$(git status --porcelain | grep -v -E '^.. TEST-REPORT\.json$' || true)
+if [[ -n "$dirty" ]]; then
   echo "test-report: refusing to run on a dirty tree. Commit or stash first:" >&2
-  git status --short >&2
+  echo "$dirty" >&2
   exit 1
 fi
 
@@ -67,15 +71,25 @@ run_suite_skipped() {
   echo
 }
 
+# Per-suite extra flags (e.g. -v for streamed test names + log output).
+# Set TEST_FLAGS in the environment to add to every `go test` invocation.
+GO_TEST_FLAGS="${TEST_FLAGS:-}"
+
+# Per-suite timeout. A complete run takes ~40s on this host, so 2m is
+# plenty of margin without being stuck for 10 minutes (Go's default)
+# when a device-side hang takes a test out. -timeout goes before
+# TEST_FLAGS so a caller can override with e.g. TEST_FLAGS='-timeout 10m'.
+DEFAULT_TIMEOUT="-timeout 2m"
+
 # ── Tier 1: Go unit ──────────────────────────────────────────────────────────
-run_suite go-unit "go test ./..."
+run_suite go-unit "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS ./..."
 
 # ── Tier 2: live device tier (go-ios) ────────────────────────────────────────
 # Gated on SPYDER_LIVE_UDID. Requires a paired iOS device + the bundled
 # `ios tunnel start --userspace` running (spyder spawns it; outside spyder
 # you can run `bin/ios tunnel start --userspace` manually).
 if [[ -n "${SPYDER_LIVE_UDID:-}" ]]; then
-  run_suite live "go test -run '_Live$' ./internal/device/..."
+  run_suite live "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS -run '_Live$' ./internal/device/..."
 else
   run_suite_skipped live "set SPYDER_LIVE_UDID=<udid> to run; requires a paired device"
 fi

@@ -54,4 +54,15 @@ require (
 	software.sslmate.com/src/go-pkcs12 v0.2.0 // indirect
 )
 
-replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20260510062847-15d4eb19a94b
+// Patched go-ios fork. Track the `spyder-patches` branch in
+// marcelocantos/go-ios — it's a long-lived branch that rebases onto
+// upstream/main periodically, carrying only the patches spyder needs
+// that haven't (or shouldn't) merge upstream. Pin to the branch's
+// current tip SHA via the pseudo-version. When pulling in a new
+// upstream:
+//   1. cd into the fork, `git fetch upstream`,
+//      `git rebase upstream/main spyder-patches`,
+//      `git push --force-with-lease origin spyder-patches`.
+//   2. `go get github.com/danielpaulus/go-ios@<new-spyder-patches-sha>`
+//      then bump this line.
+replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20260520093604-0c634f48768f
