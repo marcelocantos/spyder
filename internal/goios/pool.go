@@ -43,6 +43,12 @@ type ServicePool[T any] struct {
 	entries map[string]*poolEntry[T] // key: "udid"
 	stop    chan struct{}
 	stopped bool
+	// opens counts how many times newConn was invoked across the pool's
+	// lifetime — i.e. the number of underlying service-channel handshakes.
+	// Exposed for tests that want to assert the pool is actually
+	// amortising opens (🎯T67's acceptance is about reducing usbmuxd
+	// session churn; this is the direct signal).
+	opens int64
 }
 
 // NewServicePool constructs a pool wrapping the per-device service
@@ -92,6 +98,7 @@ func (p *ServicePool[T]) Acquire(udid string) (conn T, release func(), err error
 			var zero T
 			return zero, func() {}, cerr
 		}
+		p.opens++
 		e = &poolEntry[T]{conn: c, lastUsed: time.Now()}
 		p.entries[udid] = e
 	}
@@ -135,6 +142,16 @@ func (p *ServicePool[T]) Close() error {
 		_ = p.closeFn(e.conn)
 	}
 	return nil
+}
+
+// Opens returns the number of underlying service-channel handshakes
+// the pool has performed across its lifetime. Useful in tests to
+// confirm the pool is amortising opens — for N operations on the same
+// UDID with no Invalidate calls, Opens should be exactly 1.
+func (p *ServicePool[T]) Opens() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.opens
 }
 
 // sweep runs every idleTTL/2 and evicts entries idle past idleTTL.

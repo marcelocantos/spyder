@@ -2208,9 +2208,10 @@ targets:
     achieved: 2026-05-20
   T67:
     name: Spyder pools per-device go-ios service connections to reduce usbmuxd churn
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 1.0
     acceptance:
     - 'Per-device connection cache in internal/goios/ for the high-churn services: installation_proxy, appservice, instruments.ProcessControl, instruments.ScreenshotService, oslog DTX channel. Reuse one open connection across operations within a short window instead of open-call-close on every RPC.'
     - Cache invalidation tied to the existing goios.Resolver.Invalidate path — transport errors drop the cache entry so the next call re-handshakes.
@@ -2222,6 +2223,17 @@ targets:
       Today every spyder RPC against an iOS device opens a fresh service connection (installation_proxy, appservice, screenshotr, etc.), uses it once, closes it. The Close() impls in go-ios v1.0.213 close the underlying socket correctly (audited in T63's investigation — only ListenAppStateNotifications has the broken Close, and that's already excised). But the per-RPC connect overhead is real, and usbmuxd's session table seems to react poorly to high churn even when each individual open/close is correct.
 
       A 60s-TTL per-service cache should eliminate ~90% of connection establishment for typical test runs while staying simple — no thread-safety nightmare since goios.Resolver already serialises per-UDID resolution.
+
+      **Achieved 2026-05-20** in two commits (PR #103 landed the primitive + installation_proxy wiring; this follow-up wired appservice + ScreenshotService and added the live stress test).
+
+      Implementation disposition vs original acceptance:
+      - `installation_proxy` — pooled (LandedInPR #103). `ipPool` in `internal/device/ios.go`.
+      - `appservice` — pooled. `asPool` shared across LaunchApp/TerminateApp/AppPID.
+      - `instruments.ScreenshotService` — pooled. `ssPool`, used by Screenshot.
+      - `instruments.ProcessControl` — not used in spyder (no call sites), so no work needed. If a future caller appears, follow the same `goios.NewServicePool` template.
+      - `oslog DTX channel` — intentionally not pooled. The activity-trace-tap channel is a long-lived per-consumer stream (goroutine pump in `internal/oslog/stream.go`), not an RPC-shaped service. Sharing one stream across multiple consumers would require fan-out architecture; pool semantics (Acquire/release) don't apply.
+      - Bounded lifecycle: idle TTL 60s (configurable via `NewServicePool` constructor); max concurrent is implicitly 1 per (UDID, service) — the per-entry mutex serialises operations, which matches each service's own concurrency contract (none of these services are safe for concurrent use anyway).
+      - Stress test (`TestIOSPoolStress_Live` in `internal/device/`) asserts three signals on a real iPhone: 200 pooled ops perform 0 new opens (warm cache); 20 baseline ops with forced Invalidate perform 20 opens; pooled wall-clock is < 90% of baseline (the 10% target in the original acceptance assumed open-cost dominated per-op time, which isn't true for installation_proxy's BrowseUserApps where the RPC body dominates — the open-count reduction is the decisive metric); and `bin/ios list` succeeds post-stress, confirming usbmuxd's device list isn't wedged.
     tags:
     - ios
     - go-ios
@@ -2230,6 +2242,7 @@ targets:
     - stability
     origin: manual
     discovered: 2026-05-20
+    achieved: 2026-05-20
   T68:
     name: Identify the macOS-side trigger that wedges usbmuxd's third-party device list
     status: identified
