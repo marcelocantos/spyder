@@ -1,20 +1,21 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-05-19T13:04:11Z",
+  "generated_at": "2026-05-20T00:20:00Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "go test ./...",
-      "duration_s": 10,
+      "duration_s": 13,
       "status": "pass"
     },
     {
       "name": "live",
       "cmd": "go test -run '_Live$' ./internal/device/...",
-      "duration_s": 11,
-      "status": "pass"
+      "duration_s": 0,
+      "status": "skipped",
+      "note": "Skipped: ios.GetDevice fails on both paired devices (Minicades iPhone, Jevons iPad mini) — `Device 'UDID' not found` despite ios.ListDevices enumerating them. Environmental upstream go-ios quirk requiring device unplug+replug; not introduced by this release's code. Manager unit tests in internal/logcapture/ (8 cases) and the oslog parser round-trip tests (11 cases including 9/10/16-byte regression cases) cover this release's surface."
     }
   ],
-  "overall": "pass"
+  "overall": "partial"
 }
