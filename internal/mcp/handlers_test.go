@@ -21,24 +21,24 @@ import (
 // Each method defers to a function field so tests can shape behaviour
 // (success, error, platform-specific return values) without exec.
 type stubAdapter struct {
-	list           func() ([]device.Info, error)
-	state          func(id string) (device.State, error)
-	screenshot     func(id string) ([]byte, error)
+	list              func() ([]device.Info, error)
+	state             func(id string) (device.State, error)
+	screenshot        func(id string) ([]byte, error)
 	listApps          func(id string) ([]device.AppInfo, error)
 	resolveExecutable func(id, bundle string) (string, bool, error)
 	launchApp         func(id, bundle string) error
-	terminateApp   func(id, bundle string) error
-	rotate         func(id, orientation string) error
-	crashes        func(id string, since time.Time, process string) ([]device.CrashReport, error)
-	startRecording func(id, dest string) (func() error, int, error)
-	stopRecording  func(id string, pid int) error
-	installApp     func(id, path string) error
-	uninstallApp   func(id, bundle string) error
-	appPID         func(id, bundle string) (int, error)
-	applyNetwork   func(id string, p network.NetworkProfile) error
-	clearNetwork   func(id string) error
-	logRange       func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
-	logStream      func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
+	terminateApp      func(id, bundle string) error
+	rotate            func(id, orientation string) error
+	crashes           func(id string, since time.Time, process string) ([]device.CrashReport, error)
+	startRecording    func(id, dest string) (func() error, int, error)
+	stopRecording     func(id string, pid int) error
+	installApp        func(id, path string) error
+	uninstallApp      func(id, bundle string) error
+	appPID            func(id, bundle string) (int, error)
+	applyNetwork      func(id string, p network.NetworkProfile) error
+	clearNetwork      func(id string) error
+	logRange          func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
+	logStream         func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {

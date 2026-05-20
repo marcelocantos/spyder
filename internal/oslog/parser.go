@@ -33,15 +33,15 @@ import (
 
 // Opcode constants, in the high byte of each 16-bit word.
 const (
-	cmdDefineTable             = 1
-	cmdEndRow                  = 2
-	cmdConvertMachContinuous   = 5
-	cmdTableReset              = 0x64
-	cmdCopy                    = 0x65
-	cmdSentinel                = 0x68
-	cmdStruct                  = 0x69
-	cmdPlaceholderCount        = 0x6A
-	cmdDebug                   = 0x6B
+	cmdDefineTable           = 1
+	cmdEndRow                = 2
+	cmdConvertMachContinuous = 5
+	cmdTableReset            = 0x64
+	cmdCopy                  = 0x65
+	cmdSentinel              = 0x68
+	cmdStruct                = 0x69
+	cmdPlaceholderCount      = 0x6A
+	cmdDebug                 = 0x6B
 )
 
 // stackItem represents one entry on the parser's value stack. The

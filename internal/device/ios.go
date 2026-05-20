@@ -25,11 +25,12 @@ import (
 	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/ostrace"
-	"github.com/marcelocantos/spyder/internal/oslog"
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/oslog"
 )
+
 // stateTTL bounds how often we re-query a device. Tools called in quick
 // succession (e.g. from an agent reasoning loop) share a snapshot so the
 // device isn't hammered.
