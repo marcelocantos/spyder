@@ -2002,7 +2002,7 @@ targets:
     achieved: 2026-04-18
   T60:
     name: Server-side managed log capture sessions replace the agent-side --follow + background-shell + kill dance
-    status: set_aside
+    status: achieved
     value: 0.0
     cost: 0.0
     set_aside_reason: Deferred — separated from 🎯T62's release acceptance on 2026-05-19. The bash-dance for agent-driven log capture is ergonomically poor but functional, so it doesn't block consumer adoption of the iOS log path. Reinstate this target standalone when there's a concrete agent-UX pain point that the existing --follow stream can't address. Original spec preserved in the acceptance list for future pickup.
@@ -2044,6 +2044,7 @@ targets:
     - surfaced-by:multimaze2
     origin: manual
     discovered: 2026-05-19
+    achieved: 2026-05-20
   T61:
     name: spyder log --bundle-id &lt;id&gt; --follow works on iOS 26.4 (currently EOFs immediately)
     status: achieved
@@ -2161,6 +2162,25 @@ targets:
     - investigation
     origin: manual
     discovered: 2026-05-19
+  T65:
+    name: oslog parser drops math/big in favour of a sliding-window bit buffer
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - internal/oslog/parser.go's readImmediate uses a uint64 sliding-window accumulator with a byte-drain on overflow, not math/big.Int.
+    - No math/big import remains in the internal/oslog/ package.
+    - All existing round-trip tests in internal/oslog/parser_test.go pass, including the 9-byte / 10-byte / 16-byte cases that motivated the original big.Int introduction.
+    - The test encoder (encodeImmediate) is also math/big-free, using a complementary bit-reader pattern.
+    context: Filed and achieved together with 🎯T60 in v0.41.0. The big.Int path was a mechanical port from pymobiledevice3 (Python ints are arbitrary-precision by default). The encoding is bit-stream concatenation, not arithmetic — every immediate is a finite byte sequence. Replaced with a 21-bit-max uint64 sliding window plus byte-drain on overflow. Identical output, no per-chunk heap allocation, intent reads honestly. Discovered when reviewing the parser implementation prompted by the question "why is the decoder a VM and why does it need math/big?"
+    tags:
+    - ios
+    - oslog
+    - parser
+    - code-quality
+    origin: manual
+    discovered: 2026-05-20
+    achieved: 2026-05-20
   T7:
     name: spyder supervises the Python bridge tunneld for reliable iOS DVT access
     status: achieved
