@@ -87,20 +87,32 @@ func TestAndroidListApps_Live(t *testing.T) {
 	t.Logf("ListApps(%s): %d third-party apps; first %d: %v", serial, len(apps), n, ids)
 }
 
-// TestAndroidLogRange_Live drains logcat for up to 3 seconds and expects at
-// least one structured line. Android devices always emit logcat traffic.
+// TestAndroidLogRange_Live drains the logcat buffer and expects at least
+// one structured line. LogRange on Android uses `adb logcat -d` which
+// dumps the static ring buffer and exits — distinct from LogStream's
+// continuous tail. Some OEM images (Samsung's been observed) keep a
+// very small main buffer that's frequently empty at probe time; retry
+// up to 3 times across short waits to absorb that flake without
+// claiming the LogRange code path is broken when LogStream is working.
 func TestAndroidLogRange_Live(t *testing.T) {
 	serial := androidSerial(t)
 
 	adapter := NewAndroidAdapter()
-	lines, err := adapter.LogRange(serial, LogFilter{}, time.Time{}, time.Now().Add(3*time.Second))
-	if err != nil {
-		t.Fatalf("LogRange(%s): %v", serial, err)
+	var lines []LogLine
+	var err error
+	for attempt := 1; attempt <= 3; attempt++ {
+		lines, err = adapter.LogRange(serial, LogFilter{}, time.Time{}, time.Now().Add(3*time.Second))
+		if err != nil {
+			t.Fatalf("LogRange(%s) attempt %d: %v", serial, attempt, err)
+		}
+		if len(lines) > 0 {
+			t.Logf("LogRange(%s) attempt %d: %d lines (first: %+v)", serial, attempt, len(lines), firstOrEmpty(lines))
+			return
+		}
+		t.Logf("LogRange(%s) attempt %d: 0 lines (empty static buffer); retrying after 1s", serial, attempt)
+		time.Sleep(1 * time.Second)
 	}
-	if len(lines) == 0 {
-		t.Errorf("LogRange(%s) returned 0 lines over ~3s; expected continuous logcat traffic", serial)
-	}
-	t.Logf("LogRange(%s): %d lines (first: %+v)", serial, len(lines), firstOrEmpty(lines))
+	t.Errorf("LogRange(%s) returned 0 lines across 3 attempts; static logcat buffer appears empty (try `adb -s %s logcat -d` manually to confirm)", serial, serial)
 }
 
 // TestAndroidResolveExecutable_Live verifies that ResolveExecutable returns

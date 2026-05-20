@@ -90,3 +90,38 @@ func TestParseAndroidLogcatTimestamp(t *testing.T) {
 		t.Errorf("time = %v; want 14:23:01", ts)
 	}
 }
+
+// TestParseAndroidLogcatTimestampUsesLocalTZ guards the regression
+// where logcat entries were parsed as UTC, causing devices in a
+// non-UTC timezone to appear hours ahead of "now" and get filtered
+// out by `until = now+3s` windows. The fix uses time.ParseInLocation
+// with time.Local. Asserting the parse picks up the host's local
+// timezone (whatever it happens to be in the test environment) is
+// enough — we don't need to fake a specific TZ for the regression
+// check, only that the offset is non-UTC when the host's is non-UTC.
+func TestParseAndroidLogcatTimestampUsesLocalTZ(t *testing.T) {
+	ts := parseAndroidLogcatTimestamp("04-15 14:23:01.123")
+	if ts.Location() != time.Local {
+		t.Errorf("Location() = %v; want time.Local — UTC parsing would shift the timestamp incorrectly relative to time.Now() comparisons", ts.Location())
+	}
+}
+
+// TestParseAndroidLogcatTimestampLineUpsWithNow is the exact-shape
+// regression for the Samsung filter-everything bug. Synthesise a
+// logcat line whose local-time HH:MM:SS matches the current host
+// local time, then assert the parsed timestamp falls within a few
+// seconds of time.Now() — i.e., the `Timestamp.After(now+3s)` filter
+// in LogRange will NOT drop it. The pre-fix code would parse the
+// same string as UTC, producing a timestamp offset by the host's
+// TZ which falsely tested After(now) on every non-UTC host.
+func TestParseAndroidLogcatTimestampLineUpsWithNow(t *testing.T) {
+	now := time.Now()
+	// Build "MM-DD HH:MM:SS.000" from now in local time.
+	s := now.Format("01-02 15:04:05.000")
+	ts := parseAndroidLogcatTimestamp(s)
+	delta := now.Sub(ts)
+	if delta < -3*time.Second || delta > 3*time.Second {
+		t.Errorf("parsed %q → %s; now=%s; delta=%v (want |delta| ≤ 3s — anything else means TZ handling is broken and LogRange will filter out all entries)",
+			s, ts.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), delta)
+	}
+}
