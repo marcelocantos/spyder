@@ -21,9 +21,13 @@ fi
 
 # Refuse to run on a dirty tree. The report's meaning is "these tests
 # ran against this exact tree"; a dirty tree makes that claim incoherent.
-if [[ -n "$(git status --porcelain)" ]]; then
+# Exception: TEST-REPORT.json itself, since we're about to overwrite it
+# and the prior contents (from an earlier completed or killed run)
+# don't reflect anything about the tree we're testing.
+dirty=$(git status --porcelain | grep -v -E '^.. TEST-REPORT\.json$' || true)
+if [[ -n "$dirty" ]]; then
   echo "test-report: refusing to run on a dirty tree. Commit or stash first:" >&2
-  git status --short >&2
+  echo "$dirty" >&2
   exit 1
 fi
 
