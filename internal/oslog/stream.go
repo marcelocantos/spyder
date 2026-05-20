@@ -140,19 +140,19 @@ func connectInstruments(dev goios_ios.DeviceEntry) (*dtx.Connection, error) {
 // (in milliseconds between batch flushes).
 func defaultConfig() map[string]any {
 	return map[string]any{
-		"bm":                      0,
-		"combineDataScope":        0,
-		"machTimebaseDenom":       3,
-		"machTimebaseNumer":       125,
-		"onlySignposts":           0,
-		"pidToInjectCombineDYLIB": "-1",
-		"predicate":               "(messageType == info OR messageType == debug OR messageType == default OR messageType == error OR messageType == fault)",
-		"signpostsAndLogs":        1,
+		"bm":                        0,
+		"combineDataScope":          0,
+		"machTimebaseDenom":         3,
+		"machTimebaseNumer":         125,
+		"onlySignposts":             0,
+		"pidToInjectCombineDYLIB":   "-1",
+		"predicate":                 "(messageType == info OR messageType == debug OR messageType == default OR messageType == error OR messageType == fault)",
+		"signpostsAndLogs":          1,
 		"trackPidToExecNameMapping": true,
-		"enableHTTPArchiveLogging": false,
-		"targetPID":                -3,
-		"trackExpiredPIDs":         1,
-		"ur":                       500,
+		"enableHTTPArchiveLogging":  false,
+		"targetPID":                 -3,
+		"trackExpiredPIDs":          1,
+		"ur":                        500,
 	}
 }
 

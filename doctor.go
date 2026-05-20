@@ -156,8 +156,8 @@ func probeDevices() doctorReport {
 							TransportType string `json:"transportType"`
 						} `json:"connectionProperties"`
 						HardwareProperties struct {
-							UDID         string `json:"udid"`
-							Platform     string `json:"platform"`
+							UDID     string `json:"udid"`
+							Platform string `json:"platform"`
 						} `json:"hardwareProperties"`
 					} `json:"devices"`
 				} `json:"result"`

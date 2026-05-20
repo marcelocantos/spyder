@@ -33,12 +33,12 @@ func (s *stubStreamAdapter) ListApps(id string) ([]device.AppInfo, error) { retu
 func (s *stubStreamAdapter) ResolveExecutable(id, b string) (string, bool, error) {
 	return b, true, nil
 }
-func (s *stubStreamAdapter) LaunchApp(id, b string) error    { return nil }
-func (s *stubStreamAdapter) TerminateApp(id, b string) error              { return nil }
-func (s *stubStreamAdapter) InstallApp(id, p string) error                { return nil }
-func (s *stubStreamAdapter) UninstallApp(id, b string) error              { return nil }
-func (s *stubStreamAdapter) AppPID(id, b string) (int, error)             { return 0, nil }
-func (s *stubStreamAdapter) Rotate(id, o string) error                    { return nil }
+func (s *stubStreamAdapter) LaunchApp(id, b string) error     { return nil }
+func (s *stubStreamAdapter) TerminateApp(id, b string) error  { return nil }
+func (s *stubStreamAdapter) InstallApp(id, p string) error    { return nil }
+func (s *stubStreamAdapter) UninstallApp(id, b string) error  { return nil }
+func (s *stubStreamAdapter) AppPID(id, b string) (int, error) { return 0, nil }
+func (s *stubStreamAdapter) Rotate(id, o string) error        { return nil }
 func (s *stubStreamAdapter) Crashes(id string, _ time.Time, _ string) ([]device.CrashReport, error) {
 	return nil, nil
 }

@@ -84,10 +84,10 @@ func TestDecoder_SentinelPushesNil(t *testing.T) {
 	// Push a nil sentinel; then push 3 normal items; the sentinel
 	// will be args[0] (unknown0).
 	frame := buildFrame(
-		word16(cmdSentinel, 0), // nil for args[0]
-		encodeImmediate([]byte{0}),  // args[1]
-		pushString("TestTable"),     // name (args[2])
-		word16(cmdStruct, 0),        // empty column tuple (args[3])
+		word16(cmdSentinel, 0),     // nil for args[0]
+		encodeImmediate([]byte{0}), // args[1]
+		pushString("TestTable"),    // name (args[2])
+		word16(cmdStruct, 0),       // empty column tuple (args[3])
 		word16(cmdDefineTable, 0),
 	)
 	_, err := d.Decode(frame, nil)
@@ -346,14 +346,14 @@ func TestDecoder_DefineTableHandlesEmptyColumnNames(t *testing.T) {
 	tsBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(tsBytes, 12345)
 	f2 := buildFrame(
-		encodeImmediate(tsBytes),     // col 0: time
-		encodeImmediate([]byte{0}),   // col 1: "" (placeholder)
-		encodeImmediate([]byte{0}),   // col 2: "" (placeholder)
+		encodeImmediate(tsBytes),   // col 0: time
+		encodeImmediate([]byte{0}), // col 1: "" (placeholder)
+		encodeImmediate([]byte{0}), // col 2: "" (placeholder)
 		// col 3: message tuple
-		pushString("narrative-text"), // type
+		pushString("narrative-text"),          // type
 		encodeImmediate([]byte("sparse log")), // data (10 bytes → 1 NUL pad)
-		word16(cmdStruct, 2),         // one (type, data) pair
-		word16(cmdStruct, 1),         // outer message tuple
+		word16(cmdStruct, 2),                  // one (type, data) pair
+		word16(cmdStruct, 1),                  // outer message tuple
 		word16(cmdEndRow, 0),
 	)
 	records, err := d.Decode(f2, nil)

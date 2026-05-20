@@ -25,11 +25,12 @@ import (
 	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/ostrace"
-	"github.com/marcelocantos/spyder/internal/oslog"
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/oslog"
 )
+
 // stateTTL bounds how often we re-query a device. Tools called in quick
 // succession (e.g. from an agent reasoning loop) share a snapshot so the
 // device isn't hammered.
@@ -61,6 +62,16 @@ type IOSAdapter struct {
 	// operations on the cached connection — installation_proxy is
 	// not safe for concurrent use anyway.
 	ipPool *goios.ServicePool[*installationproxy.Connection]
+	// asPool caches one appservice connection per UDID. Each
+	// LaunchApp / TerminateApp / AppPID currently opens a fresh
+	// appservice DTX channel; pooling collapses launch-then-verify
+	// cycles to a single open.
+	asPool *goios.ServicePool[*appservice.Connection]
+	// ssPool caches one instruments.ScreenshotService per UDID. The
+	// DTX handshake costs ~150ms on iOS-17+ tunnels; pooling makes
+	// repeated screenshots (visual diff loops, recording fallbacks)
+	// effectively free after the first.
+	ssPool *goios.ServicePool[*instruments.ScreenshotService]
 
 	mu    sync.Mutex
 	cache map[string]cachedState
@@ -84,6 +95,27 @@ func NewIOSAdapter() *IOSAdapter {
 				return installationproxy.New(dev)
 			},
 			func(c *installationproxy.Connection) error {
+				c.Close()
+				return nil
+			},
+			60*time.Second,
+		),
+		asPool: goios.NewServicePool(
+			resolver,
+			func(dev goios_ios.DeviceEntry) (*appservice.Connection, error) {
+				return appservice.New(dev)
+			},
+			func(c *appservice.Connection) error {
+				return c.Close()
+			},
+			60*time.Second,
+		),
+		ssPool: goios.NewServicePool(
+			resolver,
+			func(dev goios_ios.DeviceEntry) (*instruments.ScreenshotService, error) {
+				return instruments.NewScreenshotService(dev)
+			},
+			func(c *instruments.ScreenshotService) error {
 				c.Close()
 				return nil
 			},
@@ -412,18 +444,15 @@ func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return nil, fmt.Errorf("screenshot: %w", err)
-	}
-	svc, err := instruments.NewScreenshotService(dev)
+	svc, release, err := a.ssPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
 		return nil, fmt.Errorf("screenshot on %s: %w", id, err)
 	}
-	defer svc.Close()
+	defer release()
 	data, err := svc.TakeScreenshot()
 	if err != nil {
+		a.ssPool.Invalidate(id)
 		return nil, fmt.Errorf("screenshot on %s: %w", id, err)
 	}
 	return data, nil
@@ -494,22 +523,19 @@ func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return fmt.Errorf("launch: %w", err)
-	}
-	conn, err := appservice.New(dev)
+	conn, release, err := a.asPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
 		return fmt.Errorf("appservice on %s: %w", id, err)
 	}
-	defer conn.Close()
+	defer release()
 	if _, err := conn.LaunchApp(bundleID, nil, nil, nil, false); err != nil {
 		// Map "app not installed"-shaped errors to the spyder convention.
 		msg := err.Error()
 		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
 			return fmt.Errorf("app not installed: %s", bundleID)
 		}
+		a.asPool.Invalidate(id)
 		return fmt.Errorf("launch %s on %s: %w", bundleID, id, err)
 	}
 	return nil
@@ -530,17 +556,14 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 		}
 		return err
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return fmt.Errorf("terminate: %w", err)
-	}
-	conn, err := appservice.New(dev)
+	conn, release, err := a.asPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
 		return fmt.Errorf("appservice on %s: %w", id, err)
 	}
-	defer conn.Close()
+	defer release()
 	if err := conn.KillProcess(pid); err != nil {
+		a.asPool.Invalidate(id)
 		return fmt.Errorf("terminate %s (pid %d) on %s: %w", bundleID, pid, id, err)
 	}
 	return nil
@@ -556,10 +579,6 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return 0, fmt.Errorf("resolve pid: %w", err)
-	}
 	appBase, err := a.installedAppFolder(id, bundleID)
 	if err != nil {
 		a.goios.Invalidate(id)
@@ -568,14 +587,15 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if appBase == "" {
 		return 0, fmt.Errorf("app not installed: %s", bundleID)
 	}
-	asConn, err := appservice.New(dev)
+	asConn, release, err := a.asPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
 		return 0, fmt.Errorf("appservice on %s: %w", id, err)
 	}
-	defer asConn.Close()
+	defer release()
 	procs, err := asConn.ListProcesses()
 	if err != nil {
+		a.asPool.Invalidate(id)
 		return 0, fmt.Errorf("list processes on %s: %w", id, err)
 	}
 	needle := "/" + appBase + "/"

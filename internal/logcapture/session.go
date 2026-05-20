@@ -387,18 +387,18 @@ func (m *Manager) sweep(ctx context.Context) {
 
 // GetResult is the payload returned by Manager.Get.
 type GetResult struct {
-	SessionID    string            `json:"session_id"`
-	CapturedAt   time.Time         `json:"captured_at"`
-	Lines        []device.LogLine  `json:"lines"`
-	DroppedLines int               `json:"dropped_lines,omitempty"`
+	SessionID    string           `json:"session_id"`
+	CapturedAt   time.Time        `json:"captured_at"`
+	Lines        []device.LogLine `json:"lines"`
+	DroppedLines int              `json:"dropped_lines,omitempty"`
 }
 
 // StopResult is the payload returned by Manager.Stop.
 type StopResult struct {
-	SessionID    string            `json:"session_id"`
-	StoppedAt    time.Time         `json:"stopped_at"`
-	Lines        []device.LogLine  `json:"lines"`
-	DroppedLines int               `json:"dropped_lines,omitempty"`
+	SessionID    string           `json:"session_id"`
+	StoppedAt    time.Time        `json:"stopped_at"`
+	Lines        []device.LogLine `json:"lines"`
+	DroppedLines int              `json:"dropped_lines,omitempty"`
 }
 
 // SessionInfo is the per-session record returned by Manager.List.
