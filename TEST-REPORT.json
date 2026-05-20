@@ -1,18 +1,18 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-05-20T10:48:28Z",
+  "generated_at": "2026-05-20T11:10:03Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
-      "cmd": "go test -v ./...",
-      "duration_s": 37,
+      "cmd": "go test -timeout 2m  ./...",
+      "duration_s": 41,
       "status": "pass"
     },
     {
       "name": "live",
-      "cmd": "go test -v -run '_Live$' ./internal/device/...",
-      "duration_s": 0,
+      "cmd": "go test -timeout 2m  -run '_Live$' ./internal/device/...",
+      "duration_s": 39,
       "status": "pass"
     }
   ],
