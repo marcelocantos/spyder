@@ -884,6 +884,35 @@ spyder log --capture-list
 
 **When to prefer `--capture` over `--follow`.** Use `--capture` whenever the agent needs to read the data across more than one turn (most agent workflows), needs to peek without stopping, or runs in a host without easy access to background shell + temp files (most MCP clients). Use `--follow` for human-driven tailing on the terminal or for very long captures where you want SSE-style streaming straight into a file.
 
+## Diagnosing iOS device-stack wedges (`spyder doctor`)
+
+macOS's `usbmuxd` daemon can desync from CoreDevice's view of paired iOS devices under operational churn — heavy `spyder` test runs, repeated DTX channel opens, multiple service-connection cycles per second. The symptom: `xcrun devicectl list devices` shows the device as `connected` but `bin/ios list` returns an empty or short list, and every go-ios RPC against the missing UDID fails with `Device 'UDID' not found. Is it attached to the machine?`.
+
+Recovery is `killall usbmuxd` — launchd respawns it within ~1 s and the device list re-enumerates from current hardware state. `spyder doctor` automates the detect+fix loop:
+
+```bash
+spyder doctor          # diagnose only; exits 2 if wedged
+spyder doctor --fix    # diagnose; if wedged, run the bundled killusbmuxd helper via sudo
+spyder doctor --json   # machine-readable report
+```
+
+`--fix` shells out to the bundled `spyder-killusbmuxd` binary (installed alongside `spyder`). The helper does literally one thing — `killall usbmuxd` — and exits. It's separated from `spyder` itself so the operator can grant it `NOPASSWD` sudo without giving the main binary any privilege.
+
+For auth-free recovery, add a sudoers entry (one-time setup):
+
+```bash
+# Pick the install path for your environment:
+#   Homebrew:   /opt/homebrew/bin/spyder-killusbmuxd
+#   Source dev: /path/to/spyder/bin/spyder-killusbmuxd
+HELPER=/opt/homebrew/bin/spyder-killusbmuxd
+echo "$USER ALL=(root) NOPASSWD: $HELPER" | sudo tee /etc/sudoers.d/spyder-killusbmuxd
+sudo chmod 0440 /etc/sudoers.d/spyder-killusbmuxd
+```
+
+After that, `spyder doctor --fix` runs without any password prompt. With PAM touchid configured for sudo, you don't even need the sudoers entry — touchid handles the auth interactively.
+
+**When `--fix` doesn't recover everything**: occasionally a device-side state (lockdown / RemotePairing) also gets stuck and the device stays missing from usbmux even after the restart. Unplug+replug the device and re-pair if the dialog appears.
+
 ## Keeping iOS devices awake
 
 There is no in-spyder keep-awake supervisor. The previous KeepAwake
