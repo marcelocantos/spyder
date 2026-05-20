@@ -2181,6 +2181,79 @@ targets:
     origin: manual
     discovered: 2026-05-20
     achieved: 2026-05-20
+  T66:
+    name: spyder doctor detects and recovers wedged usbmuxd via sudo + touchid
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`spyder doctor` subcommand exists. Reports overall health: paired-device count via `xcrun devicectl list devices --quiet --json-output`, paired-device count via `bin/ios list`, and any other quick sanity probes (tunnel running, ~/.spyder paths writable).'
+    - When `devicectl` reports N>0 connected iOS devices but `bin/ios list` returns fewer, classify as 'usbmuxd wedged' and surface the specific UDIDs missing from the usbmux view.
+    - When wedged, `spyder doctor --fix` shells out to `sudo killall usbmuxd` (launchd respawns it in ~1s). On the user's macOS box, PAM touchid handles the auth prompt — one fingerprint tap, no password typing. Without --fix, only diagnose; don't mutate.
+    - Post-fix, re-probe and confirm the usbmux device count matches devicectl. Exit non-zero if still wedged. Print the recovery action taken so the user has audit trail.
+    context: |-
+      Discovered during the live-test validation push (this session). usbmuxd wedges intermittently under operational churn — its third-party-visible device list desyncs from CoreDevice's view. Observable as: `xcrun devicectl list devices` shows N devices connected; `bin/ios list` shows N-1 or 0; every go-ios RPC against the missing UDIDs returns "Device 'UDID' not found". Recovery requires `sudo killall usbmuxd`.
+
+      This makes spyder operationally fragile on macOS hosts where the user is running heavy device test suites. The user has PAM touchid for sudo, so the recovery is one fingerprint tap once spyder asks for it — no privilege escalation infrastructure needed. The "doctor" pattern (detect + optionally fix) mirrors `brew doctor` and Xcode's first-run checks.
+
+      T67 (connection pooling) and T68 (upstream investigation) are the other prongs of the same problem.
+    tags:
+    - ios
+    - usbmuxd
+    - dev-experience
+    - diagnostics
+    - macos-fragility
+    origin: manual
+    discovered: 2026-05-20
+  T67:
+    name: Spyder pools per-device go-ios service connections to reduce usbmuxd churn
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Per-device connection cache in internal/goios/ for the high-churn services: installation_proxy, appservice, instruments.ProcessControl, instruments.ScreenshotService, oslog DTX channel. Reuse one open connection across operations within a short window instead of open-call-close on every RPC.'
+    - Cache invalidation tied to the existing goios.Resolver.Invalidate path — transport errors drop the cache entry so the next call re-handshakes.
+    - 'Connection lifecycle is bounded: idle TTL configurable (default 60s), max concurrent connections per device configurable (default 4), explicit Close() drains everything.'
+    - 'Measured: a stress test that opens N=200 sequential operations against a real iOS device completes in <10% of the wall-clock baseline of one-connection-per-op AND with usbmuxd remaining healthy throughout (verified via `bin/ios list` after the run).'
+    context: |-
+      Companion to T66. The diagnose-and-fix path is reactive — pooling reduces the rate at which the wedge happens in the first place by amortising the per-RPC usbmux session cost across many operations.
+
+      Today every spyder RPC against an iOS device opens a fresh service connection (installation_proxy, appservice, screenshotr, etc.), uses it once, closes it. The Close() impls in go-ios v1.0.213 close the underlying socket correctly (audited in T63's investigation — only ListenAppStateNotifications has the broken Close, and that's already excised). But the per-RPC connect overhead is real, and usbmuxd's session table seems to react poorly to high churn even when each individual open/close is correct.
+
+      A 60s-TTL per-service cache should eliminate ~90% of connection establishment for typical test runs while staying simple — no thread-safety nightmare since goios.Resolver already serialises per-UDID resolution.
+    tags:
+    - ios
+    - go-ios
+    - usbmuxd
+    - performance
+    - stability
+    origin: manual
+    discovered: 2026-05-20
+  T68:
+    name: Identify the macOS-side trigger that wedges usbmuxd's third-party device list
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Reproducer script in scripts/ that reliably wedges usbmuxd's third-party device visibility within ≤5 minutes against a paired iOS device, without involving Xcode or system reboot.
+    - Either (a) a `dtrace` / `fs_usage` / `nettop` trace captured during the wedge that identifies the offending RPC pattern or kernel transition, or (b) a clear write-up of why the trigger couldn't be isolated and the next investigation step.
+    - Documented in docs/papers/ with the observed behaviour, the recovery path, links to upstream Apple Feedback or known issues if any are found, and the operational implications (e.g. heavy test churn rates that should be avoided in tooling that runs against macOS-paired iOS devices).
+    context: |-
+      The macOS-upstream half of the T66 + T67 work. Spyder's mitigations (doctor + pooling) cover the consequences; this target covers the cause.
+
+      Empirical pattern from the live-test session (2026-05-20): under operational churn from go-ios's test suite (rapid Launch/Terminate, multiple DTX channel open/close, repeated ListDevices), usbmuxd's third-party-visible device list drops entries while macOS's CoreDevice view stays correct. Recovery is `sudo killall usbmuxd` only — in-process recovery via reopening connections doesn't work because usbmuxd genuinely doesn't have the device in its visibility table.
+
+      Without access to Apple's source, isolation has to come from external observation. dtrace probes on usbmuxd (if SIP permits) or on the Mach IPC path. Worth coordinating with the libimobiledevice / pymobiledevice3 communities — they almost certainly have anecdotal evidence of the same wedge.
+
+      Don't start this target without explicit user ask. Open-ended investigation into Apple-side behaviour, useful only if T66 + T67 turn out to be insufficient.
+    tags:
+    - ios
+    - usbmuxd
+    - macos-upstream
+    - investigation
+    - deferred
+    origin: manual
+    discovered: 2026-05-20
   T7:
     name: spyder supervises the Python bridge tunneld for reliable iOS DVT access
     status: achieved
