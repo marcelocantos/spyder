@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/wedge"
 )
 
 // runDoctor implements `spyder doctor [--fix]`. It probes the iOS
@@ -111,11 +113,13 @@ xcrun devicectl's view and go-ios's usbmux view.
 type doctorReport struct {
 	DevicectlUDIDs []string `json:"devicectl_udids"`
 	UsbmuxUDIDs    []string `json:"usbmux_udids"`
+	IOUSBIOSCount  int      `json:"iousb_ios_count"`
 	MissingFromMux []string `json:"missing_from_usbmux,omitempty"`
 	UsbmuxWedge    bool     `json:"usbmux_wedge"`
 	IosBinary      string   `json:"ios_binary"`
 	IosBinaryError string   `json:"ios_binary_error,omitempty"`
 	DevicectlError string   `json:"devicectl_error,omitempty"`
+	IOUSBError     string   `json:"iousb_error,omitempty"`
 }
 
 // probeDevices runs both `xcrun devicectl list devices` and `bin/ios
@@ -178,6 +182,17 @@ func probeDevices() doctorReport {
 		r.DevicectlError = fmt.Sprintf("tempdir for devicectl: %v", terr)
 	}
 
+	// IOUSB ground truth — the kernel's view of attached iOS devices.
+	// Catches the idle-wedge case where devicectl reports no connected
+	// tunnels (so the devicectl-vs-usbmux check above sees nothing to
+	// flag) but the device is physically attached and just missing
+	// from usbmux's third-party table.
+	if count, err := wedge.USBAttachedIOSCount(); err != nil {
+		r.IOUSBError = fmt.Sprintf("ioreg: %v", err)
+	} else {
+		r.IOUSBIOSCount = count
+	}
+
 	muxSet := map[string]bool{}
 	for _, u := range r.UsbmuxUDIDs {
 		muxSet[u] = true
@@ -187,7 +202,12 @@ func probeDevices() doctorReport {
 			r.MissingFromMux = append(r.MissingFromMux, u)
 		}
 	}
-	if len(r.DevicectlUDIDs) > 0 && len(r.MissingFromMux) > 0 {
+	// Wedge fires if EITHER signal disagrees with usbmux:
+	//   - devicectl says a device is connected that usbmux can't see, or
+	//   - IOUSB sees more iOS devices than usbmux does.
+	// The IOUSB check catches the idle case the devicectl filter misses.
+	if (len(r.DevicectlUDIDs) > 0 && len(r.MissingFromMux) > 0) ||
+		(r.IOUSBError == "" && r.IOUSBIOSCount > len(r.UsbmuxUDIDs)) {
 		r.UsbmuxWedge = true
 	}
 	return r
@@ -203,12 +223,23 @@ func printDoctorReport(r doctorReport) {
 		fmt.Printf("  (error: %s)\n", r.DevicectlError)
 	}
 	fmt.Printf("usbmux iOS UDIDs:        %s\n", joinOrNone(r.UsbmuxUDIDs))
+	if r.IOUSBError != "" {
+		fmt.Printf("IOUSB iOS-device count:  (error: %s)\n", r.IOUSBError)
+	} else {
+		fmt.Printf("IOUSB iOS-device count:  %d\n", r.IOUSBIOSCount)
+	}
 	if r.UsbmuxWedge {
-		fmt.Printf("⚠ usbmux is missing: %s\n", joinOrNone(r.MissingFromMux))
-		fmt.Println("   → usbmuxd's device list has desynced from CoreDevice's view.")
+		if len(r.MissingFromMux) > 0 {
+			fmt.Printf("⚠ usbmux is missing: %s\n", joinOrNone(r.MissingFromMux))
+		}
+		if r.IOUSBError == "" && r.IOUSBIOSCount > len(r.UsbmuxUDIDs) {
+			fmt.Printf("⚠ IOUSB sees %d iOS device(s) but usbmux only sees %d — kernel attached, usbmux lost track.\n",
+				r.IOUSBIOSCount, len(r.UsbmuxUDIDs))
+		}
+		fmt.Println("   → usbmuxd's third-party visibility table has desynced.")
 		fmt.Println("   → recovery: restart usbmuxd (`sudo killall usbmuxd`; launchd respawns it).")
 	} else if len(r.UsbmuxUDIDs) > 0 {
-		fmt.Println("✓ usbmux and devicectl agree on attached iOS devices.")
+		fmt.Println("✓ usbmux, devicectl, and IOUSB agree on attached iOS devices.")
 	} else {
 		fmt.Println("(no iOS devices currently attached)")
 	}

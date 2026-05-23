@@ -32,6 +32,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/wedge"
 )
 
 // Run-artefact retention defaults. Overridable via env so the Homebrew
@@ -77,6 +78,13 @@ func Run(ctx context.Context, cfg Config) error {
 			tunnelSup = nil
 		}
 	}
+
+	// Wedge monitor. Detects the usbmuxd third-party-table desync
+	// (🎯T68) via a 30s polling timer + an opportunistic log-stream
+	// tail of `log stream --process usbmuxd`. On detection, fires a
+	// snapshot and attempts `sudo spyder-killusbmuxd`. Cleanly tied
+	// to ctx — exits on daemon shutdown.
+	go wedge.RunMonitor(ctx)
 
 	slog.Info("spyder listening",
 		"addr", cfg.Addr, "mcp", "/mcp", "rest", rest.Prefix)
