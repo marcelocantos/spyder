@@ -60,12 +60,28 @@ jobs:
           go build -trimpath -ldflags "-s -w" -mod=mod \
             -o "dist/ios" github.com/danielpaulus/go-ios
 
+      - name: Build spyder-killusbmuxd
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          # Single-purpose helper invoked by `spyder doctor --fix`. It
+          # exists as a separate binary so the operator can grant it
+          # NOPASSWD sudo (via `spyder doctor --install-sudoers`)
+          # without giving the main spyder binary any privilege. Brew
+          # flat-links the Cellar's bin/* into /opt/homebrew/bin/,
+          # which is the path the sudoers entry whitelists.
+          go build -trimpath -ldflags "-s -w" \
+            -o "dist/spyder-killusbmuxd" ./cmd/spyder-killusbmuxd
+
       - name: Package
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           TARBALL_DIR="spyder-${VERSION}-${{ matrix.target }}"
           mkdir -p "${TARBALL_DIR}/bin" "${TARBALL_DIR}/libexec/spyder"
           cp dist/spyder "${TARBALL_DIR}/bin/"
+          cp dist/spyder-killusbmuxd "${TARBALL_DIR}/bin/"
           cp dist/ios "${TARBALL_DIR}/libexec/spyder/"
           mkdir -p dist
           tar czf "dist/${TARBALL_DIR}.tar.gz" "${TARBALL_DIR}"
@@ -94,7 +110,7 @@ jobs:
           github_token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           formula_folder: Formula
           version: ${{ github.event.release.tag_name }}
-          install: 'bin.install "bin/spyder" => "spyder"; (libexec/"spyder").install "libexec/spyder/ios"'
+          install: 'bin.install "bin/spyder" => "spyder"; bin.install "bin/spyder-killusbmuxd" => "spyder-killusbmuxd"; (libexec/"spyder").install "libexec/spyder/ios"'
           target_darwin_arm64: true
           test: 'system bin/"spyder", "--version"'
           skip_checksum: true
