@@ -180,7 +180,7 @@ func (s *Stream) pump(ctx context.Context) {
 			out, err := dec.Decode(frame, buf)
 			if err != nil {
 				s.decodeErr = err
-				slog.Debug("oslog: decode error — continuing", "error", err.Error(), "frame_len", len(frame))
+				slog.Error("oslog: decode error — continuing", "error", err.Error(), "frame_len", len(frame))
 				continue
 			}
 			for _, r := range out {

@@ -255,7 +255,7 @@ func (m *Manager) Start(ctx context.Context, ad Adapter, p StartParams) (*Sessio
 		err := ad.LogStream(streamCtx, p.DeviceID, p.Filter, ch)
 		close(ch)
 		if err != nil && !errors.Is(err, context.Canceled) {
-			slog.Warn("logcapture: LogStream ended with error",
+			slog.Error("logcapture: LogStream ended with error",
 				"session_id", id, "device_id", p.DeviceID, "error", err)
 		}
 	}()

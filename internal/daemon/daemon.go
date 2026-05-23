@@ -73,7 +73,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if binPath := resolveIOSTunnelBinary(); binPath != "" {
 		tunnelSup = iostunnel.New(binPath)
 		if err := tunnelSup.Start(ctx); err != nil {
-			slog.Warn("iostunnel: start failed; iOS tools degraded", "error", err)
+			slog.Error("iostunnel: start failed; iOS tools degraded", "error", err)
 			tunnelSup = nil
 		}
 	}
@@ -92,7 +92,7 @@ func Run(ctx context.Context, cfg Config) error {
 		defer shutdownCancel()
 		if tunnelSup != nil {
 			if err := tunnelSup.Stop(shutdownCtx); err != nil {
-				slog.Warn("daemon: iostunnel stop error", "error", err)
+				slog.Error("daemon: iostunnel stop error", "error", err)
 			}
 		}
 		if logCapMgr != nil {
@@ -152,7 +152,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 			"path", paths.RunsBase(), "error", err)
 		runsStore = nil
 	} else if res, perr := runsStore.Prune(); perr != nil {
-		slog.Warn("runs prune failed", "error", perr)
+		slog.Error("runs prune failed", "error", perr)
 	} else if len(res.Removed) > 0 {
 		slog.Info("runs pruned on startup",
 			"removed", len(res.Removed), "retained", res.Retained)
@@ -221,7 +221,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	if poolInst != nil {
 		go func() {
 			if err := poolInst.Adopt(context.Background()); err != nil {
-				slog.Warn("pool: adopt failed; proceeding with empty inventory", "error", err)
+				slog.Error("pool: adopt failed; proceeding with empty inventory", "error", err)
 			}
 			slog.Info("pool: adoption complete")
 		}()

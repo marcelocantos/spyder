@@ -114,9 +114,9 @@ func (s *Supervisor) Start(ctx context.Context) error {
 			return
 		}
 		if err != nil {
-			slog.Warn("iostunnel: subprocess exited", "error", err)
+			slog.Error("iostunnel: subprocess exited", "error", err)
 		} else {
-			slog.Warn("iostunnel: subprocess exited unexpectedly (no error)")
+			slog.Error("iostunnel: subprocess exited unexpectedly (no error)")
 		}
 	}()
 
@@ -137,7 +137,7 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		// Already exited, or no permission. Best-effort.
-		slog.Debug("iostunnel: SIGTERM failed; falling through", "error", err)
+		slog.Error("iostunnel: SIGTERM failed; falling through", "error", err)
 	}
 
 	// Wait up to 3 s for clean shutdown, then SIGKILL. The Wait()
@@ -154,7 +154,7 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	select {
 	case err := <-done:
 		if err != nil && !isAlreadyReaped(err) {
-			slog.Debug("iostunnel: process Wait returned error (likely already reaped)", "error", err)
+			slog.Info("iostunnel: process Wait returned error (likely already reaped)", "error", err)
 		}
 		slog.Info("iostunnel: stopped cleanly")
 		return nil

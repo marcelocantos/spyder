@@ -402,7 +402,7 @@ func runCaptureCtx(ctx context.Context, name string, args ...string) (stdout, st
 
 	elapsedMs := time.Since(started).Milliseconds()
 	if err != nil {
-		slog.Warn("exec failed",
+		slog.Error("exec failed",
 			"cmd", name, "args", args,
 			"duration_ms", elapsedMs,
 			"error", err.Error(),
@@ -1031,11 +1031,13 @@ func (a *IOSAdapter) streamOSTrace(ctx context.Context, id string, filter LogFil
 	for {
 		entry, err := conn.ReadEntry()
 		if err != nil {
-			slog.Debug("ostrace stream end", "device", id,
-				"read", read, "emitted", emitted, "err", err.Error())
 			if ctx.Err() != nil {
+				slog.Info("ostrace stream end (context canceled)",
+					"device", id, "read", read, "emitted", emitted)
 				return ctx.Err()
 			}
+			slog.Error("ostrace stream end (transport error)",
+				"device", id, "read", read, "emitted", emitted, "err", err.Error())
 			return fmt.Errorf("ostrace read on %s: %w", id, err)
 		}
 		read++

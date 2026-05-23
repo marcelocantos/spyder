@@ -214,7 +214,7 @@ func (s Snapshot) log() {
 func (s Snapshot) write() {
 	dir := filepath.Join(paths.Base(), "wedge-snapshots")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		slog.Warn("wedge: snapshot dir mkdir failed", "error", err)
+		slog.Error("wedge: snapshot dir mkdir failed", "error", err)
 		return
 	}
 	ts := s.Timestamp.Format("20060102T150405Z")
@@ -225,11 +225,11 @@ func (s Snapshot) write() {
 	file := filepath.Join(dir, fmt.Sprintf("%s-%s.json", ts, tail))
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
-		slog.Warn("wedge: snapshot marshal failed", "error", err)
+		slog.Error("wedge: snapshot marshal failed", "error", err)
 		return
 	}
 	if err := os.WriteFile(file, data, 0o644); err != nil {
-		slog.Warn("wedge: snapshot write failed", "error", err, "path", file)
+		slog.Error("wedge: snapshot write failed", "error", err, "path", file)
 		return
 	}
 	slog.Info("wedge: snapshot written", "path", file, "wedged", s.Wedged)
