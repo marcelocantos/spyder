@@ -308,8 +308,13 @@ func installSudoers() {
 
 // resolveBundledIOSBinary mirrors daemon.resolveIOSTunnelBinary's
 // search order (SPYDER_IOS_TUNNEL_BINARY → libexec/spyder/ios →
-// alongside the spyder binary → bin/ios in dev tree). Kept local so
-// doctor doesn't depend on internal/daemon.
+// alongside the spyder binary → ios on $PATH). Kept local so doctor
+// doesn't depend on internal/daemon.
+//
+// Symlinks on the spyder binary are resolved before computing the
+// sibling layout — Homebrew flat-links bin/spyder into the Cellar's
+// versioned bin/, and libexec/ is NOT flat-linked, so `..` from the
+// flat bin/ misses the real libexec/spyder/ios.
 func resolveBundledIOSBinary() string {
 	if env := os.Getenv("SPYDER_IOS_TUNNEL_BINARY"); env != "" {
 		if _, err := os.Stat(env); err == nil {
@@ -317,20 +322,35 @@ func resolveBundledIOSBinary() string {
 		}
 	}
 	if exe, err := os.Executable(); err == nil {
-		dir := filepath.Dir(exe)
-		// Homebrew layout: libexec/spyder/ios alongside bin/spyder.
-		for _, rel := range []string{
-			filepath.Join("..", "libexec", "spyder", "ios"),
-			"ios",
-		} {
-			candidate := filepath.Clean(filepath.Join(dir, rel))
-			if _, err := os.Stat(candidate); err == nil {
-				return candidate
-			}
+		if candidate := iosBinaryAlongside(exe); candidate != "" {
+			return candidate
 		}
 	}
 	if p, err := exec.LookPath("ios"); err == nil {
 		return p
+	}
+	return ""
+}
+
+// iosBinaryAlongside resolves any symlinks on exe and checks the two
+// candidate sibling layouts (Homebrew + dev tree). Returns the first
+// candidate that exists, or "" if neither does. Exported via the
+// package boundary purely as test surface — production callers go
+// through resolveBundledIOSBinary.
+func iosBinaryAlongside(exe string) string {
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		resolved = exe
+	}
+	dir := filepath.Dir(resolved)
+	for _, rel := range []string{
+		filepath.Join("..", "libexec", "spyder", "ios"),
+		"ios",
+	} {
+		candidate := filepath.Clean(filepath.Join(dir, rel))
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
 	}
 	return ""
 }
