@@ -2273,7 +2273,7 @@ targets:
     discovered: 2026-05-20
   T68.1:
     name: spyder captures structured wedge snapshots when usbmux/CoreDevice visibility diverges
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2289,9 +2289,10 @@ targets:
     - diagnostic
     origin: manual
     discovered: 2026-05-23
+    achieved: 2026-05-23
   T68.2:
     name: spyder daemon auto-recovers from usbmuxd third-party-table wedges
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2304,6 +2305,7 @@ targets:
     context: Filed 2026-05-23 after diagnosing an idle-wedge on the iPad while spyder had been completely quiet for 7 hours. Trigger event was visible in usbmuxd Info-level logs as a phantom MuxReceivedUSBData device disconnected. Kernel-IOKit did not process a corresponding disconnect, so the device stayed in ioreg but vanished from usbmux third-party API while CoreDevice plus Xcode plus ioreg all kept seeing it. Recovery is killall usbmuxd. v0.45.0 wedge.Capture hooks on goios.Resolver.resolve errors catch traffic-driven wedges but do nothing for the idle case. This target closes that gap with a daemon-side monitor. Mechanism analysis suggests trigger is environmental (display-wake-driven USB hub renegotiation, multi-tier topology), not workload-correlated, so monitor must run unconditionally rather than being call-driven.
     origin: manual
     discovered: 2026-05-23
+    achieved: 2026-05-23
   T69:
     name: Remove spyder doctor --install-sudoers + spyder-killusbmuxd once usbmuxd wedge has a real fix
     status: identified
