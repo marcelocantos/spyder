@@ -334,7 +334,7 @@ func (h *Handler) archiveArtefact(dev, owner, source, mime, ext string, data []b
 	canonical := h.canonicalDevice(dev)
 	run, err := h.runs.Active(canonical, owner)
 	if err != nil {
-		slog.Warn("runs: active lookup failed",
+		slog.Error("runs: active lookup failed",
 			"device", canonical, "owner", owner, "error", err)
 		return
 	}
@@ -344,7 +344,7 @@ func (h *Handler) archiveArtefact(dev, owner, source, mime, ext string, data []b
 	name := fmt.Sprintf("%s-%s%s",
 		source, time.Now().UTC().Format("20060102-150405"), ext)
 	if _, err := h.runs.AddArtefact(run.ID, source, name, mime, data); err != nil {
-		slog.Warn("runs: archive artefact failed",
+		slog.Error("runs: archive artefact failed",
 			"run", run.ID, "source", source, "error", err)
 	}
 }
@@ -677,11 +677,11 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 		existing, lerr := h.runs.Active(canonical, owner)
 		switch {
 		case lerr != nil:
-			slog.Warn("runs: active lookup on reserve failed",
+			slog.Error("runs: active lookup on reserve failed",
 				"device", canonical, "owner", owner, "error", lerr)
 		case existing == nil:
 			if _, err := h.runs.Open(canonical, owner, note); err != nil {
-				slog.Warn("runs: open on reserve failed",
+				slog.Error("runs: open on reserve failed",
 					"device", canonical, "owner", owner, "error", err)
 			}
 		}
@@ -718,7 +718,7 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 		canonical := h.canonicalDevice(dev)
 		if run, lerr := h.runs.Active(canonical, owner); lerr == nil && run != nil {
 			if cerr := h.runs.Close(run.ID); cerr != nil {
-				slog.Warn("runs: close on release failed",
+				slog.Error("runs: close on release failed",
 					"run", run.ID, "error", cerr)
 			}
 		}
@@ -1271,14 +1271,14 @@ func (h *Handler) stopRecordingForOwner(canonical, owner string) {
 	}
 	s, err := h.recordings.Stop(canonical)
 	if err != nil {
-		slog.Warn("recording cleanup on release failed", "device", canonical, "owner", owner, "error", err)
+		slog.Error("recording cleanup on release failed", "device", canonical, "owner", owner, "error", err)
 		return
 	}
 	// Wait briefly for clean shutdown.
 	select {
 	case <-s.Done():
 	case <-time.After(10 * time.Second):
-		slog.Warn("recording cleanup timed out", "device", canonical, "owner", owner)
+		slog.Error("recording cleanup timed out", "device", canonical, "owner", owner)
 	}
 }
 

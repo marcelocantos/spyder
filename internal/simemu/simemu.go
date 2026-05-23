@@ -330,14 +330,14 @@ func runCapture(name string, args ...string) ([]byte, error) {
 		if len(tail) > 200 {
 			tail = tail[len(tail)-200:]
 		}
-		slog.Warn("simemu exec failed",
+		slog.Error("simemu exec failed",
 			"cmd", name, "args", args,
 			"duration_ms", elapsedMs,
 			"error", err.Error(),
 			"stderr_tail", tail)
 		return nil, fmt.Errorf("%w\nstderr: %s", err, stderr.String())
 	}
-	slog.Debug("simemu exec ok",
+	slog.Info("simemu exec ok",
 		"cmd", name, "args", args,
 		"duration_ms", elapsedMs,
 		"stdout_bytes", stdout.Len())

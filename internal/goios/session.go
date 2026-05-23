@@ -22,11 +22,13 @@ package goios
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/tunnel"
+	"github.com/marcelocantos/spyder/internal/wedge"
 )
 
 // Defaults match `ios tunnel start --userspace`'s registry endpoint.
@@ -131,16 +133,35 @@ func (r *Resolver) Invalidate(udid string) {
 // resolve performs the tunnel-info → RSD-handshake → enriched-DeviceEntry
 // dance. Mirrors what go-ios's CLI does in main.go's
 // deviceWithRsdProvider, with all errors wrapped for context.
+//
+// On every error path, fires wedge.Capture so the next observed
+// wedge has a discrete trigger event with usbmux/CoreDevice
+// snapshots correlated to the failing call (🎯T68.1). Capture is
+// internally throttled, so high-frequency churn won't flood the log.
+//
+// Start/end events are logged at Info — bounded by the 60s session
+// cache, so this is event-shaped (one fresh handshake per device
+// per minute under steady load), not per-RPC noise.
 func (r *Resolver) resolve(udid string) (ios.DeviceEntry, error) {
+	started := time.Now()
+	slog.Info("goios resolve: start", "udid", udid)
+
+	fail := func(stage string, err error) error {
+		wedge.Capture(udid, "goios.resolve."+stage)
+		slog.Error("goios resolve: failed", "udid", udid, "stage", stage,
+			"duration_ms", time.Since(started).Milliseconds(), "error", err.Error())
+		return err
+	}
+
 	dev, err := ios.GetDevice(udid)
 	if err != nil {
-		return ios.DeviceEntry{}, fmt.Errorf("goios: get device %s: %w", udid, err)
+		return ios.DeviceEntry{}, fail("GetDevice", fmt.Errorf("goios: get device %s: %w", udid, err))
 	}
 	info, err := tunnel.TunnelInfoForDevice(udid, r.tunnelHost, r.tunnelPort)
 	if err != nil {
-		return ios.DeviceEntry{}, fmt.Errorf(
+		return ios.DeviceEntry{}, fail("TunnelInfo", fmt.Errorf(
 			"goios: tunnel info for %s from %s:%d: %w (is `ios tunnel start` running?)",
-			udid, r.tunnelHost, r.tunnelPort, err)
+			udid, r.tunnelHost, r.tunnelPort, err))
 	}
 	dev.UserspaceTUN = info.UserspaceTUN
 	dev.UserspaceTUNHost = r.tunnelHost
@@ -148,19 +169,24 @@ func (r *Resolver) resolve(udid string) (ios.DeviceEntry, error) {
 
 	rsdService, err := ios.NewWithAddrPortDevice(info.Address, info.RsdPort, dev)
 	if err != nil {
-		return ios.DeviceEntry{}, fmt.Errorf("goios: connect RSD %s:%d: %w", info.Address, info.RsdPort, err)
+		return ios.DeviceEntry{}, fail("NewRSD",
+			fmt.Errorf("goios: connect RSD %s:%d: %w", info.Address, info.RsdPort, err))
 	}
 	defer rsdService.Close()
 	rsdProvider, err := rsdService.Handshake()
 	if err != nil {
-		return ios.DeviceEntry{}, fmt.Errorf("goios: RSD handshake for %s: %w", udid, err)
+		return ios.DeviceEntry{}, fail("Handshake",
+			fmt.Errorf("goios: RSD handshake for %s: %w", udid, err))
 	}
 	enriched, err := ios.GetDeviceWithAddress(udid, info.Address, rsdProvider)
 	if err != nil {
-		return ios.DeviceEntry{}, fmt.Errorf("goios: enrich device %s: %w", udid, err)
+		return ios.DeviceEntry{}, fail("Enrich",
+			fmt.Errorf("goios: enrich device %s: %w", udid, err))
 	}
 	enriched.UserspaceTUN = dev.UserspaceTUN
 	enriched.UserspaceTUNHost = dev.UserspaceTUNHost
 	enriched.UserspaceTUNPort = dev.UserspaceTUNPort
+	slog.Info("goios resolve: ok", "udid", udid,
+		"duration_ms", time.Since(started).Milliseconds())
 	return enriched, nil
 }

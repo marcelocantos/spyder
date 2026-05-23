@@ -192,22 +192,77 @@ func (h *Handler) ResolveAdapterForStream(dev string) (device.Adapter, string, e
 	return adapter, id, err
 }
 
-// Dispatch routes a tool call by name to its handler. Every call is logged
-// at DEBUG on entry and exit (with duration + outcome) so the spyder log
-// carries a complete timeline of user-initiated actions for post-mortem.
+// Dispatch routes a tool call by name to its handler. Every call is
+// logged at INFO on entry and exit (matches the REST handler's
+// request-log convention), and a watchdog goroutine fires
+// `mcp dispatch slow` warnings at 30 s + every 60 s after that for
+// any call still in flight — so a hung deploy / install / launch
+// surfaces in the log AS IT'S HANGING, not retroactively after the
+// MCP client times out.
 func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
 	started := time.Now()
-	slog.Debug("mcp dispatch", "tool", name, "device", deviceArg(args))
+	device := deviceArg(args)
+	slog.Info("mcp dispatch", "tool", name, "device", device)
+
+	done := make(chan struct{})
+	go watchSlowDispatch(name, device, started, done)
+
 	result, err := h.dispatch(name, args)
+	close(done)
 	elapsedMs := time.Since(started).Milliseconds()
 	if err != nil {
-		slog.Warn("mcp dispatch failed",
+		slog.Error("mcp dispatch failed",
 			"tool", name, "duration_ms", elapsedMs, "error", err.Error())
 	} else {
-		slog.Debug("mcp dispatch ok",
+		slog.Info("mcp dispatch ok",
 			"tool", name, "duration_ms", elapsedMs)
 	}
 	return result, err
+}
+
+// slowDispatchThreshold is the in-flight age at which a dispatch
+// first qualifies as "slow" and gets a watchdog log line. Tuned to
+// the iOS deploy_app pipeline: a fresh tunnel handshake + signed
+// install can legitimately take ~10–20 s on a cold device, so 30 s
+// is the floor for "this is taking longer than it should."
+//
+// slowDispatchInterval is the periodic re-log cadence after the
+// first slow event. Each fire repeats the in-flight age so an
+// operator scanning the log can see a hang's wall-clock duration
+// directly from the most recent line.
+//
+// Declared as vars (not consts) so tests can shorten them.
+var (
+	slowDispatchThreshold = 30 * time.Second
+	slowDispatchInterval  = 60 * time.Second
+)
+
+// watchSlowDispatch logs a warning if a dispatch is still in flight
+// after slowDispatchThreshold, then re-logs every slowDispatchInterval
+// until done is closed. Returns immediately if done fires before
+// the threshold — the common (fast) case adds one goroutine
+// allocation and one select wakeup, no log noise.
+func watchSlowDispatch(tool, device string, started time.Time, done <-chan struct{}) {
+	select {
+	case <-done:
+		return
+	case <-time.After(slowDispatchThreshold):
+	}
+	slog.Warn("mcp dispatch slow",
+		"tool", tool, "device", device,
+		"in_flight_ms", time.Since(started).Milliseconds())
+	ticker := time.NewTicker(slowDispatchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			slog.Warn("mcp dispatch still in flight",
+				"tool", tool, "device", device,
+				"in_flight_ms", time.Since(started).Milliseconds())
+		}
+	}
 }
 
 // deviceArg pulls the "device" argument for logging context if present.

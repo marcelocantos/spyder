@@ -197,7 +197,7 @@ func (p *Pool) Adopt(_ context.Context) error {
 	// iOS sims.
 	sims, err := p.exec.SimList()
 	if err != nil {
-		slog.Warn("pool adopt: SimList failed; skipping iOS adoption", "error", err)
+		slog.Error("pool adopt: SimList failed; skipping iOS adoption", "error", err)
 	} else {
 		for _, s := range sims {
 			if !strings.HasPrefix(s.Name, PoolNamePrefix) {
@@ -223,7 +223,7 @@ func (p *Pool) Adopt(_ context.Context) error {
 	// Android AVDs.
 	avds, err := p.exec.AVDList()
 	if err != nil {
-		slog.Warn("pool adopt: AVDList failed; skipping Android adoption", "error", err)
+		slog.Error("pool adopt: AVDList failed; skipping Android adoption", "error", err)
 	} else {
 		for _, a := range avds {
 			if !strings.HasPrefix(a.Name, PoolNamePrefix) {
@@ -257,7 +257,7 @@ func (p *Pool) Adopt(_ context.Context) error {
 					"instance_id", h.InstanceID, "device_id", devID,
 					"holder", h.Holder, "template", h.Template)
 				if err := p.store.DeleteByDevice(devID); err != nil {
-					slog.Warn("pool adopt: failed to delete stale hold",
+					slog.Error("pool adopt: failed to delete stale hold",
 						"device_id", devID, "error", err)
 				}
 			}
@@ -427,7 +427,7 @@ func (p *Pool) markReserved(inst *Instance, holder string) {
 			AcquiredAt: inst.AcquiredAt,
 		})
 		if err != nil {
-			slog.Warn("pool: persist hold failed (in-memory state still consistent)",
+			slog.Error("pool: persist hold failed (in-memory state still consistent)",
 				"id", inst.ID, "error", err)
 		}
 	}
@@ -452,7 +452,7 @@ func (p *Pool) Release(instanceID string) error {
 	inst.LastReleaseAt = p.clk.Now()
 	if p.store != nil {
 		if err := p.store.Delete(instanceID); err != nil {
-			slog.Warn("pool: delete hold failed (in-memory state still consistent)",
+			slog.Error("pool: delete hold failed (in-memory state still consistent)",
 				"id", instanceID, "error", err)
 		}
 	}
@@ -524,7 +524,7 @@ func (p *Pool) onLingerExpired(instanceID string) {
 
 	// Shutdown but keep on disk.
 	if err := p.shutdownInstance(inst); err != nil {
-		slog.Warn("pool: linger expire: shutdown failed",
+		slog.Error("pool: linger expire: shutdown failed",
 			"id", instanceID, "error", err)
 		// Leave in running tier so it can be reused or retried.
 		return
@@ -874,7 +874,7 @@ func (p *Pool) bootInstance(inst *Instance) error {
 	switch inst.Platform {
 	case "ios":
 		if err := p.exec.SimBoot(inst.DeviceID); err != nil {
-			slog.Warn("pool: boot failed",
+			slog.Error("pool: boot failed",
 				"id", inst.ID, "device", inst.DeviceID, "platform", "ios",
 				"duration_ms", time.Since(started).Milliseconds(), "error", err)
 			return fmt.Errorf("sim boot %s: %w", inst.DeviceID, err)
@@ -882,7 +882,7 @@ func (p *Pool) bootInstance(inst *Instance) error {
 	case "android":
 		serial, err := p.exec.AVDBoot(inst.DeviceID)
 		if err != nil {
-			slog.Warn("pool: boot failed",
+			slog.Error("pool: boot failed",
 				"id", inst.ID, "device", inst.DeviceID, "platform", "android",
 				"duration_ms", time.Since(started).Milliseconds(), "error", err)
 			return fmt.Errorf("avd boot %s: %w", inst.DeviceID, err)
@@ -903,14 +903,14 @@ func (p *Pool) shutdownInstance(inst *Instance) error {
 	switch inst.Platform {
 	case "ios":
 		if err := p.exec.SimShutdown(inst.DeviceID); err != nil {
-			slog.Warn("pool: shutdown failed",
+			slog.Error("pool: shutdown failed",
 				"id", inst.ID, "device", inst.DeviceID, "error", err)
 			return fmt.Errorf("sim shutdown %s: %w", inst.DeviceID, err)
 		}
 	case "android":
 		if inst.Serial != "" {
 			if err := p.exec.AVDShutdown(inst.Serial); err != nil {
-				slog.Warn("pool: shutdown failed",
+				slog.Error("pool: shutdown failed",
 					"id", inst.ID, "serial", inst.Serial, "error", err)
 				return fmt.Errorf("avd shutdown %s: %w", inst.Serial, err)
 			}
@@ -944,7 +944,7 @@ func (p *Pool) destroyInstance(inst *Instance) error {
 		_ = p.store.Delete(inst.ID)
 	}
 	if err != nil {
-		slog.Warn("pool: destroyed with deletion error",
+		slog.Error("pool: destroyed with deletion error",
 			"id", inst.ID, "device", inst.DeviceID, "error", err)
 	} else {
 		slog.Info("pool: destroyed",

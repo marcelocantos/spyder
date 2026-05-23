@@ -2260,6 +2260,8 @@ targets:
       Without access to Apple's source, isolation has to come from external observation. dtrace probes on usbmuxd (if SIP permits) or on the Mach IPC path. Worth coordinating with the libimobiledevice / pymobiledevice3 communities — they almost certainly have anecdotal evidence of the same wedge.
 
       Don't start this target without explicit user ask. Open-ended investigation into Apple-side behaviour, useful only if T66 + T67 turn out to be insufficient.
+    depends_on:
+    - T68.1
     tags:
     - ios
     - usbmuxd
@@ -2268,6 +2270,24 @@ targets:
     - deferred
     origin: manual
     discovered: 2026-05-20
+  T68.1:
+    name: spyder captures structured wedge snapshots when usbmux/CoreDevice visibility diverges
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A new internal/wedge package fires on wedge-shaped error returns at the spyder layer (initial hook: goios.Resolver.resolve''s every error return), probes both usbmuxd (in-process goios_ios.ListDevices) and CoreDevice (xcrun devicectl list devices), computes the discrepancy, and writes a JSON snapshot to ~/.spyder/wedge-snapshots/ plus a structured slog event.'
+    - Capture calls are throttled per process (~1 snapshot per minute) so a sustained wedge doesn't flood the log.
+    - 'Snapshot includes: timestamp, trigger (call-site name), trigger UDID, both UDID lists, both error strings if any, the diff (missing-from-usbmux + extra-in-usbmux), and a wedged boolean.'
+    - Unit-tested core (diffUDIDs + buildSnapshot) covers wedge / full-wedge / consistent / stale-usbmux / both-empty cases.
+    context: Filed as a stepping stone toward T68's full root-cause investigation. The macOS-side trigger that wedges usbmuxd's third-party device list still hasn't been isolated; when the wedge happens, by the time the operator notices, the daemon log only shows the post-wedge "Device not found" errors with no correlated context. This target adds enough observability that the NEXT wedge gives the analyst a discrete trigger event with full state at the moment of failure, without committing to the heavier dtrace / fs_usage expedition T68 itself proposes.
+    tags:
+    - ios
+    - usbmuxd
+    - observability
+    - diagnostic
+    origin: manual
+    discovered: 2026-05-23
   T69:
     name: Remove spyder doctor --install-sudoers + spyder-killusbmuxd once usbmuxd wedge has a real fix
     status: identified
