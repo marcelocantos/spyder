@@ -27,6 +27,7 @@ import (
 
 	"github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/tunnel"
+	"github.com/marcelocantos/spyder/internal/wedge"
 )
 
 // Defaults match `ios tunnel start --userspace`'s registry endpoint.
@@ -131,13 +132,20 @@ func (r *Resolver) Invalidate(udid string) {
 // resolve performs the tunnel-info → RSD-handshake → enriched-DeviceEntry
 // dance. Mirrors what go-ios's CLI does in main.go's
 // deviceWithRsdProvider, with all errors wrapped for context.
+//
+// On every error path, fires wedge.Capture so the next observed
+// wedge has a discrete trigger event with usbmux/CoreDevice
+// snapshots correlated to the failing call (🎯T68.1). Capture is
+// internally throttled, so high-frequency churn won't flood the log.
 func (r *Resolver) resolve(udid string) (ios.DeviceEntry, error) {
 	dev, err := ios.GetDevice(udid)
 	if err != nil {
+		wedge.Capture(udid, "goios.resolve.GetDevice")
 		return ios.DeviceEntry{}, fmt.Errorf("goios: get device %s: %w", udid, err)
 	}
 	info, err := tunnel.TunnelInfoForDevice(udid, r.tunnelHost, r.tunnelPort)
 	if err != nil {
+		wedge.Capture(udid, "goios.resolve.TunnelInfo")
 		return ios.DeviceEntry{}, fmt.Errorf(
 			"goios: tunnel info for %s from %s:%d: %w (is `ios tunnel start` running?)",
 			udid, r.tunnelHost, r.tunnelPort, err)
@@ -148,15 +156,18 @@ func (r *Resolver) resolve(udid string) (ios.DeviceEntry, error) {
 
 	rsdService, err := ios.NewWithAddrPortDevice(info.Address, info.RsdPort, dev)
 	if err != nil {
+		wedge.Capture(udid, "goios.resolve.NewRSD")
 		return ios.DeviceEntry{}, fmt.Errorf("goios: connect RSD %s:%d: %w", info.Address, info.RsdPort, err)
 	}
 	defer rsdService.Close()
 	rsdProvider, err := rsdService.Handshake()
 	if err != nil {
+		wedge.Capture(udid, "goios.resolve.Handshake")
 		return ios.DeviceEntry{}, fmt.Errorf("goios: RSD handshake for %s: %w", udid, err)
 	}
 	enriched, err := ios.GetDeviceWithAddress(udid, info.Address, rsdProvider)
 	if err != nil {
+		wedge.Capture(udid, "goios.resolve.Enrich")
 		return ios.DeviceEntry{}, fmt.Errorf("goios: enrich device %s: %w", udid, err)
 	}
 	enriched.UserspaceTUN = dev.UserspaceTUN
