@@ -5,7 +5,9 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -96,5 +98,47 @@ func TestIOSBinaryAlongside_Missing(t *testing.T) {
 
 	if got := iosBinaryAlongside(spyderExe); got != "" {
 		t.Errorf("iosBinaryAlongside(no-ios) = %q; want \"\"", got)
+	}
+}
+
+// TestSudoersContent_HasBypassAndNopasswd asserts the generated
+// sudoers body carries both the `!authenticate` Defaults directive
+// (so PAM/TouchID is bypassed for the daemon's non-tty sudo) and
+// the NOPASSWD grant. Without either, `sudo -n` from the wedge
+// monitor fails.
+func TestSudoersContent_HasBypassAndNopasswd(t *testing.T) {
+	got := sudoersContent("marcelo", "/opt/homebrew/bin/spyder-killusbmuxd")
+	for _, want := range []string{
+		"Defaults!/opt/homebrew/bin/spyder-killusbmuxd !authenticate",
+		"marcelo ALL=(root) NOPASSWD: /opt/homebrew/bin/spyder-killusbmuxd",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sudoers content missing required line %q\n--- generated ---\n%s", want, got)
+		}
+	}
+}
+
+// TestSudoersContent_VisudoAccepts validates the generated content
+// against `visudo -c -f`, which parses sudoers syntax without
+// requiring root. Catches any future template tweak that produces
+// invalid syntax before it lands on a user's machine.
+func TestSudoersContent_VisudoAccepts(t *testing.T) {
+	if _, err := exec.LookPath("visudo"); err != nil {
+		t.Skip("visudo not available; skipping syntax check")
+	}
+	content := sudoersContent("marcelo", "/opt/homebrew/bin/spyder-killusbmuxd")
+	tmp, err := os.CreateTemp("", "sudoers-test-*.tmp")
+	if err != nil {
+		t.Fatalf("tempfile: %v", err)
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(content); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	tmp.Close()
+	out, err := exec.Command("visudo", "-c", "-f", tmp.Name()).CombinedOutput()
+	if err != nil {
+		t.Fatalf("visudo rejected generated sudoers:\n  err: %v\n  output: %s\n  content:\n%s",
+			err, out, content)
 	}
 }
