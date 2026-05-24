@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/marcelocantos/spyder/internal/devicectl"
 )
@@ -291,4 +292,49 @@ func TestStateDevicectlFallback(t *testing.T) {
 	if _, err := a2.State(synthUDID + "-2"); err == nil {
 		t.Error("State should error when both lockdown and devicectl fallback fail")
 	}
+}
+
+// --- DTX degradation (🎯T72.4) ---------------------------------------------
+
+const synthNoTunnelUDID = "00008103-DEADBEEFNOTUNNEL"
+
+// assertDegraded checks an error is the structured usbmuxd-degradation
+// error: matchable both via errors.Is and via the literal substrings
+// clients key off.
+func assertDegraded(t *testing.T, tool string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected a degraded error, got nil", tool)
+	}
+	if !errors.Is(err, ErrUSBMuxdUnavailable) {
+		t.Errorf("%s: errors.Is(ErrUSBMuxdUnavailable) = false; err=%v", tool, err)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "usbmuxd") || !strings.Contains(msg, "unavailable") {
+		t.Errorf("%s: Error() must mention 'usbmuxd' and 'unavailable'; got %q", tool, msg)
+	}
+}
+
+func TestScreenshotDegradesWhenTunnelDown(t *testing.T) {
+	// No tunnel/usbmuxd reachable for a synthetic UDID → ssPool.Acquire
+	// fails → structured degradation.
+	a := NewIOSAdapter()
+	_, err := a.Screenshot(synthNoTunnelUDID)
+	assertDegraded(t, "screenshot", err)
+}
+
+func TestLogRangeDegradesWhenTunnelDown(t *testing.T) {
+	a := NewIOSAdapter()
+	// streamOSTrace's Session acquire fails immediately, so this returns
+	// without waiting out the log window.
+	_, err := a.LogRange(synthNoTunnelUDID, LogFilter{}, time.Time{}, time.Now().Add(time.Second))
+	assertDegraded(t, "logs", err)
+}
+
+func TestCrashesDegradesWhenTunnelDown(t *testing.T) {
+	// go-ios Session fails (no tunnel); devicectl fallback (stubbed to
+	// error) can't recover crash reports → structured degradation.
+	a := adapterWithStub(&devicectlStub{detailsErr: errors.New("no device matching")})
+	_, err := a.Crashes(synthNoTunnelUDID, time.Time{}, "")
+	assertDegraded(t, "crashes", err)
 }

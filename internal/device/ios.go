@@ -34,6 +34,24 @@ import (
 // device isn't hammered.
 const stateTTL = 2 * time.Second
 
+// ErrUSBMuxdUnavailable marks a failure on spyder's DTX-only iOS surface
+// (screenshot, oslog stream, crash-report retrieval) caused by the bundled
+// ios tunnel registry / usbmuxd being unreachable. These features have no
+// CoreDevice equivalent on iOS 17+, so they degrade — rather than the
+// app-lifecycle and enumeration tools, which run over devicectl and keep
+// working through a usbmuxd wedge (🎯T72). Clients can match the literal
+// substrings "usbmuxd" and "unavailable" in Error(), or use
+// errors.Is(err, ErrUSBMuxdUnavailable).
+var ErrUSBMuxdUnavailable = errors.New("usbmuxd unavailable")
+
+// degradedDTX wraps an acquire-time failure on a DTX-only tool into a
+// structured, client-matchable degradation error.
+func degradedDTX(tool, id string, cause error) error {
+	return fmt.Errorf(
+		"%s on %s: %w — DTX-only tool degraded (no CoreDevice equivalent on iOS 17+); underlying: %v",
+		tool, id, ErrUSBMuxdUnavailable, cause)
+}
+
 // IOSAdapter talks to iOS devices through two channels:
 //
 //   - CoreDevice via `xcrun devicectl` (the internal/devicectl wrapper) for
@@ -321,8 +339,10 @@ func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 	}
 	svc, release, err := a.ssPool.Acquire(id)
 	if err != nil {
+		// Acquire dials the bundled tunnel / usbmuxd; a failure here is the
+		// wedge signal. Screenshot has no CoreDevice equivalent, so degrade.
 		a.goios.Invalidate(id)
-		return nil, fmt.Errorf("screenshot on %s: %w", id, err)
+		return nil, degradedDTX("screenshot", id, err)
 	}
 	defer release()
 	data, err := svc.TakeScreenshot()
@@ -482,7 +502,17 @@ func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]Cras
 	}
 	dev, err := a.goios.Session(id)
 	if err != nil {
-		return nil, fmt.Errorf("crashes: %w", err)
+		// The DTX/afc crashreport path is unavailable (tunnel/usbmuxd
+		// wedged). CoreDevice exposes no crash-report retrieval API, so
+		// there is no richer fallback — we cross-check the device's
+		// reachability via devicectl and return a structured degraded
+		// error either way (🎯T72.4).
+		_, derr := a.dctl.DeviceDetails(context.Background(), id)
+		if derr == nil {
+			return nil, degradedDTX("crashes", id,
+				fmt.Errorf("device is reachable via CoreDevice but crash reports require usbmuxd (afc com.apple.crashreportcopymobile); underlying: %v", err))
+		}
+		return nil, degradedDTX("crashes", id, err)
 	}
 
 	tmp, err := os.MkdirTemp("", "spyder-crashes-*")
@@ -819,7 +849,10 @@ func (a *IOSAdapter) streamOSTrace(ctx context.Context, id string, filter LogFil
 	regexFilter *regexp.Regexp, emit func(LogLine) bool) error {
 	dev, err := a.goios.Session(id)
 	if err != nil {
-		return fmt.Errorf("ostrace: %w", err)
+		// Session dials the bundled tunnel / usbmuxd. The oslog stream
+		// (DTX activitytracetap, lockdown os_trace_relay) has no CoreDevice
+		// equivalent on iOS 17+, so a failure here degrades the tool.
+		return degradedDTX("oslog stream", id, err)
 	}
 
 	// Try DTX first.
