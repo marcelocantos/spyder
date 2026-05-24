@@ -123,13 +123,17 @@ loop:
 			break loop
 		}
 	}
+	streamErr := <-errCh
+	if errors.Is(streamErr, ErrUSBMuxdUnavailable) {
+		t.Skipf("LogStream(%s): DTX surface degraded (tunnel/usbmuxd wedged) — skipping HIL test: %v", udid, streamErr)
+	}
 	if got == 0 {
 		t.Errorf("LogStream(%s) drained 0 lines over ~3s; expected continuous syslog traffic", udid)
 	} else {
 		t.Logf("LogStream(%s): %d lines drained over ~3s", udid, got)
 	}
-	if err := <-errCh; err != nil && !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) {
-		t.Errorf("LogStream(%s) returned err=%v; want nil, DeadlineExceeded, or Canceled", udid, err)
+	if streamErr != nil && !errors.Is(streamErr, context.DeadlineExceeded) && !errors.Is(streamErr, context.Canceled) {
+		t.Errorf("LogStream(%s) returned err=%v; want nil, DeadlineExceeded, or Canceled", udid, streamErr)
 	}
 }
 
@@ -144,6 +148,9 @@ func TestIOSCrashes_Live(t *testing.T) {
 	a := NewIOSAdapter()
 	reports, err := a.Crashes(udid, time.Now().Add(-30*24*time.Hour), "")
 	if err != nil {
+		if errors.Is(err, ErrUSBMuxdUnavailable) {
+			t.Skipf("Crashes(%s): DTX surface degraded (tunnel/usbmuxd wedged) — skipping HIL test: %v", udid, err)
+		}
 		t.Fatalf("Crashes(%s): %v", udid, err)
 	}
 	t.Logf("Crashes(%s, last 30d): %d report(s)", udid, len(reports))
