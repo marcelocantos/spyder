@@ -42,6 +42,16 @@ const (
 	// or tunnel restart self-heals within a minute or two without
 	// needing explicit Invalidate calls everywhere.
 	cacheTTL = 60 * time.Second
+
+	// resolveTimeout bounds a single tunnel-info → RSD-handshake →
+	// enrich sequence. go-ios's RSD HTTP dial (ios.NewWithAddrPortDevice)
+	// blocks indefinitely when the device's tunnel is wedged — a real
+	// failure mode observed in the field — which would otherwise hang
+	// every DTX-backed caller (screenshot, oslog stream, crashes) forever.
+	// Bounding it lets those tools surface a structured degraded error
+	// "rather than hanging" (🎯T72.4). A healthy handshake is sub-second,
+	// so this is generous headroom, not a tight budget.
+	resolveTimeout = 15 * time.Second
 )
 
 // Resolver hands out enriched ios.DeviceEntry values keyed by UDID,
@@ -109,7 +119,7 @@ func (r *Resolver) Session(udid string) (ios.DeviceEntry, error) {
 		r.inflight[udid] = done
 		r.mu.Unlock()
 
-		dev, err := r.resolve(udid)
+		dev, err := r.resolveWithTimeout(udid)
 
 		r.mu.Lock()
 		delete(r.inflight, udid)
@@ -128,6 +138,33 @@ func (r *Resolver) Invalidate(udid string) {
 	r.mu.Lock()
 	delete(r.cache, udid)
 	r.mu.Unlock()
+}
+
+// resolveWithTimeout runs resolve under resolveTimeout. go-ios's RSD dial
+// has no internal deadline, so a wedged tunnel blocks resolve forever;
+// this bounds it. On timeout the in-flight resolve goroutine is abandoned
+// — it sends to a buffered channel that's discarded, and resolve's own
+// deferred Close cleans up the RSD service when (if) it finally unblocks.
+func (r *Resolver) resolveWithTimeout(udid string) (ios.DeviceEntry, error) {
+	type result struct {
+		dev ios.DeviceEntry
+		err error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		dev, err := r.resolve(udid)
+		ch <- result{dev, err}
+	}()
+	select {
+	case res := <-ch:
+		return res.dev, res.err
+	case <-time.After(resolveTimeout):
+		wedge.Capture(udid, "goios.resolve.timeout")
+		slog.Error("goios resolve: timed out", "udid", udid, "timeout", resolveTimeout.String())
+		return ios.DeviceEntry{}, fmt.Errorf(
+			"goios: RSD session for %s timed out after %s (tunnel/usbmuxd may be wedged)",
+			udid, resolveTimeout)
+	}
 }
 
 // resolve performs the tunnel-info → RSD-handshake → enriched-DeviceEntry
