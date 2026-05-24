@@ -34,17 +34,6 @@ import (
 // device isn't hammered.
 const stateTTL = 2 * time.Second
 
-// devicectlTimeoutSeconds caps every per-device devicectl invocation so
-// an unresponsive device can't wedge a caller. We pass it through as
-// devicectl's own --timeout flag (its internal machinery aborts the
-// underlying CoreDevice operation cleanly) AND wrap with a
-// CommandContext deadline a couple of seconds longer so the Go side
-// reaps even if devicectl misbehaves on the timeout.
-const (
-	devicectlTimeoutSeconds = 30
-	devicectlTimeout        = (devicectlTimeoutSeconds + 2) * time.Second
-)
-
 // IOSAdapter talks to iOS devices through two channels:
 //
 //   - CoreDevice via `xcrun devicectl` (the internal/devicectl wrapper) for
@@ -68,6 +57,11 @@ type IOSAdapter struct {
 	// effectively free after the first.
 	ssPool *goios.ServicePool[*instruments.ScreenshotService]
 
+	// usbmuxList yields the supplemental go-ios usbmux enumeration for
+	// List. It's a field so tests can substitute a deterministic source;
+	// production wires it to usbmuxDevicesGuarded.
+	usbmuxList func() []Info
+
 	mu    sync.Mutex
 	cache map[string]cachedState
 }
@@ -82,7 +76,7 @@ type cachedState struct {
 // registry endpoint).
 func NewIOSAdapter() *IOSAdapter {
 	resolver := goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort)
-	return &IOSAdapter{
+	a := &IOSAdapter{
 		goios: resolver,
 		dctl:  devicectl.New(),
 		ssPool: goios.NewServicePool(
@@ -98,35 +92,104 @@ func NewIOSAdapter() *IOSAdapter {
 		),
 		cache: map[string]cachedState{},
 	}
+	a.usbmuxList = a.usbmuxDevicesGuarded
+	return a
 }
 
-// List returns iOS devices that are currently reachable. The set is the
-// intersection of:
+// usbmuxEnumTimeout bounds the supplemental go-ios usbmux enumeration so a
+// wedged usbmuxd (the exact failure 🎯T72 mitigates) can't block List. When
+// it fires, List falls back to the devicectl-only device set.
+const usbmuxEnumTimeout = 4 * time.Second
+
+// List returns iOS devices currently reachable. devicectl (CoreDevice) is
+// the primary source for both identity and connection state — it is
+// usbmuxd-free, so enumeration keeps working when usbmuxd is wedged. go-ios's
+// usbmux enumeration is a supplemental signal that (a) enriches any
+// human-friendly fields devicectl left blank and (b) surfaces iOS-<17 /
+// USB-only devices CoreDevice doesn't manage. The supplemental pass is
+// time-bounded so a wedged usbmuxd degrades to "devicectl-only" rather than
+// hanging.
 //
-//   - go-ios's USBMux enumeration (with per-device lockdown enrichment
-//     for the human-friendly fields).
-//   - `xcrun devicectl list devices` filtered for tunnelState=connected
-//     OR a USB connection (USBMux-only iOS-<17 devices count too).
-//
-// Devices USBMux knows about but devicectl reports as `unavailable` are
-// dropped — they're paired but not currently usable, and surfacing them
-// produces useless install/launch attempts. When neither source is
-// available the function returns an empty list rather than an error —
-// matching the Android adapter's behaviour when adb is absent.
+// A device devicectl knows about but reports as not-connected is dropped
+// even if usbmux still sees it — devicectl is the authority on usability,
+// and surfacing a paired-but-unavailable device produces useless
+// install/launch attempts. When neither source yields anything the function
+// returns an empty list rather than an error, matching the Android adapter's
+// behaviour when adb is absent.
 func (a *IOSAdapter) List() ([]Info, error) {
-	connected, _ := devicectlConnectedIOSDevices()
-
 	var devices []Info
+	byUDID := make(map[string]int)     // udid → index in devices
+	dctlState := make(map[string]bool) // udid → devicectl says connected
 
-	// Primary source: go-ios's usbmux enumeration, with per-device
-	// lockdown enrichment for the human-friendly fields.
-	if devList, err := goios_ios.ListDevices(); err == nil {
-		for _, dev := range devList.DeviceList {
-			udid := dev.Properties.SerialNumber
-			if connected != nil && !connected[udid] {
+	// Primary: devicectl / CoreDevice.
+	if dctlDevices, err := a.dctl.ListDevices(context.Background()); err == nil {
+		for _, d := range dctlDevices {
+			if d.Platform != "iOS" {
 				continue
 			}
-			info := Info{UUID: udid, Platform: "ios"}
+			udid := d.UDID
+			if udid == "" {
+				udid = d.Identifier // fall back to the CoreDevice UUID
+			}
+			dctlState[udid] = d.Connected()
+			if !d.Connected() {
+				continue
+			}
+			info := Info{UUID: udid, Platform: "ios", Name: d.Name, Model: d.Model}
+			if d.OSVersion != "" {
+				info.OS = "iOS " + d.OSVersion
+			}
+			byUDID[udid] = len(devices)
+			devices = append(devices, info)
+		}
+	} else {
+		slog.Warn("devicectl enumeration failed; relying on usbmux only", "error", err.Error())
+	}
+
+	// Supplemental: go-ios usbmux enumeration, hang-guarded.
+	for _, info := range a.usbmuxList() {
+		if connected, known := dctlState[info.UUID]; known {
+			if !connected {
+				continue // devicectl says unavailable — authoritative, drop it
+			}
+			// Enrich only fields devicectl left blank; devicectl wins on identity.
+			idx := byUDID[info.UUID]
+			if devices[idx].Name == "" {
+				devices[idx].Name = info.Name
+			}
+			if devices[idx].Model == "" {
+				devices[idx].Model = info.Model
+			}
+			if devices[idx].OS == "" {
+				devices[idx].OS = info.OS
+			}
+			continue
+		}
+		// devicectl doesn't manage this device (iOS<17 / USB-only) — include it.
+		byUDID[info.UUID] = len(devices)
+		devices = append(devices, info)
+	}
+
+	return devices, nil
+}
+
+// usbmuxDevicesGuarded runs the go-ios usbmux enumeration (with per-device
+// lockdown enrichment) in the background and returns its result, or nil if
+// it doesn't complete within usbmuxEnumTimeout. The timeout is what lets a
+// wedged usbmuxd degrade to devicectl-only enumeration instead of hanging
+// List. A timed-out goroutine is left to finish and be GC'd; it holds no
+// locks the caller needs.
+func (a *IOSAdapter) usbmuxDevicesGuarded() []Info {
+	ch := make(chan []Info, 1)
+	go func() {
+		devList, err := goios_ios.ListDevices()
+		if err != nil {
+			ch <- nil
+			return
+		}
+		var out []Info
+		for _, dev := range devList.DeviceList {
+			info := Info{UUID: dev.Properties.SerialNumber, Platform: "ios"}
 			if values, gerr := goios_ios.GetValues(dev); gerr == nil {
 				info.Name = values.Value.DeviceName
 				info.Model = values.Value.ProductType
@@ -134,176 +197,19 @@ func (a *IOSAdapter) List() ([]Info, error) {
 					info.OS = "iOS " + values.Value.ProductVersion
 				}
 			}
-			devices = append(devices, info)
+			out = append(out, info)
 		}
-	}
+		ch <- out
+	}()
 
-	if _, err := exec.LookPath("xcrun"); err == nil {
-		tmp, err := os.MkdirTemp("", "spyder-devctl-*")
-		if err == nil {
-			defer os.RemoveAll(tmp)
-			jsonPath := filepath.Join(tmp, "devices.json")
-			_, _, _ = runDevicectl("list", "devices", "--quiet", "--json-output", jsonPath)
-			if data, err := os.ReadFile(jsonPath); err == nil {
-				if parsed, err := parseDevicectlList(data); err == nil {
-					// parseDevicectlList already filters by tunnelState
-					// internally for the merge step.
-					filtered := parsed[:0]
-					for _, d := range parsed {
-						if connected == nil || connected[d.UUID] {
-							filtered = append(filtered, d)
-						}
-					}
-					devices = mergeIOSDevices(devices, filtered)
-				}
-			}
-		}
+	select {
+	case infos := <-ch:
+		return infos
+	case <-time.After(usbmuxEnumTimeout):
+		slog.Warn("usbmux enumeration timed out; using devicectl-only device set (usbmuxd may be wedged)",
+			"timeout", usbmuxEnumTimeout.String())
+		return nil
 	}
-
-	return devices, nil
-}
-
-// devicectlConnectedIOSDevices returns the set of UDIDs that
-// `xcrun devicectl list devices --json-output` reports as
-// `tunnelState=connected` AND `transportType=wired` for the iOS
-// platform. Used by IOSAdapter.List to filter out paired-but-unavailable
-// devices that the tunneld registry would otherwise surface (e.g. a
-// phone that was previously trusted but is currently powered off), and
-// to exclude devices reachable only over the local network.
-//
-// Returns (nil, error) when devicectl can't be queried — caller should
-// treat this as "filter unavailable" and pass everything through.
-func devicectlConnectedIOSDevices() (map[string]bool, error) {
-	if _, err := exec.LookPath("xcrun"); err != nil {
-		return nil, err
-	}
-	tmp, err := os.MkdirTemp("", "spyder-devctl-conn-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmp)
-	jsonPath := filepath.Join(tmp, "devices.json")
-	if _, _, err := runDevicectl("list", "devices", "--quiet", "--json-output", jsonPath); err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(jsonPath)
-	if err != nil {
-		return nil, err
-	}
-	return parseDevicectlConnectedIOSDevices(data)
-}
-
-// parseDevicectlConnectedIOSDevices applies the wired+connected filter
-// to the devicectl JSON document. Extracted from the shell-out wrapper
-// so it can be unit-tested without invoking xcrun.
-func parseDevicectlConnectedIOSDevices(data []byte) (map[string]bool, error) {
-	var doc struct {
-		Result struct {
-			Devices []struct {
-				HardwareProperties struct {
-					UDID     string `json:"udid"`
-					Platform string `json:"platform"`
-				} `json:"hardwareProperties"`
-				ConnectionProperties struct {
-					TunnelState   string `json:"tunnelState"`
-					TransportType string `json:"transportType"`
-				} `json:"connectionProperties"`
-			} `json:"devices"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	out := make(map[string]bool, len(doc.Result.Devices))
-	for _, d := range doc.Result.Devices {
-		if d.HardwareProperties.Platform != "iOS" {
-			continue
-		}
-		if d.ConnectionProperties.TunnelState != "connected" {
-			continue
-		}
-		if d.ConnectionProperties.TransportType != "wired" {
-			continue
-		}
-		out[d.HardwareProperties.UDID] = true
-	}
-	return out, nil
-}
-
-// parseDevicectlList parses the `xcrun devicectl list devices
-// --json-output` document. devicectl emits a nested structure
-// (result.devices[]); we flatten to []Info and pick the richest
-// human-friendly fields available (marketingName over productType,
-// device.name over the CoreDevice identifier).
-func parseDevicectlList(data []byte) ([]Info, error) {
-	var doc struct {
-		Result struct {
-			Devices []struct {
-				Identifier         string `json:"identifier"`
-				HardwareProperties struct {
-					UDID          string `json:"udid"`
-					MarketingName string `json:"marketingName"`
-					ProductType   string `json:"productType"`
-				} `json:"hardwareProperties"`
-				DeviceProperties struct {
-					Name            string `json:"name"`
-					OSVersionNumber string `json:"osVersionNumber"`
-				} `json:"deviceProperties"`
-			} `json:"devices"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("devicectl list JSON: %w", err)
-	}
-	out := make([]Info, 0, len(doc.Result.Devices))
-	for _, d := range doc.Result.Devices {
-		udid := d.HardwareProperties.UDID
-		if udid == "" {
-			udid = d.Identifier // fall back to CoreDevice UUID
-		}
-		info := Info{
-			UUID:     udid,
-			Name:     d.DeviceProperties.Name,
-			Platform: "ios",
-		}
-		if d.HardwareProperties.MarketingName != "" {
-			info.Model = d.HardwareProperties.MarketingName
-		} else {
-			info.Model = d.HardwareProperties.ProductType
-		}
-		if d.DeviceProperties.OSVersionNumber != "" {
-			info.OS = "iOS " + d.DeviceProperties.OSVersionNumber
-		}
-		out = append(out, info)
-	}
-	return out, nil
-}
-
-// mergeIOSDevices overlays devicectl-sourced entries onto a base list,
-// keyed by hardware UDID. devicectl's marketingName and name typically beat
-// the bridge's ProductType/Name for human-readability, so they win on conflict.
-func mergeIOSDevices(base, overlay []Info) []Info {
-	byUDID := make(map[string]int, len(base))
-	for i, b := range base {
-		byUDID[b.UUID] = i
-	}
-	for _, o := range overlay {
-		if idx, ok := byUDID[o.UUID]; ok {
-			if o.Name != "" {
-				base[idx].Name = o.Name
-			}
-			if o.Model != "" {
-				base[idx].Model = o.Model
-			}
-			if o.OS != "" {
-				base[idx].OS = o.OS
-			}
-			continue
-		}
-		base = append(base, o)
-		byUDID[o.UUID] = len(base) - 1
-	}
-	return base
 }
 
 // State reports iOS device state via the bridge for battery/charging data.
@@ -322,24 +228,31 @@ func (a *IOSAdapter) State(id string) (State, error) {
 	}
 	a.mu.Unlock()
 
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return State{}, fmt.Errorf("state: %w", err)
-	}
-
 	var state State
 
-	// Battery info comes from lockdown's com.apple.mobile.battery domain
-	// — go-ios's GetBatteryDiagnostics wraps the per-key fetch and gives
-	// us the capacity (already 0–100) and charging flag in one helper.
-	batt, err := goios_ios.GetBatteryDiagnostics(dev)
-	if err != nil {
-		state.Notes = append(state.Notes, fmt.Sprintf("battery data unavailable: %v", err))
-	} else if batt.HasBattery {
-		level := int(batt.BatteryCurrentCapacity)
-		state.BatteryLevel = &level
-		charging := batt.BatteryIsCharging
-		state.Charging = &charging
+	// Battery/charging come from lockdown's com.apple.mobile.battery domain
+	// (go-ios over usbmuxd). devicectl/CoreDevice exposes no battery data,
+	// so when the lockdown path is unavailable — usbmuxd wedged, tunnel
+	// down — we fall back to a devicectl device-details query: it can't
+	// recover battery, but it confirms the device is reachable and lets
+	// State return a degraded result with an explanatory note rather than
+	// erroring out (🎯T72.3).
+	if dev, sessErr := a.goios.Session(id); sessErr == nil {
+		batt, err := goios_ios.GetBatteryDiagnostics(dev)
+		if err != nil {
+			state.Notes = append(state.Notes, fmt.Sprintf("battery data unavailable: %v", err))
+		} else if batt.HasBattery {
+			level := int(batt.BatteryCurrentCapacity)
+			state.BatteryLevel = &level
+			charging := batt.BatteryIsCharging
+			state.Charging = &charging
+		}
+	} else if det, derr := a.dctl.DeviceDetails(context.Background(), id); derr == nil {
+		state.Notes = append(state.Notes, fmt.Sprintf(
+			"battery/charging unavailable: lockdown path failed (%v); CoreDevice fallback confirms %s (iOS %s) reachable but does not expose battery",
+			sessErr, det.Name, det.OSVersion))
+	} else {
+		return State{}, fmt.Errorf("state: lockdown path failed (%w) and devicectl fallback failed (%v)", sessErr, derr)
 	}
 
 	state.Notes = append(state.Notes,
@@ -390,19 +303,6 @@ func runCaptureCtx(ctx context.Context, name string, args ...string) (stdout, st
 			"stderr_bytes", errBuf.Len())
 	}
 	return outBuf.Bytes(), errBuf.Bytes(), err
-}
-
-// runDevicectl invokes a devicectl subcommand with the standard
-// devicectlTimeout cap, automatically prepending devicectl's own
-// `--timeout <s>` flag so the binary aborts cleanly before our
-// CommandContext deadline fires. Always use this for
-// `xcrun devicectl ...` calls — never `runCapture` directly.
-func runDevicectl(args ...string) (stdout, stderr []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
-	defer cancel()
-	full := append([]string{"devicectl", "--timeout",
-		fmt.Sprintf("%d", devicectlTimeoutSeconds)}, args...)
-	return runCaptureCtx(ctx, "xcrun", full...)
 }
 
 func truncate(s string, n int) string {
@@ -1047,20 +947,4 @@ func (a *IOSAdapter) streamOSLogDTX(ctx context.Context, id string,
 			}
 		}
 	}
-}
-
-func stringOf(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }
