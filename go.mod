@@ -65,4 +65,4 @@ require (
 //      `git push --force-with-lease origin spyder-patches`.
 //   2. `go get github.com/danielpaulus/go-ios@<new-spyder-patches-sha>`
 //      then bump this line.
-replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20260520093604-0c634f48768f
+replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20260524022121-d78573d186a3

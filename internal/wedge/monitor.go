@@ -32,6 +32,25 @@ var (
 	debounceDelay = 5 * time.Second
 )
 
+// Injectable seams for testing reconcile's episode logic without shelling
+// out (ioreg / go-ios / sudo). Production wires them to the real functions.
+var (
+	isWedgedFn = IsWedged
+	captureFn  = Capture
+	recoverFn  = AttemptRecovery
+)
+
+// wedgeState tracks the monitor's view of the current wedge episode so
+// auto-recovery fires at most once per episode (🎯T72.5).
+type wedgeState struct {
+	// inEpisode is true while the system is continuously wedged. It resets
+	// when a parity check comes back healthy, opening a fresh episode for
+	// the next wedge.
+	inEpisode bool
+	// attempted is true once auto-recovery has fired in the current episode.
+	attempted bool
+}
+
 // RunMonitor blocks until ctx is cancelled, running the wedge
 // detection loop. Two trigger sources funnel into a single
 // reconciliation step:
@@ -41,9 +60,14 @@ var (
 //     disconnected` (catches the known phantom-disconnect path
 //     within a few seconds of trigger)
 //
-// On wedge detection, the monitor writes a snapshot via Capture and
-// invokes AttemptRecovery. Recovery is throttled to one attempt per
-// 2 minutes regardless of how many triggers fire.
+// On wedge detection the monitor always writes a snapshot via Capture.
+// Auto-recovery (killusbmuxd) fires at most ONCE per wedge episode — the
+// first detection of a continuous wedge — and then gives up until the
+// system recovers and wedges again. The old behaviour (one kill every 2
+// minutes for as long as the wedge persisted) was actively harmful when
+// the wedge is device-side: the kills did nothing but churn usbmuxd. A
+// deliberate retry is now an explicit operator action (`spyder doctor
+// --fix`). (🎯T72.5.)
 //
 // The function performs an immediate parity check at startup before
 // the first timer tick — handles the case where the daemon starts
@@ -56,38 +80,60 @@ func RunMonitor(ctx context.Context) {
 	go pollTrigger(ctx, triggers)
 	go logTailTrigger(ctx, triggers)
 
+	var st wedgeState
+
 	// Immediate startup check.
-	reconcile(ctx, "startup")
+	reconcile(ctx, "startup", &st)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case src := <-triggers:
-			reconcile(ctx, src)
+			reconcile(ctx, src, &st)
 		}
 	}
 }
 
-// reconcile runs one parity check and dispatches to snapshot +
-// recovery if a wedge is found. Failures of the parity check itself
-// (ioreg / ListDevices error) are logged but do not stop the monitor.
-func reconcile(ctx context.Context, source string) {
-	wedged, iousb, usbmux, err := IsWedged()
+// reconcile runs one parity check and, on a wedge, always writes a
+// snapshot; it fires auto-recovery only on the rising edge of a wedge
+// episode (st tracks that). Failures of the parity check itself (ioreg /
+// ListDevices error) are logged but do not stop the monitor.
+func reconcile(ctx context.Context, source string, st *wedgeState) {
+	wedged, iousb, usbmux, err := isWedgedFn()
 	if err != nil {
 		slog.Error("wedge: parity check failed",
 			"source", source, "error", err.Error())
 		return
 	}
 	if !wedged {
-		slog.Debug("wedge: parity check ok",
-			"source", source, "iousb", iousb, "usbmux", usbmux)
+		if st.inEpisode {
+			slog.Info("wedge: cleared", "source", source, "iousb", iousb, "usbmux", usbmux)
+		} else {
+			slog.Debug("wedge: parity check ok",
+				"source", source, "iousb", iousb, "usbmux", usbmux)
+		}
+		st.inEpisode = false
+		st.attempted = false
 		return
 	}
+
+	newEpisode := !st.inEpisode
+	st.inEpisode = true
 	slog.Warn("wedge: detected by monitor",
-		"source", source, "iousb", iousb, "usbmux", usbmux)
-	Capture("", "wedge.monitor."+source)
-	_, _ = AttemptRecovery(ctx)
+		"source", source, "iousb", iousb, "usbmux", usbmux, "new_episode", newEpisode)
+
+	// Detection + snapshot always run.
+	captureFn("", "wedge.monitor."+source)
+
+	if newEpisode && !st.attempted {
+		st.attempted = true
+		_ = recoverFn(ctx)
+		return
+	}
+	slog.Info("wedge: auto-recovery already attempted this episode; not retrying "+
+		"(kill-usbmuxd churn disabled — run `spyder doctor --fix` to retry, or unplug+replug the device)",
+		"source", source)
 }
 
 // pollTrigger fires a "poll" trigger every pollInterval until ctx

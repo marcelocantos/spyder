@@ -82,7 +82,12 @@ GO_TEST_FLAGS="${TEST_FLAGS:-}"
 DEFAULT_TIMEOUT="-timeout 2m"
 
 # ── Tier 1: Go unit ──────────────────────────────────────────────────────────
-run_suite go-unit "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS ./..."
+# Hermetic: the live tests gate on SPYDER_LIVE_* env vars at runtime (not a
+# build tag), so we must clear them for this invocation — otherwise setting
+# SPYDER_LIVE_UDID to enable the live tier below would also run the live
+# tests here, double-running them and exposing the unit tier to device
+# flakiness (🎯T72.6).
+run_suite go-unit "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS ./..."
 
 # ── Tier 2: live device tier (go-ios) ────────────────────────────────────────
 # Gated on SPYDER_LIVE_UDID. Requires a paired iOS device + the bundled

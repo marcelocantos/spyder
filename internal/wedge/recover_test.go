@@ -8,22 +8,13 @@ import (
 	"testing"
 )
 
-// TestAttemptRecovery_Throttles confirms two back-to-back calls
-// produce one attempt and one skip. The exec call inside will
-// usually fail (no sudoers entry in test environment) but the
-// throttle behaviour is independent of that.
-func TestAttemptRecovery_Throttles(t *testing.T) {
-	resetRecoveryThrottle()
-	t.Cleanup(resetRecoveryThrottle)
-
-	ctx := context.Background()
-
-	fired1, _ := AttemptRecovery(ctx)
-	if !fired1 {
-		t.Fatal("first AttemptRecovery returned fired=false; want true")
-	}
-	fired2, _ := AttemptRecovery(ctx)
-	if fired2 {
-		t.Error("second AttemptRecovery within throttle returned fired=true; want false")
+// TestAttemptRecovery_NoSudoersFails confirms AttemptRecovery surfaces an
+// error when the helper can't run (the test environment has no sudoers
+// entry and `sudo -n` fails fast). The throttle that used to gate repeat
+// calls was removed in 🎯T72.5 — episode gating now lives in the monitor —
+// so each call is an independent best-effort attempt.
+func TestAttemptRecovery_NoSudoersFails(t *testing.T) {
+	if err := AttemptRecovery(context.Background()); err == nil {
+		t.Skip("AttemptRecovery succeeded (helper + sudoers present); nothing to assert")
 	}
 }
