@@ -23,7 +23,11 @@ bin/spyder-killusbmuxd: cmd/spyder-killusbmuxd/main.go
 # gopacket, struc, ...) that spyder itself doesn't import — `go mod
 # tidy` strips them from go.sum, but the ios build needs them. mod
 # mode auto-fetches them at build time.
-bin/ios:
+#
+# Depends on go.mod/go.sum so bumping the go-ios pin (the `replace`
+# target SHA) rebuilds the bundled binary — otherwise the file target
+# is considered up-to-date and `make build` silently ships the old ios.
+bin/ios: go.mod go.sum
 	go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios
 
 test:
