@@ -4,10 +4,13 @@ Cross-platform mobile development workflow assistant. HTTP-based MCP
 server (Go) that sits above mobile-mcp and XcodeBuildMCP as the
 session-state layer — device inventory, wake-state, and prep/run/restore
 orchestration around real-device tests. iOS physical devices are a
-first-class citizen (via the bundled
-[go-ios](https://github.com/danielpaulus/go-ios) Go library — usbmux,
-lockdown, DTX, RSD, all in-process), where mobile-mcp's WDA path
-often fails; Android is supported via `adb`.
+first-class citizen: app lifecycle and enumeration go through Apple's
+CoreDevice (`xcrun devicectl`), which bypasses usbmuxd; the DTX-only
+surface (screenshots, oslog stream, crashes, battery) uses the bundled
+[go-ios](https://github.com/danielpaulus/go-ios) Go library (usbmux,
+lockdown, DTX, RSD, in-process) and degrades gracefully when usbmuxd is
+wedged. This is where mobile-mcp's WDA path often fails. Android is
+supported via `adb`.
 
 ## What it owns
 
@@ -50,16 +53,28 @@ claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
   reaps it on shutdown.
 - **internal/iostunnel** — supervisor for the `ios tunnel start
   --userspace` subprocess.
+- **internal/devicectl** — typed Go wrappers over `xcrun devicectl`
+  (CoreDevice). The iOS adapter's primary path for app lifecycle
+  (install/uninstall/launch/terminate/pid), app listing, executable
+  resolution, device enumeration and device details. CoreDevice
+  bypasses usbmuxd entirely, so these keep working when usbmuxd is
+  wedged (🎯T72). Imports nothing from go-ios.
 - **internal/goios** — per-UDID session helper around go-ios:
   walks tunnel-info → RSD-handshake → enriched DeviceEntry once,
-  caches the result, hands callers a populated DeviceEntry that
-  go-ios's instruments / installationproxy / appservice / syslog
-  packages expect.
+  caches the result (resolution bounded by a 15s timeout so a wedged
+  tunnel degrades rather than hangs), hands callers a populated
+  DeviceEntry that go-ios's instruments / syslog / crashreport
+  packages expect. Now used only for the DTX-only surface.
 - **internal/mcp** — `Handler` + `Definitions()`. Dispatches tool calls.
 - **internal/device** — `Adapter` interface; `ios.go` and `android.go`
-  implementations. iOS uses go-ios as a Go module dependency
-  (`installationproxy`, `instruments`, `appservice`, `syslog`,
-  `crashreport`, `zipconduit`); Android shells out to `adb`.
+  implementations. iOS talks to devices through two channels:
+  **CoreDevice via internal/devicectl** for app lifecycle and
+  enumeration (usbmuxd-free), and **in-process go-ios** for the
+  DTX-only surface CoreDevice has no equivalent for on iOS 17+ —
+  screenshots, the os_trace log stream, crash-report retrieval, and
+  battery state. When usbmuxd is wedged the devicectl tools keep
+  working and the DTX tools return a structured `ErrUSBMuxdUnavailable`
+  rather than hanging. Android shells out to `adb`.
 - **internal/inventory** — symbolic name resolution, JSON-backed.
 - **internal/paths** — `~/.spyder/` path conventions.
 

@@ -20,12 +20,10 @@ import (
 	"time"
 
 	goios_ios "github.com/danielpaulus/go-ios/ios"
-	"github.com/danielpaulus/go-ios/ios/appservice"
 	"github.com/danielpaulus/go-ios/ios/crashreport"
-	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/ostrace"
-	"github.com/danielpaulus/go-ios/ios/zipconduit"
+	"github.com/marcelocantos/spyder/internal/devicectl"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/oslog"
@@ -36,42 +34,51 @@ import (
 // device isn't hammered.
 const stateTTL = 2 * time.Second
 
-// devicectlTimeoutSeconds caps every per-device devicectl invocation so
-// an unresponsive device can't wedge a caller. We pass it through as
-// devicectl's own --timeout flag (its internal machinery aborts the
-// underlying CoreDevice operation cleanly) AND wrap with a
-// CommandContext deadline a couple of seconds longer so the Go side
-// reaps even if devicectl misbehaves on the timeout.
-const (
-	devicectlTimeoutSeconds = 30
-	devicectlTimeout        = (devicectlTimeoutSeconds + 2) * time.Second
-)
+// ErrUSBMuxdUnavailable marks a failure on spyder's DTX-only iOS surface
+// (screenshot, oslog stream, crash-report retrieval) caused by the bundled
+// ios tunnel registry / usbmuxd being unreachable. These features have no
+// CoreDevice equivalent on iOS 17+, so they degrade — rather than the
+// app-lifecycle and enumeration tools, which run over devicectl and keep
+// working through a usbmuxd wedge (🎯T72). Clients can match the literal
+// substrings "usbmuxd" and "unavailable" in Error(), or use
+// errors.Is(err, ErrUSBMuxdUnavailable).
+var ErrUSBMuxdUnavailable = errors.New("usbmuxd unavailable")
 
-// IOSAdapter talks to iOS devices via in-process go-ios calls.
-// `xcrun devicectl` is still used for install / uninstall (where
-// devicectl's signing and provisioning handling is hard to replace);
-// everything else runs in-process.
+// degradedDTX wraps an acquire-time failure on a DTX-only tool into a
+// structured, client-matchable degradation error.
+func degradedDTX(tool, id string, cause error) error {
+	return fmt.Errorf(
+		"%s on %s: %w — DTX-only tool degraded (no CoreDevice equivalent on iOS 17+); underlying: %v",
+		tool, id, ErrUSBMuxdUnavailable, cause)
+}
+
+// IOSAdapter talks to iOS devices through two channels:
+//
+//   - CoreDevice via `xcrun devicectl` (the internal/devicectl wrapper) for
+//     everything Apple has exposed there: install / uninstall / launch /
+//     terminate / list-apps / resolve-executable / pid lookup / enumeration
+//     / device details. This path bypasses usbmuxd entirely and keeps
+//     working when usbmuxd is wedged (🎯T72).
+//   - In-process go-ios (over the bundled RSD tunnel) for the DTX-only
+//     surface CoreDevice has no equivalent for on iOS 17+: screenshots,
+//     the os_trace log stream, crash-report retrieval, and battery state.
+//     These degrade when usbmuxd is wedged.
 type IOSAdapter struct {
 	goios *goios.Resolver
-	// ipPool holds one cached installation_proxy connection per UDID.
-	// installation_proxy is the highest-churn service spyder uses
-	// (every ListApps + ResolveExecutable + bundle-id resolution
-	// opens one), and the per-RPC open/close churn appears to be a
-	// trigger for the usbmuxd-wedge symptom (🎯T67). Reusing one
-	// connection per device collapses N opens to 1. Pool serialises
-	// operations on the cached connection — installation_proxy is
-	// not safe for concurrent use anyway.
-	ipPool *goios.ServicePool[*installationproxy.Connection]
-	// asPool caches one appservice connection per UDID. Each
-	// LaunchApp / TerminateApp / AppPID currently opens a fresh
-	// appservice DTX channel; pooling collapses launch-then-verify
-	// cycles to a single open.
-	asPool *goios.ServicePool[*appservice.Connection]
+	// dctl drives the CoreDevice (devicectl) path — the primary surface
+	// for app lifecycle and enumeration. It holds no per-device state and
+	// is safe for concurrent use.
+	dctl *devicectl.Client
 	// ssPool caches one instruments.ScreenshotService per UDID. The
 	// DTX handshake costs ~150ms on iOS-17+ tunnels; pooling makes
 	// repeated screenshots (visual diff loops, recording fallbacks)
 	// effectively free after the first.
 	ssPool *goios.ServicePool[*instruments.ScreenshotService]
+
+	// usbmuxList yields the supplemental go-ios usbmux enumeration for
+	// List. It's a field so tests can substitute a deterministic source;
+	// production wires it to usbmuxDevicesGuarded.
+	usbmuxList func() []Info
 
 	mu    sync.Mutex
 	cache map[string]cachedState
@@ -87,29 +94,9 @@ type cachedState struct {
 // registry endpoint).
 func NewIOSAdapter() *IOSAdapter {
 	resolver := goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort)
-	return &IOSAdapter{
+	a := &IOSAdapter{
 		goios: resolver,
-		ipPool: goios.NewServicePool(
-			resolver,
-			func(dev goios_ios.DeviceEntry) (*installationproxy.Connection, error) {
-				return installationproxy.New(dev)
-			},
-			func(c *installationproxy.Connection) error {
-				c.Close()
-				return nil
-			},
-			60*time.Second,
-		),
-		asPool: goios.NewServicePool(
-			resolver,
-			func(dev goios_ios.DeviceEntry) (*appservice.Connection, error) {
-				return appservice.New(dev)
-			},
-			func(c *appservice.Connection) error {
-				return c.Close()
-			},
-			60*time.Second,
-		),
+		dctl:  devicectl.New(),
 		ssPool: goios.NewServicePool(
 			resolver,
 			func(dev goios_ios.DeviceEntry) (*instruments.ScreenshotService, error) {
@@ -123,35 +110,104 @@ func NewIOSAdapter() *IOSAdapter {
 		),
 		cache: map[string]cachedState{},
 	}
+	a.usbmuxList = a.usbmuxDevicesGuarded
+	return a
 }
 
-// List returns iOS devices that are currently reachable. The set is the
-// intersection of:
+// usbmuxEnumTimeout bounds the supplemental go-ios usbmux enumeration so a
+// wedged usbmuxd (the exact failure 🎯T72 mitigates) can't block List. When
+// it fires, List falls back to the devicectl-only device set.
+const usbmuxEnumTimeout = 4 * time.Second
+
+// List returns iOS devices currently reachable. devicectl (CoreDevice) is
+// the primary source for both identity and connection state — it is
+// usbmuxd-free, so enumeration keeps working when usbmuxd is wedged. go-ios's
+// usbmux enumeration is a supplemental signal that (a) enriches any
+// human-friendly fields devicectl left blank and (b) surfaces iOS-<17 /
+// USB-only devices CoreDevice doesn't manage. The supplemental pass is
+// time-bounded so a wedged usbmuxd degrades to "devicectl-only" rather than
+// hanging.
 //
-//   - go-ios's USBMux enumeration (with per-device lockdown enrichment
-//     for the human-friendly fields).
-//   - `xcrun devicectl list devices` filtered for tunnelState=connected
-//     OR a USB connection (USBMux-only iOS-<17 devices count too).
-//
-// Devices USBMux knows about but devicectl reports as `unavailable` are
-// dropped — they're paired but not currently usable, and surfacing them
-// produces useless install/launch attempts. When neither source is
-// available the function returns an empty list rather than an error —
-// matching the Android adapter's behaviour when adb is absent.
+// A device devicectl knows about but reports as not-connected is dropped
+// even if usbmux still sees it — devicectl is the authority on usability,
+// and surfacing a paired-but-unavailable device produces useless
+// install/launch attempts. When neither source yields anything the function
+// returns an empty list rather than an error, matching the Android adapter's
+// behaviour when adb is absent.
 func (a *IOSAdapter) List() ([]Info, error) {
-	connected, _ := devicectlConnectedIOSDevices()
-
 	var devices []Info
+	byUDID := make(map[string]int)     // udid → index in devices
+	dctlState := make(map[string]bool) // udid → devicectl says connected
 
-	// Primary source: go-ios's usbmux enumeration, with per-device
-	// lockdown enrichment for the human-friendly fields.
-	if devList, err := goios_ios.ListDevices(); err == nil {
-		for _, dev := range devList.DeviceList {
-			udid := dev.Properties.SerialNumber
-			if connected != nil && !connected[udid] {
+	// Primary: devicectl / CoreDevice.
+	if dctlDevices, err := a.dctl.ListDevices(context.Background()); err == nil {
+		for _, d := range dctlDevices {
+			if d.Platform != "iOS" {
 				continue
 			}
-			info := Info{UUID: udid, Platform: "ios"}
+			udid := d.UDID
+			if udid == "" {
+				udid = d.Identifier // fall back to the CoreDevice UUID
+			}
+			dctlState[udid] = d.Connected()
+			if !d.Connected() {
+				continue
+			}
+			info := Info{UUID: udid, Platform: "ios", Name: d.Name, Model: d.Model}
+			if d.OSVersion != "" {
+				info.OS = "iOS " + d.OSVersion
+			}
+			byUDID[udid] = len(devices)
+			devices = append(devices, info)
+		}
+	} else {
+		slog.Warn("devicectl enumeration failed; relying on usbmux only", "error", err.Error())
+	}
+
+	// Supplemental: go-ios usbmux enumeration, hang-guarded.
+	for _, info := range a.usbmuxList() {
+		if connected, known := dctlState[info.UUID]; known {
+			if !connected {
+				continue // devicectl says unavailable — authoritative, drop it
+			}
+			// Enrich only fields devicectl left blank; devicectl wins on identity.
+			idx := byUDID[info.UUID]
+			if devices[idx].Name == "" {
+				devices[idx].Name = info.Name
+			}
+			if devices[idx].Model == "" {
+				devices[idx].Model = info.Model
+			}
+			if devices[idx].OS == "" {
+				devices[idx].OS = info.OS
+			}
+			continue
+		}
+		// devicectl doesn't manage this device (iOS<17 / USB-only) — include it.
+		byUDID[info.UUID] = len(devices)
+		devices = append(devices, info)
+	}
+
+	return devices, nil
+}
+
+// usbmuxDevicesGuarded runs the go-ios usbmux enumeration (with per-device
+// lockdown enrichment) in the background and returns its result, or nil if
+// it doesn't complete within usbmuxEnumTimeout. The timeout is what lets a
+// wedged usbmuxd degrade to devicectl-only enumeration instead of hanging
+// List. A timed-out goroutine is left to finish and be GC'd; it holds no
+// locks the caller needs.
+func (a *IOSAdapter) usbmuxDevicesGuarded() []Info {
+	ch := make(chan []Info, 1)
+	go func() {
+		devList, err := goios_ios.ListDevices()
+		if err != nil {
+			ch <- nil
+			return
+		}
+		var out []Info
+		for _, dev := range devList.DeviceList {
+			info := Info{UUID: dev.Properties.SerialNumber, Platform: "ios"}
 			if values, gerr := goios_ios.GetValues(dev); gerr == nil {
 				info.Name = values.Value.DeviceName
 				info.Model = values.Value.ProductType
@@ -159,176 +215,19 @@ func (a *IOSAdapter) List() ([]Info, error) {
 					info.OS = "iOS " + values.Value.ProductVersion
 				}
 			}
-			devices = append(devices, info)
+			out = append(out, info)
 		}
-	}
+		ch <- out
+	}()
 
-	if _, err := exec.LookPath("xcrun"); err == nil {
-		tmp, err := os.MkdirTemp("", "spyder-devctl-*")
-		if err == nil {
-			defer os.RemoveAll(tmp)
-			jsonPath := filepath.Join(tmp, "devices.json")
-			_, _, _ = runDevicectl("list", "devices", "--quiet", "--json-output", jsonPath)
-			if data, err := os.ReadFile(jsonPath); err == nil {
-				if parsed, err := parseDevicectlList(data); err == nil {
-					// parseDevicectlList already filters by tunnelState
-					// internally for the merge step.
-					filtered := parsed[:0]
-					for _, d := range parsed {
-						if connected == nil || connected[d.UUID] {
-							filtered = append(filtered, d)
-						}
-					}
-					devices = mergeIOSDevices(devices, filtered)
-				}
-			}
-		}
+	select {
+	case infos := <-ch:
+		return infos
+	case <-time.After(usbmuxEnumTimeout):
+		slog.Warn("usbmux enumeration timed out; using devicectl-only device set (usbmuxd may be wedged)",
+			"timeout", usbmuxEnumTimeout.String())
+		return nil
 	}
-
-	return devices, nil
-}
-
-// devicectlConnectedIOSDevices returns the set of UDIDs that
-// `xcrun devicectl list devices --json-output` reports as
-// `tunnelState=connected` AND `transportType=wired` for the iOS
-// platform. Used by IOSAdapter.List to filter out paired-but-unavailable
-// devices that the tunneld registry would otherwise surface (e.g. a
-// phone that was previously trusted but is currently powered off), and
-// to exclude devices reachable only over the local network.
-//
-// Returns (nil, error) when devicectl can't be queried — caller should
-// treat this as "filter unavailable" and pass everything through.
-func devicectlConnectedIOSDevices() (map[string]bool, error) {
-	if _, err := exec.LookPath("xcrun"); err != nil {
-		return nil, err
-	}
-	tmp, err := os.MkdirTemp("", "spyder-devctl-conn-*")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmp)
-	jsonPath := filepath.Join(tmp, "devices.json")
-	if _, _, err := runDevicectl("list", "devices", "--quiet", "--json-output", jsonPath); err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(jsonPath)
-	if err != nil {
-		return nil, err
-	}
-	return parseDevicectlConnectedIOSDevices(data)
-}
-
-// parseDevicectlConnectedIOSDevices applies the wired+connected filter
-// to the devicectl JSON document. Extracted from the shell-out wrapper
-// so it can be unit-tested without invoking xcrun.
-func parseDevicectlConnectedIOSDevices(data []byte) (map[string]bool, error) {
-	var doc struct {
-		Result struct {
-			Devices []struct {
-				HardwareProperties struct {
-					UDID     string `json:"udid"`
-					Platform string `json:"platform"`
-				} `json:"hardwareProperties"`
-				ConnectionProperties struct {
-					TunnelState   string `json:"tunnelState"`
-					TransportType string `json:"transportType"`
-				} `json:"connectionProperties"`
-			} `json:"devices"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	out := make(map[string]bool, len(doc.Result.Devices))
-	for _, d := range doc.Result.Devices {
-		if d.HardwareProperties.Platform != "iOS" {
-			continue
-		}
-		if d.ConnectionProperties.TunnelState != "connected" {
-			continue
-		}
-		if d.ConnectionProperties.TransportType != "wired" {
-			continue
-		}
-		out[d.HardwareProperties.UDID] = true
-	}
-	return out, nil
-}
-
-// parseDevicectlList parses the `xcrun devicectl list devices
-// --json-output` document. devicectl emits a nested structure
-// (result.devices[]); we flatten to []Info and pick the richest
-// human-friendly fields available (marketingName over productType,
-// device.name over the CoreDevice identifier).
-func parseDevicectlList(data []byte) ([]Info, error) {
-	var doc struct {
-		Result struct {
-			Devices []struct {
-				Identifier         string `json:"identifier"`
-				HardwareProperties struct {
-					UDID          string `json:"udid"`
-					MarketingName string `json:"marketingName"`
-					ProductType   string `json:"productType"`
-				} `json:"hardwareProperties"`
-				DeviceProperties struct {
-					Name            string `json:"name"`
-					OSVersionNumber string `json:"osVersionNumber"`
-				} `json:"deviceProperties"`
-			} `json:"devices"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("devicectl list JSON: %w", err)
-	}
-	out := make([]Info, 0, len(doc.Result.Devices))
-	for _, d := range doc.Result.Devices {
-		udid := d.HardwareProperties.UDID
-		if udid == "" {
-			udid = d.Identifier // fall back to CoreDevice UUID
-		}
-		info := Info{
-			UUID:     udid,
-			Name:     d.DeviceProperties.Name,
-			Platform: "ios",
-		}
-		if d.HardwareProperties.MarketingName != "" {
-			info.Model = d.HardwareProperties.MarketingName
-		} else {
-			info.Model = d.HardwareProperties.ProductType
-		}
-		if d.DeviceProperties.OSVersionNumber != "" {
-			info.OS = "iOS " + d.DeviceProperties.OSVersionNumber
-		}
-		out = append(out, info)
-	}
-	return out, nil
-}
-
-// mergeIOSDevices overlays devicectl-sourced entries onto a base list,
-// keyed by hardware UDID. devicectl's marketingName and name typically beat
-// the bridge's ProductType/Name for human-readability, so they win on conflict.
-func mergeIOSDevices(base, overlay []Info) []Info {
-	byUDID := make(map[string]int, len(base))
-	for i, b := range base {
-		byUDID[b.UUID] = i
-	}
-	for _, o := range overlay {
-		if idx, ok := byUDID[o.UUID]; ok {
-			if o.Name != "" {
-				base[idx].Name = o.Name
-			}
-			if o.Model != "" {
-				base[idx].Model = o.Model
-			}
-			if o.OS != "" {
-				base[idx].OS = o.OS
-			}
-			continue
-		}
-		base = append(base, o)
-		byUDID[o.UUID] = len(base) - 1
-	}
-	return base
 }
 
 // State reports iOS device state via the bridge for battery/charging data.
@@ -347,24 +246,31 @@ func (a *IOSAdapter) State(id string) (State, error) {
 	}
 	a.mu.Unlock()
 
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return State{}, fmt.Errorf("state: %w", err)
-	}
-
 	var state State
 
-	// Battery info comes from lockdown's com.apple.mobile.battery domain
-	// — go-ios's GetBatteryDiagnostics wraps the per-key fetch and gives
-	// us the capacity (already 0–100) and charging flag in one helper.
-	batt, err := goios_ios.GetBatteryDiagnostics(dev)
-	if err != nil {
-		state.Notes = append(state.Notes, fmt.Sprintf("battery data unavailable: %v", err))
-	} else if batt.HasBattery {
-		level := int(batt.BatteryCurrentCapacity)
-		state.BatteryLevel = &level
-		charging := batt.BatteryIsCharging
-		state.Charging = &charging
+	// Battery/charging come from lockdown's com.apple.mobile.battery domain
+	// (go-ios over usbmuxd). devicectl/CoreDevice exposes no battery data,
+	// so when the lockdown path is unavailable — usbmuxd wedged, tunnel
+	// down — we fall back to a devicectl device-details query: it can't
+	// recover battery, but it confirms the device is reachable and lets
+	// State return a degraded result with an explanatory note rather than
+	// erroring out (🎯T72.3).
+	if dev, sessErr := a.goios.Session(id); sessErr == nil {
+		batt, err := goios_ios.GetBatteryDiagnostics(dev)
+		if err != nil {
+			state.Notes = append(state.Notes, fmt.Sprintf("battery data unavailable: %v", err))
+		} else if batt.HasBattery {
+			level := int(batt.BatteryCurrentCapacity)
+			state.BatteryLevel = &level
+			charging := batt.BatteryIsCharging
+			state.Charging = &charging
+		}
+	} else if det, derr := a.dctl.DeviceDetails(context.Background(), id); derr == nil {
+		state.Notes = append(state.Notes, fmt.Sprintf(
+			"battery/charging unavailable: lockdown path failed (%v); CoreDevice fallback confirms %s (iOS %s) reachable but does not expose battery",
+			sessErr, det.Name, det.OSVersion))
+	} else {
+		return State{}, fmt.Errorf("state: lockdown path failed (%w) and devicectl fallback failed (%v)", sessErr, derr)
 	}
 
 	state.Notes = append(state.Notes,
@@ -417,19 +323,6 @@ func runCaptureCtx(ctx context.Context, name string, args ...string) (stdout, st
 	return outBuf.Bytes(), errBuf.Bytes(), err
 }
 
-// runDevicectl invokes a devicectl subcommand with the standard
-// devicectlTimeout cap, automatically prepending devicectl's own
-// `--timeout <s>` flag so the binary aborts cleanly before our
-// CommandContext deadline fires. Always use this for
-// `xcrun devicectl ...` calls — never `runCapture` directly.
-func runDevicectl(args ...string) (stdout, stderr []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
-	defer cancel()
-	full := append([]string{"devicectl", "--timeout",
-		fmt.Sprintf("%d", devicectlTimeoutSeconds)}, args...)
-	return runCaptureCtx(ctx, "xcrun", full...)
-}
-
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
@@ -446,8 +339,10 @@ func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 	}
 	svc, release, err := a.ssPool.Acquire(id)
 	if err != nil {
+		// Acquire dials the bundled tunnel / usbmuxd; a failure here is the
+		// wedge signal. Screenshot has no CoreDevice equivalent, so degrade.
 		a.goios.Invalidate(id)
-		return nil, fmt.Errorf("screenshot on %s: %w", id, err)
+		return nil, degradedDTX("screenshot", id, err)
 	}
 	defer release()
 	data, err := svc.TakeScreenshot()
@@ -464,86 +359,74 @@ func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	conn, release, err := a.ipPool.Acquire(id)
+	apps, err := a.dctl.ListApps(context.Background(), id)
 	if err != nil {
-		a.goios.Invalidate(id)
-		return nil, fmt.Errorf("installation_proxy on %s: %w", id, err)
-	}
-	defer release()
-	raw, err := conn.BrowseUserApps()
-	if err != nil {
-		a.ipPool.Invalidate(id)
 		return nil, fmt.Errorf("list_apps on %s: %w", id, err)
 	}
-	apps := make([]AppInfo, 0, len(raw))
-	for _, app := range raw {
-		apps = append(apps, AppInfo{
-			BundleID:   app.CFBundleIdentifier(),
-			Name:       app.CFBundleName(),
-			Executable: app.CFBundleExecutable(),
-			Version:    app.CFBundleShortVersionString(),
+	out := make([]AppInfo, 0, len(apps))
+	for _, app := range apps {
+		out = append(out, AppInfo{
+			BundleID:   app.BundleID,
+			Name:       app.Name,
+			Executable: executableFromAppFolder(app.AppFolder),
+			Version:    app.Version,
 		})
 	}
-	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
-	return apps, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].BundleID < out[j].BundleID })
+	return out, nil
 }
 
-// ResolveExecutable maps an iOS bundle id to its CFBundleExecutable —
-// the string the device's syslog stream uses to identify the app in
-// the `process` column. Returns ("", false, nil) when the bundle isn't
-// installed.
+// ResolveExecutable maps an iOS bundle id to the executable name that
+// appears in the device's log streams. Returns ("", false, nil) when the
+// bundle isn't installed.
+//
+// devicectl doesn't expose CFBundleExecutable, so we derive it from the
+// .app bundle folder name (CFBundleExecutable equals the bundle folder
+// stem for the overwhelming majority of apps; the rare app whose
+// executable name diverges from its bundle name would mismatch a log
+// filter — an acceptable edge given the usbmuxd-free win).
 func (a *IOSAdapter) ResolveExecutable(id, bundleID string) (string, bool, error) {
 	if id == "" || bundleID == "" {
 		return "", false, errors.New("device id and bundle_id are required")
 	}
-	conn, release, err := a.ipPool.Acquire(id)
+	app, installed, err := a.dctl.ResolveBundleApp(context.Background(), id, bundleID)
 	if err != nil {
-		a.goios.Invalidate(id)
-		return "", false, fmt.Errorf("installation_proxy on %s: %w", id, err)
+		return "", false, fmt.Errorf("resolve_executable on %s: %w", id, err)
 	}
-	defer release()
-	apps, err := conn.BrowseAllApps()
-	if err != nil {
-		a.ipPool.Invalidate(id)
-		return "", false, fmt.Errorf("browse apps on %s: %w", id, err)
+	if !installed {
+		return "", false, nil
 	}
-	for _, app := range apps {
-		if app.CFBundleIdentifier() == bundleID {
-			return app.CFBundleExecutable(), true, nil
-		}
-	}
-	return "", false, nil
+	return executableFromAppFolder(app.AppFolder), true, nil
 }
 
-// LaunchApp foregrounds an arbitrary app via go-ios's appservice
-// (com.apple.coredevice.feature.launchapplication, the iOS-17+
-// CoreDevice launch path). The pid the launch returns is currently
-// discarded — callers that need it call AppPID after.
+// executableFromAppFolder strips the ".app" suffix from a bundle folder
+// name (e.g. "MultiMaze.app" → "MultiMaze"), yielding the executable name
+// as it appears in process paths and log streams.
+func executableFromAppFolder(folder string) string {
+	return strings.TrimSuffix(folder, ".app")
+}
+
+// LaunchApp foregrounds an app by bundle id via CoreDevice
+// (devicectl device process launch). On failure it disambiguates the
+// "app not installed" case so callers get the spyder error convention.
 func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	conn, release, err := a.asPool.Acquire(id)
-	if err != nil {
-		a.goios.Invalidate(id)
-		return fmt.Errorf("appservice on %s: %w", id, err)
-	}
-	defer release()
-	if _, err := conn.LaunchApp(bundleID, nil, nil, nil, false); err != nil {
-		// Map "app not installed"-shaped errors to the spyder convention.
-		msg := err.Error()
-		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
+	ctx := context.Background()
+	if _, err := a.dctl.LaunchApp(ctx, id, bundleID, nil); err != nil {
+		// Only pay the extra round-trip to classify the failure when the
+		// launch actually failed.
+		if _, installed, rerr := a.dctl.ResolveBundleApp(ctx, id, bundleID); rerr == nil && !installed {
 			return fmt.Errorf("app not installed: %s", bundleID)
 		}
-		a.asPool.Invalidate(id)
 		return fmt.Errorf("launch %s on %s: %w", bundleID, id, err)
 	}
 	return nil
 }
 
-// TerminateApp stops an app by bundle id. iOS doesn't expose a
-// "kill by bundle id" RPC directly — go-ios's appservice only kills by
-// pid — so we resolve the pid first.
+// TerminateApp stops an app by bundle id. CoreDevice's signal RPC kills
+// by pid, so we resolve the pid first; an already-stopped app is a no-op.
 func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
@@ -556,78 +439,56 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 		}
 		return err
 	}
-	conn, release, err := a.asPool.Acquire(id)
-	if err != nil {
-		a.goios.Invalidate(id)
-		return fmt.Errorf("appservice on %s: %w", id, err)
-	}
-	defer release()
-	if err := conn.KillProcess(pid); err != nil {
-		a.asPool.Invalidate(id)
+	if err := a.dctl.SignalProcess(context.Background(), id, pid, "SIGKILL"); err != nil {
 		return fmt.Errorf("terminate %s (pid %d) on %s: %w", bundleID, pid, id, err)
 	}
 	return nil
 }
 
-// AppPID returns the pid of a running app by bundle id. Implemented
-// in two RPCs: installation_proxy resolves the bundle id to its
-// installed .app folder, and appservice.ListProcesses scans live
-// processes for one whose path contains that .app folder. Returns the
-// "app not running" error sentinel that the deploy_app handler keys
-// off when verify-pid runs immediately after a launch.
+// AppPID returns the pid of a running app by bundle id via CoreDevice.
+// It resolves the bundle id to its installed .app folder (devicectl
+// device info apps) and scans live processes (devicectl device info
+// processes) for one whose executable path sits inside that folder.
+// Returns the "app not running" sentinel the deploy_app handler keys off
+// when verify-pid runs immediately after a launch.
 func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
-	appBase, err := a.installedAppFolder(id, bundleID)
+	ctx := context.Background()
+	appFolder, err := a.installedAppFolder(id, bundleID)
 	if err != nil {
-		a.goios.Invalidate(id)
 		return 0, err
 	}
-	if appBase == "" {
+	if appFolder == "" {
 		return 0, fmt.Errorf("app not installed: %s", bundleID)
 	}
-	asConn, release, err := a.asPool.Acquire(id)
+	procs, err := a.dctl.ListProcesses(ctx, id)
 	if err != nil {
-		a.goios.Invalidate(id)
-		return 0, fmt.Errorf("appservice on %s: %w", id, err)
-	}
-	defer release()
-	procs, err := asConn.ListProcesses()
-	if err != nil {
-		a.asPool.Invalidate(id)
 		return 0, fmt.Errorf("list processes on %s: %w", id, err)
 	}
-	needle := "/" + appBase + "/"
+	needle := "/" + appFolder + "/"
 	for _, p := range procs {
 		if strings.Contains(p.Path, needle) {
-			return p.Pid, nil
+			return p.PID, nil
 		}
 	}
 	return 0, fmt.Errorf("app not running: %s", bundleID)
 }
 
 // installedAppFolder returns the basename of the .app folder
-// (e.g. "MultiMaze.app") for the given bundle id, queried via
-// installation_proxy through the pooled connection. Returns "" when
-// the bundle isn't installed.
+// (e.g. "MultiMaze.app") for the given bundle id, via CoreDevice
+// (devicectl device info apps --bundle-id). Returns "" when the bundle
+// isn't installed.
 func (a *IOSAdapter) installedAppFolder(id, bundleID string) (string, error) {
-	conn, release, err := a.ipPool.Acquire(id)
+	app, installed, err := a.dctl.ResolveBundleApp(context.Background(), id, bundleID)
 	if err != nil {
-		return "", fmt.Errorf("installation_proxy: %w", err)
+		return "", fmt.Errorf("resolve bundle app on %s: %w", id, err)
 	}
-	defer release()
-	apps, err := conn.BrowseAllApps()
-	if err != nil {
-		a.ipPool.Invalidate(id)
-		return "", fmt.Errorf("browse apps: %w", err)
+	if !installed {
+		return "", nil
 	}
-	for _, app := range apps {
-		if app.CFBundleIdentifier() == bundleID {
-			return filepath.Base(app.Path()), nil
-		}
-	}
-	return "", nil
+	return app.AppFolder, nil
 }
 
 // Crashes fetches crash reports from the device via go-ios's
@@ -641,7 +502,17 @@ func (a *IOSAdapter) Crashes(id string, since time.Time, process string) ([]Cras
 	}
 	dev, err := a.goios.Session(id)
 	if err != nil {
-		return nil, fmt.Errorf("crashes: %w", err)
+		// The DTX/afc crashreport path is unavailable (tunnel/usbmuxd
+		// wedged). CoreDevice exposes no crash-report retrieval API, so
+		// there is no richer fallback — we cross-check the device's
+		// reachability via devicectl and return a structured degraded
+		// error either way (🎯T72.4).
+		_, derr := a.dctl.DeviceDetails(context.Background(), id)
+		if derr == nil {
+			return nil, degradedDTX("crashes", id,
+				fmt.Errorf("device is reachable via CoreDevice but crash reports require usbmuxd (afc com.apple.crashreportcopymobile); underlying: %v", err))
+		}
+		return nil, degradedDTX("crashes", id, err)
 	}
 
 	tmp, err := os.MkdirTemp("", "spyder-crashes-*")
@@ -804,42 +675,27 @@ func (a *IOSAdapter) StopRecording(id string, pid int) error {
 	return fmt.Errorf("screen recording is not supported on iOS physical devices")
 }
 
-// InstallApp installs a .app or .ipa bundle via go-ios's zipconduit
-// (com.apple.streaming_zip_conduit). zipconduit handles both folder
-// (.app) and archive (.ipa) inputs natively, no zipping step needed.
+// InstallApp installs a .app or .ipa bundle via CoreDevice
+// (devicectl device install app). devicectl handles both folder (.app)
+// and archive (.ipa) inputs and performs signing/provisioning against the
+// profile the device is registered with.
 func (a *IOSAdapter) InstallApp(id, path string) error {
 	if id == "" || path == "" {
 		return errors.New("device id and path are required")
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return fmt.Errorf("install: %w", err)
-	}
-	conn, err := zipconduit.New(dev)
-	if err != nil {
-		a.goios.Invalidate(id)
-		return fmt.Errorf("zipconduit on %s: %w", id, err)
-	}
-	if err := conn.SendFile(path); err != nil {
+	if err := a.dctl.InstallApp(context.Background(), id, path); err != nil {
 		return fmt.Errorf("install %s on %s: %w", filepath.Base(path), id, err)
 	}
 	return nil
 }
 
-// UninstallApp removes an app by bundle identifier via go-ios's
-// installation_proxy.
+// UninstallApp removes an app by bundle identifier via CoreDevice
+// (devicectl device uninstall app).
 func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	conn, release, err := a.ipPool.Acquire(id)
-	if err != nil {
-		a.goios.Invalidate(id)
-		return fmt.Errorf("installation_proxy on %s: %w", id, err)
-	}
-	defer release()
-	if err := conn.Uninstall(bundleID); err != nil {
-		a.ipPool.Invalidate(id)
+	if err := a.dctl.UninstallApp(context.Background(), id, bundleID); err != nil {
 		return fmt.Errorf("uninstall %s on %s: %w", bundleID, id, err)
 	}
 	return nil
@@ -993,7 +849,10 @@ func (a *IOSAdapter) streamOSTrace(ctx context.Context, id string, filter LogFil
 	regexFilter *regexp.Regexp, emit func(LogLine) bool) error {
 	dev, err := a.goios.Session(id)
 	if err != nil {
-		return fmt.Errorf("ostrace: %w", err)
+		// Session dials the bundled tunnel / usbmuxd. The oslog stream
+		// (DTX activitytracetap, lockdown os_trace_relay) has no CoreDevice
+		// equivalent on iOS 17+, so a failure here degrades the tool.
+		return degradedDTX("oslog stream", id, err)
 	}
 
 	// Try DTX first.
@@ -1121,20 +980,4 @@ func (a *IOSAdapter) streamOSLogDTX(ctx context.Context, id string,
 			}
 		}
 	}
-}
-
-func stringOf(v any) string {
-	if s, ok := v.(string); ok {
-		return s
-	}
-	return ""
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

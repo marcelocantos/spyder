@@ -410,7 +410,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("screenshot",
-			mcpgo.WithDescription("Capture a PNG screenshot of the device. Returns the image inline for the agent to inspect. iOS uses the in-process go-ios DTX `screenshotr` service (requires the bundled tunnel); Android uses adb shell screencap. Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithDescription("Capture a PNG screenshot of the device. Returns the image inline for the agent to inspect. iOS uses the in-process go-ios DTX `screenshotr` service (requires the bundled tunnel); Android uses adb shell screencap. DEGRADES ON iOS when usbmuxd is wedged: screenshots have no CoreDevice equivalent on iOS 17+, so this tool returns a structured 'usbmuxd unavailable' error while install/launch/terminate/list_apps keep working. Strictly enforced: rejects if the device is reserved by a different owner."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -774,7 +774,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 				"server-side); `process` is the raw image-name filter for callers who already "+
 				"know it. Specify one or the other, not both. "+
 				"For live streaming (--follow), use the REST SSE endpoint POST /api/v1/log_stream instead — "+
-				"MCP transport does not support streaming. Read-only."),
+				"MCP transport does not support streaming. Read-only. "+
+				"DEGRADES ON iOS when usbmuxd is wedged: the oslog stream (DTX/os_trace_relay) has no "+
+				"CoreDevice equivalent on iOS 17+, so this tool returns a structured 'usbmuxd unavailable' "+
+				"error while install/launch/terminate/list_apps keep working."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),

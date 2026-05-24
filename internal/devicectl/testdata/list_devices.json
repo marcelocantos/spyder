@@ -1,0 +1,63 @@
+{
+  "info": {
+    "arguments": ["devicectl", "list", "devices"],
+    "commandType": "devicectl.list.devices",
+    "jsonVersion": 2,
+    "outcome": "success"
+  },
+  "result": {
+    "devices": [
+      {
+        "identifier": "952C8C05-BBC7-5B07-9017-4E67557DD296",
+        "hardwareProperties": {
+          "udid": "00008110-001C10590C28201E",
+          "marketingName": "iPhone 14",
+          "productType": "iPhone14,7",
+          "platform": "iOS"
+        },
+        "deviceProperties": {
+          "name": "spare phone",
+          "osVersionNumber": "18.4"
+        },
+        "connectionProperties": {
+          "tunnelState": "unavailable",
+          "transportType": null
+        }
+      },
+      {
+        "identifier": "1F4A2B6C-0000-5000-9000-ABCDEF012345",
+        "hardwareProperties": {
+          "udid": "00008103-000D39301A6A201E",
+          "marketingName": "iPad Pro (11-inch)",
+          "productType": "iPad8,9",
+          "platform": "iOS"
+        },
+        "deviceProperties": {
+          "name": "Pippa",
+          "osVersionNumber": "17.5"
+        },
+        "connectionProperties": {
+          "tunnelState": "connected",
+          "transportType": "wired"
+        }
+      },
+      {
+        "identifier": "2222CAFE-0000-5000-9000-000000000002",
+        "hardwareProperties": {
+          "udid": "",
+          "marketingName": "",
+          "productType": "iPhone15,2",
+          "platform": "iOS"
+        },
+        "deviceProperties": {
+          "name": "no-marketing-name",
+          "osVersionNumber": "17.0"
+        },
+        "connectionProperties": {
+          "tunnelState": "disconnected",
+          "transportType": "localNetwork"
+        }
+      }
+    ]
+  }
+}

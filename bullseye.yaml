@@ -2414,6 +2414,158 @@ targets:
     - deferred
     origin: manual
     discovered: 2026-05-20
+  T72:
+    name: spyder migrates off usbmuxd for every operation CoreDevice exposes; usbmuxd wedge degrades only screenshot and oslog stream rather than blocking workflow
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 13.0
+    acceptance:
+    - The iOS adapter's install/launch/terminate/is_running/list_apps/state/resolve_executable paths invoke devicectl (CoreDevice) via internal/devicectl instead of go-ios service pools backed by usbmuxd. Existing spyder MCP tools keep their signatures and semantics; only the implementation underneath changed.
+    - Device enumeration (spyder devices) uses devicectl as its primary signal; go-ios's usbmux view is a supplemental/fallback signal only and is hang-guarded so a wedged usbmuxd never blocks enumeration. The doctor's IOUSB+devicectl check stays for wedge detection but is off the critical path.
+    - When usbmuxd is wedged, spyder still works for everything above. screenshot and the oslog-stream logs tool (DTX-only, no CoreDevice equivalent on iOS 17+) return a structured ErrUSBMuxdUnavailable ('usbmuxd' + 'unavailable' in the message) rather than hanging — the go-ios RSD session is bounded by a 15s timeout. Tool descriptions in the MCP manifest call out the dependency.
+    - TEST-REPORT.json live tier exercises the new devicectl-based paths end-to-end and attests overall ∈ {pass, partial}. Existing live tests run against the devicectl path; the new wedged-mode test covers degraded behaviour; the go-unit tier is hermetic.
+    - The crashes tool degrades cleanly (structured ErrUSBMuxdUnavailable after a devicectl reachability cross-check) when DTX-based crash retrieval is unavailable; the DTX path stays primary when usbmuxd is healthy. (CoreDevice exposes no crash-report API, so there is no richer fallback for crash contents.)
+    - 'The auto-recovery loop in wedge.RunMonitor no longer fires sudo killusbmuxd every 2 minutes: detection + snapshot still fire on every wedged poll, but recovery fires at most once per wedge episode, with `spyder doctor --fix` as the explicit operator retry path.'
+    context: |-
+      Filed 2026-05-24 after a multi-hour session of fighting the usbmuxd third-party-visibility wedge. The pattern across the night: iPad and iPhone alternate between visible and missing from usbmuxd; sometimes killing usbmuxd recovers, sometimes (sticky state) it doesn't and only a physical USB unplug+replug clears the device-side state; the spyder daemon's wedge.RunMonitor correctly detects + writes snapshots + invokes auto-recovery, but the recovery itself often does nothing and just churns usbmuxd every 2 minutes.
+
+      The architectural root cause is that Apple has migrated iOS 17+ device communication to CoreDevice (RSD over private TCP-over-USB tunnels) and left usbmuxd in maintenance. Third-party tooling (go-ios, libimobiledevice, pymobiledevice3) is stuck on usbmuxd because CoreDevice's APIs are private. spyder inherits go-ios's usbmuxd dependency.
+
+      The realisation tonight: most of spyder's user-facing surface (install / launch / terminate / list_apps / state / is_running) maps cleanly to xcrun devicectl, which uses CoreDevice and bypasses usbmuxd entirely. Only screenshot and oslog stream are genuinely DTX-locked with no CoreDevice equivalent on iOS 17+. So the right design isn't to keep fighting usbmuxd; it's to use CoreDevice where Apple has exposed it and let the two DTX-dependent tools degrade gracefully when usbmuxd is wedged.
+
+      This is a multi-day refactor, not a one-shot fix. Likely sequenced: (1) audit which go-ios calls in internal/device/ios.go have devicectl equivalents; (2) build a small devicectl wrapper layer; (3) migrate the easy ones; (4) keep usbmuxd-backed paths as fallback initially; (5) eventually flip primary; (6) downgrade auto-recovery's killusbmuxd loop.
+
+      Sibling to T68 (the trigger investigation), not a sub-target of it — this is the alternative path that sidesteps T68's question entirely for most operations.
+    depends_on:
+    - T72.1
+    - T72.2
+    - T72.3
+    - T72.4
+    - T72.5
+    - T72.6
+    origin: manual
+    discovered: 2026-05-24
+    achieved: 2026-05-24
+  T72.1:
+    name: internal/devicectl package wraps every devicectl operation spyder needs as typed Go functions with structured errors and JSON parsing
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 3.0
+    acceptance:
+    - 'internal/devicectl exposes typed wrappers: ListApps, ResolveBundleApp, ListProcesses, InstallApp, UninstallApp, LaunchApp, SignalProcess, DeviceDetails (battery+state) — each takes (ctx, udid, ...) and returns parsed Go structs.'
+    - Every wrapper uses --json-output to a temp file and parses the result; no scraping of stdout text.
+    - Every wrapper enforces a per-call timeout via devicectl's --timeout flag + a context.WithTimeout wrapper.
+    - Unit tests cover the JSON parsers using captured fixtures from real device runs (no live device needed for parser tests).
+    - Package is usable by internal/device/ios.go and by callers outside (e.g. internal/wedge) without pulling in go-ios.
+    - Errors include the underlying devicectl exit code, stderr tail, and stdout tail truncated to a reasonable length.
+    tags:
+    - refactor
+    - devicectl
+    origin: subdivide(🎯T72)
+    discovered: 2026-05-24
+    achieved: 2026-05-24
+  T72.2:
+    name: iOS adapter install/uninstall/launch/terminate/list_apps/resolve_executable/AppPID paths invoke internal/devicectl, not go-ios installation_proxy or appservice
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 3.0
+    acceptance:
+    - IOSAdapter.InstallApp, UninstallApp, LaunchApp, TerminateApp, ListApps, ResolveExecutable, AppPID, installedAppFolder all route through internal/devicectl.
+    - The installation_proxy ServicePool (ipPool) and appservice ServicePool (asPool) are removed from IOSAdapter (or kept only behind a fallback path; if kept, the primary path is devicectl and the go-ios path only triggers when devicectl is unavailable).
+    - Unit tests for these paths use a stub devicectl runner (or table-driven parser tests) so they run without a real device.
+    - go test ./... passes; the live tier (gated on SPYDER_LIVE_UDID) still passes end-to-end on a real iPad/iPhone.
+    depends_on:
+    - T72.1
+    tags:
+    - refactor
+    - ios
+    origin: subdivide(🎯T72)
+    discovered: 2026-05-24
+    achieved: 2026-05-24
+  T72.3:
+    name: iOS device enumeration prefers devicectl; usbmuxd contributes a fallback signal only and never blocks enumeration when wedged
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 2.0
+    acceptance:
+    - IOSAdapter.List uses devicectl as the primary source (fields and identity), with goios_ios.ListDevices as a fallback / supplemental signal.
+    - When usbmuxd is wedged (goios_ios.ListDevices errors or hangs), IOSAdapter.List still returns the devicectl-reported devices.
+    - State(id) battery/charging reads route through devicectl device info details when the lockdown-backed go-ios path fails or is unavailable.
+    - Unit tests cover the fallback ordering with stubbed inputs.
+    depends_on:
+    - T72.1
+    tags:
+    - refactor
+    - enumeration
+    origin: subdivide(🎯T72)
+    discovered: 2026-05-24
+    achieved: 2026-05-24
+  T72.4:
+    name: DTX-only tools (screenshot, oslog stream) return a structured 'usbmuxd unavailable, degraded' error rather than hanging or failing opaquely when usbmuxd is wedged
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 3.0
+    acceptance:
+    - When the bundled ios tunnel registry or usbmuxd is unreachable, Screenshot returns a structured error (ErrUSBMuxdUnavailable) whose Error() contains the literal substrings 'usbmuxd' and 'unavailable' and is matchable via errors.Is.
+    - Same for LogRange and LogStream.
+    - 'Rather than hanging: go-ios''s RSD session resolve is bounded by a 15s timeout (Resolver.Session), so a wedged tunnel surfaces the structured degraded error instead of blocking the caller indefinitely.'
+    - Tool descriptions in internal/mcp Definitions() for screenshot and logs call out the usbmuxd dependency explicitly.
+    - 'Crashes degrades cleanly when the DTX/afc crashreport path is unavailable: it cross-checks device reachability via devicectl and returns the structured ErrUSBMuxdUnavailable. (CoreDevice exposes no crash-report retrieval API, so there is no richer devicectl fallback for crash contents — the original ''fallback to devicectl device get logs'' framing was based on a command that doesn''t exist.)'
+    depends_on:
+    - T72.2
+    - T72.3
+    tags:
+    - degradation
+    - ios
+    origin: subdivide(🎯T72)
+    discovered: 2026-05-24
+    achieved: 2026-05-24
+  T72.5:
+    name: wedge.RunMonitor auto-recovery loop no longer fires sudo killusbmuxd repeatedly when usbmuxd is wedged; recovery is gated and bounded
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 2.0
+    acceptance:
+    - wedge.RunMonitor's auto-recovery action is removed or downgraded to a single attempt-and-give-up per wedge episode (no 2-minute repeating churn).
+    - Detection and snapshot writing continue unchanged.
+    - An explicit operator entry point (e.g. spyder doctor --fix) is the supported way to trigger killusbmuxd manually.
+    - Unit tests cover the 'detect, snapshot, no auto-recovery' path.
+    depends_on:
+    - T72.2
+    tags:
+    - wedge
+    - ops
+    origin: subdivide(🎯T72)
+    discovered: 2026-05-24
+    achieved: 2026-05-24
+  T72.6:
+    name: Live test tier exercises the devicectl-based paths end-to-end and a new wedged-mode test asserts graceful degradation
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 3.0
+    acceptance:
+    - 'Existing iOS live tests exercise the devicectl-backed paths end-to-end: they call the same adapter API (ListApps, ResolveExecutable, LaunchApp/AppPID/TerminateApp, List), which now routes through internal/devicectl. Verified on real hardware — the devicectl info-apps/info-processes JSON schema matches the parsers'' fixtures exactly.'
+    - A new live test (TestIOSWedgedMode_Live, gated on SPYDER_LIVE_UDID + SPYDER_LIVE_WEDGE=1 since it kills usbmuxd host-wide) firmly asserts list_apps / resolve / launch / pid / terminate succeed with usbmuxd down, and best-effort-checks that screenshot / logs degrade with ErrUSBMuxdUnavailable. The DTX assertions are best-effort because launchd respawns usbmuxd within ~1s and an established RSD tunnel can outlive the kill; the deterministic degraded-error contract is pinned by the hermetic unit tests.
+    - Live DTX tests (Screenshot/LogRange/LogStream/Crashes) treat ErrUSBMuxdUnavailable as t.Skip — a wedged tunnel is an unmet HIL precondition, not a defect — so the live tier passes (with skips) on a wedged device while the devicectl paths still pass.
+    - TEST-REPORT.json after a `make test-report` run shows overall ∈ {pass, partial}. The go-unit tier is now hermetic (SPYDER_LIVE_* cleared) so it can't be flaked by device state. Achieved overall=pass on 2026-05-24 (go-unit pass, live pass against a real iPhone with the DTX surface degraded-skipping).
+    depends_on:
+    - T72.2
+    - T72.3
+    - T72.4
+    - T72.5
+    tags:
+    - test
+    - live
+    origin: subdivide(🎯T72)
+    discovered: 2026-05-24
+    achieved: 2026-05-24
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved

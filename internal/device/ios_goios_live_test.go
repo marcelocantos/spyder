@@ -4,11 +4,25 @@
 package device
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
 	"time"
 )
+
+// skipIfDTXDegraded skips a live test when err is the structured
+// usbmuxd-unavailable degradation (🎯T72.4). The DTX-only surface
+// (screenshot, oslog stream, crashes) returns this when the device's
+// tunnel/usbmuxd is wedged — an unmet HIL precondition, not a code
+// defect, so the test skips rather than fails. The devicectl-backed
+// tools have no such dependency and are expected to pass regardless.
+func skipIfDTXDegraded(t *testing.T, op string, err error) {
+	t.Helper()
+	if errors.Is(err, ErrUSBMuxdUnavailable) {
+		t.Skipf("%s: DTX surface degraded (tunnel/usbmuxd wedged) — skipping HIL test: %v", op, err)
+	}
+}
 
 // TestScreenshot_Live exercises the new go-ios-backed screenshot path.
 func TestScreenshot_Live(t *testing.T) {
@@ -20,6 +34,7 @@ func TestScreenshot_Live(t *testing.T) {
 	adapter := NewIOSAdapter()
 	png, err := adapter.Screenshot(udid)
 	if err != nil {
+		skipIfDTXDegraded(t, "Screenshot", err)
 		t.Fatalf("Screenshot(%s): %v", udid, err)
 	}
 	if len(png) < 1024 {
@@ -63,6 +78,7 @@ func TestLogRange_Live(t *testing.T) {
 	// cap when until is zero.)
 	lines, err := adapter.LogRange(udid, LogFilter{}, time.Time{}, time.Now().Add(3*time.Second))
 	if err != nil {
+		skipIfDTXDegraded(t, "LogRange", err)
 		t.Fatalf("LogRange: %v", err)
 	}
 	t.Logf("LogRange(%s) over ~3s: %d lines (first: %+v)", udid, len(lines), firstOrEmpty(lines))
@@ -156,6 +172,7 @@ func TestLogRangeThirdPartyApp_Live(t *testing.T) {
 		LogFilter{Process: exe},
 		time.Time{}, time.Now().Add(5*time.Second))
 	if err != nil {
+		skipIfDTXDegraded(t, "LogRange(third-party)", err)
 		t.Fatalf("LogRange filtered by %s (exe=%s): %v", bundleID, exe, err)
 	}
 	if len(lines) == 0 {

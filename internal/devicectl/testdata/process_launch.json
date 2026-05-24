@@ -1,0 +1,18 @@
+{
+  "info": {
+    "arguments": ["devicectl", "device", "process", "launch"],
+    "commandType": "devicectl.device.process.launch",
+    "jsonVersion": 2,
+    "outcome": "success"
+  },
+  "result": {
+    "process": {
+      "processIdentifier": 1337,
+      "executable": "file:///private/var/containers/Bundle/Application/9C1F0E2A-1111-2222-3333-444455556666/MultiMaze.app/MultiMaze"
+    },
+    "launchOptions": {
+      "activateSchemes": true,
+      "terminateExisting": false
+    }
+  }
+}
