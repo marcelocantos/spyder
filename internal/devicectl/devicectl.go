@@ -85,25 +85,36 @@ func (e *CommandError) Error() string {
 func (e *CommandError) Unwrap() error { return e.Err }
 
 // Client is the entry point for devicectl operations. The zero value is not
-// usable; call New. Tests construct a Client with a stub exec to drive the
-// parsers without a real device.
+// usable; call New (or NewWithExec in tests).
 type Client struct {
 	timeoutSeconds int
 	// exec runs `xcrun devicectl <args> --timeout <n> --json-output <tmp>`,
 	// reads the temp file, and returns its contents. Overridable in tests.
-	exec execFunc
+	exec ExecFunc
 }
 
-// execFunc runs a devicectl subcommand and returns the parsed JSON document
-// it wrote to its --json-output file. subcommand is a human-readable label
-// (e.g. "device info apps") used only for error messages; args is the full
+// ExecFunc runs a devicectl subcommand and returns the JSON document it
+// wrote to its --json-output file. subcommand is a human-readable label
+// (e.g. "device info apps") used only for error messages; args is the
 // devicectl arg vector excluding the auto-appended --timeout / --json-output.
-type execFunc func(ctx context.Context, timeoutSeconds int, subcommand string, args []string) ([]byte, error)
+// Tests pass an ExecFunc to NewWithExec to drive the wrappers (and any
+// caller layered on top) without a real device.
+type ExecFunc func(ctx context.Context, timeoutSeconds int, subcommand string, args []string) ([]byte, error)
 
 // New returns a Client wired to the real `xcrun devicectl` with the default
 // per-call timeout.
 func New() *Client {
 	return &Client{timeoutSeconds: DefaultTimeoutSeconds, exec: defaultExec}
+}
+
+// NewWithExec builds a Client backed by a custom ExecFunc. Intended for
+// tests that drive the wrappers without invoking xcrun. A non-positive
+// timeoutSeconds falls back to DefaultTimeoutSeconds.
+func NewWithExec(timeoutSeconds int, exec ExecFunc) *Client {
+	if timeoutSeconds <= 0 {
+		timeoutSeconds = DefaultTimeoutSeconds
+	}
+	return &Client{timeoutSeconds: timeoutSeconds, exec: exec}
 }
 
 // run invokes the configured exec with this client's timeout.

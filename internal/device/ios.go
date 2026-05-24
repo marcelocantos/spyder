@@ -20,12 +20,10 @@ import (
 	"time"
 
 	goios_ios "github.com/danielpaulus/go-ios/ios"
-	"github.com/danielpaulus/go-ios/ios/appservice"
 	"github.com/danielpaulus/go-ios/ios/crashreport"
-	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/ostrace"
-	"github.com/danielpaulus/go-ios/ios/zipconduit"
+	"github.com/marcelocantos/spyder/internal/devicectl"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/oslog"
@@ -47,26 +45,23 @@ const (
 	devicectlTimeout        = (devicectlTimeoutSeconds + 2) * time.Second
 )
 
-// IOSAdapter talks to iOS devices via in-process go-ios calls.
-// `xcrun devicectl` is still used for install / uninstall (where
-// devicectl's signing and provisioning handling is hard to replace);
-// everything else runs in-process.
+// IOSAdapter talks to iOS devices through two channels:
+//
+//   - CoreDevice via `xcrun devicectl` (the internal/devicectl wrapper) for
+//     everything Apple has exposed there: install / uninstall / launch /
+//     terminate / list-apps / resolve-executable / pid lookup / enumeration
+//     / device details. This path bypasses usbmuxd entirely and keeps
+//     working when usbmuxd is wedged (🎯T72).
+//   - In-process go-ios (over the bundled RSD tunnel) for the DTX-only
+//     surface CoreDevice has no equivalent for on iOS 17+: screenshots,
+//     the os_trace log stream, crash-report retrieval, and battery state.
+//     These degrade when usbmuxd is wedged.
 type IOSAdapter struct {
 	goios *goios.Resolver
-	// ipPool holds one cached installation_proxy connection per UDID.
-	// installation_proxy is the highest-churn service spyder uses
-	// (every ListApps + ResolveExecutable + bundle-id resolution
-	// opens one), and the per-RPC open/close churn appears to be a
-	// trigger for the usbmuxd-wedge symptom (🎯T67). Reusing one
-	// connection per device collapses N opens to 1. Pool serialises
-	// operations on the cached connection — installation_proxy is
-	// not safe for concurrent use anyway.
-	ipPool *goios.ServicePool[*installationproxy.Connection]
-	// asPool caches one appservice connection per UDID. Each
-	// LaunchApp / TerminateApp / AppPID currently opens a fresh
-	// appservice DTX channel; pooling collapses launch-then-verify
-	// cycles to a single open.
-	asPool *goios.ServicePool[*appservice.Connection]
+	// dctl drives the CoreDevice (devicectl) path — the primary surface
+	// for app lifecycle and enumeration. It holds no per-device state and
+	// is safe for concurrent use.
+	dctl *devicectl.Client
 	// ssPool caches one instruments.ScreenshotService per UDID. The
 	// DTX handshake costs ~150ms on iOS-17+ tunnels; pooling makes
 	// repeated screenshots (visual diff loops, recording fallbacks)
@@ -89,27 +84,7 @@ func NewIOSAdapter() *IOSAdapter {
 	resolver := goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort)
 	return &IOSAdapter{
 		goios: resolver,
-		ipPool: goios.NewServicePool(
-			resolver,
-			func(dev goios_ios.DeviceEntry) (*installationproxy.Connection, error) {
-				return installationproxy.New(dev)
-			},
-			func(c *installationproxy.Connection) error {
-				c.Close()
-				return nil
-			},
-			60*time.Second,
-		),
-		asPool: goios.NewServicePool(
-			resolver,
-			func(dev goios_ios.DeviceEntry) (*appservice.Connection, error) {
-				return appservice.New(dev)
-			},
-			func(c *appservice.Connection) error {
-				return c.Close()
-			},
-			60*time.Second,
-		),
+		dctl:  devicectl.New(),
 		ssPool: goios.NewServicePool(
 			resolver,
 			func(dev goios_ios.DeviceEntry) (*instruments.ScreenshotService, error) {
@@ -464,86 +439,74 @@ func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	conn, release, err := a.ipPool.Acquire(id)
+	apps, err := a.dctl.ListApps(context.Background(), id)
 	if err != nil {
-		a.goios.Invalidate(id)
-		return nil, fmt.Errorf("installation_proxy on %s: %w", id, err)
-	}
-	defer release()
-	raw, err := conn.BrowseUserApps()
-	if err != nil {
-		a.ipPool.Invalidate(id)
 		return nil, fmt.Errorf("list_apps on %s: %w", id, err)
 	}
-	apps := make([]AppInfo, 0, len(raw))
-	for _, app := range raw {
-		apps = append(apps, AppInfo{
-			BundleID:   app.CFBundleIdentifier(),
-			Name:       app.CFBundleName(),
-			Executable: app.CFBundleExecutable(),
-			Version:    app.CFBundleShortVersionString(),
+	out := make([]AppInfo, 0, len(apps))
+	for _, app := range apps {
+		out = append(out, AppInfo{
+			BundleID:   app.BundleID,
+			Name:       app.Name,
+			Executable: executableFromAppFolder(app.AppFolder),
+			Version:    app.Version,
 		})
 	}
-	sort.Slice(apps, func(i, j int) bool { return apps[i].BundleID < apps[j].BundleID })
-	return apps, nil
+	sort.Slice(out, func(i, j int) bool { return out[i].BundleID < out[j].BundleID })
+	return out, nil
 }
 
-// ResolveExecutable maps an iOS bundle id to its CFBundleExecutable —
-// the string the device's syslog stream uses to identify the app in
-// the `process` column. Returns ("", false, nil) when the bundle isn't
-// installed.
+// ResolveExecutable maps an iOS bundle id to the executable name that
+// appears in the device's log streams. Returns ("", false, nil) when the
+// bundle isn't installed.
+//
+// devicectl doesn't expose CFBundleExecutable, so we derive it from the
+// .app bundle folder name (CFBundleExecutable equals the bundle folder
+// stem for the overwhelming majority of apps; the rare app whose
+// executable name diverges from its bundle name would mismatch a log
+// filter — an acceptable edge given the usbmuxd-free win).
 func (a *IOSAdapter) ResolveExecutable(id, bundleID string) (string, bool, error) {
 	if id == "" || bundleID == "" {
 		return "", false, errors.New("device id and bundle_id are required")
 	}
-	conn, release, err := a.ipPool.Acquire(id)
+	app, installed, err := a.dctl.ResolveBundleApp(context.Background(), id, bundleID)
 	if err != nil {
-		a.goios.Invalidate(id)
-		return "", false, fmt.Errorf("installation_proxy on %s: %w", id, err)
+		return "", false, fmt.Errorf("resolve_executable on %s: %w", id, err)
 	}
-	defer release()
-	apps, err := conn.BrowseAllApps()
-	if err != nil {
-		a.ipPool.Invalidate(id)
-		return "", false, fmt.Errorf("browse apps on %s: %w", id, err)
+	if !installed {
+		return "", false, nil
 	}
-	for _, app := range apps {
-		if app.CFBundleIdentifier() == bundleID {
-			return app.CFBundleExecutable(), true, nil
-		}
-	}
-	return "", false, nil
+	return executableFromAppFolder(app.AppFolder), true, nil
 }
 
-// LaunchApp foregrounds an arbitrary app via go-ios's appservice
-// (com.apple.coredevice.feature.launchapplication, the iOS-17+
-// CoreDevice launch path). The pid the launch returns is currently
-// discarded — callers that need it call AppPID after.
+// executableFromAppFolder strips the ".app" suffix from a bundle folder
+// name (e.g. "MultiMaze.app" → "MultiMaze"), yielding the executable name
+// as it appears in process paths and log streams.
+func executableFromAppFolder(folder string) string {
+	return strings.TrimSuffix(folder, ".app")
+}
+
+// LaunchApp foregrounds an app by bundle id via CoreDevice
+// (devicectl device process launch). On failure it disambiguates the
+// "app not installed" case so callers get the spyder error convention.
 func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	conn, release, err := a.asPool.Acquire(id)
-	if err != nil {
-		a.goios.Invalidate(id)
-		return fmt.Errorf("appservice on %s: %w", id, err)
-	}
-	defer release()
-	if _, err := conn.LaunchApp(bundleID, nil, nil, nil, false); err != nil {
-		// Map "app not installed"-shaped errors to the spyder convention.
-		msg := err.Error()
-		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
+	ctx := context.Background()
+	if _, err := a.dctl.LaunchApp(ctx, id, bundleID, nil); err != nil {
+		// Only pay the extra round-trip to classify the failure when the
+		// launch actually failed.
+		if _, installed, rerr := a.dctl.ResolveBundleApp(ctx, id, bundleID); rerr == nil && !installed {
 			return fmt.Errorf("app not installed: %s", bundleID)
 		}
-		a.asPool.Invalidate(id)
 		return fmt.Errorf("launch %s on %s: %w", bundleID, id, err)
 	}
 	return nil
 }
 
-// TerminateApp stops an app by bundle id. iOS doesn't expose a
-// "kill by bundle id" RPC directly — go-ios's appservice only kills by
-// pid — so we resolve the pid first.
+// TerminateApp stops an app by bundle id. CoreDevice's signal RPC kills
+// by pid, so we resolve the pid first; an already-stopped app is a no-op.
 func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
@@ -556,78 +519,56 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 		}
 		return err
 	}
-	conn, release, err := a.asPool.Acquire(id)
-	if err != nil {
-		a.goios.Invalidate(id)
-		return fmt.Errorf("appservice on %s: %w", id, err)
-	}
-	defer release()
-	if err := conn.KillProcess(pid); err != nil {
-		a.asPool.Invalidate(id)
+	if err := a.dctl.SignalProcess(context.Background(), id, pid, "SIGKILL"); err != nil {
 		return fmt.Errorf("terminate %s (pid %d) on %s: %w", bundleID, pid, id, err)
 	}
 	return nil
 }
 
-// AppPID returns the pid of a running app by bundle id. Implemented
-// in two RPCs: installation_proxy resolves the bundle id to its
-// installed .app folder, and appservice.ListProcesses scans live
-// processes for one whose path contains that .app folder. Returns the
-// "app not running" error sentinel that the deploy_app handler keys
-// off when verify-pid runs immediately after a launch.
+// AppPID returns the pid of a running app by bundle id via CoreDevice.
+// It resolves the bundle id to its installed .app folder (devicectl
+// device info apps) and scans live processes (devicectl device info
+// processes) for one whose executable path sits inside that folder.
+// Returns the "app not running" sentinel the deploy_app handler keys off
+// when verify-pid runs immediately after a launch.
 func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
-	appBase, err := a.installedAppFolder(id, bundleID)
+	ctx := context.Background()
+	appFolder, err := a.installedAppFolder(id, bundleID)
 	if err != nil {
-		a.goios.Invalidate(id)
 		return 0, err
 	}
-	if appBase == "" {
+	if appFolder == "" {
 		return 0, fmt.Errorf("app not installed: %s", bundleID)
 	}
-	asConn, release, err := a.asPool.Acquire(id)
+	procs, err := a.dctl.ListProcesses(ctx, id)
 	if err != nil {
-		a.goios.Invalidate(id)
-		return 0, fmt.Errorf("appservice on %s: %w", id, err)
-	}
-	defer release()
-	procs, err := asConn.ListProcesses()
-	if err != nil {
-		a.asPool.Invalidate(id)
 		return 0, fmt.Errorf("list processes on %s: %w", id, err)
 	}
-	needle := "/" + appBase + "/"
+	needle := "/" + appFolder + "/"
 	for _, p := range procs {
 		if strings.Contains(p.Path, needle) {
-			return p.Pid, nil
+			return p.PID, nil
 		}
 	}
 	return 0, fmt.Errorf("app not running: %s", bundleID)
 }
 
 // installedAppFolder returns the basename of the .app folder
-// (e.g. "MultiMaze.app") for the given bundle id, queried via
-// installation_proxy through the pooled connection. Returns "" when
-// the bundle isn't installed.
+// (e.g. "MultiMaze.app") for the given bundle id, via CoreDevice
+// (devicectl device info apps --bundle-id). Returns "" when the bundle
+// isn't installed.
 func (a *IOSAdapter) installedAppFolder(id, bundleID string) (string, error) {
-	conn, release, err := a.ipPool.Acquire(id)
+	app, installed, err := a.dctl.ResolveBundleApp(context.Background(), id, bundleID)
 	if err != nil {
-		return "", fmt.Errorf("installation_proxy: %w", err)
+		return "", fmt.Errorf("resolve bundle app on %s: %w", id, err)
 	}
-	defer release()
-	apps, err := conn.BrowseAllApps()
-	if err != nil {
-		a.ipPool.Invalidate(id)
-		return "", fmt.Errorf("browse apps: %w", err)
+	if !installed {
+		return "", nil
 	}
-	for _, app := range apps {
-		if app.CFBundleIdentifier() == bundleID {
-			return filepath.Base(app.Path()), nil
-		}
-	}
-	return "", nil
+	return app.AppFolder, nil
 }
 
 // Crashes fetches crash reports from the device via go-ios's
@@ -804,42 +745,27 @@ func (a *IOSAdapter) StopRecording(id string, pid int) error {
 	return fmt.Errorf("screen recording is not supported on iOS physical devices")
 }
 
-// InstallApp installs a .app or .ipa bundle via go-ios's zipconduit
-// (com.apple.streaming_zip_conduit). zipconduit handles both folder
-// (.app) and archive (.ipa) inputs natively, no zipping step needed.
+// InstallApp installs a .app or .ipa bundle via CoreDevice
+// (devicectl device install app). devicectl handles both folder (.app)
+// and archive (.ipa) inputs and performs signing/provisioning against the
+// profile the device is registered with.
 func (a *IOSAdapter) InstallApp(id, path string) error {
 	if id == "" || path == "" {
 		return errors.New("device id and path are required")
 	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return fmt.Errorf("install: %w", err)
-	}
-	conn, err := zipconduit.New(dev)
-	if err != nil {
-		a.goios.Invalidate(id)
-		return fmt.Errorf("zipconduit on %s: %w", id, err)
-	}
-	if err := conn.SendFile(path); err != nil {
+	if err := a.dctl.InstallApp(context.Background(), id, path); err != nil {
 		return fmt.Errorf("install %s on %s: %w", filepath.Base(path), id, err)
 	}
 	return nil
 }
 
-// UninstallApp removes an app by bundle identifier via go-ios's
-// installation_proxy.
+// UninstallApp removes an app by bundle identifier via CoreDevice
+// (devicectl device uninstall app).
 func (a *IOSAdapter) UninstallApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	conn, release, err := a.ipPool.Acquire(id)
-	if err != nil {
-		a.goios.Invalidate(id)
-		return fmt.Errorf("installation_proxy on %s: %w", id, err)
-	}
-	defer release()
-	if err := conn.Uninstall(bundleID); err != nil {
-		a.ipPool.Invalidate(id)
+	if err := a.dctl.UninstallApp(context.Background(), id, bundleID); err != nil {
 		return fmt.Errorf("uninstall %s on %s: %w", bundleID, id, err)
 	}
 	return nil
