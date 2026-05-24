@@ -1,0 +1,38 @@
+{
+  "info": {
+    "arguments": ["devicectl", "device", "info", "apps"],
+    "commandType": "devicectl.device.info.apps",
+    "jsonVersion": 2,
+    "outcome": "success"
+  },
+  "result": {
+    "apps": [
+      {
+        "appClip": false,
+        "builtByDeveloper": true,
+        "bundleIdentifier": "com.minicades.MultiMaze",
+        "bundleVersion": "42",
+        "defaultApp": false,
+        "hidden": false,
+        "internalApp": false,
+        "name": "MultiMaze",
+        "removable": true,
+        "url": "file:///private/var/containers/Bundle/Application/9C1F0E2A-1111-2222-3333-444455556666/MultiMaze.app/",
+        "version": "1.4.2"
+      },
+      {
+        "appClip": false,
+        "builtByDeveloper": false,
+        "bundleIdentifier": "com.example.Notes",
+        "bundleVersion": "7",
+        "defaultApp": false,
+        "hidden": false,
+        "internalApp": false,
+        "name": "Field Notes",
+        "removable": true,
+        "url": "file:///private/var/containers/Bundle/Application/AAAA1111-2222-3333-4444-555566667777/Field%20Notes.app/",
+        "version": "2.0"
+      }
+    ]
+  }
+}

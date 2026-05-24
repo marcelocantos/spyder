@@ -1,0 +1,20 @@
+{
+  "info": {
+    "arguments": ["devicectl", "device", "info", "details"],
+    "commandType": "devicectl.device.info.details",
+    "jsonVersion": 2,
+    "outcome": "success"
+  },
+  "result": {
+    "deviceProperties": {
+      "name": "Pippa",
+      "osVersionNumber": "17.5"
+    },
+    "hardwareProperties": {
+      "udid": "00008103-000D39301A6A201E",
+      "marketingName": "iPad Pro (11-inch)",
+      "productType": "iPad8,9",
+      "platform": "iOS"
+    }
+  }
+}
