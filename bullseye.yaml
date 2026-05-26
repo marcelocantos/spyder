@@ -2382,7 +2382,10 @@ targets:
       - Tag each spyder-pinned SHA in the fork before bumping the pin (e.g. `git tag spyder-pin-v0.41.0 <sha> && git push origin spyder-pin-v0.41.0`). Tags are permanent refs; keeps the SHA reachable forever. Cleanest, preserves linear history.
       - Merge upstream/main into spyder-patches instead of rebasing. No force-push; every old SHA stays reachable via the parent chain. Uglier history (merge commits), but Go-module-proof.
 
-      Defer until either (a) we actually rebase spyder-patches for the first time (most likely trigger), or (b) the historical-rebuild scenario bites us. Until then, the current single-commit state of spyder-patches means there's nothing to lose anyway.
+      **Status update 2026-05-26 (audit):** the "single-commit / nothing to lose anyway" framing is now stale. spyder-patches carries TWO commits as of v0.48.0 (ahead_by=2, behind_by=0 vs upstream/main):
+        1. `0c634f4` dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType
+        2. `d78573d` tunnel: self-heal a userspace tunnel whose device lifeline dies
+      spyder's go.mod pin was bumped to `v1.0.214-0.20260524022121-d78573d186a3` (the d78573d SHA). Crucially, the second commit was APPENDED on top of the first, not produced by a rebase, so 0c634f4 remains reachable as d78573d's parent — no orphaning has occurred yet and no historical spyder pin is currently at risk. But the safety question is no longer hypothetical: the next time upstream/main moves and we rebase spyder-patches onto it, the current tip (d78573d) — which the live v0.48.0+ pins reference — would be orphaned. Resolve T70 before that first real rebase. The append-only growth of the branch is itself the trigger this target was waiting for.
     tags:
     - go-ios
     - fork
@@ -2397,15 +2400,18 @@ targets:
     value: 0.0
     cost: 0.0
     acceptance:
-    - 'Periodically (when you next happen to touch the fork for any reason, or at most every few months), fetch upstream and compare against spyder-patches. The check is: `cd /tmp/go-ios-fix && git fetch upstream && git log --oneline upstream/main..spyder-patches` (commits we carry) and `git log --oneline spyder-patches..upstream/main` (commits upstream has that we don''t).'
+    - 'Periodically (when you next happen to touch the fork for any reason, or at most every few months), fetch upstream and compare against spyder-patches. The check is: `cd /tmp/go-ios-fix && git fetch upstream && git log --oneline upstream/main..spyder-patches` (commits we carry) and `git log --oneline spyder-patches..upstream/main` (commits upstream has that we don''t). Equivalent without a local clone: `gh api repos/danielpaulus/go-ios/compare/main...marcelocantos:go-ios:spyder-patches --jq ''.ahead_by, .behind_by''`.'
     - If commits upstream touch any of the paths spyder actively uses — `ios/dtx_codec/`, `ios/instruments/`, `ios/installationproxy/`, `ios/appservice/`, `ios/ostrace/`, `ios/crashreport/`, `ios/syslog/`, `ios/zipconduit/`, `ios/tunnel/`, `ios/{utils,lockdown}.go` — read them. Decide whether to pull them in via a rebase (see 🎯T70 for the safe workflow) or whether they're irrelevant.
-    - 'If spyder-patches''s single commit (`dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType`) lands upstream verbatim, retire spyder-patches entirely and remove the `replace` directive from spyder''s go.mod — we go back to a clean upstream pin.'
+    - 'spyder-patches now carries TWO spyder-specific commits (ahead_by=2). Track each for upstreaming independently: (a) `0c634f4` dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType; (b) `d78573d` tunnel: self-heal a userspace tunnel whose device lifeline dies (touches `ios/tunnel/`). If BOTH land upstream verbatim, retire spyder-patches entirely and remove the `replace` directive from spyder''s go.mod — back to a clean upstream pin. If only one lands, drop that commit from the fork and keep the other; consider opening an upstream PR for `d78573d` (the self-heal is generally useful, not spyder-specific).'
     context: |-
-      Filed instead of building any active scheduling (cron / GitHub Actions / Slack DM). Considered all of those during the v0.41 session and concluded the realistic upstream-tracking cadence is "when something else makes me touch the fork" — likely every few months, possibly never if spyder-patches stays at one commit and we don't hit any new upstream-bug-of-the-week.
+      Filed instead of building any active scheduling (cron / GitHub Actions / Slack DM). Considered all of those during the v0.41 session and concluded the realistic upstream-tracking cadence is "when something else makes me touch the fork" — likely every few months, possibly never if spyder-patches stays small and we don't hit any new upstream-bug-of-the-week.
 
-      The fork (https://github.com/marcelocantos/go-ios) currently carries ONE commit beyond upstream/main: `0c634f4 dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType` on the `spyder-patches` branch. Upstream's `main` and our fork's main are otherwise in sync. Three earlier patches (iOS-17+ instruments dispatch fixes) merged upstream before this session and no longer need to ride in the fork.
+      **Updated 2026-05-26 (audit):** the fork (https://github.com/marcelocantos/go-ios) now carries TWO commits beyond upstream/main on the `spyder-patches` branch (ahead_by=2, behind_by=0):
+        1. `0c634f4` dtx_codec: dispatch ReadMessage on PayloadHeader.MessageType
+        2. `d78573d` tunnel: self-heal a userspace tunnel whose device lifeline dies (added for v0.48.0; touches `ios/tunnel/`, which IS on the actively-used-paths list below).
+      spyder's go.mod pins the d78573d SHA (`v1.0.214-0.20260524022121-d78573d186a3`). Three earlier patches (iOS-17+ instruments dispatch fixes) merged upstream before this era and no longer ride in the fork. The `d78573d` self-heal is a strong upstream-PR candidate — it's a general go-ios tunnel-robustness fix, not spyder-specific — so the cleanest long-term outcome is to upstream it and shrink the fork back toward zero.
 
-      When you do check: the spyder paths that matter for divergence are the ones called from `internal/device/ios.go`, `internal/goios/`, `internal/oslog/`. Anything else in upstream go-ios can drift freely — spyder doesn't touch it.
+      When you do check: the spyder paths that matter for divergence are the ones called from `internal/device/ios.go`, `internal/goios/`, `internal/oslog/`, plus `ios/tunnel/` now that we carry a patch there. Anything else in upstream go-ios can drift freely — spyder doesn't touch it.
     tags:
     - go-ios
     - fork
@@ -2416,9 +2422,10 @@ targets:
     discovered: 2026-05-20
   T72:
     name: spyder migrates off usbmuxd for every operation CoreDevice exposes; usbmuxd wedge degrades only screenshot and oslog stream rather than blocking workflow
-    status: converging
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Set aside 2026-05-26. Superseded by the v0.48.0 tunnel self-heal (PR #110, commit 4237c9a). The 2026-05-24 root-cause investigation established that the wedge actually hit in practice was NOT a usbmuxd fault but a no-liveness/no-rebuild bug in the bundled go-ios tunnel daemon (fork TunnelManager): a dead device lifeline left a zombie tunnel (listener open, traffic black-holed) that UpdateTunnels never rebuilt because it only checked existence, not health; plus no read deadline on the H2 handshake. v0.48.0 fixes all three and was proven on hardware (kill usbmuxd → detect+rebuild same second, DTX recovered, no daemon restart). This invalidates T72''s premise that ''DTX is permanently degraded when wedged''. There are two distinct wedges: the common tunnel-lifeline wedge (now self-heals) and the rare usbmux-visibility wedge (the original T72/T68 trigger, still real). The devicectl migration (PR #109) is parked as an open draft — a fallback for the usbmux-visibility wedge only, to revisit if that wedge actually recurs in anger. Three useful bits were already cherry-picked out of #109 into #110: the goios.Session 15s timeout, the de-churned wedge loop (former T72.5), and the hermetic go-unit test fix (former T72.6). Resurface this subtree only if the usbmux-visibility wedge bites again.'
     acceptance:
     - The iOS adapter's install/launch/terminate/is_running/list_apps/state/resolve_executable paths invoke xcrun devicectl (or CoreDevice IPC directly) instead of the goios service pools backed by usbmuxd. Existing spyder MCP tools keep their same signatures and semantics; only the implementation underneath changes.
     - Device enumeration (the spyder devices tool) drops usbmuxd from its primary signal and relies on devicectl, with usbmuxd's view used as a fallback / cross-check only. The doctor's IOUSB+devicectl check stays load-bearing for wedge detection but is no longer in the critical path for ordinary operations.
@@ -2447,9 +2454,10 @@ targets:
     discovered: 2026-05-24
   T72.1:
     name: internal/devicectl package wraps every devicectl operation spyder needs as typed Go functions with structured errors and JSON parsing
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Set aside 2026-05-26 with parent 🎯T72 — devicectl migration parked as fallback (draft PR #109) after the v0.48.0 tunnel self-heal superseded the usbmuxd-fault premise. See 🎯T72 for full rationale.'
     acceptance:
     - 'internal/devicectl exposes typed wrappers: ListApps, ResolveBundleApp, ListProcesses, InstallApp, UninstallApp, LaunchApp, SignalProcess, DeviceDetails (battery+state) — each takes (ctx, udid, ...) and returns parsed Go structs.'
     - Every wrapper uses --json-output to a temp file and parses the result; no scraping of stdout text.
@@ -2464,9 +2472,10 @@ targets:
     discovered: 2026-05-24
   T72.2:
     name: iOS adapter install/uninstall/launch/terminate/list_apps/resolve_executable/AppPID paths invoke internal/devicectl, not go-ios installation_proxy or appservice
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Set aside 2026-05-26 with parent 🎯T72 — devicectl migration parked as fallback (draft PR #109) after the v0.48.0 tunnel self-heal superseded the usbmuxd-fault premise. See 🎯T72 for full rationale.'
     acceptance:
     - IOSAdapter.InstallApp, UninstallApp, LaunchApp, TerminateApp, ListApps, ResolveExecutable, AppPID, installedAppFolder all route through internal/devicectl.
     - The installation_proxy ServicePool (ipPool) and appservice ServicePool (asPool) are removed from IOSAdapter (or kept only behind a fallback path; if kept, the primary path is devicectl and the go-ios path only triggers when devicectl is unavailable).
@@ -2481,9 +2490,10 @@ targets:
     discovered: 2026-05-24
   T72.3:
     name: iOS device enumeration prefers devicectl; usbmuxd contributes a fallback signal only and never blocks enumeration when wedged
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Set aside 2026-05-26 with parent 🎯T72 — devicectl migration parked as fallback (draft PR #109) after the v0.48.0 tunnel self-heal superseded the usbmuxd-fault premise. See 🎯T72 for full rationale.'
     acceptance:
     - IOSAdapter.List uses devicectl as the primary source (fields and identity), with goios_ios.ListDevices as a fallback / supplemental signal.
     - When usbmuxd is wedged (goios_ios.ListDevices errors or hangs), IOSAdapter.List still returns the devicectl-reported devices.
@@ -2498,9 +2508,10 @@ targets:
     discovered: 2026-05-24
   T72.4:
     name: DTX-only tools (screenshot, oslog stream) return a structured 'usbmuxd unavailable, degraded' error rather than hanging or failing opaquely when usbmuxd is wedged
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Set aside 2026-05-26 with parent 🎯T72 — premise (DTX permanently degraded when wedged) invalidated by the v0.48.0 self-heal. Parked with the devicectl-migration fallback (draft PR #109). See 🎯T72 for full rationale.'
     acceptance:
     - When the bundled ios tunnel registry or usbmuxd is unreachable, Screenshot returns a structured error whose Error() mentions 'usbmuxd' and 'unavailable' (matchable from clients).
     - Same for LogRange and LogStream.
@@ -2516,9 +2527,10 @@ targets:
     discovered: 2026-05-24
   T72.5:
     name: wedge.RunMonitor auto-recovery loop no longer fires sudo killusbmuxd repeatedly when usbmuxd is wedged; recovery is gated and bounded
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Set aside 2026-05-26 — effectively delivered ahead of the subtree: the de-churned wedge loop (gated/bounded killusbmuxd) was cherry-picked out of #109 into the v0.48.0 self-heal (PR #110). Parked with parent 🎯T72; see it for full rationale.'
     acceptance:
     - wedge.RunMonitor's auto-recovery action is removed or downgraded to a single attempt-and-give-up per wedge episode (no 2-minute repeating churn).
     - Detection and snapshot writing continue unchanged.
@@ -2533,9 +2545,10 @@ targets:
     discovered: 2026-05-24
   T72.6:
     name: Live test tier exercises the devicectl-based paths end-to-end and a new wedged-mode test asserts graceful degradation
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Set aside 2026-05-26 — the hermetic go-unit test fix was cherry-picked out of #109 into v0.48.0 (PR #110); the devicectl-specific live/wedged-mode tests are parked with the migration fallback. See parent 🎯T72 for full rationale.'
     acceptance:
     - Existing live tests in internal/device/ios_*_live_test.go are rewired to exercise the devicectl-backed paths.
     - A new live test runs install / launch / terminate / list_apps end-to-end with usbmuxd intentionally killed at setup, and asserts they succeed.
