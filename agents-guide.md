@@ -101,7 +101,7 @@ everything it can see.
 | `devices` | List connected iOS + Android devices, annotated with inventory alias. | `platform` filter: `ios`, `android`, or `all` (default). |
 | `resolve` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
 | `device_state` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
-| `screenshot` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService` (needs tunnel); Android uses `adb shell screencap`. |
+| `screenshot` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService` (needs tunnel); Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
 | `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
 | `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses go-ios's `appservice.LaunchApp` (CoreDevice launch path, needs tunnel); Android uses `adb monkey -c LAUNCHER`. |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
@@ -370,8 +370,8 @@ Via MCP, the same operations are:
 {"name": "baseline_update", "arguments": {"suite": "login-flow", "case": "main-screen", "screenshot_path": "/tmp/login.png"}}
 {"name": "diff", "arguments": {"suite": "login-flow", "case": "main-screen", "screenshot_path": "/tmp/new.png"}}
 ```
-| `record_start` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | `{device, owner?}`. iOS simulators only — physical devices return an immediate error. Only one recording per device at a time. Reservation-gated. |
-| `record_stop` | Stop the active recording and return the local mp4 path. | `{device, owner?}`. Waits for the recorder to flush. On Android, pulls the file from the device. |
+| `record_start` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | `{device, owner?}`. iOS simulators only — physical devices return an immediate error. Observational; not gated by device reservation. Only one recording per device at a time. The `owner` you pass here is the one that must stop the recording. |
+| `record_stop` | Stop the active recording and return the local mp4 path. | `{device, owner?}`. Owner must match the one that started the recording (not the device reservation). Waits for the recorder to flush. On Android, pulls the file from the device. |
 | `network` | Apply or clear network condition shaping. | `{device, owner, profile?}` or `{device, owner, clear:true}`. Android emulators only — see gotchas below. |
 | `logs` | Fetch log lines between two timestamps. | Read-only. iOS routes through go-ios's `syslog_relay` shim (BSD-style syslog stream); Android uses `adb logcat`. For live tailing use REST SSE (see below). |
 
@@ -447,10 +447,15 @@ spyder log iPad --regex "crash|panic"                      # regex on message
 
 For parallel dev sessions (e.g. one agent working on TiltBuggy while another
 works on another game), acquire an exclusive hold on a device with `reserve`
-before mutating operations. Mutating tools (`screenshot`,
-`launch_app`, `terminate_app`) reject with a structured conflict error
-naming the holder if someone else is holding the device. Read tools
-(`devices`, `resolve`, `device_state`, `reservations`) are unaffected.
+before mutating operations. Mutating tools (`launch_app`, `terminate_app`,
+`install_app`, `uninstall_app`, `deploy_app`, `network`, `rotate`) reject
+with a structured conflict error naming the holder if someone else is
+holding the device. Read and observational tools (`devices`, `resolve`,
+`device_state`, `is_running`, `list_apps`, `crashes`, `logs`, `screenshot`,
+`record_start`, `record_stop`, `reservations`) are unaffected — any session
+can screenshot or record any device, even one held by someone else.
+`record_stop` authenticates against the owner that started the recording,
+not the device reservation.
 
 ### Literal device reservation
 
@@ -994,8 +999,9 @@ event.
 
 **Conflict detection**: Only one recording session per device at a time. A
 second `record_start` on the same device returns a Conflict error naming the
-current recorder's owner. The session is also stopped automatically when the
-owner's reservation is released.
+current recorder's owner. A recording is also stopped automatically when its
+own owner releases their reservation (matched on owner identity, not on device
+holder).
 
 ## Common gotchas
 

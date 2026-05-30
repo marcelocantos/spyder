@@ -113,3 +113,70 @@ func TestHandleRecordStop_AfterSecondStartSucceeds(t *testing.T) {
 		t.Fatalf("record_start after stop should succeed; body=%s", resultText(t, &r))
 	}
 }
+
+// record_start is observational; a session that doesn't own the device
+// reservation can still record it.
+func TestHandleRecordStart_IgnoresReservation(t *testing.T) {
+	ios := &stubAdapter{
+		startRecording: func(id, dest string) (func() error, int, error) {
+			doneCh := make(chan struct{})
+			close(doneCh)
+			return func() error { return nil }, 99, nil
+		},
+	}
+	h, s := newHandlerWithReservations(t, ios, nil)
+	_, _ = s.Acquire("iPad", "someone-else", 0, "")
+
+	r := dispatchJSON(t, h, "record_start", map[string]any{
+		"device": "iPad",
+		"owner":  "tiltbuggy",
+	})
+	if r.IsError {
+		t.Fatalf("record_start must not be gated by device reservations; body=%s", resultText(t, &r))
+	}
+}
+
+// record_stop authenticates against the recording owner, not the device
+// reservation. A caller whose owner differs from the recording's owner
+// is rejected even if they hold the device reservation.
+func TestHandleRecordStop_RecordingOwnerMismatch(t *testing.T) {
+	ios := &stubAdapter{
+		startRecording: func(id, dest string) (func() error, int, error) {
+			doneCh := make(chan struct{})
+			close(doneCh)
+			return func() error { return nil }, 99, nil
+		},
+	}
+	h, s := newHandlerWithReservations(t, ios, nil)
+	// device-holder is "deviceboss"; recording-starter is "recorder".
+	_, _ = s.Acquire("iPad", "deviceboss", 0, "")
+
+	r := dispatchJSON(t, h, "record_start", map[string]any{
+		"device": "iPad",
+		"owner":  "recorder",
+	})
+	if r.IsError {
+		t.Fatalf("record_start should succeed; body=%s", resultText(t, &r))
+	}
+
+	// The device-holder is NOT the recording owner; they cannot stop it.
+	r = dispatchJSON(t, h, "record_stop", map[string]any{
+		"device": "iPad",
+		"owner":  "deviceboss",
+	})
+	if !r.IsError {
+		t.Fatal("record_stop by non-recording-owner should reject")
+	}
+	if !strings.Contains(resultText(t, &r), "recorder") {
+		t.Errorf("error should name the recording's owner; got %s", resultText(t, &r))
+	}
+
+	// The actual recording owner can stop it.
+	r = dispatchJSON(t, h, "record_stop", map[string]any{
+		"device": "iPad",
+		"owner":  "recorder",
+	})
+	if r.IsError {
+		t.Fatalf("record_stop by recording owner should succeed; body=%s", resultText(t, &r))
+	}
+}

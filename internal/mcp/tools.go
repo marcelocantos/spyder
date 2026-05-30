@@ -304,9 +304,6 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if res := h.authorize(dev, owner); res != nil {
-		return res, nil
-	}
 	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
@@ -1183,9 +1180,6 @@ func (h *Handler) handleRecordStart(args map[string]any) (*mcpgo.CallToolResult,
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if res := h.authorize(dev, owner); res != nil {
-		return res, nil
-	}
 	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
@@ -1237,11 +1231,13 @@ func (h *Handler) handleRecordStop(args map[string]any) (*mcpgo.CallToolResult, 
 
 	h.mu.Lock()
 
-	if res := h.authorize(dev, owner); res != nil {
-		h.mu.Unlock()
-		return res, nil
-	}
 	canonical := h.canonicalDevice(dev)
+
+	// Only the session that started the recording may stop it.
+	if active := h.recordings.ForDevice(canonical); active != nil && active.Owner != owner {
+		h.mu.Unlock()
+		return toolErr("record_stop on %s: recording is owned by %q; pass owner=%q to stop it", dev, active.Owner, active.Owner)
+	}
 
 	session, stopErr := h.recordings.Stop(canonical)
 	h.mu.Unlock()

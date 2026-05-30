@@ -174,17 +174,24 @@ func TestHandleTerminateApp_RejectsWhenHeld(t *testing.T) {
 	}
 }
 
-func TestHandleScreenshot_RejectsWhenHeld(t *testing.T) {
+// Screenshot is observational and must succeed regardless of who (if
+// anyone) currently holds the device — see the analogous read-tool
+// tests below.
+func TestHandleScreenshot_IgnoresReservation(t *testing.T) {
+	called := false
 	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) {
-		t.Fatal("Screenshot should NOT be called")
-		return nil, nil
+		called = true
+		return []byte("PNG"), nil
 	}}
 	h, s := newHandlerWithReservations(t, ios, nil)
 	_, _ = s.Acquire("iPad", "someone-else", 0, "")
 
 	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
-	if !r.IsError {
-		t.Fatal("screenshot on reserved device should fail")
+	if r.IsError {
+		t.Fatalf("screenshot must not be gated by reservations; body=%s", resultText(t, &r))
+	}
+	if !called {
+		t.Error("adapter Screenshot should have been called")
 	}
 }
 
@@ -217,12 +224,18 @@ func TestReadTools_IgnoreReservations(t *testing.T) {
 // --- anonymous calls on held device -----------------------------------
 
 func TestMutatingTool_AnonymousCaller_Rejected(t *testing.T) {
-	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return nil, nil }}
+	ios := &stubAdapter{terminateApp: func(id, bundle string) error {
+		t.Fatal("TerminateApp should NOT be called on a held device")
+		return nil
+	}}
 	h, s := newHandlerWithReservations(t, ios, nil)
 	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
 
 	// No owner arg → treated as anonymous → rejected because device is held.
-	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
+	r := dispatchJSON(t, h, "terminate_app", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.foo",
+	})
 	if !r.IsError {
 		t.Fatal("anonymous mutating call on held device should reject")
 	}
@@ -230,14 +243,17 @@ func TestMutatingTool_AnonymousCaller_Rejected(t *testing.T) {
 
 func TestMutatingTool_AnonymousCaller_FreeDevice_Proceeds(t *testing.T) {
 	called := false
-	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) {
+	ios := &stubAdapter{terminateApp: func(id, bundle string) error {
 		called = true
-		return []byte("PNG"), nil
+		return nil
 	}}
 	h, _ := newHandlerWithReservations(t, ios, nil)
 
 	// No reservation → anonymous caller proceeds.
-	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
+	r := dispatchJSON(t, h, "terminate_app", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.foo",
+	})
 	if r.IsError {
 		t.Fatalf("free-device anonymous call should succeed; body=%s", resultText(t, &r))
 	}
