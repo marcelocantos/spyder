@@ -999,8 +999,9 @@ event.
 
 **Conflict detection**: Only one recording session per device at a time. A
 second `record_start` on the same device returns a Conflict error naming the
-current recorder's owner. The session is also stopped automatically when the
-owner's reservation is released.
+current recorder's owner. A recording is also stopped automatically when its
+own owner releases their reservation (matched on owner identity, not on device
+holder).
 
 ## Common gotchas
 
