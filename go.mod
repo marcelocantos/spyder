@@ -55,14 +55,33 @@ require (
 )
 
 // Patched go-ios fork. Track the `spyder-patches` branch in
-// marcelocantos/go-ios — it's a long-lived branch that rebases onto
+// marcelocantos/go-ios — a long-lived branch that rebases onto
 // upstream/main periodically, carrying only the patches spyder needs
-// that haven't (or shouldn't) merge upstream. Pin to the branch's
-// current tip SHA via the pseudo-version. When pulling in a new
-// upstream:
+// that haven't (or shouldn't) merge upstream. Pin below to a fork SHA
+// via the pseudo-version.
+//
+// The pin is a SHA, and rebasing spyder-patches orphans its previous
+// tip: after a force-push the old SHA is unreachable from any branch,
+// so GitHub may eventually GC it and `go build` of a historical spyder
+// commit that pins it would fail (proxy.golang.org caches anything ever
+// built, but that is not a durable guarantee). This already happened
+// once — 15d4eb19 (v0.33.0-era) was orphaned by a later rebase.
+//
+// Fix: tag every pinned SHA in the fork so it stays permanently
+// reachable. Each historical pin has a `spyder-pin-v<release>` tag
+// (e.g. spyder-pin-v0.33.0, spyder-pin-v0.42.0, spyder-pin-v0.48.0).
+// Rebase the branch freely; the tags keep old pins alive.
+//
+// When pulling in a new upstream:
 //   1. cd into the fork, `git fetch upstream`,
 //      `git rebase upstream/main spyder-patches`,
 //      `git push --force-with-lease origin spyder-patches`.
-//   2. `go get github.com/danielpaulus/go-ios@<new-spyder-patches-sha>`
+//   2. Tag the new tip BEFORE bumping the pin, and push the tag:
+//        git tag spyder-pin-v<next-spyder-release> spyder-patches
+//        git push origin spyder-pin-v<next-spyder-release>
+//      (or via the API, no clone needed:
+//        gh api -X POST repos/marcelocantos/go-ios/git/refs \
+//          -f ref=refs/tags/spyder-pin-v<next> -f sha=<new-tip-sha>)
+//   3. `go get github.com/danielpaulus/go-ios@<new-spyder-patches-sha>`
 //      then bump this line.
 replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20260524022121-d78573d186a3
