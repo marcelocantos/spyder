@@ -42,7 +42,7 @@ func TestSessionAgainstRealIOS_Live(t *testing.T) {
 		if app.BundleID == "" || strings.HasPrefix(app.BundleID, "com.apple.") {
 			continue
 		}
-		if err := adapter.LaunchApp(udid, app.BundleID); err == nil {
+		if err := adapter.LaunchApp(udid, app.BundleID, nil); err == nil {
 			t.Logf("launched %s to keep the device emitting during the test", app.BundleID)
 			break
 		}

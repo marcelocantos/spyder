@@ -141,7 +141,7 @@ func TestHandleReservations_NoStore_EmptyList(t *testing.T) {
 // --- strict enforcement on mutating tools -----------------------------
 
 func TestHandleLaunchApp_RejectsWhenHeld(t *testing.T) {
-	ios := &stubAdapter{launchApp: func(id, bundle string) error {
+	ios := &stubAdapter{launchApp: func(id, bundle string, env map[string]string) error {
 		t.Fatal("LaunchApp should NOT be called")
 		return nil
 	}}

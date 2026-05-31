@@ -122,6 +122,26 @@ func optString(args map[string]any, key string) string {
 	return v
 }
 
+// optStringMap reads an optional JSON object of string→string from args.
+// Non-string values are coerced via fmt.Sprintf("%v", ...) so callers
+// can pass numbers/bools without manual conversion. Returns nil when the
+// key is absent or the value isn't an object.
+func optStringMap(args map[string]any, key string) map[string]string {
+	raw, ok := args[key].(map[string]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		} else {
+			out[k] = fmt.Sprintf("%v", v)
+		}
+	}
+	return out
+}
+
 // parseTimeArg parses a `since` / `until` style argument. The string may
 // be either an RFC3339 absolute timestamp (e.g. "2026-05-17T16:43:24Z")
 // or a Go duration relative to now (e.g. "-2m" for "two minutes ago",
@@ -388,6 +408,7 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 		return nil, err
 	}
 	owner := optString(args, "owner")
+	env := optStringMap(args, "env")
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if res := h.authorize(dev, owner); res != nil {
@@ -397,7 +418,7 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	if err := adapter.LaunchApp(id, bundleID); err != nil {
+	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
 		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
 	}
 	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
@@ -1387,6 +1408,7 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 	}
 	bundleID := optString(args, "bundle_id")
 	owner := optString(args, "owner")
+	env := optStringMap(args, "env")
 
 	path, err = validateAppPath(path)
 	if err != nil {
@@ -1428,7 +1450,7 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 	}
 
 	// Step 3: launch.
-	if err := adapter.LaunchApp(id, bundleID); err != nil {
+	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
 		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
 	}
 

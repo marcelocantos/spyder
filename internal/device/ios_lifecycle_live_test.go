@@ -58,7 +58,7 @@ func TestIOSLaunchTerminateCycle_Live(t *testing.T) {
 	_ = a.TerminateApp(udid, bundleID)
 	time.Sleep(500 * time.Millisecond)
 
-	if err := a.LaunchApp(udid, bundleID); err != nil {
+	if err := a.LaunchApp(udid, bundleID, nil); err != nil {
 		if !strings.Contains(err.Error(), "pidFromResponse") {
 			t.Fatalf("LaunchApp(%s, %s): %v", udid, bundleID, err)
 		}

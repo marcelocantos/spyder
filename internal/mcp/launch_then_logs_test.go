@@ -39,7 +39,7 @@ func TestLaunchThenLogs_HappyPath(t *testing.T) {
 			}
 			return exeName, true, nil
 		},
-		launchApp: func(id, bundle string) error { return nil },
+		launchApp: func(id, bundle string, env map[string]string) error { return nil },
 		logRange: func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error) {
 			capturedFilter = filter
 			capturedSince = since
@@ -111,7 +111,7 @@ func TestLaunchThenLogs_SecondLaunchWins(t *testing.T) {
 		resolveExecutable: func(id, bundle string) (string, bool, error) {
 			return exeName, true, nil
 		},
-		launchApp: func(id, bundle string) error { return nil },
+		launchApp: func(id, bundle string, env map[string]string) error { return nil },
 		logRange: func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error) {
 			capturedSince = since
 			return nil, nil

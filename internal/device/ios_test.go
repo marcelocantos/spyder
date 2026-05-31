@@ -211,7 +211,7 @@ func TestIOSAdapter_NoSuchDevice_GoIOSMethods(t *testing.T) {
 		{"State", func() error { _, err := a.State("UDID"); return err }},
 		{"Screenshot", func() error { _, err := a.Screenshot("UDID"); return err }},
 		{"ListApps", func() error { _, err := a.ListApps("UDID"); return err }},
-		{"LaunchApp", func() error { return a.LaunchApp("UDID", "com.example.app") }},
+		{"LaunchApp", func() error { return a.LaunchApp("UDID", "com.example.app", nil) }},
 		{"TerminateApp", func() error { return a.TerminateApp("UDID", "com.example.app") }},
 		{"AppPID", func() error { _, err := a.AppPID("UDID", "com.example.app"); return err }},
 		{"Crashes", func() error { _, err := a.Crashes("UDID", time.Time{}, ""); return err }},
@@ -253,13 +253,13 @@ func TestIOSAdapter_EmptyID(t *testing.T) {
 		}
 	})
 	t.Run("LaunchApp_emptyID", func(t *testing.T) {
-		err := a.LaunchApp("", "com.example.app")
+		err := a.LaunchApp("", "com.example.app", nil)
 		if err == nil || !strings.Contains(err.Error(), "required") {
 			t.Errorf("LaunchApp('','bundle') = %v; want 'required' error", err)
 		}
 	})
 	t.Run("LaunchApp_emptyBundle", func(t *testing.T) {
-		err := a.LaunchApp("UDID", "")
+		err := a.LaunchApp("UDID", "", nil)
 		if err == nil || !strings.Contains(err.Error(), "required") {
 			t.Errorf("LaunchApp('UDID','') = %v; want 'required' error", err)
 		}

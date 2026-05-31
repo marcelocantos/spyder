@@ -111,8 +111,16 @@ type Adapter interface {
 
 	// LaunchApp foregrounds an arbitrary app by bundle id. iOS uses
 	// the in-process go-ios `appservice` launch (requires the bundled
-	// tunnel); Android uses adb monkey.
-	LaunchApp(id, bundleID string) error
+	// tunnel); Android uses adb monkey (no env) or am start (with env).
+	//
+	// env, if non-nil, sets environment variables for the launched
+	// process. On iOS the values become the process environment via
+	// appservice (readable via getenv); on Android they're passed as
+	// Intent string-extras (the app's Java/Kotlin shim must extract
+	// them and setenv() before native code runs); on iOS simulators
+	// they go via simctl's SIMCTL_CHILD_<KEY> convention. Callers pass
+	// nil when no env is required.
+	LaunchApp(id, bundleID string, env map[string]string) error
 
 	// TerminateApp stops a running app by bundle id. iOS uses the
 	// in-process go-ios DTX `processcontrol` service (bundle→pid +

@@ -26,7 +26,7 @@ type stubAdapter struct {
 	screenshot        func(id string) ([]byte, error)
 	listApps          func(id string) ([]device.AppInfo, error)
 	resolveExecutable func(id, bundle string) (string, bool, error)
-	launchApp         func(id, bundle string) error
+	launchApp         func(id, bundle string, env map[string]string) error
 	terminateApp      func(id, bundle string) error
 	rotate            func(id, orientation string) error
 	crashes           func(id string, since time.Time, process string) ([]device.CrashReport, error)
@@ -71,11 +71,11 @@ func (s *stubAdapter) ResolveExecutable(id, bundle string) (string, bool, error)
 	}
 	return s.resolveExecutable(id, bundle)
 }
-func (s *stubAdapter) LaunchApp(id, bundle string) error {
+func (s *stubAdapter) LaunchApp(id, bundle string, env map[string]string) error {
 	if s.launchApp == nil {
 		return nil
 	}
-	return s.launchApp(id, bundle)
+	return s.launchApp(id, bundle, env)
 }
 func (s *stubAdapter) TerminateApp(id, bundle string) error {
 	if s.terminateApp == nil {
@@ -370,7 +370,7 @@ func TestHandleListApps(t *testing.T) {
 
 func TestHandleLaunchApp_IOS(t *testing.T) {
 	calls := 0
-	ios := &stubAdapter{launchApp: func(id, bundle string) error {
+	ios := &stubAdapter{launchApp: func(id, bundle string, env map[string]string) error {
 		calls++
 		return nil
 	}}
@@ -386,7 +386,7 @@ func TestHandleLaunchApp_IOS(t *testing.T) {
 
 func TestHandleLaunchApp_Android(t *testing.T) {
 	calls := 0
-	android := &stubAdapter{launchApp: func(id, bundle string) error {
+	android := &stubAdapter{launchApp: func(id, bundle string, env map[string]string) error {
 		calls++
 		return nil
 	}}
@@ -397,6 +397,72 @@ func TestHandleLaunchApp_Android(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("LaunchApp calls = %d; want 1", calls)
+	}
+}
+
+// launch_app's optional env map is forwarded verbatim to the adapter.
+// Non-string values are stringified by optStringMap.
+func TestHandleLaunchApp_EnvPassthrough(t *testing.T) {
+	var got map[string]string
+	ios := &stubAdapter{launchApp: func(id, bundle string, env map[string]string) error {
+		got = env
+		return nil
+	}}
+	h := newHandlerWithStubs(t, ios, nil)
+	r := dispatchJSON(t, h, "launch_app", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.foo",
+		"env": map[string]any{
+			"LOG_TARGET":  "192.168.1.42:9999",
+			"FEATURE_X":   "on",
+			"NUMERIC_VAL": 42,
+		},
+	})
+	if r.IsError {
+		t.Fatalf("launch_app with env should succeed; body=%s", resultText(t, &r))
+	}
+	if got["LOG_TARGET"] != "192.168.1.42:9999" {
+		t.Errorf("LOG_TARGET = %q; want 192.168.1.42:9999", got["LOG_TARGET"])
+	}
+	if got["FEATURE_X"] != "on" {
+		t.Errorf("FEATURE_X = %q; want on", got["FEATURE_X"])
+	}
+	if got["NUMERIC_VAL"] != "42" {
+		t.Errorf("NUMERIC_VAL = %q; want 42 (stringified)", got["NUMERIC_VAL"])
+	}
+}
+
+// deploy_app's env map is forwarded to the launch step.
+func TestHandleDeployApp_EnvPassthroughToLaunch(t *testing.T) {
+	tmp := t.TempDir()
+	appPath := filepath.Join(tmp, "MultiMaze.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	plist := filepath.Join(appPath, "Info.plist")
+	if err := os.WriteFile(plist, []byte("<?xml version=\"1.0\"?><plist><dict><key>CFBundleIdentifier</key><string>com.example.app</string></dict></plist>"), 0o644); err != nil {
+		t.Fatalf("write plist: %v", err)
+	}
+
+	var launchEnv map[string]string
+	ios := &stubAdapter{
+		launchApp:    func(id, bundle string, env map[string]string) error { launchEnv = env; return nil },
+		terminateApp: func(id, bundle string) error { return nil },
+		installApp:   func(id, path string) error { return nil },
+		appPID:       func(id, bundle string) (int, error) { return 1234, nil },
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device":    "iPad",
+		"path":      appPath,
+		"bundle_id": "com.example.app",
+		"env":       map[string]any{"LOG_TARGET": "host:9999"},
+	})
+	if r.IsError {
+		t.Fatalf("deploy_app should succeed; body=%s", resultText(t, &r))
+	}
+	if launchEnv["LOG_TARGET"] != "host:9999" {
+		t.Errorf("launch step env LOG_TARGET = %q; want host:9999", launchEnv["LOG_TARGET"])
 	}
 }
 
@@ -543,7 +609,7 @@ func TestHandleDeployApp_Success(t *testing.T) {
 			installCalled = true
 			return nil
 		},
-		launchApp: func(id, bundle string) error {
+		launchApp: func(id, bundle string, env map[string]string) error {
 			launchCalled = true
 			return nil
 		},
@@ -585,7 +651,7 @@ func TestHandleDeployApp_InstallFailFast(t *testing.T) {
 	ios := &stubAdapter{
 		terminateApp: func(id, bundle string) error { return nil },
 		installApp:   func(id, path string) error { return errors.New("install failed: disk full") },
-		launchApp: func(id, bundle string) error {
+		launchApp: func(id, bundle string, env map[string]string) error {
 			launchCalled = true
 			return nil
 		},

@@ -40,7 +40,7 @@ func TestAndroidLaunchTerminateCycle_Live(t *testing.T) {
 	_ = a.TerminateApp(serial, pkg)
 	time.Sleep(500 * time.Millisecond)
 
-	if err := a.LaunchApp(serial, pkg); err != nil {
+	if err := a.LaunchApp(serial, pkg, nil); err != nil {
 		t.Fatalf("LaunchApp(%s, %s): %v", serial, pkg, err)
 	}
 	// AppPID may take a moment to settle as the process starts.
