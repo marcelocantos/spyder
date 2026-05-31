@@ -46,8 +46,17 @@ func (a *SimulatorAdapter) ListApps(id string) ([]AppInfo, error) {
 	return nil, errors.New("simctl: ListApps() not yet implemented for simulators")
 }
 
-func (a *SimulatorAdapter) LaunchApp(id, bundleID string) error {
-	out, err := exec.Command("xcrun", "simctl", "launch", id, bundleID).CombinedOutput()
+func (a *SimulatorAdapter) LaunchApp(id, bundleID string, env map[string]string) error {
+	cmd := exec.Command("xcrun", "simctl", "launch", id, bundleID)
+	if len(env) > 0 {
+		// simctl forwards SIMCTL_CHILD_<KEY>=<VALUE> entries from its
+		// own environment to the launched process as <KEY>=<VALUE>.
+		cmd.Env = os.Environ()
+		for k, v := range env {
+			cmd.Env = append(cmd.Env, "SIMCTL_CHILD_"+k+"="+v)
+		}
+	}
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("simctl launch: %w\n%s", err, truncate(string(out), 200))
 	}

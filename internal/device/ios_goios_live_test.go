@@ -111,7 +111,7 @@ func TestLogRangeThirdPartyApp_Live(t *testing.T) {
 		// Cold-start the named app.
 		_ = adapter.TerminateApp(udid, bundleID)
 		time.Sleep(250 * time.Millisecond)
-		if err := adapter.LaunchApp(udid, bundleID); err != nil {
+		if err := adapter.LaunchApp(udid, bundleID, nil); err != nil {
 			t.Fatalf("LaunchApp(%s): %v", bundleID, err)
 		}
 	} else {
@@ -136,7 +136,7 @@ func TestLogRangeThirdPartyApp_Live(t *testing.T) {
 			// most reliable signal a quiescent app produces.
 			_ = adapter.TerminateApp(udid, a.BundleID)
 			time.Sleep(250 * time.Millisecond)
-			if launchErr := adapter.LaunchApp(udid, a.BundleID); launchErr != nil {
+			if launchErr := adapter.LaunchApp(udid, a.BundleID, nil); launchErr != nil {
 				t.Logf("candidate %s did not launch: %v; trying next", a.BundleID, launchErr)
 				continue
 			}

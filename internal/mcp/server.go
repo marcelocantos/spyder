@@ -429,7 +429,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("launch_app",
-			mcpgo.WithDescription("Foreground an app by bundle id. iOS uses the in-process go-ios `appservice` launch (requires the bundled tunnel); Android uses adb monkey with the LAUNCHER intent. Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithDescription("Foreground an app by bundle id. iOS uses the in-process go-ios `appservice` launch (requires the bundled tunnel); Android uses adb monkey with the LAUNCHER intent (or `am start` when env is supplied); iOS simulators use `xcrun simctl launch`. Strictly enforced: rejects if the device is reserved by a different owner.\n\nOptional `env` map sets environment variables for the launched process. On iOS the values become the process environment (readable via `getenv()`); on iOS simulators they're forwarded via `SIMCTL_CHILD_<KEY>=<VALUE>`; on Android they're passed as Intent string-extras and the app's Java/Kotlin shim must extract them and call `setenv()` before native code runs (see agents-guide.md for the shim pattern). The conventional key for dev-time network logging is `LOG_TARGET=host:port` — apps that opt in install a TCP log sink targeting that address."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -440,6 +440,9 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
+			mcpgo.WithObject("env",
+				mcpgo.Description("Optional environment variables to inject into the launched app process. Keys and values are strings (non-string values are stringified). Convention: `LOG_TARGET=host:port` enables the dev-time TCP log sink in apps that support it."),
 			),
 		),
 
@@ -501,7 +504,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("deploy_app",
-			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid} on success. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid} on success. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -515,6 +518,9 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
+			),
+			mcpgo.WithObject("env",
+				mcpgo.Description("Optional environment variables to inject into the launched app process. Same semantics as `launch_app`'s `env`. Convention: `LOG_TARGET=host:port` enables the dev-time TCP log sink."),
 			),
 		),
 

@@ -519,7 +519,7 @@ func (a *IOSAdapter) ResolveExecutable(id, bundleID string) (string, bool, error
 // (com.apple.coredevice.feature.launchapplication, the iOS-17+
 // CoreDevice launch path). The pid the launch returns is currently
 // discarded — callers that need it call AppPID after.
-func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
+func (a *IOSAdapter) LaunchApp(id, bundleID string, env map[string]string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
@@ -529,7 +529,14 @@ func (a *IOSAdapter) LaunchApp(id, bundleID string) error {
 		return fmt.Errorf("appservice on %s: %w", id, err)
 	}
 	defer release()
-	if _, err := conn.LaunchApp(bundleID, nil, nil, nil, false); err != nil {
+	var envArg map[string]interface{}
+	if len(env) > 0 {
+		envArg = make(map[string]interface{}, len(env))
+		for k, v := range env {
+			envArg[k] = v
+		}
+	}
+	if _, err := conn.LaunchApp(bundleID, nil, envArg, nil, false); err != nil {
 		// Map "app not installed"-shaped errors to the spyder convention.
 		msg := err.Error()
 		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {

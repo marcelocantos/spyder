@@ -33,7 +33,9 @@ func (s *stubStreamAdapter) ListApps(id string) ([]device.AppInfo, error) { retu
 func (s *stubStreamAdapter) ResolveExecutable(id, b string) (string, bool, error) {
 	return b, true, nil
 }
-func (s *stubStreamAdapter) LaunchApp(id, b string) error     { return nil }
+func (s *stubStreamAdapter) LaunchApp(id, b string, env map[string]string) error {
+	return nil
+}
 func (s *stubStreamAdapter) TerminateApp(id, b string) error  { return nil }
 func (s *stubStreamAdapter) InstallApp(id, p string) error    { return nil }
 func (s *stubStreamAdapter) UninstallApp(id, b string) error  { return nil }

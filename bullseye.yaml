@@ -2566,6 +2566,43 @@ targets:
     - live
     origin: subdivide(🎯T72)
     discovered: 2026-05-24
+  T73:
+    name: launch_app and deploy_app forward an env map to the launched app process on iOS and Android
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'MCP `launch_app` accepts an optional `env: {KEY: VALUE, ...}` map argument.'
+    - MCP `deploy_app` accepts the same and forwards it to the launch step.
+    - REST `/api/v1/launch_app` and `/api/v1/deploy_app` accept the same parameter.
+    - iOS adapter passes env through go-ios `appservice.LaunchApp`'s env parameter; the app sees the keys via `getenv()`.
+    - Android adapter forwards env entries via `am start -e KEY VALUE` (Intent extras). A documented helper pattern in agents-guide.md shows how the app's Java/Kotlin shim reads the extras and calls `setenv()` in JNI before `SDL_main` runs.
+    - Unit tests assert env passthrough on both iOS and Android handlers (mock adapters; no live device needed).
+    - A live test (gated on `SPYDER_LIVE_UDID`/`SPYDER_LIVE_ANDROID_SERIAL`) launches an app with a known env var and verifies the app observes it (e.g. echoes it to a log line or a file, captured back).
+    - agents-guide.md documents `LOG_TARGET=host:port` as a convention — apps that opt in (see the ge network-sink target) install a network log sink targeting this address. The env name is convention only and is not owned by spyder; spyder itself treats the env map as opaque key/value pairs.
+    context: |-
+      Filed 2026-05-31 after multimaze2 / ge debugging on Jevons (iPad mini A17 Pro) showed that iOS unified logging is unreliable enough as a developer's primary diagnostic channel that consumers need an escape hatch. The escape hatch (network TCP sink in the app — see paired ge target) needs a way to be configured at deploy time without source edits. The natural fit is a per-launch env var passed through to the app process.
+
+      iOS supports this cleanly today: go-ios's appservice.LaunchApp accepts an env map[string]string parameter that becomes the launched process environment, readable via plain getenv(). The mechanism is the same one Xcode's "Scheme → Arguments → Environment Variables" uses.
+
+      Android is the awkward sibling: adb shell am start passes Intent extras, not env vars. The app must extract the extra and setenv() it into native code before the C++ entry point runs. Documenting the standard shim pattern (Java/Kotlin activity reads extra, JNI helper sets env, then SDL_main fires) is part of the deliverable.
+
+      Generic env passthrough is the deliberately-narrow surface: spyder doesn't need to know about log targets specifically. Apps that opt into the LOG_TARGET convention get network logging; apps that want to pass other env vars (feature flags, dev sandbox markers, test fixture identifiers) get them for free. Resist the temptation to grow this into a fuller "launch options" schema (working directory, signal handlers, etc.) — narrow start, expand only on concrete demand. Aligns with [[feedback_minimal_client_api]].
+
+      LOG_TARGET (not SPYDER_LOG_TARGET, not GE_LOG_TARGET): the env var is convention-shared between any tool that injects it and any library that reads it; namespacing it to either side gets the ownership wrong.
+
+      Paired with the ge network-sink target for the consumer side; either can land first.
+    tags:
+    - mcp
+    - launch
+    - env-passthrough
+    - ios
+    - android
+    - dev-experience
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-05-31
+    achieved: 2026-05-31
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved

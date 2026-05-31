@@ -258,22 +258,42 @@ func (a *AndroidAdapter) ResolveExecutable(id, bundleID string) (string, bool, e
 	return "", false, nil
 }
 
-// LaunchApp foregrounds an app via `adb shell monkey -p <pkg> -c LAUNCHER 1`.
-func (a *AndroidAdapter) LaunchApp(id, bundleID string) error {
+// LaunchApp foregrounds an app. With no env, uses `adb shell monkey -p
+// <pkg> -c LAUNCHER 1`. With env, switches to `adb shell am start -a
+// MAIN -c LAUNCHER -p <pkg> --es KEY VALUE ...` so the values arrive as
+// Intent string-extras — the app's Java/Kotlin shim is expected to
+// extract them in onCreate() and setenv() before native code runs (see
+// agents-guide.md for the standard shim pattern).
+func (a *AndroidAdapter) LaunchApp(id, bundleID string, env map[string]string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	out, stderr, err := runCapture("adb", "-s", id, "shell", "monkey", "-p", bundleID, "-c", "android.intent.category.LAUNCHER", "1")
+	var args []string
+	if len(env) == 0 {
+		args = []string{"-s", id, "shell", "monkey", "-p", bundleID, "-c", "android.intent.category.LAUNCHER", "1"}
+	} else {
+		args = []string{
+			"-s", id, "shell", "am", "start",
+			"-a", "android.intent.action.MAIN",
+			"-c", "android.intent.category.LAUNCHER",
+			"-p", bundleID,
+		}
+		for k, v := range env {
+			args = append(args, "--es", k, v)
+		}
+	}
+	out, stderr, err := runCapture("adb", args...)
 	combined := string(stderr) + " " + string(out)
 	if isAndroidDeviceNotConnected(combined) {
 		return fmt.Errorf("device not connected: %s", id)
 	}
 	if strings.Contains(strings.ToLower(combined), "no activities found") ||
-		strings.Contains(strings.ToLower(combined), "no packages found") {
+		strings.Contains(strings.ToLower(combined), "no packages found") ||
+		strings.Contains(strings.ToLower(combined), "does not exist") {
 		return fmt.Errorf("app not installed or has no launcher activity: %s", bundleID)
 	}
 	if err != nil {
-		return fmt.Errorf("adb monkey: %v\n%s", err, truncate(string(stderr), 200))
+		return fmt.Errorf("adb start: %v\n%s", err, truncate(string(stderr), 200))
 	}
 	return nil
 }

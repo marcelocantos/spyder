@@ -241,7 +241,7 @@ func TestHandleLogs_SinceLaunch(t *testing.T) {
 			capturedSince = since
 			return nil, nil
 		},
-		launchApp: func(id, bundle string) error { return nil },
+		launchApp: func(id, bundle string, env map[string]string) error { return nil },
 	}
 	h := newHandlerWithStubs(t, ios, nil)
 

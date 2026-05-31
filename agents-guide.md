@@ -103,12 +103,12 @@ everything it can see.
 | `device_state` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
 | `screenshot` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService` (needs tunnel); Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
 | `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
-| `launch_app` | Foreground an arbitrary app by bundle id. | iOS uses go-ios's `appservice.LaunchApp` (CoreDevice launch path, needs tunnel); Android uses `adb monkey -c LAUNCHER`. |
+| `launch_app` | Foreground an arbitrary app by bundle id. Optional `env: {KEY: VALUE, ...}` map injects environment variables into the launched process — see "Launching with env" below. | iOS uses go-ios's `appservice.LaunchApp` (CoreDevice launch path, needs tunnel); Android uses `adb monkey -c LAUNCHER` (no env) or `am start --es KEY VALUE` (with env). |
 | `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
 | `rotate` | Rotate an iOS simulator or Android emulator to a named orientation. Physical iOS/Android devices return a clear error. | Orientations: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. iOS uses `xcrun simctl io <udid> rotate`; Android uses `adb emu rotate` (driven N times to reach the target). |
 | `install_app` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | iOS: `xcrun devicectl device install app`; Android: `adb install -r`. |
 | `uninstall_app` | Remove an app by bundle id / package name. | iOS: `xcrun devicectl device uninstall app --bundle-identifier`; Android: `adb uninstall`. |
-| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
+| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. Optional `env` map forwarded to the launch step — see "Launching with env" below. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
 | `reserve` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Also stops any active recording owned by the releaser. |
 | `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Any applied network profile is cleared automatically. |
@@ -132,6 +132,103 @@ everything it can see.
 | `pool_list` | Current pool state for all templates (available/running/reserved counts per template). | Read-only. Pool must be configured via `~/.spyder/pool.yaml`. |
 | `pool_warm` | Force pre-boot N additional instances for a template. | `{template, count}`. Moves instances from available to running tier. |
 | `pool_drain` | Shut down and delete all idle instances for a template. | `{template}`. Reserved instances are terminated first. |
+
+## Launching with env
+
+Both `launch_app` and `deploy_app` accept an optional `env` map that
+forwards environment variables to the launched app process. Useful for
+runtime configuration that shouldn't be baked into the binary —
+debug-feature flags, sandbox markers, and (the motivating use case)
+network log targets.
+
+The map is plain JSON `{string: string}` — non-string values are
+coerced via `fmt.Sprintf("%v", ...)`:
+
+```json
+{
+  "name": "deploy_app",
+  "arguments": {
+    "device": "Jevons",
+    "path": "/path/to/MyApp.app",
+    "env": {
+      "LOG_TARGET": "192.168.1.42:9999",
+      "FEATURE_FLAG_X": "on"
+    }
+  }
+}
+```
+
+The `env` parameter is a generic mechanism — spyder doesn't know what
+the keys mean. Apps decide which env vars they read. By convention,
+apps that ship a dev-time TCP log sink (see ge's `LOG_TARGET` wiring)
+honour the key `LOG_TARGET=host:port` to enable streaming logs to a
+host running `nc -l <port>`. That's the only convention spyder
+documents; everything else is between you and your app.
+
+### Per-platform delivery
+
+| Platform | Delivery | Pickup |
+|---|---|---|
+| **iOS device** | go-ios `appservice.LaunchApp` passes the map as the launched process environment. | Standard `getenv("KEY")` in the app. No app-side shim required. |
+| **iOS simulator** | `xcrun simctl launch` reads `SIMCTL_CHILD_<KEY>=<VALUE>` entries from its own environment and exposes them as `<KEY>=<VALUE>` to the simulated app. spyder builds these from the `env` map. | Standard `getenv("KEY")`. |
+| **Android (device or emulator)** | `adb shell am start --es KEY VALUE ...` passes the entries as Intent string-extras. Spyder switches from `monkey` to `am start` whenever `env` is non-empty. | The app's Java/Kotlin shim must extract the extras in `onCreate()` and call `setenv()` via JNI before native code runs — see the shim pattern below. |
+
+### Android shim pattern
+
+Android Intent extras aren't environment variables; the app has to
+transcribe them. The standard pattern in `MainActivity.java` /
+`MainActivity.kt` plus a small JNI helper:
+
+```java
+// MainActivity.java
+@Override
+protected void onCreate(Bundle savedInstanceState) {
+    super.onCreate(savedInstanceState);
+
+    Intent intent = getIntent();
+    Bundle extras = intent.getExtras();
+    if (extras != null) {
+        for (String key : extras.keySet()) {
+            Object value = extras.get(key);
+            if (value instanceof String) {
+                nativeSetenv(key, (String) value);
+            }
+        }
+    }
+    // SDLActivity.super.onCreate() or equivalent comes after.
+}
+
+private static native void nativeSetenv(String key, String value);
+```
+
+```c
+// jni/setenv.c
+#include <jni.h>
+#include <stdlib.h>
+
+JNIEXPORT void JNICALL
+Java_com_example_app_MainActivity_nativeSetenv(
+    JNIEnv* env, jclass cls, jstring key, jstring value) {
+    const char* k = (*env)->GetStringUTFChars(env, key, NULL);
+    const char* v = (*env)->GetStringUTFChars(env, value, NULL);
+    setenv(k, v, 1);
+    (*env)->ReleaseStringUTFChars(env, key, k);
+    (*env)->ReleaseStringUTFChars(env, value, v);
+}
+```
+
+Now `getenv("LOG_TARGET")` from native code returns the expected value
+on Android the same way it does on iOS and the desktop. The shim is
+~20 lines and lives in the app, not in spyder or ge — spyder doesn't
+have an Android side of itself to inject the shim into.
+
+### REST equivalent
+
+```sh
+curl -s -X POST http://127.0.0.1:3030/api/v1/deploy_app \
+  -H 'Content-Type: application/json' \
+  -d '{"device":"Jevons","path":"/path/to/MyApp.app","env":{"LOG_TARGET":"192.168.1.42:9999"}}'
+```
 
 ## Sim/emu pool
 
