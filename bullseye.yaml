@@ -2642,7 +2642,7 @@ targets:
     discovered: 2026-06-01
   T75:
     name: Bidirectional MessagePack RPC channel between spyder and apps — first slice
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2683,9 +2683,10 @@ targets:
     - surfaced-by:multimaze2
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.1:
     name: Framing + RPC envelope — length-prefixed MessagePack with {id, method, params}/{id, result|error}
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2710,9 +2711,10 @@ targets:
     - foundation
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.10:
     name: '`backgrounded` / `foregrounded` — fire platform lifecycle notifications without touching device focus'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2737,9 +2739,10 @@ targets:
     - android
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.11:
     name: '`perf_counters` push — app streams periodic key/value samples (frame time, allocations, custom metrics)'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2762,9 +2765,10 @@ targets:
     - instruments-replacement
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.12:
     name: '`screenshot_app` — app returns PNG of its own framebuffer over the channel'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2785,9 +2789,10 @@ targets:
     - orthogonal-path
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.13:
     name: '`low_memory_warning` — fire synthetic memory-pressure signal'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2811,9 +2816,10 @@ targets:
     - lifecycle
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.14:
     name: '`save_state` / `restore_state` — serialize and load app state for deterministic replay across builds'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2838,9 +2844,10 @@ targets:
     - regression-testing
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.2:
     name: '`hello` handshake — app advertises name, version, supported methods'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2860,9 +2867,10 @@ targets:
     - capabilities
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.3:
     name: '`ping` — liveness check and channel warmup'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2882,9 +2890,10 @@ targets:
     - ping
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.4:
     name: '`log` push — structured log emission replaces the v0.51 line-text channel'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2906,9 +2915,10 @@ targets:
     - messagepack
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.5:
     name: '`quit` — clean app shutdown via SDL_QUIT path, no macOS crash notification'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2932,9 +2942,10 @@ targets:
     - user-pain
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.6:
     name: '`input_inject` — synthetic SDL events (tap, key, accelerometer) from spyder into the app''s event loop'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2958,9 +2969,10 @@ targets:
     - agent-driving
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.7:
     name: '`state_query` — request named slices of app state as MessagePack blobs'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -2983,9 +2995,10 @@ targets:
     - agent-driving
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.8:
     name: Time control — `pause`, `resume`, `step`, `speed` methods drive the app's main loop
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3012,9 +3025,10 @@ targets:
     - game-loop
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T75.9:
     name: '`flush` — drain pending output (log queue, persistence) and ack when done'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3035,6 +3049,7 @@ targets:
     - graceful-ops
     origin: manual
     discovered: 2026-06-01
+    achieved: 2026-06-01
   T76:
     name: Bidirectional MessagePack RPC channel — deferred extensions
     status: identified
