@@ -33,18 +33,20 @@ func TestStartGetStop_RoundTrip(t *testing.T) {
 	}
 	_ = conn.Close()
 
-	// Wait briefly for the reader to drain the lines.
-	deadline := time.Now().Add(time.Second)
-	var r *GetResult
+	// Wait for all three lines to land in the buffer *before* draining
+	// — polling Get itself would drain the buffer between checks and
+	// cause spurious failures on slower runners.
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		r, err = m.Get(sess.ID)
-		if err != nil {
-			t.Fatalf("Get: %v", err)
-		}
-		if len(r.Lines) == 3 {
+		info := m.List()
+		if len(info) > 0 && info[0].BufferLines == 3 {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	r, err := m.Get(sess.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
 	}
 
 	if len(r.Lines) != 3 {
