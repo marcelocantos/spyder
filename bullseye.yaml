@@ -2640,6 +2640,592 @@ targets:
     - surfaced-by:multimaze2
     origin: manual
     discovered: 2026-06-01
+  T75:
+    name: Bidirectional MessagePack RPC channel between spyder and apps — first slice
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - All sub-targets (T75.1–T75.14) achieved.
+    - An app linked against ge (or a minimal smoke-test client under testdata/) connects to spyder over TCP on a port opened by log_collect_start, completes the `hello` handshake, and successfully services every method in the v1 slice.
+    - 'agents-guide.md documents: the framing protocol (length-prefixed MessagePack), the RPC envelope ({id, method, params} / {id, result|error}), the v1 method set, and the corresponding MCP tools spyder exposes per method (e.g. `app_quit`, `app_input`, `app_state`, …).'
+    - MessagePack `bin` payloads (screenshots, perf-counter blobs) round-trip cleanly; no base64 in the protocol.
+    context: |-
+      The TCP channel introduced in spyder v0.51 (log_collect_*) carries text logs in one direction. Promoting it to a structured, bidirectional, MessagePack-framed RPC channel turns spyder into an orchestrator of *running apps* — not just devices.
+
+      The v1 slice covers everything in the high-value-per-unit-complexity bracket: protocol foundation (T75.1–T75.3), lifecycle control (T75.5 quit / T75.9 flush / T75.10 lifecycle / T75.13 memory pressure), input and state visibility (T75.6 input / T75.7 state / T75.8 time control), and the capture set (T75.4 logs / T75.11 perf / T75.12 screenshots / T75.14 state save). All of these are app-side surfaces in the tens-of-lines range; spyder-side each adds one MCP tool plus a method registration.
+
+      Pairs with ge T83 (the LOG_TARGET sink). The TCP channel uses the same env-passthrough mechanism (spyder T73) to communicate the host:port the app should dial.
+
+      Deferred follow-ons (auth, multi-client, scripting, hot-reload, test events, file push, pub/sub) collected under T76.
+    depends_on:
+    - T75.1
+    - T75.2
+    - T75.3
+    - T75.4
+    - T75.5
+    - T75.6
+    - T75.7
+    - T75.8
+    - T75.9
+    - T75.10
+    - T75.11
+    - T75.12
+    - T75.13
+    - T75.14
+    tags:
+    - mcp
+    - rpc
+    - messagepack
+    - tcp
+    - bidirectional
+    - umbrella
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-06-01
+  T75.1:
+    name: Framing + RPC envelope — length-prefixed MessagePack with {id, method, params}/{id, result|error}
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Wire frame is `[4-byte LE length] [MessagePack bytes]`; reader rejects frames > a configurable max (default 16 MB) without crashing.
+    - 'Request envelope: `{id: uint, method: str, params: any}`. Response envelope: `{id: uint, result: any}` or `{id: uint, error: {code: int, message: str, data?: any}}`.'
+    - 'Spyder-side: an RPC dispatcher routes method names to registered handlers and matches responses to in-flight requests by id (timeout configurable per-call, default 30s).'
+    - 'App-side reference implementation in C++ (ge or a minimal client under spyder testdata/) demonstrates: connect, send request, receive response, handle async push.'
+    - 'Unit tests cover: length-prefix boundary conditions, oversized-frame rejection, malformed-MessagePack handling, unknown-method error, duplicate-id rejection.'
+    context: |-
+      The protocol foundation. Every other T75.x method rides on this — the framing + envelope + dispatcher trio are non-negotiable prerequisites. Get the framing right once and the next 13 methods become same-day additions.
+
+      Design notes from the discussion:
+      - MessagePack chosen for native binary support (no base64 for screenshots/perf blobs).
+      - Length-prefix rather than delimiter (binary bytes can contain any byte, no usable terminator).
+      - JSON-RPC-shaped envelope: familiar, well-known semantics for request/response/error, plus async server-push messages by omitting `id`.
+
+      Pairs with [[T75]] (parent).
+    tags:
+    - protocol
+    - framing
+    - rpc
+    - foundation
+    origin: manual
+    discovered: 2026-06-01
+  T75.10:
+    name: '`backgrounded` / `foregrounded` — fire platform lifecycle notifications without touching device focus'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `backgrounded` triggers the app''s own background-transition path (iOS: `applicationDidEnterBackground` analog; Android: `onPause` + `onStop`). Same for `foregrounded` (the inverse).'
+    - App responds when the transition completes (or with a structured error if it can't initiate).
+    - Spyder MCP tools `app_background`, `app_foreground` expose these.
+    - 'Verified: state-restoration paths (e.g. save→restore on background→foreground cycle) can be exercised without home-button heroics or `xcrun simctl` foregrounding tricks.'
+    context: |-
+      Lifecycle simulation. Useful for testing state-restoration paths that hardly ever run in routine dev: serializing on background, restoring on foreground, handling the resumption-after-N-minutes-asleep case.
+
+      App-side: post the platform notification, let the existing handlers do their work. Spyder-side: one MCP tool per direction.
+
+      Pairs with [[T75.1]], [[T75.2]].
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - lifecycle
+    - background
+    - foreground
+    - ios
+    - android
+    origin: manual
+    discovered: 2026-06-01
+  T75.11:
+    name: '`perf_counters` push — app streams periodic key/value samples (frame time, allocations, custom metrics)'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'App emits `perf` push messages (no `id`) at a configurable cadence (default 1s) with params `{ts, samples: {name: number}}`. Spyder buffers samples in a bounded ring per session.'
+    - Spyder MCP tool `app_perf_get` returns samples since last call (or since start), with windowed summaries (min/max/avg/p50/p95/p99) computed server-side.
+    - 'App-side surface: a `perf_emit(name, value)` helper apps call from anywhere; sampler thread batches and pushes on cadence.'
+    - ge ships frame-time and allocation-count counters by default; apps add custom counters with one line.
+    context: |-
+      Live performance telemetry without Instruments. The kind of question \"what's the p99 frame time on this build vs the previous?\" stops needing Xcode + manual export and becomes a single MCP call.
+
+      Schema deliberately loose (key/value pairs); apps emit whatever they want, spyder buffers and aggregates generically. Tighter schemas can come later if needed.
+
+      Pairs with [[T75.1]] (the channel), [[T75.4]] (similar async-push shape).
+    depends_on:
+    - T75.1
+    tags:
+    - perf
+    - telemetry
+    - metrics
+    - instruments-replacement
+    origin: manual
+    discovered: 2026-06-01
+  T75.12:
+    name: '`screenshot_app` — app returns PNG of its own framebuffer over the channel'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `screenshot_app` triggers framebuffer readback. App responds with `{format: "png", width, height, data: <bin>}` — `data` is MessagePack `bin`, not base64.'
+    - Spyder MCP tool `app_screenshot` (distinct from the existing DTX-based `screenshot`) routes through the RPC channel.
+    - 'App-side: platform-specific readback (Metal MTLBlitCommandEncoder for iOS/macOS, glReadPixels for GLES on Android) + PNG encode (existing ge dependency).'
+    - 'Verified: latency comparable to or better than DTX `screenshot` on iOS device; works when DTX is wedged (validates the orthogonal-path claim).'
+    context: |-
+      App-side capture as a sibling tool to the existing OS-path screenshot, not a replacement. Wins where the OS path falls short: deterministic state-correlated capture (\"screenshot exactly when game-state == X\"), high-frequency burst, capture filtered to the app's own surface (no system UI), and crucially — works when the DTX/tunnel path is wedged.
+
+      Pairs with [[T75.1]] (binary-payload framing).
+    depends_on:
+    - T75.1
+    tags:
+    - screenshot
+    - framebuffer
+    - messagepack-binary
+    - orthogonal-path
+    origin: manual
+    discovered: 2026-06-01
+  T75.13:
+    name: '`low_memory_warning` — fire synthetic memory-pressure signal'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `low_memory_warning` posts the platform memory-warning notification (iOS: `UIApplicationDidReceiveMemoryWarningNotification`; Android: `onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL)`).'
+    - App responds when the notification has been dispatched (not necessarily when caches have actually freed).
+    - Spyder MCP tool `app_low_memory` exposes this.
+    - 'Verified: ge''s resource caches (texture pool, sprite atlas) clear in response, freeable memory drops measurably.'
+    context: |-
+      Stress-test the cleanup paths that hardly ever run in dev. Memory-warning handlers are notoriously under-exercised — most devs only find out theirs is broken when the App Store reviewer's iPad with 200 background apps reproduces it.
+
+      Tiny app-side cost: one platform call. Pairs with [[T75.7]] (state_query before/after to verify caches actually freed).
+
+      Pairs with [[T75.1]], [[T75.2]].
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - memory
+    - low-memory-warning
+    - stress-test
+    - lifecycle
+    origin: manual
+    discovered: 2026-06-01
+  T75.14:
+    name: '`save_state` / `restore_state` — serialize and load app state for deterministic replay across builds'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `save_state` returns `{state: <bin>}` — opaque MessagePack blob the app produces.'
+    - 'Spyder→app `restore_state` with `{state: <bin>}` restores the app''s internal state from a previously-saved blob.'
+    - Spyder MCP tools `app_save_state` and `app_restore_state` expose these; spyder optionally stashes the blob in the active run-artefact bundle for later replay.
+    - 'Round-trip verified: save→restore on the same build reproduces identical state (verified via state_query). Cross-build save→restore documents a clear failure mode when schemas diverge (versioned blob header, explicit error on mismatch).'
+    - 'App-side: implementation is per-app and per-feature; ge ships a minimal scaffolding for tiltbuggy/multimaze2 — marble position, level index, score — as the proving ground.'
+    context: |-
+      Foundation for actual game-state regression testing. Not visual diff, not log diff — \"do these two builds reach the same state from the same inputs?\" Combined with input recording (T75.6 captured), gives full deterministic replay of a bug against tomorrow's build.
+
+      High app-side cost: the app has to define and implement a full state-serialization story. That's why this lands in the v1 slice but explicitly with scaffolding only, not a complete state-coverage commitment. Real coverage grows as features get added to the persisted set.
+
+      Pairs with [[T75.1]] (binary payloads), [[T75.6]] (input replay), [[T75.7]] (state introspection for verification).
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - save-state
+    - restore-state
+    - deterministic-replay
+    - regression-testing
+    origin: manual
+    discovered: 2026-06-01
+  T75.2:
+    name: '`hello` handshake — app advertises name, version, supported methods'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'First app→spyder message on a new connection is `hello` with params `{app_name, app_version, methods: [str]}`.'
+    - 'Spyder responds with `{spyder_version, accepted_methods: [str]}` (subset of what spyder knows how to call).'
+    - Spyder MCP tools that depend on an unsupported method return a structured 'app does not support X' error rather than hanging or returning a generic timeout.
+    - Handshake completes within 1s of connect; missing/malformed hello fails the connection with a clear error in spyder logs.
+    context: |-
+      Capability negotiation. Spyder needs to know what the connected app supports so it can offer the correct MCP-tool surface per app and gracefully degrade against older builds. The methods list grows organically as T75.5–T75.14 land; older apps simply omit methods they don't implement.
+
+      Pairs with [[T75.1]] (depends on framing).
+    depends_on:
+    - T75.1
+    tags:
+    - protocol
+    - handshake
+    - capabilities
+    origin: manual
+    discovered: 2026-06-01
+  T75.3:
+    name: '`ping` — liveness check and channel warmup'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `ping` returns `{ts: server-arrival-timestamp}` immediately.'
+    - Spyder marks the channel dead and tears down the session if N consecutive pings (configurable, default 3) time out at T (configurable, default 5s).
+    - MCP tool `app_ping` exposes a one-shot ping for explicit liveness checks from the agent.
+    context: |-
+      Trivial primitive that subsumes most "is the app still alive" logic. Also a useful first-method to validate the framing+handshake+dispatch path end-to-end before adding any substantive method.
+
+      Pairs with [[T75.1]], [[T75.2]] (foundation).
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - protocol
+    - liveness
+    - ping
+    origin: manual
+    discovered: 2026-06-01
+  T75.4:
+    name: '`log` push — structured log emission replaces the v0.51 line-text channel'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - App emits log lines as `log` push messages (no `id`, app→spyder direction) with params `{ts, level, subsystem?, format, args}` — server-side filtering on level/subsystem becomes structured, not regex.
+    - ge's NetworkLogSink reframes its spdlog payload as MessagePack `log` messages when LOG_TARGET points at a spyder log_collect listener (and the listener advertises MessagePack support in its hello).
+    - 'Backwards-compat: spyder log_collect listeners still accept raw line-text on the same port for apps that haven''t been reframed yet; the listener sniffs the first bytes to distinguish.'
+    - log_collect_get / _stop return both raw-text and structured-log lines in the same response, distinguishable by an `event_type` field.
+    context: |-
+      Reframes the v0.51 newline-text channel as a typed message on the bidirectional protocol. Apps that adopt the RPC channel get structured logs for free — level, subsystem, and (eventually) format-args separated from message text so spyder can filter / aggregate / index without regex parsing.
+
+      Backwards-compat with raw text matters because not every app will move at once — ge will, but ad-hoc test apps might just `printf` over the socket.
+
+      Pairs with [[T75.1]], [[T83 in ge]] (the LOG_TARGET sink that produces these).
+    depends_on:
+    - T75.1
+    tags:
+    - log
+    - structured-logs
+    - messagepack
+    origin: manual
+    discovered: 2026-06-01
+  T75.5:
+    name: '`quit` — clean app shutdown via SDL_QUIT path, no macOS crash notification'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `quit` with params `{timeout_ms?}` (default 5000). App acks `{shutting_down: true}`, then runs its normal shutdown (flush, save, SDL_Quit, return from main), exit code 0.'
+    - Spyder MCP tool `app_quit` exposes this; falls back to `terminate_app` (SIGKILL path) if the app doesn't ack within timeout_ms or the TCP connection doesn't close within an additional grace window.
+    - 'Verified on macOS host: app exits cleanly, no "MultiMaze quit unexpectedly" notification from CrashReporter.'
+    - 'Verified on iOS Simulator + physical device: launchd records a clean exit; no .ips crash report generated under ~/Library/Logs/DiagnosticReports/.'
+    context: |-
+      Concrete user-visible win surfaced in the design discussion. Current `terminate_app` goes through go-ios's processcontrol which is SIGKILL-equivalent; on the Simulator the macOS host's crash reporter sees the abnormal exit and pops a notification. Bidirectional channel lets spyder ask the app to shut itself down through its own SDL_QUIT path — clean exit code, no crash notification.
+
+      Sets the pattern for graceful-operations-with-timeout-fallback: T75.9 (flush), T75.10 (lifecycle), T75.13 (memory) share the same shape.
+
+      Pairs with [[T75.1]], [[T75.2]] (foundation).
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - quit
+    - shutdown
+    - lifecycle
+    - user-pain
+    origin: manual
+    discovered: 2026-06-01
+  T75.6:
+    name: '`input_inject` — synthetic SDL events (tap, key, accelerometer) from spyder into the app''s event loop'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `input_inject` with params `{type: "finger_down"|"finger_up"|"finger_motion"|"key_down"|"key_up"|"accel", ...}`. App fabricates the corresponding SDL_Event and pushes it into its own event queue via `SDL_PushEvent`.'
+    - Coordinates are normalised (0–1 finger / points for mouse) so callers don't need to know the device's pixel dimensions.
+    - Spyder MCP tools `app_tap`, `app_swipe`, `app_key`, `app_accel` wrap the common cases; raw `app_input` exposes the underlying message for arbitrary event types.
+    - 'Live test (gated): launch ge''s tiltbuggy or multimaze2, app_tap at the centre of a known button, app responds with the expected state transition (verified via T75.7 state_query).'
+    context: |-
+      The single biggest debugging-mode unlock identified in the design discussion. Replaces the entire "did the OS tap reach my SDL handler" mystery (exactly the wall the multimaze2 investigation ran into) — the agent drives the app at the application-event layer, bypassing the OS accessibility / WebDriverAgent / touch-injection stack.
+
+      App-side cost is small: one switch statement that translates message fields into SDL_Event struct fields. Spyder-side: one MCP tool per common gesture, one raw passthrough for unusual ones.
+
+      Pairs with [[T75.1]], [[T75.2]]; combines with [[T75.7]] for verified agent-driven flow.
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - input
+    - sdl
+    - synthetic-events
+    - agent-driving
+    origin: manual
+    discovered: 2026-06-01
+  T75.7:
+    name: '`state_query` — request named slices of app state as MessagePack blobs'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `state_query` with params `{slice: str}` (e.g. "scene", "physics", "hud", "input_queue"). App responds with `{slice, data: any}` — data can be arbitrary MessagePack (map, array, nested).'
+    - App's hello advertises supported slices in its methods list (e.g. as `state.scene`, `state.physics`).
+    - Spyder MCP tool `app_state` takes `{slice}` and surfaces the response verbatim.
+    - '`state_query` with an unknown slice returns a structured error listing supported slices.'
+    context: |-
+      Pull-on-demand state introspection. Generic by design — the app picks what to expose, agent picks what to query. Each new slice the app implements pays compounding dividends: fewer "screenshot and OCR" cycles, more "ask the app what it thinks is happening" cycles.
+
+      Foundation for almost every later use case: input-injection verification (T75.6 + state_query confirms the input changed the state), perf debugging (state_query at the moment a counter spikes), regression testing (state_query as a deterministic comparison oracle).
+
+      Pairs with [[T75.1]], [[T75.2]].
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - state
+    - introspection
+    - agent-driving
+    origin: manual
+    discovered: 2026-06-01
+  T75.8:
+    name: Time control — `pause`, `resume`, `step`, `speed` methods drive the app's main loop
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`pause` halts the app''s frame loop (game-loop dt becomes 0; render and input handling continue so the app remains responsive).'
+    - '`resume` re-enables normal pacing.'
+    - '`step` advances exactly N frames (default 1) while paused, then re-pauses.'
+    - '`speed` sets a dt multiplier (e.g. 0.1 for slow-mo, 10.0 for soak); persists until next `speed` or `resume`.'
+    - Spyder MCP tools `app_pause`, `app_resume`, `app_step`, `app_speed` expose these.
+    - App-side surface is a `dt *= speed; if (paused && step_count == 0) dt = 0` block in the main-loop pacing logic, plus the four method handlers.
+    context: |-
+      Game-dev-specific but enormous payoff for visual/timing bugs. Frame-by-frame stepping for renderer issues; 10× speed for stress; slow-mo to catch the frame the bug happens in.
+
+      Trivial app-side once the bidirectional channel exists. The hard work (knowing what to pause and what to keep alive — input, network, render must keep going so spyder can still observe and command) is a one-time decision the app makes.
+
+      Pairs with [[T75.1]], [[T75.2]].
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - time-control
+    - pause
+    - step
+    - speed
+    - game-loop
+    origin: manual
+    discovered: 2026-06-01
+  T75.9:
+    name: '`flush` — drain pending output (log queue, persistence) and ack when done'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `flush` with params `{what?: ["log", "persistence", "render", "all"]}` (default "all"). App drains the named queues and responds when complete.'
+    - 'App-side timeout enforced (default 5s) — if a named subsystem doesn''t drain in time, `flush` responds with `{flushed: [...], stalled: [...]}` rather than hanging the RPC.'
+    - Spyder MCP tool `app_flush`. Other graceful operations (`app_quit`, `app_save_state`) call this internally before their destructive step.
+    - 'Verified: `app_quit` after high log throughput captures all in-flight lines on the spyder side.'
+    context: |-
+      Small but load-bearing. Without it, `quit` and `save_state` lose last-words data when there's a backlog in the async log sender thread (or any other queue). Most useful as a precondition for clean handoffs rather than a method the agent calls directly.
+
+      Pairs with [[T75.4]] (the log queue is the primary thing to flush), [[T75.5]] (quit calls it first).
+    depends_on:
+    - T75.1
+    - T75.2
+    tags:
+    - flush
+    - drain
+    - graceful-ops
+    origin: manual
+    discovered: 2026-06-01
+  T76:
+    name: Bidirectional MessagePack RPC channel — deferred extensions
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Every sub-target (T76.1–T76.7) either lands or carries a concrete won't-fix disposition referencing real usage data.
+    - Adoption decisions are re-evaluated *after* the T75 v1 slice has been used in anger — the channel may grow naturally into these or they may prove unnecessary once the simpler set is in hand.
+    context: |-
+      The "later" pile from the bidirectional-channel design discussion. Filed up-front to capture intent so the design rationale isn't re-derived from scratch later; not for active work until T75 ships and accumulates usage. Each sub-target is high-cost, narrow-applicability, or both — natural set to defer until concrete need surfaces.
+
+      Pairs with T75 (the v1 slice).
+    depends_on:
+    - T76.1
+    - T76.2
+    - T76.3
+    - T76.4
+    - T76.5
+    - T76.6
+    - T76.7
+    tags:
+    - mcp
+    - rpc
+    - messagepack
+    - tcp
+    - deferred
+    - umbrella
+    origin: manual
+    discovered: 2026-06-01
+  T76.1:
+    name: Test-event push — structured per-assertion events from XCTest/instrumented Android tests
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Test framework emits `test_event` push messages with params `{event: "started"|"passed"|"failed"|"skipped", suite, name, duration_ms?, message?, assertion_detail?}`.'
+    - Spyder MCP tool `app_test_events` returns a session-bounded list, with filtering by suite/event.
+    - 'XCTest adapter: a XCTestObservation subclass that captures the standard hooks and pushes them. Android JUnit / instrumentation adapter equivalent.'
+    - 'Verified: a multi-test xcodebuild run emits the same set of events spyder MCP returns, with no need to scrape xcodebuild''s stdout.'
+    context: |-
+      Replaces the awkward parse-xcodebuild-output / parse-instrumentation-stdout pattern. Tests stream structured events live; spyder collects; agent queries.
+
+      Deferred because: requires per-test-framework adapter work (XCTestObservation, JUnit RunListener) that isn't free. Worth waiting for the v1 slice to land — the channel + dispatch path is the prereq, the adapter integration is what makes this a target rather than a one-line method add.
+
+      Pairs with [[T75.1]] (channel), [[T75.4]] (similar push shape).
+    tags:
+    - test
+    - xctest
+    - junit
+    - instrumentation
+    - structured-events
+    origin: manual
+    discovered: 2026-06-01
+  T76.2:
+    name: '`hot_reload` — push config / asset blobs, app reloads in place without rebuild'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `hot_reload` with params `{kind: "config"|"shader"|"level"|"texture"|...", payload: <bin>, ref?: str}`. App routes to the matching reloader and responds with `{reloaded: true, applied_at: ts}` or a structured error.'
+    - Spyder MCP tool `app_hot_reload` exposes this; convenience wrapper `app_hot_reload_file` reads a local file and pushes its contents.
+    - 'Verified: tiltbuggy gravity tweak via hot_reload visibly changes physics within one frame, no rebuild-deploy-launch cycle.'
+    context: |-
+      Collapses the iteration loop for designers and gameplay tuning from minutes to seconds. Single command: \"increase gravity by 10% and replay the last 30 seconds\" (combined with [[T75.14]] state save/restore).
+
+      Deferred because: only works for apps that actually have a hot-reload pathway. Most don't. The protocol is cheap (one method); the app-side reload-everything plumbing is the real cost and varies wildly per app.
+
+      Pairs with [[T75.1]] (channel), [[T75.14]] (combines for state-correlated reloads).
+    tags:
+    - hot-reload
+    - iteration
+    - config
+    - assets
+    origin: manual
+    discovered: 2026-06-01
+  T76.3:
+    name: '`repl_eval` — push embedded-script snippets, app evaluates against live state'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `repl_eval` with params `{lang: "lua"|"wren"|"...", source: str}`. App evaluates the snippet in the game context, responds with `{result: any}` or `{error: {...}}`.'
+    - Spyder MCP tool `app_eval` exposes this; convenience aliases per supported language.
+    - App embeds at least one scripting runtime (Lua via sol2 is the obvious candidate for ge consumers) with bindings exposing read-only access to scene/physics/state.
+    - 'Sandboxing: dev-only build flag (compile-time gate, same as ge T83''s NDEBUG path) ensures the eval surface can never ship to TestFlight/Play Store.'
+    context: |-
+      Maximum flexibility for one-off debugging: walk the scene graph, force a state, query an arbitrary expression. Effectively a debugger console without Xcode attached.
+
+      Deferred because: requires embedding a scripting engine (Lua, Wren, etc.) that most ge games don't ship. The app-side cost is real: runtime integration, binding generation, sandboxing. Payoff is diffuse — useful for the long-tail of debug scenarios that the explicit method set (T75.7 state_query, T75.6 input, etc.) doesn't cover.
+
+      Pairs with [[T75.1]] (channel).
+    tags:
+    - repl
+    - scripting
+    - lua
+    - wren
+    - debugger-console
+    origin: manual
+    discovered: 2026-06-01
+  T76.4:
+    name: Auth + encryption — gate the channel behind a token / TLS for non-LAN use
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Channel optionally enforces a shared-secret token (passed via env var alongside LOG_TARGET) and / or TLS for connections originating outside RFC 1918 ranges.
+    - MCP tool surface unchanged — the auth is below the protocol layer.
+    - 'Documented: when and why to enable (cloud-CI scenarios, untrusted-WiFi development); default is off (LAN dev-tool, opt-in build flag covers the threat model already).'
+    context: |-
+      Deferred because the channel as designed is LAN-only and dev-only (debug-build compile gate). Threat model: a developer on their own LAN running a tool against their own apps. Auth and encryption are over-engineering for that case.
+
+      Becomes relevant if: cloud-CI scenarios (a remote agent running spyder against devices on a different network), shared-WiFi dev environments (coffee-shop coding), or if the channel ever ships in release builds (which the v1 design explicitly prevents).
+
+      Pairs with [[T75.1]] (the channel this would secure).
+    tags:
+    - auth
+    - encryption
+    - tls
+    - security
+    - deferred
+    origin: manual
+    discovered: 2026-06-01
+  T76.5:
+    name: Multi-client fan-out — multiple spyders / agents observing one app concurrently
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - App accepts multiple concurrent RPC connections; pushes (logs, perf, etc.) fan out to all subscribed clients.
+    - Per-client request/response correlation works correctly under concurrent in-flight requests from different clients.
+    - 'Spyder-side: the existing log_collect session model extends naturally to RPC sessions — each spyder process is one client.'
+    - 'Documented: which methods are safe for multi-client (everything except destructive ones) and which serialize (one quit at a time).'
+    context: |-
+      Deferred until concrete use case surfaces. The v1 single-client model covers the natural workflow (one agent, one spyder, one app being debugged). Multi-client comes into play for: pair-debugging (two devs both observing), multi-agent orchestration (a test agent + a perf-monitoring agent), or recording-while-driving setups.
+
+      The protocol change is small (multiple connections, fanout the pushes); the operational complexity (who is the source of truth for time-control state, what happens if two clients quit simultaneously) is real.
+
+      Pairs with [[T75.1]] (the underlying channel).
+    tags:
+    - multi-client
+    - fan-out
+    - concurrency
+    - deferred
+    origin: manual
+    discovered: 2026-06-01
+  T76.6:
+    name: Spyder→app file push — upload assets / save files / configs via the framing protocol
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `file_push` with params `{dest_path: str, data: <bin>, mode?: int}` writes the file into the app''s sandbox at a path the app permits.'
+    - App declares allowed destination paths (e.g. `Documents/<subdir>/`) in its hello capabilities to bound the surface; rejects writes outside.
+    - Spyder MCP tool `app_push_file` reads a host file and uploads. Companion `app_pull_file` reverses it.
+    - 'Use cases verified: pushing a fresh save file, uploading a captured replay for the app to play back, replacing a config blob.'
+    context: |-
+      Generalisation of [[T76.2]] hot_reload. Where hot_reload semantically reloads the app's in-memory state from a new blob, file_push is just \"write this byte sequence to this sandbox path\" — the app may or may not act on it.
+
+      Deferred because: T75.14 (state save/restore) already covers the highest-value case (replay state across builds) without needing to touch the filesystem at all. File push is for cases where the app's existing file-driven mechanisms (level loading, asset replacement, save-game pre-population) are what you want to drive. Real value, but narrower than save_state.
+
+      Pairs with [[T75.1]] (binary-payload channel), [[T76.2]] (hot_reload is the in-memory cousin).
+    tags:
+    - file-push
+    - upload
+    - sandbox
+    - deferred
+    origin: manual
+    discovered: 2026-06-01
+  T76.7:
+    name: Pub/sub event categories — filtered subscription for high-volume push streams
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Spyder→app `subscribe` with params `{categories: [str]}` (e.g. `["log:error", "perf:frame_time", "state:scene_change"]`). App only pushes matching events to that client.'
+    - 'App-side default: subscribe-to-all on connect (preserves current behaviour); explicit subscribe call narrows.'
+    - Spyder MCP tool `app_subscribe` exposes per-session subscription state.
+    - 'Decision documented: which categories are worth defining (and which should stay coalesced into the existing log/perf channels).'
+    context: |-
+      Becomes relevant if: the push stream grows so noisy that the agent (or spyder's buffer) can't keep up, or if multiple clients (T76.5) want different views of the same app. With <10 method types and modest per-app volume, the current subscribe-to-all default is fine; pub/sub adds plumbing without payoff.
+
+      Deferred until the v1 slice exposes the actual volume profile under real use.
+
+      Pairs with [[T75.1]] (channel), [[T76.5]] (multi-client makes filtering more valuable).
+    tags:
+    - pubsub
+    - subscribe
+    - filtering
+    - deferred
+    origin: manual
+    discovered: 2026-06-01
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved
