@@ -15,6 +15,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
@@ -50,19 +51,22 @@ type PoolManager interface {
 
 // Handler implements the spyder tool handler.
 type Handler struct {
-	mu           sync.Mutex
-	inventory    *inventory.Store
-	ios          device.Adapter
-	android      device.Adapter
-	reservations *reservations.Store
-	runs         *runs.Store
-	bls          *baselines.Store
-	recordings   *recording.Registry
-	logCapture   *logcapture.Manager
-	logCollect   *logcollect.Manager
-	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
-	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
-	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
+	mu                   sync.Mutex
+	inventory            *inventory.Store
+	ios                  device.Adapter
+	android              device.Adapter
+	reservations         *reservations.Store
+	runs                 *runs.Store
+	bls                  *baselines.Store
+	recordings           *recording.Registry
+	logCapture           *logcapture.Manager
+	logCollect           *logcollect.Manager
+	appChannel           *appchannel.Manager
+	appChannelListeners  map[string]*appchannel.Listener
+	appChannelListenerMu sync.Mutex
+	runsBaseDir          string                // base dir for active-run temp files; empty = os.TempDir()
+	pool                 selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
+	poolMgr              PoolManager           // optional hook for 🎯T24 pool management
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -155,15 +159,22 @@ func WithLogCollect(m *logcollect.Manager) HandlerOption {
 	return func(h *Handler) { h.logCollect = m }
 }
 
+// WithAppChannel injects the bidirectional MessagePack RPC manager
+// (🎯T75). When omitted, app_* tools return a "not configured" error.
+func WithAppChannel(m *appchannel.Manager) HandlerOption {
+	return func(h *Handler) { h.appChannel = m }
+}
+
 // NewHandler creates a new spyder tool handler.
 func NewHandler(opts ...HandlerOption) *Handler {
 	h := &Handler{
-		inventory:       inventory.New(),
-		ios:             device.NewIOSAdapter(),
-		android:         device.NewAndroidAdapter(),
-		recordings:      recording.NewRegistry(),
-		networkByDevice: map[string]appliedNetwork{},
-		launchTimes:     map[launchKey]time.Time{},
+		inventory:           inventory.New(),
+		ios:                 device.NewIOSAdapter(),
+		android:             device.NewAndroidAdapter(),
+		recordings:          recording.NewRegistry(),
+		networkByDevice:     map[string]appliedNetwork{},
+		launchTimes:         map[launchKey]time.Time{},
+		appChannelListeners: map[string]*appchannel.Listener{},
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -375,6 +386,47 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleLogCollectStop(args)
 	case "log_collect_list":
 		return h.handleLogCollectList(args)
+	// --- bidirectional app channel (🎯T75) -------------------------------
+	case "app_channel_start":
+		return h.handleAppChannelStart(args)
+	case "app_channel_stop":
+		return h.handleAppChannelStop(args)
+	case "app_channel_list":
+		return h.handleAppChannelList(args)
+	case "app_ping":
+		return h.handleAppPing(args)
+	case "app_quit":
+		return h.handleAppQuit(args)
+	case "app_flush":
+		return h.handleAppFlush(args)
+	case "app_background":
+		return h.handleAppBackground(args)
+	case "app_foreground":
+		return h.handleAppForeground(args)
+	case "app_low_memory":
+		return h.handleAppLowMemory(args)
+	case "app_pause":
+		return h.handleAppPause(args)
+	case "app_resume":
+		return h.handleAppResume(args)
+	case "app_step":
+		return h.handleAppStep(args)
+	case "app_speed":
+		return h.handleAppSpeed(args)
+	case "app_input":
+		return h.handleAppInput(args)
+	case "app_state":
+		return h.handleAppState(args)
+	case "app_save_state":
+		return h.handleAppSaveState(args)
+	case "app_restore_state":
+		return h.handleAppRestoreState(args)
+	case "app_screenshot":
+		return h.handleAppScreenshot(args)
+	case "app_log_get":
+		return h.handleAppLogGet(args)
+	case "app_perf_get":
+		return h.handleAppPerfGet(args)
 	case "is_running":
 		return h.handleIsRunning(args)
 	// --- pool tools (🎯T24) -----------------------------------------------
@@ -396,7 +448,8 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 func Definitions() []mcpgo.Tool {
 	defs := append(allBaseDefinitions(), visualDefinitions()...)
 	defs = append(defs, logCaptureDefinitions()...)
-	return append(defs, logCollectDefinitions()...)
+	defs = append(defs, logCollectDefinitions()...)
+	return append(defs, appChannelDefinitions()...)
 }
 
 // allBaseDefinitions returns the core (non-visual) tool definitions.
