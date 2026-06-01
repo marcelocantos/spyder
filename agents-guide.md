@@ -132,6 +132,10 @@ everything it can see.
 | `pool_list` | Current pool state for all templates (available/running/reserved counts per template). | Read-only. Pool must be configured via `~/.spyder/pool.yaml`. |
 | `pool_warm` | Force pre-boot N additional instances for a template. | `{template, count}`. Moves instances from available to running tier. |
 | `pool_drain` | Shut down and delete all idle instances for a template. | `{template}`. Reserved instances are terminated first. |
+| `log_collect_start` | Open a fresh TCP port and start a session that captures lines pushed to it. Returns `{session_id, port, hosts}` for use as `LOG_TARGET=host:port` in a subsequent `launch_app`/`deploy_app`. | One port per session — connections on that port are unambiguously from the app launched with the matching `LOG_TARGET`. See "Collecting logs over TCP" below. |
+| `log_collect_get` | Return lines received since the last get/start. | `{session_id}`. Capture continues. |
+| `log_collect_stop` | Close the listener and drain remaining lines. | `{session_id}`. |
+| `log_collect_list` | Metadata for every live collect session: port, owner, buffer state, lifetime connection/byte counters. | Read-only. |
 
 ## Launching with env
 
@@ -229,6 +233,63 @@ curl -s -X POST http://127.0.0.1:3030/api/v1/deploy_app \
   -H 'Content-Type: application/json' \
   -d '{"device":"Jevons","path":"/path/to/MyApp.app","env":{"LOG_TARGET":"192.168.1.42:9999"}}'
 ```
+
+## Collecting logs over TCP
+
+When an app honours the `LOG_TARGET=host:port` convention (e.g. by
+installing a spdlog `tcp_sink` against it — ge does this), spyder can
+be the listener: `log_collect_start` opens a fresh TCP port, returns
+the address you should hand to `LOG_TARGET`, and accumulates incoming
+lines in a bounded buffer for incremental retrieval.
+
+```json
+// 1. Open a listener. Spyder picks a random port.
+{"name": "log_collect_start", "arguments": {"owner": "multimaze2"}}
+// → {"session_id": "ab12...", "port": 54321, "hosts": ["192.168.1.42"], ...}
+
+// 2. Deploy with LOG_TARGET pointing at one of those hosts:port.
+{"name": "deploy_app", "arguments": {
+  "device": "Jevons",
+  "path": "/path/to/MyApp.app",
+  "env": {"LOG_TARGET": "192.168.1.42:54321"}
+}}
+
+// 3. Read what's arrived (capture continues).
+{"name": "log_collect_get", "arguments": {"session_id": "ab12..."}}
+// → {"lines": [{"timestamp": "...", "source": "192.168.1.40:51234", "message": "..."}, ...]}
+
+// 4. Tear down when done.
+{"name": "log_collect_stop", "arguments": {"session_id": "ab12..."}}
+```
+
+### Design
+
+- **Port-per-session**: one listener owns one port. A connection on that
+  port is unambiguously from the app you launched against the matching
+  `LOG_TARGET` — no in-band tagging, no per-line headers, no protocol
+  on top of newline-delimited text.
+- **Reconnect semantics**: if the app drops and reconnects (network
+  blip, backgrounded then resumed), all connections on the same port
+  land in the same session's buffer. Order is FIFO by arrival
+  timestamp.
+- **Bounded buffer**: ~50 MB / 100k lines per session by default, FIFO
+  eviction; `dropped_lines` in the get/stop response tells you when
+  the buffer overflowed.
+- **TTL**: sessions auto-expire after 5 minutes of no `get`/`stop`
+  activity (max 24 h, configurable per call).
+- **All interfaces**: listener binds `0.0.0.0:0`. `hosts` returns the
+  LAN-reachable IPv4 addresses on this machine so you don't have to
+  `ipconfig getifaddr en0` yourself.
+
+### Caveat: env vars are per-launch
+
+The `LOG_TARGET` env arrives on one specific launch. A user-tap
+relaunch from SpringBoard / the Android launcher loses it — the app
+restarts without the env and stops phoning home. To resume collection,
+re-run `launch_app` (or `deploy_app`) with the same env, or rely on
+app-side persistence if the app stores the target. See spyder 🎯T74
+for the resilience follow-up; in practice, manual relaunches during a
+debugging session are infrequent and re-running `launch_app` is cheap.
 
 ## Sim/emu pool
 

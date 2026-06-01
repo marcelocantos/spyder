@@ -2603,6 +2603,43 @@ targets:
     origin: manual
     discovered: 2026-05-31
     achieved: 2026-05-31
+  T74:
+    name: LOG_TARGET dev-logging is resilient across manual app relaunches and spyder listener lifecycle gaps
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Real-world experience using spyder log_collect_* + ge's LOG_TARGET sink has been accumulated for at least a few sessions across multiple repos (multimaze2, tiltbuggy, esfera2, yourworld2). User has noted the specific friction points encountered — missing logs after a SpringBoard/launcher relaunch, dead listeners, port reuse confusion, etc.
+    - |-
+      Based on that experience, a concrete remediation has been chosen and documented. Candidate shapes the design must pick from (or replace with something better surfaced by real use):
+        - (a) app-side persistence of LOG_TARGET to NSUserDefaults / SharedPreferences / config file, with lookup precedence env > persisted > none, and `LOG_TARGET=` (empty) as the opt-out (filed against ge if chosen).
+        - (b) spyder runs a long-lived stable log_collect listener bound to a per-device or per-bundle port that persists across `start`/`stop` cycles, so the app's persisted LOG_TARGET continues to find a live listener.
+        - (c) a spyder `relaunch_app` MCP tool that remembers the last env per (device, bundle_id) and re-injects on demand — hides the limitation without fixing it.
+        - (d) explicitly document the gap and the user-tap-icon caveat; close as won't-fix because in practice the manual relaunch is rare and `launch_app` is cheap.
+    - Whichever path is chosen is implemented and shipped. agents-guide.md (spyder side) and the ge equivalent are updated to describe the actual lifecycle the user can expect.
+    context: |-
+      Filed 2026-06-01 as a deferred follow-up to 🎯T73 (env passthrough, shipped in spyder v0.50.0) and ge 🎯T83 (TCP log sink, in flight).
+
+      Background: 🎯T73 lets spyder inject `env={LOG_TARGET: host:port}` at launch time, and ge T83 will install a spdlog tcp_sink in the app when it sees that env var. The combination gives a clean dev-time log channel that bypasses Apple unified logging and Android logcat.
+
+      The gap: env vars passed via `appservice.LaunchApp` / `am start --es` / `SIMCTL_CHILD_*` are *per-launch* attributes. A user-tap relaunch from SpringBoard or the Android launcher loses them — logs silently stop arriving. Conversely, even if the app *persists* LOG_TARGET app-side, there's no guarantee spyder is still listening on the original port when the app reconnects after a manual restart (`log_collect` sessions are ephemeral, ports are random per-session).
+
+      Both halves have a fix; both fixes have their own complications:
+      - App-side persistence (ge) is cheap but assumes a stable listener.
+      - Stable spyder listener (per-device or per-bundle) is more lifecycle plumbing than the v0.51 log_collect ships with — and may not be worth it if manual-relaunch isn't a frequent flow in practice.
+
+      **Don't speculate the design now.** Live with the env-only path first, capture the friction points across a few real debugging sessions, then pick a remediation that fits actual usage. The candidate shapes in the acceptance are a starting menu, not a commitment. Won't-fix (option d) is a legitimate outcome.
+
+      [[T73]] [[ge T83]]
+    tags:
+    - logging
+    - lifecycle
+    - log_target
+    - deferred
+    - experience-needed
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-06-01
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved
