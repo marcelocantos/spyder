@@ -137,6 +137,17 @@ everything it can see.
 | `log_collect_stop` | Close the listener and drain remaining lines. | `{session_id}`. |
 | `log_collect_list` | Metadata for every live collect session: port, owner, buffer state, lifetime connection/byte counters. | Read-only. |
 
+| `app_channel_start` | Open a fresh TCP listener for the bidirectional MessagePack RPC channel. Returns `{listener_id, port, hosts}`; apps dial host:port, send a `hello`, become addressable via the `app_*` tools. | See "Bidirectional app channel" below. |
+| `app_channel_stop` | Close a listener and tear down all sessions accepted on it. | `{listener_id}`. |
+| `app_channel_list` | List active sessions across all listeners (session_id, port, owner, app_name, app_version, methods). | Read-only. |
+| `app_ping`, `app_quit`, `app_flush`, `app_background`, `app_foreground`, `app_low_memory` | Lifecycle / liveness methods. `quit` is the clean-exit primitive (no macOS crash notification). | `{session_id?}`. session_id is optional when exactly one session is connected. |
+| `app_pause`, `app_resume`, `app_step`, `app_speed` | Time-control over the app's main loop. `step` advances N frames; `speed` sets a dt multiplier. | `{session_id?, frames?, multiplier?}`. |
+| `app_input` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | `{session_id?, type, ...event-specific fields}`. |
+| `app_state` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `{session_id?, slice}`. |
+| `app_save_state` / `app_restore_state` | Serialize / deserialize app state. Returns/accepts a base64-encoded blob; the app picks the schema. | `{session_id?, state_b64?}`. |
+| `app_screenshot` | Request a PNG from the app's own framebuffer (sibling to the OS-path `screenshot`). | `{session_id?}`. |
+| `app_log_get`, `app_perf_get` | Drain structured logs / perf-counter samples the app has pushed since the last call. | `{session_id?}`. |
+
 ## Launching with env
 
 Both `launch_app` and `deploy_app` accept an optional `env` map that
@@ -290,6 +301,83 @@ re-run `launch_app` (or `deploy_app`) with the same env, or rely on
 app-side persistence if the app stores the target. See spyder 🎯T74
 for the resilience follow-up; in practice, manual relaunches during a
 debugging session are infrequent and re-running `launch_app` is cheap.
+
+## Bidirectional app channel (🎯T75)
+
+The structured RPC sibling of `log_collect_*`. Instead of one-way
+newline-text push, apps speak length-prefixed MessagePack with a
+JSON-RPC-shaped envelope (`{id, method, params}` requests, `{id,
+result|error}` responses, `{method, params}` async pushes). Spyder
+can request things (quit, pause, screenshot, query state); the app
+can push things (logs, perf counters). Same agent, same loop, far
+more leverage.
+
+### Wire format
+
+- **Framing**: `[4-byte LE length] [MessagePack body]`. Max body 16 MB.
+- **Envelope**:
+  - Request (either direction): `{id, method, params}` — `id` is a
+    uint64 monotonically assigned by the sender.
+  - Response: `{id, result}` or `{id, error: {code, message, data?}}`.
+  - Push (no response expected): `{method, params}` with `id` omitted.
+- **Handshake**: first frame app→spyder must be a `hello` request:
+  `{id, method: "hello", params: {app_name, app_version, methods: [...]}}`.
+  Spyder responds with `{id, result: {spyder_version, accepted_methods}}`
+  (intersection of the app's advertised methods with spyder's known set).
+
+### Worked example
+
+```json
+// 1. Open a listener.
+{"name": "app_channel_start", "arguments": {"owner": "multimaze2"}}
+// → {"listener_id": "...", "port": 54321, "hosts": ["192.168.1.42", ...]}
+
+// 2. Deploy with the channel address in env (app reads it and dials).
+{"name": "deploy_app", "arguments": {
+  "device": "Jevons",
+  "path": "/path/to/MyApp.app",
+  "env": {"LOG_TARGET": "192.168.1.42:54321"}
+}}
+
+// 3. App connects, sends hello → app_channel_list shows the session.
+{"name": "app_channel_list"}
+// → [{"session_id": "...", "app_name": "MultiMaze", "methods": [...]}]
+
+// 4. Drive the app.
+{"name": "app_state", "arguments": {"slice": "scene"}}
+{"name": "app_input", "arguments": {"type": "finger_down", "x": 0.5, "y": 0.5}}
+{"name": "app_pause"}
+{"name": "app_step", "arguments": {"frames": 3}}
+{"name": "app_screenshot"}
+{"name": "app_quit"}  // clean exit, no macOS crash notification
+```
+
+### Method catalogue
+
+The full v1 method set (🎯T75): `ping`, `quit`, `flush`,
+`backgrounded`, `foregrounded`, `low_memory_warning`, `pause`,
+`resume`, `step`, `speed`, `input_inject`, `state_query`,
+`save_state`, `restore_state`, `screenshot_app`. Push messages from
+the app: `log` (structured), `perf` (key/value counter batches).
+
+Apps need only implement the subset they care about — advertise the
+list in `hello.methods` and spyder's per-method MCP tools will
+gracefully refuse calls to anything the app didn't claim.
+
+### Session addressing
+
+When exactly one session is connected, every `app_*` tool defaults to
+it (omit `session_id`). When multiple are connected, `session_id` is
+required to disambiguate. `app_channel_list` shows what's live.
+
+### Caveats
+
+- The channel is dev-only by design. Apps should compile the receiver
+  out of release builds (debug-build macro guard — ge does this).
+- No authentication / encryption. LAN-only. (🎯T76.4 covers the
+  upgrade path if cloud-CI or untrusted-network use ever surfaces.)
+- One spyder connection per app session for v1; multi-client fan-out
+  is deferred to 🎯T76.5.
 
 ## Sim/emu pool
 
