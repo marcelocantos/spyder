@@ -3241,6 +3241,64 @@ targets:
     - deferred
     origin: manual
     discovered: 2026-06-01
+  T77:
+    name: implicit-workflow-reservations
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Spyder grows a notion of an implicit "device workflow" so that parallel agent sessions across the 10-device fleet don't manually coordinate to avoid stepping on each other.
+    - Workflow-starting calls (deploy_app / install_app / launch_app and similar) acquire a renewable reservation on the device under the calling session's identity; the call blocks for a configurable timeout if the device is already reserved by another session, then fails cleanly.
+    - Workflow-ending calls (default behaviour of terminate_app, perhaps app_quit) release the reservation the calling session held, so the symmetric "start with deploy/launch, end with terminate" idiom naturally hands the device back to the pool. Opt-out flag (keep_reservation=true or similar) for the rare case where the caller wants to terminate but keep the device.
+    - One-shot mutations that don't open a workflow (rotate, restore_state, save_state, app_input issued outside an owned workflow, app_pause, etc.) pass through without acquiring a reservation — they may race with other sessions, which is expected for one-shot calls.
+    - Read-only calls (screenshot, one-shot logs, is_running, device_state, list_apps, app_state) never reserve and never block; multiple sessions can probe the same device concurrently and cheaply.
+    - Reservation identity is stable per session and inferred automatically (env var stamped by the agent harness, or some other mechanism) so the agent doesn't have to thread an explicit session id through every call.
+    - Reservations renew on use (lease + heartbeat) and expire on inactivity so a crashed or hung session naturally releases its devices without manual cleanup.
+    - Existing explicit reserve / release / renew calls continue to work and interoperate cleanly with the implicit path — explicit reservations dominate when both apply; the matrix's cell.* / spyder run plumbing keeps its current semantics.
+    context: |-
+      Design discussion 2026-06-07 with multimaze2/ge user.
+
+      Today reservations are explicit (`spyder reserve` / `release`) and almost nobody uses them at the agent-interaction layer — only the matrix cells do (matrix-cell.sh wraps each cell in `spyder run` for race-safety under parallel make). The day-to-day workflow (deploy + screenshot + log + interact + terminate) shares devices freely; correctness depends on humans/agents not stepping on each other's toes, which doesn't scale once a user has 10 connected devices and is running many parallel agent sessions.
+
+      The user wants spyder to auto-coordinate. Initial proposal of "any state-changing call acquires a lease" was rejected because it conflates *mutates state* with *needs exclusive access*. A cleaner shape emerged in conversation:
+
+      - The unit of exclusivity is a **workflow** ("I'm putting my code on this device and I'm going to drive it now"), not an individual call.
+      - Workflow-start trigger: deploy_app / install_app / launch_app — "I just put my code on this device" implies I intend to interact with it.
+      - Workflow-end trigger: terminate_app (default release). Bool opt-out for the rare case ("I want to kill the process but keep the device reserved").
+      - One-shot mutations (terminate of a stranger's app to clean up, rotate, restore_state) shouldn't hold leases — the caller doesn't want exclusivity, they want a single point-in-time effect.
+      - Read-only probes (screenshot, logs, is_running) never reserve.
+
+      Open design questions worth thinking through:
+      - Identity model: who is "a session"? env var stamped by agent harness, parent process tree, an explicit handshake, something else? Stable identity is what makes lease renewal correct.
+      - Contention semantics: block-with-timeout vs fast-fail vs queue. block-with-timeout is friendliest for the "A is about to finish anyway" common case but introduces tail latency that's hard to reason about under parallel make.
+      - Lease lifetime: too short and sessions in interactive flow lose devices when the agent pauses to think; too long and crashed sessions hold devices forever. DHCP-style (renew on every call, expire on N seconds of inactivity) seems right but N needs tuning against actual agent pacing.
+      - Interaction with the existing explicit reserve/release/renew: implicit + explicit must compose cleanly so the matrix cells continue to work without rewrite.
+      - terminate_app's release behaviour: default release vs default keep. The user argued default release because "the overwhelming majority of terminate_app calls really are 'I'm done with this device' — forcing opt-in to release would mean almost every caller writes the flag, which is the wrong default."
+
+      This target is for thinking + design, not for jumping straight to implementation. Lots of subtlety here and the wrong shape would be a worse outcome than the current explicit model.
+    origin: manual
+    discovered: 2026-06-07
+  T78:
+    name: spyder deploys, launches, and screenshots iOS ≤16 devices via go-ios lockdown, with no tunneld required
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - deploy_app / install_app / launch_app / terminate_app / screenshot / is-running succeed on an iOS ≤16 device with NO `ios tunnel start` / tunneld running — the launch, pid-verify, and screenshot steps route through go-ios's classic lockdown path (instruments/DVT-over-lockdown for process control; screenshotr for capture) instead of RemoteXPC/tunneld.
+    - 'Path selection is automatic per device: spyder reads the device ProductVersion and uses the lockdown path for iOS ≤16 and the tunnel/RemoteXPC path for iOS 17+. No flag or env required from the caller.'
+    - 'Verified end-to-end on a real iOS ≤16 device (e.g. an iPhone on 16.7): deploy_app → app launches → screenshot returns a valid PNG — all with tunneld stopped.'
+    - 'No regression on iOS 17+ devices: they continue to use the tunnel/DVT path (deploy_app/screenshot still work with tunneld up).'
+    - screenshot on iOS ≤16 mounts (or relies on an already-mounted) Developer Disk Image as needed so screenshotr works, rather than erroring 'mount the Developer disk image'.
+    context: 'Found 2026-06-07 while deploying ge''s tiltbuggy sample to a 5-device iOS fleet. spyder''s deploy_app/launch_app/screenshot declare ''requires tunneld on iOS (for launch + pid-verify via DVT)'', which is the iOS-17+ RemoteXPC architecture. iOS ≤16 uses the classic lockdown protocol over usbmuxd (no tunnel) for the same services. The go-ios binary spyder bundles (libexec/spyder/ios) speaks BOTH paths — but spyder''s high-level commands only use the tunnel path, so for an iOS-16.7 iPhone 8 the spyder deploy/launch/screenshot failed (''TunnelInfoForDevice: failed to parse response: unexpected end of JSON input'') and forced a drop to calling the bundled go-ios binary directly (`ios install/launch`, which worked over lockdown). Apple''s own devicectl is genuinely iOS-17+-only, so it can''t cover ≤16 either — go-ios lockdown is the only path for old devices, and spyder already ships the binary that does it. Closing this gap means old test devices work through the normal spyder surface (no reaching into libexec, no losing the reservation/owner model). Separately observed: deploy_app''s bundle_id auto-derivation tried `aapt` (Android) on a .app and failed — passing bundle_id explicitly worked; worth making .app Info.plist derivation robust too (minor, could be folded in or its own target).'
+    tags:
+    - ios
+    - device-stack
+    - go-ios
+    - lockdown
+    - compatibility
+    - deploy
+    origin: manual
+    discovered: 2026-06-07
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved
