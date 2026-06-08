@@ -2113,16 +2113,18 @@ targets:
     value: 0.0
     cost: 0.0
     acceptance:
-    - internal/autoawake/, internal/notify/, internal/device/keepawake.go, internal/device/keepawake_test.go, and ios/KeepAwake/ are gone from the tree.
+    - internal/autoawake/, internal/notify/, internal/device/keepawake.go, and internal/device/keepawake_test.go are gone from the tree. A standalone ios/KeepAwake/ manual sidecar may exist, but spyder does not auto-install or supervise it.
     - spyder serve has no --no-autoawake flag and Config.DisableAutoAwake is gone. Daemon startup is a fixed cost (tunnel spawn + HTTP listen), with no per-device convergence ticker.
     - Daemon running with two real iOS devices attached holds steady connection count to the bundled `ios` tunnel (no monotonic growth at the 15s/2s autoawake convergence cadence). devices and log RPCs respond promptly throughout.
-    - Docs/README/STABILITY.md/agents-guide.md explain the removal and point at the OS-level Auto-Lock=Never workaround. 🎯T64 tracks reinstatement after the upstream go-ios `Close()` leak is fixed.
+    - Docs/README/STABILITY.md/agents-guide.md explain the daemon-supervisor removal and point at OS-level Auto-Lock=Never or the standalone manual KeepAwake sidecar. 🎯T64 tracks reinstatement after the upstream go-ios `Close()` leak is fixed.
     context: |-
       **Root cause**: go-ios v1.0.213's `instruments.ListenAppStateNotifications` returns a `Close()` that does `closeChannel <- struct{}{}` with a 5s timeout — it never calls `conn.Close()` on the underlying DTX connection. Each autoawake convergence cycle (every 15s, per attached device) opened a new ListenAppStateNotifications, and Close() left the TCP socket ESTABLISHED. With two devices attached we observed monotonic accumulation at ~8 connections/min; after ~5 min the daemon would stop responding to /api/v1/devices despite a clean stack (all goroutines idle in cond_wait — symptom is downstream of the leak, likely mutex starvation inside go-ios's connection pool).
 
       **Why rip-out instead of fix**: the leak is upstream and spyder has no closeable handle on `conn` (ListenAppStateNotifications doesn't return it). A spyder-side goroutine-leak fix in `ForegroundApp` was attempted but didn't move the needle — connections still grew at the same rate, because the leak isn't in the goroutine, it's in go-ios's Close() being a no-op for the socket. Per user direction (2026-05-19): "if the fix doesn't work, rip it all out." Devices are now set to Auto-Lock=Never at the OS level, which obviates the original problem KeepAwake solved.
 
-      **What was removed**: the entire `internal/autoawake/` supervisor; its `internal/notify/` companion (only used for the autoawake macOS alerts); `internal/device/keepawake.go` (xcodebuild + version detection); `internal/device/keepawake_test.go`; the `ios/KeepAwake/` Swift project; all KeepAwake-specific code in `internal/device/ios.go` (KeepAwakeBundleID, inspectKeepAwakeApp, KeepAwakeInstalled, KeepAwakeInstalledVersion, ForegroundApp, appNameFromExec, IsKeepAwakeForeground, LaunchKeepAwake, ErrKeepAwakeNotInstalled, classifyKeepAwakeLaunchErr, the launch-error regexes); the `--no-autoawake` flag added during investigation; the `DisableAutoAwake` Config field; the daemon's supervisor goroutine spawn; the doc sections.
+      **What was removed**: the entire `internal/autoawake/` supervisor; its `internal/notify/` companion (only used for the autoawake macOS alerts); `internal/device/keepawake.go` (xcodebuild + version detection); `internal/device/keepawake_test.go`; all KeepAwake-specific code in `internal/device/ios.go` (KeepAwakeBundleID, inspectKeepAwakeApp, KeepAwakeInstalled, KeepAwakeInstalledVersion, ForegroundApp, appNameFromExec, IsKeepAwakeForeground, LaunchKeepAwake, ErrKeepAwakeNotInstalled, classifyKeepAwakeLaunchErr, the launch-error regexes); the `--no-autoawake` flag added during investigation; the `DisableAutoAwake` Config field; the daemon's supervisor goroutine spawn; the doc sections.
+
+      **Manual sidecar exception**: ios/KeepAwake/ was restored on 2026-06-08 as a standalone manual-install app for devices such as iPhone 8 that lack an Auto-Lock=Never setting. It is intentionally outside spyder's daemon/supervisor/deploy surface.
     tags:
     - ios
     - autoawake
@@ -2140,8 +2142,8 @@ targets:
     acceptance:
     - Root cause of the go-ios `instruments.ListenAppStateNotifications.Close()` leak documented — either confirmed in current upstream (https://github.com/danielpaulus/go-ios) or determined that newer versions ship a fixed Close(). Reproducer recorded.
     - Either (a) an upstream PR is open / merged that makes Close() actually tear down the DTX conn, or (b) spyder vendors a forked go-ios with the fix, or (c) spyder uses a different go-ios API that doesn't have the bug, or (d) we conclude the leak is fundamental and document a different keep-awake mechanism.
-    - 'An iOS keep-awake mechanism — restored KeepAwake supervisor or alternative — works end-to-end against a real device for ≥30 min without leaking tunnel connections (verified via lsof: no monotonic growth at the convergence cadence).'
-    - 'If reinstating KeepAwake: source is recovered from git history (the v0.39.0 era — pre-removal). Tests cover the leak-free path (goroutine + connection accounting in an integration test if feasible).'
+    - 'An iOS keep-awake mechanism — restored KeepAwake supervisor or alternative — works end-to-end against a real device for ≥30 min without leaking tunnel connections (verified via lsof: no monotonic growth at the convergence cadence). The standalone manual ios/KeepAwake sidecar does not satisfy this by itself because it is not supervised by spyder.'
+    - 'If reinstating automated KeepAwake: tests cover the leak-free path (goroutine + connection accounting in an integration test if feasible). The manual sidecar source may be reused, but spyder-side deploy/launch/convergence must still be rebuilt deliberately.'
     context: |-
       Filed 2026-05-19 alongside 🎯T63's removal. The KeepAwake / autoawake supervisor was ripped out because its per-convergence-tick `instruments.ListenAppStateNotifications` call leaked a TCP connection to the bundled `ios` tunnel daemon every 15s per attached device — go-ios's `Close()` does `closeChannel <- struct{}{}` (a no-op channel send) instead of `conn.Close()` on the underlying DTX connection, so the socket stays ESTABLISHED and pinned by the captured recv closure. After ~5 min the daemon would stop responding to HTTP entirely.
 
