@@ -68,6 +68,14 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		return errors.New("iostunnel: already started")
 	}
 
+	if err := s.startLocked(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Supervisor) startLocked(ctx context.Context) error {
 	// Use plain exec.Command (not exec.CommandContext) so ctx
 	// cancellation alone doesn't kill the child — Stop owns the
 	// teardown sequence and needs to send SIGTERM first for clean
@@ -118,9 +126,40 @@ func (s *Supervisor) Start(ctx context.Context) error {
 		} else {
 			slog.Error("iostunnel: subprocess exited unexpectedly (no error)")
 		}
+		go s.restartLoop(ctx)
 	}()
 
 	return nil
+}
+
+func (s *Supervisor) restartLoop(ctx context.Context) {
+	backoff := time.Second
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+
+		s.mu.Lock()
+		if s.cmd != nil {
+			s.mu.Unlock()
+			return
+		}
+		err := s.startLocked(ctx)
+		s.mu.Unlock()
+		if err == nil {
+			return
+		}
+
+		slog.Error("iostunnel: restart failed", "error", err, "retry_in", backoff.String())
+		if backoff < 30*time.Second {
+			backoff *= 2
+			if backoff > 30*time.Second {
+				backoff = 30 * time.Second
+			}
+		}
+	}
 }
 
 // Stop signals the tunnel subprocess to exit (SIGTERM, then SIGKILL
