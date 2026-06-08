@@ -23,6 +23,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -70,7 +72,27 @@ type Resolver struct {
 
 type entry struct {
 	dev      ios.DeviceEntry
+	major    int // iOS major version (e.g. 16, 17). 0 if unknown.
 	resolved time.Time
+}
+
+// ParseIOSMajor extracts the major version number from a ProductVersion
+// string such as "17.4.1" or "16.7". Returns 0 if the string can't be
+// parsed; callers should treat 0 as "unknown — assume modern path".
+func ParseIOSMajor(productVersion string) int {
+	if productVersion == "" {
+		return 0
+	}
+	dot := strings.IndexByte(productVersion, '.')
+	head := productVersion
+	if dot > 0 {
+		head = productVersion[:dot]
+	}
+	n, err := strconv.Atoi(head)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // New constructs a Resolver against the tunnel-info endpoint at
@@ -94,17 +116,32 @@ func New(host string, port int) *Resolver {
 // Session returns an enriched DeviceEntry for udid, ready to pass to
 // instruments / installationproxy / screenshotr. Cached per-UDID with a
 // short TTL; on transport errors the caller should also Invalidate.
+//
+// For iOS ≤16 devices the returned DeviceEntry is the bare lockdown
+// entry (no RSD enrichment, since RSD doesn't exist on those devices).
+// Callers that need to branch on iOS major version should use
+// SessionWithVersion instead.
 func (r *Resolver) Session(udid string) (ios.DeviceEntry, error) {
+	dev, _, err := r.SessionWithVersion(udid)
+	return dev, err
+}
+
+// SessionWithVersion is like Session but also returns the device's iOS
+// major version (e.g. 16, 17). Major == 0 means "unknown" — callers
+// should treat that as "assume the modern path", since not knowing the
+// version is more likely a fresh-device timing issue than an iOS ≤16
+// device that's been online long enough to enumerate.
+func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error) {
 	if udid == "" {
-		return ios.DeviceEntry{}, errors.New("goios: empty UDID")
+		return ios.DeviceEntry{}, 0, errors.New("goios: empty UDID")
 	}
 
 	for {
 		r.mu.Lock()
 		if e, ok := r.cache[udid]; ok && time.Since(e.resolved) < cacheTTL {
-			dev := e.dev
+			dev, major := e.dev, e.major
 			r.mu.Unlock()
-			return dev, nil
+			return dev, major, nil
 		}
 		// If another goroutine is already resolving this UDID, wait for
 		// it to finish, then re-check the cache.
@@ -119,16 +156,16 @@ func (r *Resolver) Session(udid string) (ios.DeviceEntry, error) {
 		r.inflight[udid] = done
 		r.mu.Unlock()
 
-		dev, err := r.resolveWithTimeout(udid)
+		dev, major, err := r.resolveWithTimeout(udid)
 
 		r.mu.Lock()
 		delete(r.inflight, udid)
 		close(done)
 		if err == nil {
-			r.cache[udid] = &entry{dev: dev, resolved: time.Now()}
+			r.cache[udid] = &entry{dev: dev, major: major, resolved: time.Now()}
 		}
 		r.mu.Unlock()
-		return dev, err
+		return dev, major, err
 	}
 }
 
@@ -145,23 +182,24 @@ func (r *Resolver) Invalidate(udid string) {
 // this bounds it. On timeout the in-flight resolve goroutine is abandoned
 // — it sends to a buffered channel that's discarded, and resolve's own
 // deferred Close cleans up the RSD service when (if) it finally unblocks.
-func (r *Resolver) resolveWithTimeout(udid string) (ios.DeviceEntry, error) {
+func (r *Resolver) resolveWithTimeout(udid string) (ios.DeviceEntry, int, error) {
 	type result struct {
-		dev ios.DeviceEntry
-		err error
+		dev   ios.DeviceEntry
+		major int
+		err   error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		dev, err := r.resolve(udid)
-		ch <- result{dev, err}
+		dev, major, err := r.resolve(udid)
+		ch <- result{dev, major, err}
 	}()
 	select {
 	case res := <-ch:
-		return res.dev, res.err
+		return res.dev, res.major, res.err
 	case <-time.After(resolveTimeout):
 		wedge.Capture(udid, "goios.resolve.timeout")
 		slog.Error("goios resolve: timed out", "udid", udid, "timeout", resolveTimeout.String())
-		return ios.DeviceEntry{}, fmt.Errorf(
+		return ios.DeviceEntry{}, 0, fmt.Errorf(
 			"goios: RSD session for %s timed out after %s (tunnel/usbmuxd may be wedged)",
 			udid, resolveTimeout)
 	}
@@ -179,7 +217,7 @@ func (r *Resolver) resolveWithTimeout(udid string) (ios.DeviceEntry, error) {
 // Start/end events are logged at Info — bounded by the 60s session
 // cache, so this is event-shaped (one fresh handshake per device
 // per minute under steady load), not per-RPC noise.
-func (r *Resolver) resolve(udid string) (ios.DeviceEntry, error) {
+func (r *Resolver) resolve(udid string) (ios.DeviceEntry, int, error) {
 	started := time.Now()
 	slog.Info("goios resolve: start", "udid", udid)
 
@@ -192,11 +230,28 @@ func (r *Resolver) resolve(udid string) (ios.DeviceEntry, error) {
 
 	dev, err := ios.GetDevice(udid)
 	if err != nil {
-		return ios.DeviceEntry{}, fail("GetDevice", fmt.Errorf("goios: get device %s: %w", udid, err))
+		return ios.DeviceEntry{}, 0, fail("GetDevice", fmt.Errorf("goios: get device %s: %w", udid, err))
 	}
+
+	// Detect iOS major version up front. Lockdown's GetValues works on
+	// both eras (USBMux path, sub-100ms). If the device is iOS ≤16 we
+	// skip the tunnel/RSD dance entirely — those services don't exist on
+	// that path and the bare lockdown DeviceEntry is what the legacy
+	// instruments / installationproxy / screenshotr services need.
+	major := 0
+	if values, gvErr := ios.GetValues(dev); gvErr == nil {
+		major = ParseIOSMajor(values.Value.ProductVersion)
+	}
+	if major != 0 && major < 17 {
+		slog.Info("goios resolve: ok (lockdown-only, no tunnel)",
+			"udid", udid, "ios_major", major,
+			"duration_ms", time.Since(started).Milliseconds())
+		return dev, major, nil
+	}
+
 	info, err := tunnel.TunnelInfoForDevice(udid, r.tunnelHost, r.tunnelPort)
 	if err != nil {
-		return ios.DeviceEntry{}, fail("TunnelInfo", fmt.Errorf(
+		return ios.DeviceEntry{}, major, fail("TunnelInfo", fmt.Errorf(
 			"goios: tunnel info for %s from %s:%d: %w (is `ios tunnel start` running?)",
 			udid, r.tunnelHost, r.tunnelPort, err))
 	}
@@ -206,24 +261,24 @@ func (r *Resolver) resolve(udid string) (ios.DeviceEntry, error) {
 
 	rsdService, err := ios.NewWithAddrPortDevice(info.Address, info.RsdPort, dev)
 	if err != nil {
-		return ios.DeviceEntry{}, fail("NewRSD",
+		return ios.DeviceEntry{}, major, fail("NewRSD",
 			fmt.Errorf("goios: connect RSD %s:%d: %w", info.Address, info.RsdPort, err))
 	}
 	defer rsdService.Close()
 	rsdProvider, err := rsdService.Handshake()
 	if err != nil {
-		return ios.DeviceEntry{}, fail("Handshake",
+		return ios.DeviceEntry{}, major, fail("Handshake",
 			fmt.Errorf("goios: RSD handshake for %s: %w", udid, err))
 	}
 	enriched, err := ios.GetDeviceWithAddress(udid, info.Address, rsdProvider)
 	if err != nil {
-		return ios.DeviceEntry{}, fail("Enrich",
+		return ios.DeviceEntry{}, major, fail("Enrich",
 			fmt.Errorf("goios: enrich device %s: %w", udid, err))
 	}
 	enriched.UserspaceTUN = dev.UserspaceTUN
 	enriched.UserspaceTUNHost = dev.UserspaceTUNHost
 	enriched.UserspaceTUNPort = dev.UserspaceTUNPort
-	slog.Info("goios resolve: ok", "udid", udid,
+	slog.Info("goios resolve: ok", "udid", udid, "ios_major", major,
 		"duration_ms", time.Since(started).Milliseconds())
-	return enriched, nil
+	return enriched, major, nil
 }
