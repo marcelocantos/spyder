@@ -515,14 +515,29 @@ func (a *IOSAdapter) ResolveExecutable(id, bundleID string) (string, bool, error
 	return "", false, nil
 }
 
-// LaunchApp foregrounds an arbitrary app via go-ios's appservice
-// (com.apple.coredevice.feature.launchapplication, the iOS-17+
-// CoreDevice launch path). The pid the launch returns is currently
-// discarded — callers that need it call AppPID after.
+// LaunchApp foregrounds an arbitrary app. Path selection is automatic
+// per device by iOS major version: iOS-17+ devices go through go-ios's
+// appservice (com.apple.coredevice.feature.launchapplication, the
+// CoreDevice/RemoteXPC path that requires `ios tunnel start`); iOS ≤16
+// devices go through go-ios's instruments.ProcessControl (DTX-over-
+// lockdown, no tunnel required). The pid the launch returns is
+// currently discarded — callers that need it call AppPID after.
 func (a *IOSAdapter) LaunchApp(id, bundleID string, env map[string]string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
+	_, major, sErr := a.goios.SessionWithVersion(id)
+	if sErr != nil {
+		return fmt.Errorf("launch %s on %s: %w", bundleID, id, sErr)
+	}
+	if major != 0 && major < 17 {
+		return a.launchAppLockdown(id, bundleID, env)
+	}
+	return a.launchAppAppservice(id, bundleID, env)
+}
+
+// launchAppAppservice is the iOS-17+ path (CoreDevice/RemoteXPC).
+func (a *IOSAdapter) launchAppAppservice(id, bundleID string, env map[string]string) error {
 	conn, release, err := a.asPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
@@ -548,9 +563,58 @@ func (a *IOSAdapter) LaunchApp(id, bundleID string, env map[string]string) error
 	return nil
 }
 
+// launchAppLockdown is the iOS ≤16 path (DTX-over-lockdown via
+// instruments.ProcessControl). Requires a mounted Developer Disk Image
+// — if the device doesn't have one (Xcode hasn't opened it recently),
+// the underlying ProcessControl handshake fails with a clear error that
+// we wrap with a hint.
+func (a *IOSAdapter) launchAppLockdown(id, bundleID string, env map[string]string) error {
+	dev, _, err := a.goios.SessionWithVersion(id)
+	if err != nil {
+		return fmt.Errorf("launch %s on %s: %w", bundleID, id, err)
+	}
+	pc, err := instruments.NewProcessControl(dev)
+	if err != nil {
+		a.goios.Invalidate(id)
+		return wrapMissingDDI(fmt.Errorf("launch %s on %s: instruments.ProcessControl: %w", bundleID, id, err))
+	}
+	defer pc.Close()
+	var envArg map[string]any
+	if len(env) > 0 {
+		envArg = make(map[string]any, len(env))
+		for k, v := range env {
+			envArg[k] = v
+		}
+	}
+	if _, err := pc.LaunchAppWithArgs(bundleID, nil, envArg, nil); err != nil {
+		msg := err.Error()
+		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
+			return fmt.Errorf("app not installed: %s", bundleID)
+		}
+		return wrapMissingDDI(fmt.Errorf("launch %s on %s: %w", bundleID, id, err))
+	}
+	return nil
+}
+
+// wrapMissingDDI adds a helpful hint to errors that look like the
+// device's Developer Disk Image isn't mounted. The bundled `ios image
+// auto <udid>` (or opening the device once in Xcode) installs it.
+func wrapMissingDDI(err error) error {
+	if err == nil {
+		return nil
+	}
+	s := strings.ToLower(err.Error())
+	if strings.Contains(s, "developer disk") || strings.Contains(s, "image not mounted") || strings.Contains(s, "could not start service") {
+		return fmt.Errorf("%w\n\nHint: this is the iOS ≤16 lockdown path which requires the Developer Disk Image to be mounted. Mount it by opening the device once in Xcode → Devices and Simulators, or run `ios image auto <udid>` (the bundled binary is in $(brew --prefix)/opt/spyder/libexec/spyder/ios).", err)
+	}
+	return err
+}
+
 // TerminateApp stops an app by bundle id. iOS doesn't expose a
-// "kill by bundle id" RPC directly — go-ios's appservice only kills by
-// pid — so we resolve the pid first.
+// "kill by bundle id" RPC directly — go-ios kills by pid — so we
+// resolve the pid first. Path selection mirrors LaunchApp: iOS-17+
+// uses appservice.KillProcess; iOS ≤16 uses
+// instruments.ProcessControl.KillProcess.
 func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
@@ -562,6 +626,26 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 			return nil
 		}
 		return err
+	}
+	_, major, sErr := a.goios.SessionWithVersion(id)
+	if sErr != nil {
+		return fmt.Errorf("terminate %s on %s: %w", bundleID, id, sErr)
+	}
+	if major != 0 && major < 17 {
+		dev, _, err := a.goios.SessionWithVersion(id)
+		if err != nil {
+			return fmt.Errorf("terminate %s on %s: %w", bundleID, id, err)
+		}
+		pc, err := instruments.NewProcessControl(dev)
+		if err != nil {
+			a.goios.Invalidate(id)
+			return wrapMissingDDI(fmt.Errorf("terminate %s on %s: instruments.ProcessControl: %w", bundleID, id, err))
+		}
+		defer pc.Close()
+		if err := pc.KillProcess(uint64(pid)); err != nil {
+			return fmt.Errorf("terminate %s (pid %d) on %s: %w", bundleID, pid, id, err)
+		}
+		return nil
 	}
 	conn, release, err := a.asPool.Acquire(id)
 	if err != nil {
@@ -578,10 +662,13 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 
 // AppPID returns the pid of a running app by bundle id. Implemented
 // in two RPCs: installation_proxy resolves the bundle id to its
-// installed .app folder, and appservice.ListProcesses scans live
-// processes for one whose path contains that .app folder. Returns the
-// "app not running" error sentinel that the deploy_app handler keys
-// off when verify-pid runs immediately after a launch.
+// installed .app folder, and a process-list RPC scans live processes
+// for one whose path contains that .app folder. The process-list path
+// branches per iOS major version: appservice.ListProcesses on iOS-17+
+// (RemoteXPC), instruments.NewDeviceInfoService.ProcessList on iOS ≤16
+// (DTX-over-lockdown). Returns the "app not running" error sentinel
+// that the deploy_app handler keys off when verify-pid runs
+// immediately after a launch.
 func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
@@ -594,6 +681,39 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if appBase == "" {
 		return 0, fmt.Errorf("app not installed: %s", bundleID)
 	}
+	_, major, sErr := a.goios.SessionWithVersion(id)
+	if sErr != nil {
+		return 0, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, sErr)
+	}
+	needle := "/" + appBase + "/"
+	if major != 0 && major < 17 {
+		dev, _, err := a.goios.SessionWithVersion(id)
+		if err != nil {
+			return 0, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, err)
+		}
+		di, err := instruments.NewDeviceInfoService(dev)
+		if err != nil {
+			a.goios.Invalidate(id)
+			return 0, wrapMissingDDI(fmt.Errorf("AppPID for %s on %s: instruments.DeviceInfoService: %w", bundleID, id, err))
+		}
+		defer di.Close()
+		procs, err := di.ProcessList()
+		if err != nil {
+			return 0, fmt.Errorf("list processes on %s: %w", id, err)
+		}
+		for _, p := range procs {
+			// ProcessInfo on the lockdown path doesn't always carry a
+			// full executable path — match on .Name when Path is empty,
+			// falling back to Path when present.
+			if p.RealAppName != "" && strings.Contains(p.RealAppName, needle) {
+				return int(p.Pid), nil
+			}
+			if p.Name != "" && (p.Name == appBase || strings.HasSuffix(p.Name, "/"+appBase)) {
+				return int(p.Pid), nil
+			}
+		}
+		return 0, fmt.Errorf("app not running: %s", bundleID)
+	}
 	asConn, release, err := a.asPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
@@ -605,7 +725,6 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 		a.asPool.Invalidate(id)
 		return 0, fmt.Errorf("list processes on %s: %w", id, err)
 	}
-	needle := "/" + appBase + "/"
 	for _, p := range procs {
 		if strings.Contains(p.Path, needle) {
 			return p.Pid, nil

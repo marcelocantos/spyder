@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-06-01T09:38:37Z",
+  "generated_at": "2026-06-08T02:11:55Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL go test -timeout 2m  ./...",
-      "duration_s": 2,
+      "duration_s": 1,
       "status": "pass"
     },
     {
