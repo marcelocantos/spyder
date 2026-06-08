@@ -3280,7 +3280,7 @@ targets:
     discovered: 2026-06-07
   T78:
     name: spyder deploys, launches, and screenshots iOS ≤16 devices via go-ios lockdown, with no tunneld required
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3299,6 +3299,7 @@ targets:
     - deploy
     origin: manual
     discovered: 2026-06-07
+    achieved: 2026-06-08
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved
