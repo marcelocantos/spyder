@@ -145,19 +145,37 @@ func (a *IOSAdapter) List() ([]Info, error) {
 
 	// Primary source: go-ios's usbmux enumeration, with per-device
 	// lockdown enrichment for the human-friendly fields.
+	//
+	// devicectl filtering (paired-but-not-actually-connected guard) is
+	// only valid for iOS-17+: CoreDevice doesn't talk to iOS ≤16
+	// devices at all, so they're always "unavailable" there regardless
+	// of whether they're currently connected and usable via lockdown.
+	// For iOS ≤16, lockdown's GetValues is the oracle — if it succeeds,
+	// the device is reachable; if it fails, skip the entry.
 	if devList, err := goios_ios.ListDevices(); err == nil {
 		for _, dev := range devList.DeviceList {
 			udid := dev.Properties.SerialNumber
-			if connected != nil && !connected[udid] {
-				continue
-			}
 			info := Info{UUID: udid, Platform: "ios"}
-			if values, gerr := goios_ios.GetValues(dev); gerr == nil {
+			values, gerr := goios_ios.GetValues(dev)
+			if gerr == nil {
 				info.Name = values.Value.DeviceName
 				info.Model = values.Value.ProductType
 				if values.Value.ProductVersion != "" {
 					info.OS = "iOS " + values.Value.ProductVersion
 				}
+			}
+			major := 0
+			if gerr == nil {
+				major = goios.ParseIOSMajor(values.Value.ProductVersion)
+			}
+			// iOS-17+ (and unknown-version entries) gate on devicectl;
+			// iOS ≤16 entries gate on a successful lockdown enrichment.
+			if major != 0 && major < 17 {
+				if gerr != nil {
+					continue
+				}
+			} else if connected != nil && !connected[udid] {
+				continue
 			}
 			devices = append(devices, info)
 		}

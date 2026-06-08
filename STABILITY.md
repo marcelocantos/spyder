@@ -424,14 +424,14 @@ builds. **Stable.**
   `ios tunnel start --userspace` daemon (also go-ios), spawned by
   spyder at startup and reaped on shutdown — no privileged
   LaunchDaemon required.
-- **iOS keep-awake.** Removed in v0.40.0. The previous on-device
-  KeepAwake companion app + autoawake convergence supervisor were
-  ripped out because go-ios's `instruments.ListenAppStateNotifications`
-  `Close()` doesn't actually close the underlying DTX connection,
-  leaking a TCP connection per convergence cycle and eventually
-  wedging the daemon. The leak is upstream and spyder has no
-  workaround surface. Use OS-level never-sleep settings instead. See
-  🎯T64 for the investigation-and-reinstate target.
+- **iOS keep-awake.** The daemon-side autoawake convergence supervisor
+  was removed in v0.40.0 because go-ios's
+  `instruments.ListenAppStateNotifications` `Close()` doesn't actually
+  close the underlying DTX connection, leaking a TCP connection per
+  convergence cycle and eventually wedging the daemon. A standalone
+  `ios/KeepAwake` sidecar is available for manual Xcode install on
+  devices without an Auto-Lock=Never option; spyder does not auto-install
+  or supervise it. See 🎯T64 for the investigation-and-reinstate target.
 - **Tunnel daemon lifecycle.** iOS 17+ DVT operations
   (screenshot, app_state, foreground_app, ProcessControl, etc.)
   need an active RSD tunnel per device. spyder spawns the bundled
