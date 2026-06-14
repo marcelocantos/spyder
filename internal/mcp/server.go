@@ -425,6 +425,8 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleAppScreenshot(args)
 	case "app_state_slices":
 		return h.handleAppStateSlices(args)
+	case "app_state_describe":
+		return h.handleAppStateDescribe(args)
 	case "app_state_capture_start":
 		return h.handleAppStateCaptureStart(args)
 	case "app_state_capture_get":

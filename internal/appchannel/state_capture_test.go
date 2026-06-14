@@ -27,11 +27,15 @@ func newFakeStateApp(t *testing.T, port int, advertisedSlices []string) *fakeSta
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
+	descs := make([]SliceDescriptor, len(advertisedSlices))
+	for i, name := range advertisedSlices {
+		descs[i] = SliceDescriptor{Name: name}
+	}
 	helloParams, _ := PackParams(Hello{
 		AppName:    "fake-state",
 		AppVersion: "test",
 		Methods:    []string{MethodPing, MethodStateQuery},
-		Slices:     advertisedSlices,
+		Slices:     descs,
 	})
 	if err := WriteFrame(conn, &Envelope{ID: 1, Method: MethodHello, Params: helloParams}); err != nil {
 		t.Fatalf("hello: %v", err)
@@ -109,8 +113,8 @@ func TestHelloAdvertisesSlices(t *testing.T) {
 		t.Fatalf("Slices = %v; want 3 entries", hello.Slices)
 	}
 	for i, want := range []string{"scene", "physics", "hud"} {
-		if hello.Slices[i] != want {
-			t.Errorf("Slices[%d] = %q; want %q", i, hello.Slices[i], want)
+		if hello.Slices[i].Name != want {
+			t.Errorf("Slices[%d].Name = %q; want %q", i, hello.Slices[i].Name, want)
 		}
 	}
 }

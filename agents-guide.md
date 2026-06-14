@@ -370,7 +370,7 @@ When exactly one session is connected, every `app_*` tool defaults to
 it (omit `session_id`). When multiple are connected, `session_id` is
 required to disambiguate. `app_channel_list` shows what's live.
 
-### Discovering state slices (🎯T80)
+### Discovering state slices (🎯T80, T81)
 
 `state_query{slice}` is the catch-all readout the app exposes per
 named "slice" of its state (`scene`, `physics`, `hud`, whatever the
@@ -379,12 +379,62 @@ without prior knowledge:
 
 ```json
 {"name": "app_state_slices"}
-// → {"session_id": "...", "slices": ["scene", "physics", "input_queue"]}
+// → {"session_id": "...",
+//    "slices": [
+//      {"name": "scene"},
+//      {"name": "physics",
+//       "example": {"marble": {"position": {"x": 0.0, "y": 0.0, "z": 0.0}}}}
+//    ]}
 ```
 
-The list comes from the `slices` field the app advertised in its
-`hello`. Pre-T80 ge builds (which omit the field) return `[]`; the
-agent can fall back to known-slice probing if that happens.
+Each entry has a `name` (required) and an optional `example` payload —
+apps that volunteer one give the agent an immediate template for
+filter-writing; apps that don't, omit it. Bare-string entries from
+pre-T81 builds (`"scene"` rather than `{"name": "scene"}`) decode
+cleanly as name-only descriptors.
+
+### Knowing what to query for (🎯T81)
+
+When a slice doesn't have an inline example, ask the server for a
+types-only sketch — one `state_query` call walked into a structure-
+only view, much smaller than the full payload:
+
+```json
+{"name": "app_state_describe", "arguments": {"slice": "physics"}}
+// → {"slice": "physics",
+//    "shape": {"marble": {"position": {"x": "float", "y": "float", "z": "float"}},
+//              "doors": [{"id": "int", "open": "bool"}]}}
+```
+
+The agent reads the shape, writes a jq filter for the part it cares
+about, and queries the slice with that filter — never paying the full-
+payload cost. Works for any app supporting `state_query` (no app-side
+changes required).
+
+### Filtering server-side with jq (🎯T81)
+
+Every state/log/perf readout tool accepts an optional `select` jq
+expression. Spyder evaluates it server-side and returns only the
+filtered result, keeping agent context budgets manageable when slices
+are large:
+
+```json
+{"name": "app_state",
+ "arguments": {"slice": "physics", "select": ".marble.position"}}
+// → {"x": 1.2, "y": 0.3, "z": 0.0}
+```
+
+Works on:
+- `app_state` — single-shot, applied to the response.
+- `app_state_capture_start` — applied at *insert time*; samples whose
+  filter result is empty are skipped (saves buffer memory).
+- `app_state_capture_get` — applied at *drain time*; different filter
+  per call against the same capture's buffer.
+- `app_log_get` / `app_perf_get` — applied to the drained arrays.
+
+Bad expressions surface as `{"select_error": {"stage": "parse",
+"detail": "..."}}` rather than a generic tool error, so the agent
+can distinguish a busted filter from a busted device.
 
 ### Watching state evolve under inputs
 

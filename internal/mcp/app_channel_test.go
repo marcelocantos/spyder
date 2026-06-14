@@ -472,7 +472,8 @@ func TestAppChannel_DispatchSurfaceCoverage(t *testing.T) {
 		"app_input", "app_state",
 		"app_save_state", "app_restore_state",
 		"app_screenshot", "app_log_get", "app_perf_get",
-		"app_state_slices", "app_state_capture_start",
+		"app_state_slices", "app_state_describe",
+		"app_state_capture_start",
 		"app_state_capture_get", "app_state_capture_stop",
 		"app_state_capture_list",
 	}
