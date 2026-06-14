@@ -157,6 +157,11 @@ type Hello struct {
 	AppVersion string   `msgpack:"app_version"`
 	Methods    []string `msgpack:"methods"`          // methods the app handles
 	Pushes     []string `msgpack:"pushes,omitempty"` // push categories the app emits
+	// Slices enumerates the named state slices the app makes
+	// available to `state_query`. Lets agents discover what a game
+	// exposes without prior knowledge. Apps that omit this field get
+	// an empty list — backwards-compat with pre-T80 builds.
+	Slices []string `msgpack:"slices,omitempty"`
 }
 
 // HelloAck is spyder's response.

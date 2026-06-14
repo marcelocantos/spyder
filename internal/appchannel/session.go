@@ -87,6 +87,11 @@ type Session struct {
 	logDropped  int
 	perfBuf     []PerfPush
 	perfDropped int
+
+	// State captures: per-session table of background pollers that
+	// sample state_query{slice} on a fixed interval. Each captureID
+	// is unique within a session.
+	stateCaptures map[string]*StateCapture
 }
 
 // HelloInfo returns the app's advertised identity + supported methods.
@@ -211,7 +216,10 @@ func (s *Session) DrainPerf() ([]PerfPush, int) {
 }
 
 // Close terminates the session; any in-flight calls receive an error.
+// Background state captures are torn down so their goroutines don't
+// leak past session end.
 func (s *Session) Close() error {
+	s.closeStateCaptures()
 	s.cancel()
 	<-s.done
 	return nil
@@ -520,7 +528,8 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 		conn:      conn,
 		cancel:    sCancel,
 		done:      make(chan struct{}),
-		pending:   map[uint64]*pending{},
+		pending:       map[uint64]*pending{},
+		stateCaptures: map[string]*StateCapture{},
 	}
 
 	if err := s.handshake(); err != nil {

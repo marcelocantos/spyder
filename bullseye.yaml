@@ -3302,6 +3302,46 @@ targets:
     origin: manual
     discovered: 2026-06-07
     achieved: 2026-06-08
+  T79:
+    name: resolveAdapter routes by live-device match, not inventory + ClassifyRaw — inventory becomes purely opt-in
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`resolveAdapter(ref)` consults the live device lists between the inventory Lookup and the ClassifyRaw fallback. Resolution order: (1) inventory alias / UUID / CoreDevice / Android-serial exact match (existing behaviour); (2) live iOS device whose `DeviceName`, `UniqueDeviceID`, or `CoreDevice ID` matches `ref` (case-insensitive on DeviceName); (3) live Android device whose serial matches `ref`; (4) ClassifyRaw fallback for the offline case.'
+    - Step (2) and step (3) call the adapter `List()` methods directly. Cost is enumeration latency (~100ms) per resolveAdapter call when inventory misses; cache the live snapshot in the Handler with a short TTL (e.g. 5s) so back-to-back operations against the same device don't re-enumerate.
+    - 'Inventory becomes optional: an empty `~/.spyder/inventory.json` (or no file) leaves every spyder operation against a connected device working correctly, routed by live discovery. Inventory entries are still respected when present — they''re the source of truth for custom aliases (a name the device itself doesn''t advertise), notes, and stable handles for devices that are frequently offline.'
+    - 'The misroute bug that surfaced 2026-06-10 — a connected iOS device whose human-readable name (e.g. "Minicades Test iPhone", "Old iPhone") didn''t match any inventory alias or iOS UDID regex got silently routed to the Android adapter and returned `device not connected` — is no longer reachable. Specifically: `device_state` against any connected iOS device''s lockdown DeviceName succeeds without an inventory entry.'
+    - 'Test coverage: a unit test seeds a fake iOS adapter with a device whose `Name` is "Some iPhone" and asserts that `resolveAdapter("Some iPhone")` returns the iOS adapter (not Android). Another test seeds zero live devices and a non-UDID, non-serial-shaped string, and asserts ClassifyRaw fallback still fires (offline case).'
+    - agents-guide.md and the inventory section of the README explain the new resolution order — inventory becomes documented as a *convenience layer* for aliases / notes / offline-handle stability, not a mandatory registration step.
+    context: |-
+      Surfaced 2026-06-10 while debugging why spyder couldn't operate on two of four connected iOS devices ("Minicades Test iPhone" and "Old iPhone"). Root cause was not in usbmuxd, the tunnel, or the iOS adapter — it was resolveAdapter misrouting the human-readable name to the Android adapter via ClassifyRaw's "default to Android" rule. `adb -s "Minicades Test iPhone"` predictably returned "device not connected", with no hint that the wrong adapter was being consulted.
+
+      Immediate unblock was adding inventory entries for the two iPhones. But the underlying design is wrong: the live device lists already know which platform each connected device is on (spyder queries both for the `devices` MCP tool). resolveAdapter just doesn't consult them. The result is a UX trap — any user who plugs in a new iOS device and tries to operate on it by its DeviceName gets routed to Android and fails opaquely.
+
+      The fix shape (sketched in the conversation):
+
+          resolveAdapter(ref):
+              if entry := inventory.Lookup(ref): return entry.adapter
+              for d in ios.List():       if matches(d, ref): return ios
+              for d in android.List():   if matches(d, ref): return android
+              return ClassifyRaw(ref).adapter   # offline-only fallback
+
+      The 5s live-snapshot cache is what keeps the enumeration latency from biting on every call inside a workflow.
+
+      Net effect: inventory becomes optional. A fresh-spyder install with zero inventory works correctly against every connected device. Inventory entries are still useful but no longer load-bearing for basic operation — they exist for custom aliases (a name the device doesn't advertise), per-device notes, and offline-handle stability (so reservations against "Old iPhone" still route correctly even when the device is currently asleep / unplugged).
+
+      Pairs with the recently-shipped T78 (iOS ≤16 lockdown path) — that target fixed enumeration for an under-served device class; this one fixes routing for any iOS device users hadn't manually inventoried.
+    tags:
+    - resolver
+    - inventory
+    - dispatch
+    - ux
+    - ios
+    - android
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-06-10
   T8:
     name: screenshot({device}) MCP tool returns a PNG for iOS and Android
     status: achieved
@@ -3325,6 +3365,33 @@ targets:
     origin: research-derived (mobile-mcp gap 2026-04-18)
     discovered: 2026-04-18
     achieved: 2026-04-18
+  T80:
+    name: First-class agent-readable consumption of ge app-channel state slices (telemetry/metadata pipe)
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'spyder exposes ge app-channel state slices to agents through a stable MCP surface: `app_state{slice}` returns a named slice as structured JSON (exists today — confirm + document), plus a convenience to enumerate/dump all registered slices so an agent can discover what a game exposes without prior knowledge.'
+    - 'Optional capture/stream mode: an agent can sample a slice repeatedly (or subscribe) across an `app_input` sequence to watch state evolve — e.g. tilt the device and read ball positions each frame — without a hand-rolled poll loop, mirroring the `log_collect`/`app_perf_get` session pattern.'
+    - 'The flow is documented in spyder''s agent guide: `LOG_TARGET=appchannel://host:port` on launch → handshake → `app_state{slice}` / `app_input`; including the iOS one-time "Allow local network" permission gotcha that blocks the channel until accepted once per device.'
+    - 'Generic: works for any ge game''s registered slices with no per-game spyder code (the schema convention lives in ge); validated end-to-end against multimaze2''s geometry slice on a physical device.'
+    context: |-
+      Surfaced 2026-06-14 from the multimaze2 Multiball L3 geometry-bug investigation. User framing: "spyder could support this directly through some kind of metadata pipe that ge supports."
+
+      CURRENT STATE (verified 2026-06-14 by reading internal/mcp/app_channel.go): the consumer surface ALREADY EXISTS and is tested —
+      - `app_state{slice}` MCP tool routes to `state_query` and returns the slice verbatim (app_channel.go:460; test queries slice "scene");
+      - `app_perf_get` drains perf samples (line 478); app_input, save/restore all present.
+
+      This target is therefore POLISH, NOT build-from-scratch. Remaining deltas: (1) slice DISCOVERY — surface the slice list the app already advertises in `hello` (e.g. an `app_state` with no slice, or a dump-all), so an agent can learn what a game exposes without prior knowledge; (2) a capture/STREAM mode for slices (sample a slice across an `app_input` sequence without a hand-rolled poll loop, mirroring `app_perf_get`/`log_collect`); (3) agent-guide docs of the end-to-end flow + the iOS one-time local-network-permission gotcha. Paired: ge 🎯T115 (schema/push), consumer slice multimaze2 🎯T48. Note `app_state{slice}` works against a real ge game the moment that game registers a slice.
+    tags:
+    - telemetry
+    - app-channel
+    - dev-tooling
+    - multimaze-audit
+    - mcp
+    origin: manual
+    discovered: 2026-06-14
+    achieved: 2026-06-14
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved
