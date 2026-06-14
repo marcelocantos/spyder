@@ -298,7 +298,7 @@ func (h *Handler) handleAppStateSlices(args map[string]any) (*mcpgo.CallToolResu
 		return errRes, nil
 	}
 	hello := s.HelloInfo()
-	slices := []string{}
+	slices := []appchannel.SliceDescriptor{}
 	if hello != nil && hello.Slices != nil {
 		slices = hello.Slices
 	}
@@ -321,8 +321,12 @@ func (h *Handler) handleAppStateCaptureStart(args map[string]any) (*mcpgo.CallTo
 	if v, ok := args["interval_ms"].(float64); ok && v > 0 {
 		interval = time.Duration(v) * time.Millisecond
 	}
-	c, err := s.StartStateCapture(slice, interval)
+	selectExpr := optString(args, "select")
+	c, err := s.StartStateCaptureWithSelect(slice, interval, selectExpr)
 	if err != nil {
+		if jqErr, ok := err.(*appchannel.JQError); ok {
+			return toolJSON(map[string]any{"select_error": jqErr})
+		}
 		return toolErr("state_capture_start: %v", err)
 	}
 	return toolJSON(map[string]any{
@@ -331,6 +335,7 @@ func (h *Handler) handleAppStateCaptureStart(args map[string]any) (*mcpgo.CallTo
 		"slice":       c.Slice,
 		"interval_ms": int(c.Interval / time.Millisecond),
 		"started_at":  c.Started,
+		"select":      c.SelectExpr,
 	})
 }
 
@@ -347,7 +352,48 @@ func (h *Handler) handleAppStateCaptureGet(args map[string]any) (*mcpgo.CallTool
 	if err != nil {
 		return toolErr("state_capture_get: %v", err)
 	}
-	return toolJSON(r)
+	selectExpr := optString(args, "select")
+	if selectExpr == "" {
+		return toolJSON(r)
+	}
+	filtered, jqErr := filterCaptureSamples(r.Samples, selectExpr)
+	if jqErr != nil {
+		return toolJSON(map[string]any{"select_error": jqErr})
+	}
+	return toolJSON(map[string]any{
+		"capture_id":      r.CaptureID,
+		"slice":           r.Slice,
+		"samples":         filtered,
+		"dropped_samples": r.Dropped,
+		"errors":          r.Errors,
+		"last_error":      r.LastError,
+	})
+}
+
+// filterCaptureSamples runs each sample's payload through the jq expr
+// and returns the matched results paired with their timestamps. A
+// parse/compile error is returned upfront (the expression is invalid
+// regardless of which sample it'd be applied to); per-sample eval
+// errors collapse the sample's result to nil.
+func filterCaptureSamples(samples []appchannel.StateCaptureSample, expr string) ([]map[string]any, *appchannel.JQError) {
+	// Pre-parse once via ApplyJQ on a dummy empty input — gojq.Parse
+	// is cheap but we want the JQError shape consistent with the
+	// other call sites.
+	out := make([]map[string]any, 0, len(samples))
+	for _, sample := range samples {
+		v, err := appchannel.ApplyJQ(expr, sample.Data)
+		if err != nil {
+			if jqErr, ok := err.(*appchannel.JQError); ok {
+				return nil, jqErr
+			}
+			v = nil
+		}
+		out = append(out, map[string]any{
+			"timestamp": sample.Timestamp,
+			"data":      v,
+		})
+	}
+	return out, nil
 }
 
 func (h *Handler) handleAppStateCaptureStop(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -386,16 +432,45 @@ func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, er
 	if err != nil {
 		return nil, err
 	}
+	selectExpr := optString(args, "select")
 	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, 10*time.Second)
 	if err != nil {
 		return toolErr("state_query: %v", err)
 	}
-	// Decode generically and re-serialize as JSON for the agent.
-	var generic any
-	if err := appchannel.UnpackParams(res, &generic); err != nil {
-		return toolErr("state_query: decode result: %v", err)
+	out, err := appchannel.ApplyJQ(selectExpr, res)
+	if err != nil {
+		if jqErr, ok := err.(*appchannel.JQError); ok {
+			return toolJSON(map[string]any{"select_error": jqErr})
+		}
+		return toolErr("state_query: %v", err)
 	}
-	return toolJSON(generic)
+	return toolJSON(out)
+}
+
+// handleAppStateDescribe runs `state_query{slice}` once and walks the
+// response into a types-only sketch — enough for the agent to write
+// jq filters without first paying the full-payload cost.
+func (h *Handler) handleAppStateDescribe(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	slice, err := requireString(args, "slice")
+	if err != nil {
+		return nil, err
+	}
+	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, 10*time.Second)
+	if err != nil {
+		return toolErr("state_describe: %v", err)
+	}
+	shape, err := appchannel.DescribeShape(res)
+	if err != nil {
+		return toolErr("state_describe: %v", err)
+	}
+	return toolJSON(map[string]any{
+		"slice": slice,
+		"shape": shape,
+	})
 }
 
 func (h *Handler) handleAppSaveState(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -472,9 +547,14 @@ func (h *Handler) handleAppLogGet(args map[string]any) (*mcpgo.CallToolResult, e
 		return errRes, nil
 	}
 	lines, dropped := s.DrainLogs()
+	selectExpr := optString(args, "select")
+	out, jqErr := applyJQToValue(lines, selectExpr)
+	if jqErr != nil {
+		return toolJSON(map[string]any{"select_error": jqErr})
+	}
 	return toolJSON(map[string]any{
 		"session_id":    s.ID,
-		"lines":         lines,
+		"lines":         out,
 		"dropped_lines": dropped,
 	})
 }
@@ -485,11 +565,38 @@ func (h *Handler) handleAppPerfGet(args map[string]any) (*mcpgo.CallToolResult, 
 		return errRes, nil
 	}
 	samples, dropped := s.DrainPerf()
+	selectExpr := optString(args, "select")
+	out, jqErr := applyJQToValue(samples, selectExpr)
+	if jqErr != nil {
+		return toolJSON(map[string]any{"select_error": jqErr})
+	}
 	return toolJSON(map[string]any{
 		"session_id":      s.ID,
-		"samples":         samples,
+		"samples":         out,
 		"dropped_samples": dropped,
 	})
+}
+
+// applyJQToValue runs a jq expression over an arbitrary Go value by
+// round-tripping through MessagePack. Lets the log/perf handlers
+// (which start from in-memory structs) share the same filter
+// machinery the state handlers use on raw msgpack bytes.
+func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
+	if expr == "" {
+		return v, nil
+	}
+	raw, err := appchannel.PackParams(v)
+	if err != nil {
+		return nil, &appchannel.JQError{Expression: expr, Stage: "marshal", Detail: err.Error()}
+	}
+	out, err := appchannel.ApplyJQ(expr, raw)
+	if err != nil {
+		if jqErr, ok := err.(*appchannel.JQError); ok {
+			return nil, jqErr
+		}
+		return nil, &appchannel.JQError{Expression: expr, Stage: "eval", Detail: err.Error()}
+	}
+	return out, nil
 }
 
 // appChannelDefinitions returns the MCP tool surface.
@@ -562,17 +669,23 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("session_id"),
 		),
 
-		mcpgo.NewTool("app_state_slices", mcpgo.WithDescription("Return the slice catalogue the app advertised in its hello. Lets an agent discover what a game exposes to `app_state` without prior knowledge. Apps that omit the `slices` field in hello (pre-T80 ge builds) return an empty list."),
+		mcpgo.NewTool("app_state_slices", mcpgo.WithDescription("Return the slice catalogue the app advertised in its hello. Each entry has a `name` and an optional `example` payload — agents that get an example can write jq filters immediately; agents that don't can call app_state_describe to learn the shape without paying the full-payload cost."),
 			mcpgo.WithString("session_id"),
 		),
-		mcpgo.NewTool("app_state_capture_start", mcpgo.WithDescription("Start a background poller that samples `state_query{slice}` at a fixed interval, accumulating timestamped samples until app_state_capture_stop is called. Mirrors the log_collect / app_perf_get pattern — lets an agent run an `app_input` sequence and observe state evolve frame-by-frame without a hand-rolled poll loop. Drain accumulated samples with app_state_capture_get."),
+		mcpgo.NewTool("app_state_describe", mcpgo.WithDescription("Call state_query{slice} once and return a recursive types-only sketch (`{\"marble\": {\"position\": {\"x\": \"float\", ...}}, ...}`). Lets the agent infer jq expressions without first ingesting the full payload. Works for any app supporting state_query — no protocol changes needed app-side."),
+			mcpgo.WithString("session_id"),
+			mcpgo.WithString("slice", mcpgo.Required(), mcpgo.Description("Slice name to describe.")),
+		),
+		mcpgo.NewTool("app_state_capture_start", mcpgo.WithDescription("Start a background poller that samples `state_query{slice}` at a fixed interval, accumulating timestamped samples until app_state_capture_stop is called. Mirrors the log_collect / app_perf_get pattern — lets an agent run an `app_input` sequence and observe state evolve frame-by-frame without a hand-rolled poll loop. Drain accumulated samples with app_state_capture_get.\n\nOptional `select` jq expression is applied at insert time — samples whose filter result is empty don't enter the ring buffer. Saves agent context budget and capture-buffer memory when only a small subset of a large slice is interesting."),
 			mcpgo.WithString("session_id"),
 			mcpgo.WithString("slice", mcpgo.Required(), mcpgo.Description("Slice name (e.g. \"scene\", \"physics\"). Must be one the app advertised in hello.")),
 			mcpgo.WithNumber("interval_ms", mcpgo.Description("Sample interval in milliseconds. Default 100 (~10 Hz). Minimum 10.")),
+			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to each sample before insertion. Samples whose filter result is empty are skipped. Bad expressions are caught at start time and returned as `select_error`.")),
 		),
-		mcpgo.NewTool("app_state_capture_get", mcpgo.WithDescription("Drain the buffered samples for a state capture without stopping it."),
+		mcpgo.NewTool("app_state_capture_get", mcpgo.WithDescription("Drain the buffered samples for a state capture without stopping it. Optional `select` filters the drained samples (applies in addition to any insert-time filter set at start)."),
 			mcpgo.WithString("session_id"),
 			mcpgo.WithString("capture_id", mcpgo.Required(), mcpgo.Description("capture_id returned by app_state_capture_start")),
+			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to each drained sample's data. Bad expressions return `select_error`.")),
 		),
 		mcpgo.NewTool("app_state_capture_stop", mcpgo.WithDescription("Stop a state capture poller and return the remaining samples. The capture is gone after this call."),
 			mcpgo.WithString("session_id"),
@@ -582,11 +695,13 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("session_id"),
 		),
 
-		mcpgo.NewTool("app_log_get", mcpgo.WithDescription("Drain structured log lines the app has pushed since the last call. Capture continues."),
+		mcpgo.NewTool("app_log_get", mcpgo.WithDescription("Drain structured log lines the app has pushed since the last call. Capture continues. Optional `select` filters the drained lines server-side."),
 			mcpgo.WithString("session_id"),
+			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to the lines array. Example: `map(select(.level == \"error\"))`.")),
 		),
-		mcpgo.NewTool("app_perf_get", mcpgo.WithDescription("Drain perf-counter samples the app has pushed since the last call. Capture continues."),
+		mcpgo.NewTool("app_perf_get", mcpgo.WithDescription("Drain perf-counter samples the app has pushed since the last call. Capture continues. Optional `select` filters the drained samples server-side."),
 			mcpgo.WithString("session_id"),
+			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to the samples array. Example: `[.[].samples.frame_ms] | max`.")),
 		),
 	}
 }

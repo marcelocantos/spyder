@@ -20,6 +20,7 @@ import (
 	"io"
 
 	"github.com/vmihailenco/msgpack/v5"
+	"github.com/vmihailenco/msgpack/v5/msgpcode"
 )
 
 // MaxFrameBytes caps any single frame on the wire to prevent runaway
@@ -151,6 +152,45 @@ func UnpackParams(raw msgpack.RawMessage, dst any) error {
 	return nil
 }
 
+// SliceDescriptor names one state slice the app exposes, optionally
+// with a representative example payload. Wire-compatible with both
+// the bare-string form ("scene") and the struct form ({name: "scene",
+// example: {...}}) — apps that don't volunteer an example send a
+// plain string and DecodeMsgpack lifts it into a name-only descriptor.
+type SliceDescriptor struct {
+	Name    string `msgpack:"name" json:"name"`
+	Example any    `msgpack:"example,omitempty" json:"example,omitempty"`
+}
+
+// DecodeMsgpack accepts either a string (legacy / minimal apps) or a
+// map (apps that volunteer an example). Lets Hello carry a mixed list.
+func (d *SliceDescriptor) DecodeMsgpack(dec *msgpack.Decoder) error {
+	code, err := dec.PeekCode()
+	if err != nil {
+		return err
+	}
+	if msgpcode.IsString(code) {
+		s, err := dec.DecodeString()
+		if err != nil {
+			return err
+		}
+		d.Name = s
+		return nil
+	}
+	// Map form: decode into a map and pull out name / example.
+	m, err := dec.DecodeMap()
+	if err != nil {
+		return err
+	}
+	if v, ok := m["name"].(string); ok {
+		d.Name = v
+	}
+	if v, ok := m["example"]; ok {
+		d.Example = v
+	}
+	return nil
+}
+
 // Hello is the first message an app sends on a new connection.
 type Hello struct {
 	AppName    string   `msgpack:"app_name"`
@@ -159,9 +199,9 @@ type Hello struct {
 	Pushes     []string `msgpack:"pushes,omitempty"` // push categories the app emits
 	// Slices enumerates the named state slices the app makes
 	// available to `state_query`. Lets agents discover what a game
-	// exposes without prior knowledge. Apps that omit this field get
-	// an empty list — backwards-compat with pre-T80 builds.
-	Slices []string `msgpack:"slices,omitempty"`
+	// exposes without prior knowledge. Bare strings and {name, example}
+	// maps both decode cleanly (see SliceDescriptor).
+	Slices []SliceDescriptor `msgpack:"slices,omitempty"`
 }
 
 // HelloAck is spyder's response.

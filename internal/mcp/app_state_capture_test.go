@@ -24,11 +24,15 @@ func dialSliceApp(t *testing.T, port int, slices []string) net.Conn {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
+	descs := make([]appchannel.SliceDescriptor, len(slices))
+	for i, name := range slices {
+		descs[i] = appchannel.SliceDescriptor{Name: name}
+	}
 	helloParams, _ := appchannel.PackParams(appchannel.Hello{
 		AppName:    "slice-smoke",
 		AppVersion: "test",
 		Methods:    []string{appchannel.MethodPing, appchannel.MethodStateQuery},
-		Slices:     slices,
+		Slices:     descs,
 	})
 	if err := appchannel.WriteFrame(conn, &appchannel.Envelope{ID: 1, Method: appchannel.MethodHello, Params: helloParams}); err != nil {
 		t.Fatalf("hello: %v", err)
@@ -80,7 +84,7 @@ func TestAppStateSlices_ReturnsHelloCatalogue(t *testing.T) {
 	body := resultText(t, &r)
 
 	var resp struct {
-		Slices []string `json:"slices"`
+		Slices []appchannel.SliceDescriptor `json:"slices"`
 	}
 	if err := json.Unmarshal([]byte(body), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -89,8 +93,8 @@ func TestAppStateSlices_ReturnsHelloCatalogue(t *testing.T) {
 		t.Errorf("slices = %v; want 3 entries", resp.Slices)
 	}
 	for i, want := range []string{"scene", "physics", "hud"} {
-		if resp.Slices[i] != want {
-			t.Errorf("Slices[%d] = %q; want %q", i, resp.Slices[i], want)
+		if resp.Slices[i].Name != want {
+			t.Errorf("Slices[%d].Name = %q; want %q", i, resp.Slices[i].Name, want)
 		}
 	}
 }
@@ -106,6 +110,60 @@ func TestAppStateSlices_EmptyWhenAppOmits(t *testing.T) {
 	body := resultText(t, &r)
 	if !strings.Contains(body, `"slices": []`) && !strings.Contains(body, `"slices":[]`) {
 		t.Errorf("expected empty slices array; got %s", body)
+	}
+}
+
+func TestAppState_WithSelect(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	conn := dialSliceApp(t, port, []string{"physics"})
+	defer conn.Close()
+	_ = waitForAppSession(t, h)
+
+	// Filter to extract just the tick number from the slice response.
+	r := dispatchJSON(t, h, "app_state", map[string]any{"slice": "physics", "select": ".tick"})
+	if r.IsError {
+		t.Fatalf("app_state with select: %s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	if !strings.Contains(body, "1") {
+		t.Errorf("expected tick=1 in body; got %s", body)
+	}
+}
+
+func TestAppState_SelectErrorSurfaces(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	conn := dialSliceApp(t, port, []string{"scene"})
+	defer conn.Close()
+	_ = waitForAppSession(t, h)
+
+	r := dispatchJSON(t, h, "app_state", map[string]any{"slice": "scene", "select": ".[bad"})
+	body := resultText(t, &r)
+	if !strings.Contains(body, "select_error") {
+		t.Errorf("expected select_error in body; got %s", body)
+	}
+}
+
+func TestAppStateDescribe(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	conn := dialSliceApp(t, port, []string{"scene"})
+	defer conn.Close()
+	_ = waitForAppSession(t, h)
+
+	r := dispatchJSON(t, h, "app_state_describe", map[string]any{"slice": "scene"})
+	if r.IsError {
+		t.Fatalf("app_state_describe: %s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	// dialSliceApp's payload is `{slice: "...", tick: N}` — describe
+	// should emit `{slice: "string", tick: "int"}`.
+	if !strings.Contains(body, `"slice": "string"`) {
+		t.Errorf("expected slice:string in shape; got %s", body)
+	}
+	if !strings.Contains(body, `"tick": "int"`) {
+		t.Errorf("expected tick:int in shape; got %s", body)
 	}
 }
 

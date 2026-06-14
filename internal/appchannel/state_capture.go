@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/itchyny/gojq"
 	"github.com/vmihailenco/msgpack/v5"
 )
 
@@ -66,14 +67,21 @@ type StateCapture struct {
 	Slice    string
 	Interval time.Duration
 	Started  time.Time
+	// SelectExpr is the optional jq expression applied to each
+	// sample's payload before insertion. When set, samples whose
+	// filter result is empty are skipped (don't enter the ring),
+	// trading the agent-context-budget win at start-time rather
+	// than drain-time. Per-sample eval errors collapse to nil.
+	SelectExpr string
+	jqCode     *gojq.Code
 
 	cancel context.CancelFunc
 	done   chan struct{}
 
 	mu      sync.Mutex
 	samples []StateCaptureSample
-	dropped int  // FIFO-evicted samples
-	errors  int  // failed state_query calls
+	dropped int    // FIFO-evicted samples
+	errors  int    // failed state_query calls
 	lastErr string // last non-nil error message
 }
 
@@ -113,6 +121,14 @@ type StateCaptureInfo struct {
 // StartStateCapture launches a poller that calls state_query{slice}
 // every interval. Returns immediately with the capture handle.
 func (s *Session) StartStateCapture(slice string, interval time.Duration) (*StateCapture, error) {
+	return s.StartStateCaptureWithSelect(slice, interval, "")
+}
+
+// StartStateCaptureWithSelect is StartStateCapture plus an optional
+// jq expression applied at insert time. Samples whose filter result
+// is empty are skipped — saves buffer memory for the agent that
+// only cares about a small subset of a large slice.
+func (s *Session) StartStateCaptureWithSelect(slice string, interval time.Duration, selectExpr string) (*StateCapture, error) {
 	if slice == "" {
 		return nil, errors.New("appchannel: state capture requires a slice name")
 	}
@@ -126,18 +142,34 @@ func (s *Session) StartStateCapture(slice string, interval time.Duration) (*Stat
 		return nil, fmt.Errorf("appchannel: app does not support state_query")
 	}
 
+	// Pre-compile any select expression so a bad filter fails fast at
+	// start time rather than per-sample at insert time.
+	var jqCode *gojq.Code
+	if selectExpr != "" {
+		query, err := gojq.Parse(selectExpr)
+		if err != nil {
+			return nil, &JQError{Expression: selectExpr, Stage: "parse", Detail: err.Error()}
+		}
+		jqCode, err = gojq.Compile(query)
+		if err != nil {
+			return nil, &JQError{Expression: selectExpr, Stage: "compile", Detail: err.Error()}
+		}
+	}
+
 	id, err := newID()
 	if err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	c := &StateCapture{
-		ID:       id,
-		Slice:    slice,
-		Interval: interval,
-		Started:  time.Now(),
-		cancel:   cancel,
-		done:     make(chan struct{}),
+		ID:         id,
+		Slice:      slice,
+		Interval:   interval,
+		Started:    time.Now(),
+		SelectExpr: selectExpr,
+		jqCode:     jqCode,
+		cancel:     cancel,
+		done:       make(chan struct{}),
 	}
 
 	s.mu.Lock()
@@ -174,13 +206,70 @@ func (c *StateCapture) poll(ctx context.Context, s *Session) {
 				c.mu.Unlock()
 				continue
 			}
-			c.samples = append(c.samples, StateCaptureSample{Timestamp: now, Data: res})
+			// Apply insert-time filter if one was registered.
+			sample := StateCaptureSample{Timestamp: now, Data: res}
+			if c.jqCode != nil {
+				filtered, ok := c.applyJQ(ctx, res)
+				if !ok {
+					c.mu.Unlock()
+					continue
+				}
+				// Re-encode the filtered result as msgpack so the
+				// sample retains the same RawMessage shape callers
+				// already handle.
+				b, err := msgpack.Marshal(filtered)
+				if err != nil {
+					c.errors++
+					c.lastErr = err.Error()
+					c.mu.Unlock()
+					continue
+				}
+				sample.Data = b
+			}
+			c.samples = append(c.samples, sample)
 			for len(c.samples) > MaxStateCaptureSamples {
 				c.samples = c.samples[1:]
 				c.dropped++
 			}
 			c.mu.Unlock()
 		}
+	}
+}
+
+// applyJQ runs the capture's compiled filter against the raw sample
+// and returns (filteredValue, true) when at least one match was
+// produced, or (nil, false) when the filter matched nothing (so the
+// sample should be skipped). Eval errors bump the errors counter.
+// Caller must hold c.mu (so the errors counter mutation is safe).
+func (c *StateCapture) applyJQ(ctx context.Context, raw msgpack.RawMessage) (any, bool) {
+	var input any
+	if err := msgpack.Unmarshal(raw, &input); err != nil {
+		c.errors++
+		c.lastErr = err.Error()
+		return nil, false
+	}
+	input = normaliseForJQ(input)
+	iter := c.jqCode.RunWithContext(ctx, input)
+	var results []any
+	for {
+		v, ok := iter.Next()
+		if !ok {
+			break
+		}
+		if err, isErr := v.(error); isErr {
+			c.errors++
+			c.lastErr = err.Error()
+			return nil, false
+		}
+		results = append(results, v)
+	}
+	switch len(results) {
+	case 0:
+		return nil, false
+	case 1:
+		return results[0], true
+	default:
+		return results, true
 	}
 }
 

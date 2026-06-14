@@ -3392,6 +3392,44 @@ targets:
     origin: manual
     discovered: 2026-06-14
     achieved: 2026-06-14
+  T81:
+    name: Spyder-side jq filtering + runtime shape discovery on app-channel readout tools
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '**jq `select` parameter on readout tools**: `app_state`, `app_state_capture_get`, `app_state_capture_start` (apply filter at insert time — saves buffer memory for high-volume captures), `app_log_get`, and `app_perf_get` accept an optional `select: <jq-expr>` argument. When supplied, spyder evaluates the expression server-side (via `github.com/itchyny/gojq`) and returns only the filtered result. Saves agent context budget; works without app-side changes.'
+    - '**Error surface for bad expressions**: a syntactically invalid `select` expression returns a structured `select_error` field naming the column/character of the parse failure. A valid expression that evaluates to nothing returns an empty result (not an error — jq''s natural "no matches" semantics).'
+    - '**`app_state_describe` MCP tool**: takes `{slice, session_id?}`, calls `state_query{slice}` once server-side, walks the response, returns a recursive types-only sketch (`{"marble": {"position": {"x": "float", ...}}, ...}`). Works for any app that supports `state_query` — no protocol or app-side changes. Bounded response (depth + array-element caps so a million-entity slice doesn''t blow up the sketch).'
+    - '**Optional `example` field on slice descriptors**: `Hello.Slices` becomes a struct list (`{name, example?}`) instead of a bare string list. Apps that want to volunteer a representative payload do; apps that don''t are unaffected. Bare-string descriptors from pre-update apps decode cleanly (backwards-compat at the msgpack layer). `app_state_slices` surfaces `example` when present so the agent gets it once at session start.'
+    - '**Documentation**: `agents-guide.md` shows the agent-facing flow — hello surfaces slices (with optional example), agent calls `app_state_describe` for any slice missing an example, then uses `app_state{select: ...}` for cheap repeat reads. Includes a worked jq example (e.g. `.marble.position` on the physics slice).'
+    - '**Test coverage**: unit tests for the jq filter (happy path, syntactically-invalid expression, no-matches, filter applied to a capture sample); a generic-walker test for `app_state_describe` (nested maps, arrays of mixed type, depth/element caps); a hello round-trip test for the struct-shaped slice descriptors covering both forms (bare string and `{name, example}`).'
+    context: |-
+      Surfaced 2026-06-14 in conversation with the user, right after shipping T80 (slice discovery + capture). The bandwidth/context-budget gap T80 leaves on the table: the agent still has to consume full slice payloads to understand them or to extract small fields. jq filtering server-side closes the spyder→agent half of that, and app_state_describe lets the agent learn slice shapes without paying the full-payload cost even once per session.
+
+      Why this combination in one target: all three pieces serve the same agent flow (discover → understand → query cheaply). Shipping them together avoids a two-release pattern where v0.57 adds jq but the agent still has to call once-without-filter to learn the schema, and v0.58 belatedly adds describe.
+
+      Design choices, locked in via discussion:
+
+      - jq, not jsonpath or a homegrown DSL. jq is the industry standard, every LLM already knows it, and github.com/itchyny/gojq is a mature pure-Go implementation. JSONPath is weaker; custom DSLs grow forever.
+      - Server-side eval, not app-side. Saves spyder→agent bandwidth (the load-bearing budget) without requiring every ge consumer to embed a jq engine. App-side eval is a defer-until-needed delta — would only matter if a game ships a slice large enough to make the device→spyder hop bandwidth-bound, which isn't a current pain.
+      - app_state_describe not a full schema language. A runtime-derived types-only sketch is exactly enough for an LLM to write valid jq, and it requires zero app-side cooperation. JSON Schema / Protobuf / etc. would impose author burden and bit-rot risk for marginal value in this context.
+      - Optional example field, not required. Lets apps volunteer better-than-runtime docs when they have them, without forcing every slice author to maintain one. Bare-string slice descriptors from pre-update apps decode cleanly as struct entries with name-only.
+
+      Pairs with T80 (slice discovery + capture, the foundation this builds on) and ge T115 (consumer side that registers slices and could optionally provide examples).
+
+      Dependencies: a new direct dep on github.com/itchyny/gojq (~1 MB binary cost, MIT licensed, no transitive bloat).
+    tags:
+    - app-channel
+    - jq
+    - telemetry
+    - dev-tooling
+    - mcp
+    - agent-context-budget
+    - surfaced-by:multimaze2
+    origin: manual
+    discovered: 2026-06-14
+    achieved: 2026-06-14
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved
