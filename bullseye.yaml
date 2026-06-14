@@ -3367,7 +3367,7 @@ targets:
     achieved: 2026-04-18
   T80:
     name: First-class agent-readable consumption of ge app-channel state slices (telemetry/metadata pipe)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3391,6 +3391,7 @@ targets:
     - mcp
     origin: manual
     discovered: 2026-06-14
+    achieved: 2026-06-14
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved
