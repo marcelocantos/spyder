@@ -370,6 +370,53 @@ When exactly one session is connected, every `app_*` tool defaults to
 it (omit `session_id`). When multiple are connected, `session_id` is
 required to disambiguate. `app_channel_list` shows what's live.
 
+### Discovering state slices (🎯T80)
+
+`state_query{slice}` is the catch-all readout the app exposes per
+named "slice" of its state (`scene`, `physics`, `hud`, whatever the
+app registered). To find out *what* slices a connected game exposes
+without prior knowledge:
+
+```json
+{"name": "app_state_slices"}
+// → {"session_id": "...", "slices": ["scene", "physics", "input_queue"]}
+```
+
+The list comes from the `slices` field the app advertised in its
+`hello`. Pre-T80 ge builds (which omit the field) return `[]`; the
+agent can fall back to known-slice probing if that happens.
+
+### Watching state evolve under inputs
+
+For "tilt the device and read the ball position each frame" workflows,
+use the state-capture session pattern — same shape as `log_collect` /
+`app_perf_get`:
+
+```json
+// 1. Start a poller. Default 100 ms interval (~10 Hz). Minimum 10 ms.
+{"name": "app_state_capture_start",
+ "arguments": {"slice": "physics", "interval_ms": 16}}
+// → {"capture_id": "...", "slice": "physics", "interval_ms": 16, ...}
+
+// 2. Drive the app while the poller accumulates samples.
+{"name": "app_input", "arguments": {"type": "accel", "x": 0.3, "y": 0.0, "z": 0.0}}
+// ... do other things ...
+
+// 3. Drain accumulated samples. Capture keeps running.
+{"name": "app_state_capture_get", "arguments": {"capture_id": "..."}}
+// → {"samples": [{"timestamp": "...", "data": {...}}, ...], "errors": 0}
+
+// 4. Stop and drain.
+{"name": "app_state_capture_stop", "arguments": {"capture_id": "..."}}
+```
+
+Samples are bounded (100k per capture by default, FIFO eviction); the
+response carries `dropped_samples` and `errors` so the agent can tell
+when its capture wasn't lossless. The poller calls `state_query` via
+the standard RPC path with a 2 s per-call timeout — a stalled app
+shows up as `errors > 0` and the `last_error` string, not a hung
+capture. Active captures stop automatically when the session closes.
+
 ### Caveats
 
 - The channel is dev-only by design. Apps should compile the receiver
@@ -378,6 +425,13 @@ required to disambiguate. `app_channel_list` shows what's live.
   upgrade path if cloud-CI or untrusted-network use ever surfaces.)
 - One spyder connection per app session for v1; multi-client fan-out
   is deferred to 🎯T76.5.
+- **iOS local-network permission**: the first time an app dials a
+  spyder app-channel listener on the same LAN, iOS shows the system
+  "*App* would like to find and connect to devices on your local
+  network" prompt. The channel doesn't connect until you tap *Allow*
+  once per (device, app) pair. If the agent times out on the
+  handshake and `app_channel_list` shows no session, check the
+  device — the prompt is likely sitting on screen.
 
 ## Sim/emu pool
 

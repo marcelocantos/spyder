@@ -287,6 +287,96 @@ func (h *Handler) handleAppInput(args map[string]any) (*mcpgo.CallToolResult, er
 	return toolText(fmt.Sprintf("injected %s event", inputType))
 }
 
+// handleAppStateSlices returns the slice catalogue the app advertised
+// in its `hello` (the `slices` field). Lets an agent discover what a
+// connected game exposes without prior knowledge. Pre-T80 apps that
+// omit the `slices` field return an empty list — same shape, agent
+// can fall back to known-slice probing.
+func (h *Handler) handleAppStateSlices(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	hello := s.HelloInfo()
+	slices := []string{}
+	if hello != nil && hello.Slices != nil {
+		slices = hello.Slices
+	}
+	return toolJSON(map[string]any{
+		"session_id": s.ID,
+		"slices":     slices,
+	})
+}
+
+func (h *Handler) handleAppStateCaptureStart(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	slice, err := requireString(args, "slice")
+	if err != nil {
+		return nil, err
+	}
+	var interval time.Duration
+	if v, ok := args["interval_ms"].(float64); ok && v > 0 {
+		interval = time.Duration(v) * time.Millisecond
+	}
+	c, err := s.StartStateCapture(slice, interval)
+	if err != nil {
+		return toolErr("state_capture_start: %v", err)
+	}
+	return toolJSON(map[string]any{
+		"session_id":  s.ID,
+		"capture_id":  c.ID,
+		"slice":       c.Slice,
+		"interval_ms": int(c.Interval / time.Millisecond),
+		"started_at":  c.Started,
+	})
+}
+
+func (h *Handler) handleAppStateCaptureGet(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	captureID, err := requireString(args, "capture_id")
+	if err != nil {
+		return nil, err
+	}
+	r, err := s.GetStateCapture(captureID)
+	if err != nil {
+		return toolErr("state_capture_get: %v", err)
+	}
+	return toolJSON(r)
+}
+
+func (h *Handler) handleAppStateCaptureStop(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	captureID, err := requireString(args, "capture_id")
+	if err != nil {
+		return nil, err
+	}
+	r, err := s.StopStateCapture(captureID)
+	if err != nil {
+		return toolErr("state_capture_stop: %v", err)
+	}
+	return toolJSON(r)
+}
+
+func (h *Handler) handleAppStateCaptureList(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	return toolJSON(map[string]any{
+		"session_id": s.ID,
+		"captures":   s.ListStateCaptures(),
+	})
+}
+
 func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
@@ -469,6 +559,26 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("state_b64", mcpgo.Required(), mcpgo.Description("base64-encoded state blob")),
 		),
 		mcpgo.NewTool("app_screenshot", mcpgo.WithDescription("Request a screenshot from the app's own framebuffer (sibling to spyder's DTX-based `screenshot`; useful when DTX is wedged or you need state-correlated capture)."),
+			mcpgo.WithString("session_id"),
+		),
+
+		mcpgo.NewTool("app_state_slices", mcpgo.WithDescription("Return the slice catalogue the app advertised in its hello. Lets an agent discover what a game exposes to `app_state` without prior knowledge. Apps that omit the `slices` field in hello (pre-T80 ge builds) return an empty list."),
+			mcpgo.WithString("session_id"),
+		),
+		mcpgo.NewTool("app_state_capture_start", mcpgo.WithDescription("Start a background poller that samples `state_query{slice}` at a fixed interval, accumulating timestamped samples until app_state_capture_stop is called. Mirrors the log_collect / app_perf_get pattern — lets an agent run an `app_input` sequence and observe state evolve frame-by-frame without a hand-rolled poll loop. Drain accumulated samples with app_state_capture_get."),
+			mcpgo.WithString("session_id"),
+			mcpgo.WithString("slice", mcpgo.Required(), mcpgo.Description("Slice name (e.g. \"scene\", \"physics\"). Must be one the app advertised in hello.")),
+			mcpgo.WithNumber("interval_ms", mcpgo.Description("Sample interval in milliseconds. Default 100 (~10 Hz). Minimum 10.")),
+		),
+		mcpgo.NewTool("app_state_capture_get", mcpgo.WithDescription("Drain the buffered samples for a state capture without stopping it."),
+			mcpgo.WithString("session_id"),
+			mcpgo.WithString("capture_id", mcpgo.Required(), mcpgo.Description("capture_id returned by app_state_capture_start")),
+		),
+		mcpgo.NewTool("app_state_capture_stop", mcpgo.WithDescription("Stop a state capture poller and return the remaining samples. The capture is gone after this call."),
+			mcpgo.WithString("session_id"),
+			mcpgo.WithString("capture_id", mcpgo.Required(), mcpgo.Description("capture_id returned by app_state_capture_start")),
+		),
+		mcpgo.NewTool("app_state_capture_list", mcpgo.WithDescription("List the active state captures on a session. Returns capture_id, slice, interval_ms, started_at, sample/dropped/error counts."),
 			mcpgo.WithString("session_id"),
 		),
 
