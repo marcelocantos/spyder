@@ -3394,7 +3394,7 @@ targets:
     achieved: 2026-06-14
   T81:
     name: Spyder-side jq filtering + runtime shape discovery on app-channel readout tools
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3429,6 +3429,7 @@ targets:
     - surfaced-by:multimaze2
     origin: manual
     discovered: 2026-06-14
+    achieved: 2026-06-14
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved
