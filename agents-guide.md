@@ -132,11 +132,6 @@ everything it can see.
 | `pool_list` | Current pool state for all templates (available/running/reserved counts per template). | Read-only. Pool must be configured via `~/.spyder/pool.yaml`. |
 | `pool_warm` | Force pre-boot N additional instances for a template. | `{template, count}`. Moves instances from available to running tier. |
 | `pool_drain` | Shut down and delete all idle instances for a template. | `{template}`. Reserved instances are terminated first. |
-| `log_collect_start` | Open a fresh TCP port and start a session that captures lines pushed to it. Returns `{session_id, port, hosts}` for use as `LOG_TARGET=host:port` in a subsequent `launch_app`/`deploy_app`. | One port per session — connections on that port are unambiguously from the app launched with the matching `LOG_TARGET`. See "Collecting logs over TCP" below. |
-| `log_collect_get` | Return lines received since the last get/start. | `{session_id}`. Capture continues. |
-| `log_collect_stop` | Close the listener and drain remaining lines. | `{session_id}`. |
-| `log_collect_list` | Metadata for every live collect session: port, owner, buffer state, lifetime connection/byte counters. | Read-only. |
-
 | `app_channel_start` | Open a fresh TCP listener for the bidirectional MessagePack RPC channel. Returns `{listener_id, port, hosts}`; apps dial host:port, send a `hello`, become addressable via the `app_*` tools. | See "Bidirectional app channel" below. |
 | `app_channel_stop` | Close a listener and tear down all sessions accepted on it. | `{listener_id}`. |
 | `app_channel_list` | List active sessions across all listeners (session_id, port, owner, app_name, app_version, methods). | Read-only. |
@@ -245,18 +240,20 @@ curl -s -X POST http://127.0.0.1:3030/api/v1/deploy_app \
   -d '{"device":"Jevons","path":"/path/to/MyApp.app","env":{"LOG_TARGET":"192.168.1.42:9999"}}'
 ```
 
-## Collecting logs over TCP
+## Collecting logs
 
-When an app honours the `LOG_TARGET=host:port` convention (e.g. by
-installing a spdlog `tcp_sink` against it — ge does this), spyder can
-be the listener: `log_collect_start` opens a fresh TCP port, returns
-the address you should hand to `LOG_TARGET`, and accumulates incoming
-lines in a bounded buffer for incremental retrieval.
+App→spyder logging now goes through the **bidirectional app channel**
+(see [Bidirectional app channel](#bidirectional-app-channel-t75) below) —
+apps send structured `log` push messages over the MessagePack RPC
+channel, and the agent drains them with `app_log_get`. The previous
+raw-text `log_collect_*` family was removed in v0.58.0; the
+`LOG_TARGET=host:port` env-var convention now points at an
+`app_channel_start` listener rather than a text-only port.
 
 ```json
-// 1. Open a listener. Spyder picks a random port.
-{"name": "log_collect_start", "arguments": {"owner": "multimaze2"}}
-// → {"session_id": "ab12...", "port": 54321, "hosts": ["192.168.1.42"], ...}
+// 1. Open an app-channel listener.
+{"name": "app_channel_start", "arguments": {"owner": "multimaze2"}}
+// → {"listener_id": "...", "port": 54321, "hosts": ["192.168.1.42"], ...}
 
 // 2. Deploy with LOG_TARGET pointing at one of those hosts:port.
 {"name": "deploy_app", "arguments": {
@@ -265,32 +262,19 @@ lines in a bounded buffer for incremental retrieval.
   "env": {"LOG_TARGET": "192.168.1.42:54321"}
 }}
 
-// 3. Read what's arrived (capture continues).
-{"name": "log_collect_get", "arguments": {"session_id": "ab12..."}}
-// → {"lines": [{"timestamp": "...", "source": "192.168.1.40:51234", "message": "..."}, ...]}
-
-// 4. Tear down when done.
-{"name": "log_collect_stop", "arguments": {"session_id": "ab12..."}}
+// 3. App dials, sends `hello`, starts pushing structured `log` messages.
+//    Drain them whenever you want — capture continues:
+{"name": "app_log_get"}
+// → {"lines": [{"timestamp": ..., "level": "info", "format": "...", ...}], ...}
 ```
 
-### Design
-
-- **Port-per-session**: one listener owns one port. A connection on that
-  port is unambiguously from the app you launched against the matching
-  `LOG_TARGET` — no in-band tagging, no per-line headers, no protocol
-  on top of newline-delimited text.
-- **Reconnect semantics**: if the app drops and reconnects (network
-  blip, backgrounded then resumed), all connections on the same port
-  land in the same session's buffer. Order is FIFO by arrival
-  timestamp.
-- **Bounded buffer**: ~50 MB / 100k lines per session by default, FIFO
-  eviction; `dropped_lines` in the get/stop response tells you when
-  the buffer overflowed.
-- **TTL**: sessions auto-expire after 5 minutes of no `get`/`stop`
-  activity (max 24 h, configurable per call).
-- **All interfaces**: listener binds `0.0.0.0:0`. `hosts` returns the
-  LAN-reachable IPv4 addresses on this machine so you don't have to
-  `ipconfig getifaddr en0` yourself.
+Compared to the old raw-text path: structured fields (level,
+subsystem, format, args), no per-line regex parsing, server-side jq
+`select` filtering, automatic session lifecycle (no manual stop), and
+the same channel carries everything else the agent needs (`app_input`,
+`app_state`, `app_quit`, etc.). The app-side cost is implementing
+the appchannel protocol — for ge consumers, that's the work behind
+ge T83's NetworkLogSink upgrade.
 
 ### Caveat: env vars are per-launch
 
@@ -304,8 +288,7 @@ debugging session are infrequent and re-running `launch_app` is cheap.
 
 ## Bidirectional app channel (🎯T75)
 
-The structured RPC sibling of `log_collect_*`. Instead of one-way
-newline-text push, apps speak length-prefixed MessagePack with a
+The unified app→spyder channel. Apps speak length-prefixed MessagePack with a
 JSON-RPC-shaped envelope (`{id, method, params}` requests, `{id,
 result|error}` responses, `{method, params}` async pushes). Spyder
 can request things (quit, pause, screenshot, query state); the app
@@ -439,7 +422,7 @@ can distinguish a busted filter from a busted device.
 ### Watching state evolve under inputs
 
 For "tilt the device and read the ball position each frame" workflows,
-use the state-capture session pattern — same shape as `log_collect` /
+use the state-capture session pattern — same shape as `app_log_get` /
 `app_perf_get`:
 
 ```json

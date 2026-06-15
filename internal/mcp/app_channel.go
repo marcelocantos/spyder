@@ -16,7 +16,7 @@ import (
 
 // handleAppChannelStart opens a fresh appchannel TCP listener and
 // returns the host:port plus the listener_id callers use to address
-// it. Mirrors log_collect_start; apps connect, send a hello, and
+// it. Apps connect, send a hello, and
 // service subsequent RPC calls.
 func (h *Handler) handleAppChannelStart(args map[string]any) (*mcpgo.CallToolResult, error) {
 	if h.appChannel == nil {
@@ -44,13 +44,9 @@ func (h *Handler) handleAppChannelStart(args map[string]any) (*mcpgo.CallToolRes
 	})
 }
 
-// lanHosts wraps logcollect.LANHosts so this file doesn't import the
-// logcollect package directly (keeps the responsibilities clean —
-// app_channel is independent of log_collect).
+// lanHosts returns the LAN IPv4 candidates an app should dial to
+// reach this spyder.
 var lanHosts = func() ([]string, error) {
-	// Lazy import via type alias to avoid pulling logcollect in;
-	// LANHosts is duplicated trivially here from logcollect to keep
-	// the packages decoupled at the import graph.
 	return appchannelLANHosts()
 }
 
