@@ -20,7 +20,6 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/logcapture"
-	"github.com/marcelocantos/spyder/internal/logcollect"
 	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
@@ -60,7 +59,6 @@ type Handler struct {
 	bls                  *baselines.Store
 	recordings           *recording.Registry
 	logCapture           *logcapture.Manager
-	logCollect           *logcollect.Manager
 	appChannel           *appchannel.Manager
 	appChannelListeners  map[string]*appchannel.Listener
 	appChannelListenerMu sync.Mutex
@@ -150,13 +148,6 @@ func WithPoolManager(pm PoolManager) HandlerOption {
 // error.
 func WithLogCapture(m *logcapture.Manager) HandlerOption {
 	return func(h *Handler) { h.logCapture = m }
-}
-
-// WithLogCollect injects a managed TCP-listener session manager
-// (the host side of the LOG_TARGET convention from 🎯T73). When omitted,
-// log_collect_* tools return a "log collect not configured" error.
-func WithLogCollect(m *logcollect.Manager) HandlerOption {
-	return func(h *Handler) { h.logCollect = m }
 }
 
 // WithAppChannel injects the bidirectional MessagePack RPC manager
@@ -378,14 +369,6 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleLogCaptureStop(args)
 	case "log_capture_list":
 		return h.handleLogCaptureList(args)
-	case "log_collect_start":
-		return h.handleLogCollectStart(args)
-	case "log_collect_get":
-		return h.handleLogCollectGet(args)
-	case "log_collect_stop":
-		return h.handleLogCollectStop(args)
-	case "log_collect_list":
-		return h.handleLogCollectList(args)
 	// --- bidirectional app channel (🎯T75) -------------------------------
 	case "app_channel_start":
 		return h.handleAppChannelStart(args)
@@ -460,7 +443,6 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 func Definitions() []mcpgo.Tool {
 	defs := append(allBaseDefinitions(), visualDefinitions()...)
 	defs = append(defs, logCaptureDefinitions()...)
-	defs = append(defs, logCollectDefinitions()...)
 	return append(defs, appChannelDefinitions()...)
 }
 

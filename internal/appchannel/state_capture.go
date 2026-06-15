@@ -274,7 +274,7 @@ func (c *StateCapture) applyJQ(ctx context.Context, raw msgpack.RawMessage) (any
 }
 
 // GetStateCapture drains the buffered samples without stopping the
-// capture. Mirrors log_collect_get / app_log_get.
+// capture. Mirrors app_log_get.
 func (s *Session) GetStateCapture(captureID string) (*StateCaptureGetResult, error) {
 	s.mu.Lock()
 	c, ok := s.stateCaptures[captureID]

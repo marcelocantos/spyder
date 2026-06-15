@@ -2607,9 +2607,10 @@ targets:
     achieved: 2026-05-31
   T74:
     name: LOG_TARGET dev-logging is resilient across manual app relaunches and spyder listener lifecycle gaps
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: Moot — log_collect_* (raw-text TCP path) was removed in v0.58.0; all app→spyder logging now flows through the app_channel structured push (`log` push message → `app_log_get`). The original concern (LOG_TARGET pointing at an ephemeral log_collect session that the app loses on manual relaunch) still exists in principle for app_channel sessions, but the failure mode is qualitatively different — the app's hello handshake either succeeds or fails cleanly, and the session resolves the lifetime question by being identity-bound rather than port-bound. Re-file as a fresh app-channel-flavoured target if real usage surfaces the same friction shape against the new path.
     acceptance:
     - Real-world experience using spyder log_collect_* + ge's LOG_TARGET sink has been accumulated for at least a few sessions across multiple repos (multimaze2, tiltbuggy, esfera2, yourworld2). User has noted the specific friction points encountered — missing logs after a SpringBoard/launcher relaunch, dead listeners, port reuse confusion, etc.
     - |-
@@ -3430,6 +3431,43 @@ targets:
     origin: manual
     discovered: 2026-06-14
     achieved: 2026-06-14
+  T82:
+    name: app_state_capture_window — synchronous bounded capture
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '**`app_state_capture_window` MCP tool**: takes `{session_id?, slice, interval_ms?, duration_ms, select?}`, opens a state capture for the duration, returns `{slice, samples: [...]}` when the window closes. One tool call — no `capture_id` to track, no start/get/stop ceremony, no possibility of forgotten captures leaking goroutines.'
+    - '**Duration cap**: `duration_ms` enforced at `MaxStateCaptureWindow` (suggest 30s). Longer observation uses the existing `app_state_capture_start` / `_get` / `_stop` flow where the agent can interleave other work.'
+    - '**Default samples**: when `interval_ms` is omitted, default to the existing `DefaultStateCaptureInterval` (100ms). Min interval honoured (`MinStateCaptureInterval` = 10ms). When `duration_ms` is omitted, return an error — unlike the start variant, duration is the load-bearing argument.'
+    - '**`select` parameter**: same semantics as `app_state_capture_start.select` — jq expression applied at insert time so samples whose filter result is empty don''t enter the response. Bad expressions surface as `select_error` rather than wedging the capture.'
+    - '**Composes with parallel `app_input`**: the canonical workflow is one Claude turn with two parallel tool calls — `app_input` fires immediately, `app_state_capture_window` opens the sampling window during the response. Documented as the recommended pattern.'
+    - '**Implementation**: thin wrapper over the existing `StartStateCaptureWithSelect` — start, `time.Sleep(duration)` against the request context, `Stop`, return the drained samples. Cancellation: if the underlying MCP request context fires (caller disconnect or transport timeout), drain whatever''s accumulated and return it rather than dropping work.'
+    - '**Test coverage**: a unit test verifies the call returns approximately the expected sample count for a given (duration, interval); a test verifies `select` filters at insert time; a test verifies the duration cap is enforced; an MCP-level test verifies the parallel-with-`app_input` flow end-to-end against the fake-state client.'
+    - '**agents-guide.md**: "Watching state under inputs" section is updated to recommend `app_state_capture_window` as the default shape for known-duration observations, with the existing start/get/stop demoted to "agent-paced (unknown duration)" use cases.'
+    context: |-
+      Surfaced 2026-06-15 in conversation. Reframes the common observation workflow from "start capture, kick off inputs, poll for samples, eventually stop" to "fire inputs + open window in parallel, get the samples back when the window closes." One blocking tool call instead of three or more, no capture_id lifecycle, no forgotten-capture leaks.
+
+      The shape fits the agent loop cleanly: the agent has nothing to do during the window anyway (the inputs already fired, the world is evolving), so a blocking call is exactly the right semantics. MCP transports cope with multi-second tool calls; the duration cap exists to prevent monopolising the agent's single in-flight tool slot for too long.
+
+      Coexists with the existing app_channel tools — doesn't replace them:
+
+      - app_state — instantaneous probe ("what is it now?")
+      - app_state_capture_window — known-duration observation (THIS TARGET — the common case)
+      - app_state_capture_start/get/stop — agent-paced observation (unknown duration; agent decides when to stop)
+      - app_state_wait_for — predicate-triggered ("wake me when X"); not in this target, file separately if a use case emerges
+
+      Pairs with T80 (capture machinery) and T81 (jq select that the new tool reuses verbatim).
+
+      Implementation is small — most of the machinery exists. Estimated cost is in days not weeks.
+    tags:
+    - app-channel
+    - mcp
+    - agent-loop
+    - telemetry
+    - synchronous-capture
+    origin: manual
+    discovered: 2026-06-15
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved

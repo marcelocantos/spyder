@@ -24,13 +24,10 @@ import (
 func mcpTestServer(t *testing.T) (base string, teardown func()) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
-	handler, _, _, logCapMgr, logColMgr, appChanMgr := Build(Config{
+	handler, _, _, logCapMgr, appChanMgr := Build(Config{
 		Version: "test",
 	})
 	t.Cleanup(func() {
-		if logColMgr != nil {
-			logColMgr.Close()
-		}
 		if appChanMgr != nil {
 			appChanMgr.Close()
 		}

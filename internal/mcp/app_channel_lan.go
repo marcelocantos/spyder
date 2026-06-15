@@ -9,8 +9,7 @@ import (
 )
 
 // appchannelLANHosts returns the host candidates an app should dial to
-// reach this spyder. Same algorithm as logcollect.LANHosts; duplicated
-// here to keep the two packages decoupled.
+// reach this spyder.
 func appchannelLANHosts() ([]string, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
