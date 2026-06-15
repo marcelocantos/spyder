@@ -494,7 +494,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("launch_app",
-			mcpgo.WithDescription("Foreground an app by bundle id. iOS-17+ uses the in-process go-ios `appservice` launch (CoreDevice/RemoteXPC, requires the bundled tunnel); iOS ≤16 uses go-ios's `instruments.ProcessControl` (DTX-over-lockdown, no tunnel required but needs the Developer Disk Image mounted — open the device once in Xcode or `ios image auto <udid>`). Path selection is automatic per device. Android uses adb monkey with the LAUNCHER intent (or `am start` when env is supplied); iOS simulators use `xcrun simctl launch`. Strictly enforced: rejects if the device is reserved by a different owner.\n\nOptional `env` map sets environment variables for the launched process. On iOS the values become the process environment (readable via `getenv()`); on iOS simulators they're forwarded via `SIMCTL_CHILD_<KEY>=<VALUE>`; on Android they're passed as Intent string-extras and the app's Java/Kotlin shim must extract them and call `setenv()` before native code runs (see agents-guide.md for the shim pattern). The conventional key for dev-time network logging is `LOG_TARGET=host:port` — apps that opt in install a TCP log sink targeting that address."),
+			mcpgo.WithDescription("Foreground an app by bundle id. iOS-17+ uses the in-process go-ios `appservice` launch (CoreDevice/RemoteXPC, requires the bundled tunnel); iOS ≤16 uses go-ios's `instruments.ProcessControl` (DTX-over-lockdown, no tunnel required but needs the Developer Disk Image mounted — open the device once in Xcode or `ios image auto <udid>`). Path selection is automatic per device. Android uses adb monkey with the LAUNCHER intent (or `am start` when env is supplied); iOS simulators use `xcrun simctl launch`. Strictly enforced: rejects if the device is reserved by a different owner.\n\nOptional `env` map sets environment variables for the launched process. On iOS the values become the process environment (readable via `getenv()`); on iOS simulators they're forwarded via `SIMCTL_CHILD_<KEY>=<VALUE>`; on Android they're passed as Intent string-extras and the app's Java/Kotlin shim must extract them and call `setenv()` before native code runs (see agents-guide.md for the shim pattern). The conventional key for dev-time network logging is `SPYDER_APP_CHANNEL=host:port` — apps that opt in install a TCP log sink targeting that address."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -507,7 +507,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
 			),
 			mcpgo.WithObject("env",
-				mcpgo.Description("Optional environment variables to inject into the launched app process. Keys and values are strings (non-string values are stringified). Convention: `LOG_TARGET=host:port` enables the dev-time TCP log sink in apps that support it."),
+				mcpgo.Description("Optional environment variables to inject into the launched app process. Keys and values are strings (non-string values are stringified). Convention: `SPYDER_APP_CHANNEL=host:port` enables the dev-time TCP log sink in apps that support it."),
 			),
 		),
 
@@ -585,7 +585,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
 			),
 			mcpgo.WithObject("env",
-				mcpgo.Description("Optional environment variables to inject into the launched app process. Same semantics as `launch_app`'s `env`. Convention: `LOG_TARGET=host:port` enables the dev-time TCP log sink."),
+				mcpgo.Description("Optional environment variables to inject into the launched app process. Same semantics as `launch_app`'s `env`. Convention: `SPYDER_APP_CHANNEL=host:port` enables the dev-time TCP log sink."),
 			),
 		),
 

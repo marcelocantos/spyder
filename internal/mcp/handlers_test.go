@@ -413,7 +413,7 @@ func TestHandleLaunchApp_EnvPassthrough(t *testing.T) {
 		"device":    "iPad",
 		"bundle_id": "com.foo",
 		"env": map[string]any{
-			"LOG_TARGET":  "192.168.1.42:9999",
+			"SPYDER_APP_CHANNEL":  "192.168.1.42:9999",
 			"FEATURE_X":   "on",
 			"NUMERIC_VAL": 42,
 		},
@@ -421,8 +421,8 @@ func TestHandleLaunchApp_EnvPassthrough(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("launch_app with env should succeed; body=%s", resultText(t, &r))
 	}
-	if got["LOG_TARGET"] != "192.168.1.42:9999" {
-		t.Errorf("LOG_TARGET = %q; want 192.168.1.42:9999", got["LOG_TARGET"])
+	if got["SPYDER_APP_CHANNEL"] != "192.168.1.42:9999" {
+		t.Errorf("SPYDER_APP_CHANNEL = %q; want 192.168.1.42:9999", got["SPYDER_APP_CHANNEL"])
 	}
 	if got["FEATURE_X"] != "on" {
 		t.Errorf("FEATURE_X = %q; want on", got["FEATURE_X"])
@@ -456,13 +456,13 @@ func TestHandleDeployApp_EnvPassthroughToLaunch(t *testing.T) {
 		"device":    "iPad",
 		"path":      appPath,
 		"bundle_id": "com.example.app",
-		"env":       map[string]any{"LOG_TARGET": "host:9999"},
+		"env":       map[string]any{"SPYDER_APP_CHANNEL": "host:9999"},
 	})
 	if r.IsError {
 		t.Fatalf("deploy_app should succeed; body=%s", resultText(t, &r))
 	}
-	if launchEnv["LOG_TARGET"] != "host:9999" {
-		t.Errorf("launch step env LOG_TARGET = %q; want host:9999", launchEnv["LOG_TARGET"])
+	if launchEnv["SPYDER_APP_CHANNEL"] != "host:9999" {
+		t.Errorf("launch step env SPYDER_APP_CHANNEL = %q; want host:9999", launchEnv["SPYDER_APP_CHANNEL"])
 	}
 }
 

@@ -599,7 +599,7 @@ func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
 func appChannelDefinitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
 		mcpgo.NewTool("app_channel_start",
-			mcpgo.WithDescription("Open a fresh TCP listener for the bidirectional MessagePack RPC channel (🎯T75). Returns {listener_id, port, hosts}. Apps configured with the matching host:port (e.g. via spyder's launch_app env=LOG_TARGET=… or app-specific equivalent) connect, perform a `hello` handshake advertising their app_name/version/supported methods, and become addressable via the app_* tools below."),
+			mcpgo.WithDescription("Open a fresh TCP listener for the bidirectional MessagePack RPC channel (🎯T75). Returns {listener_id, port, hosts}. Apps configured with the matching host:port (e.g. via spyder's launch_app env=SPYDER_APP_CHANNEL=… or app-specific equivalent) connect, perform a `hello` handshake advertising their app_name/version/supported methods, and become addressable via the app_* tools below."),
 			mcpgo.WithString("owner", mcpgo.Description("Free-form owner string for visibility in app_channel_list")),
 		),
 		mcpgo.NewTool("app_channel_stop",

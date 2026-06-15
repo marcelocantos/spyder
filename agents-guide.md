@@ -161,7 +161,7 @@ coerced via `fmt.Sprintf("%v", ...)`:
     "device": "Jevons",
     "path": "/path/to/MyApp.app",
     "env": {
-      "LOG_TARGET": "192.168.1.42:9999",
+      "SPYDER_APP_CHANNEL": "192.168.1.42:9999",
       "FEATURE_FLAG_X": "on"
     }
   }
@@ -169,11 +169,16 @@ coerced via `fmt.Sprintf("%v", ...)`:
 ```
 
 The `env` parameter is a generic mechanism — spyder doesn't know what
-the keys mean. Apps decide which env vars they read. By convention,
-apps that ship a dev-time TCP log sink (see ge's `LOG_TARGET` wiring)
-honour the key `LOG_TARGET=host:port` to enable streaming logs to a
-host running `nc -l <port>`. That's the only convention spyder
-documents; everything else is between you and your app.
+the keys mean. Apps decide which env vars they read. The one
+convention spyder documents is `SPYDER_APP_CHANNEL=host:port`:
+apps that opt in dial that address, perform the appchannel `hello`
+handshake, and then ride the bidirectional MessagePack RPC channel
+(see [Bidirectional app channel](#bidirectional-app-channel-t75) below)
+for logs, perf, screenshots, input injection, state queries, and
+everything else. Apps that pre-date the appchannel protocol — or that
+read the older `LOG_TARGET` name — won't connect and you'll see no
+sessions in `app_channel_list`; upgrade the app or rename its env-var
+lookup. Everything else (other env keys) is between you and your app.
 
 ### Per-platform delivery
 
@@ -227,7 +232,7 @@ Java_com_example_app_MainActivity_nativeSetenv(
 }
 ```
 
-Now `getenv("LOG_TARGET")` from native code returns the expected value
+Now `getenv("SPYDER_APP_CHANNEL")` from native code returns the expected value
 on Android the same way it does on iOS and the desktop. The shim is
 ~20 lines and lives in the app, not in spyder or ge — spyder doesn't
 have an Android side of itself to inject the shim into.
@@ -237,7 +242,7 @@ have an Android side of itself to inject the shim into.
 ```sh
 curl -s -X POST http://127.0.0.1:3030/api/v1/deploy_app \
   -H 'Content-Type: application/json' \
-  -d '{"device":"Jevons","path":"/path/to/MyApp.app","env":{"LOG_TARGET":"192.168.1.42:9999"}}'
+  -d '{"device":"Jevons","path":"/path/to/MyApp.app","env":{"SPYDER_APP_CHANNEL":"192.168.1.42:9999"}}'
 ```
 
 ## Collecting logs
@@ -247,7 +252,7 @@ App→spyder logging now goes through the **bidirectional app channel**
 apps send structured `log` push messages over the MessagePack RPC
 channel, and the agent drains them with `app_log_get`. The previous
 raw-text `log_collect_*` family was removed in v0.58.0; the
-`LOG_TARGET=host:port` env-var convention now points at an
+`SPYDER_APP_CHANNEL=host:port` env-var convention now points at an
 `app_channel_start` listener rather than a text-only port.
 
 ```json
@@ -255,11 +260,11 @@ raw-text `log_collect_*` family was removed in v0.58.0; the
 {"name": "app_channel_start", "arguments": {"owner": "multimaze2"}}
 // → {"listener_id": "...", "port": 54321, "hosts": ["192.168.1.42"], ...}
 
-// 2. Deploy with LOG_TARGET pointing at one of those hosts:port.
+// 2. Deploy with SPYDER_APP_CHANNEL pointing at one of those hosts:port.
 {"name": "deploy_app", "arguments": {
   "device": "Jevons",
   "path": "/path/to/MyApp.app",
-  "env": {"LOG_TARGET": "192.168.1.42:54321"}
+  "env": {"SPYDER_APP_CHANNEL": "192.168.1.42:54321"}
 }}
 
 // 3. App dials, sends `hello`, starts pushing structured `log` messages.
@@ -278,13 +283,14 @@ ge T83's NetworkLogSink upgrade.
 
 ### Caveat: env vars are per-launch
 
-The `LOG_TARGET` env arrives on one specific launch. A user-tap
+The `SPYDER_APP_CHANNEL` env arrives on one specific launch. A user-tap
 relaunch from SpringBoard / the Android launcher loses it — the app
-restarts without the env and stops phoning home. To resume collection,
-re-run `launch_app` (or `deploy_app`) with the same env, or rely on
-app-side persistence if the app stores the target. See spyder 🎯T74
-for the resilience follow-up; in practice, manual relaunches during a
-debugging session are infrequent and re-running `launch_app` is cheap.
+restarts without the env, can't dial home, and the agent gets no
+session in `app_channel_list`. To resume, re-run `launch_app` (or
+`deploy_app`) with the same env, or have the app cache the value
+across launches (NSUserDefaults / SharedPreferences / a config file).
+In practice, manual relaunches during a debugging session are
+infrequent and re-running `launch_app` is cheap.
 
 ## Bidirectional app channel (🎯T75)
 
@@ -319,7 +325,7 @@ more leverage.
 {"name": "deploy_app", "arguments": {
   "device": "Jevons",
   "path": "/path/to/MyApp.app",
-  "env": {"LOG_TARGET": "192.168.1.42:54321"}
+  "env": {"SPYDER_APP_CHANNEL": "192.168.1.42:54321"}
 }}
 
 // 3. App connects, sends hello → app_channel_list shows the session.
