@@ -413,9 +413,9 @@ func TestHandleLaunchApp_EnvPassthrough(t *testing.T) {
 		"device":    "iPad",
 		"bundle_id": "com.foo",
 		"env": map[string]any{
-			"SPYDER_APP_CHANNEL":  "192.168.1.42:9999",
-			"FEATURE_X":   "on",
-			"NUMERIC_VAL": 42,
+			"SPYDER_APP_CHANNEL": "192.168.1.42:9999",
+			"FEATURE_X":          "on",
+			"NUMERIC_VAL":        42,
 		},
 	})
 	if r.IsError {

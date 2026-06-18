@@ -521,13 +521,13 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	}
 	sCtx, sCancel := context.WithCancel(ctx)
 	s := &Session{
-		ID:        id,
-		Port:      l.Port,
-		Owner:     l.Owner,
-		StartedAt: time.Now(),
-		conn:      conn,
-		cancel:    sCancel,
-		done:      make(chan struct{}),
+		ID:            id,
+		Port:          l.Port,
+		Owner:         l.Owner,
+		StartedAt:     time.Now(),
+		conn:          conn,
+		cancel:        sCancel,
+		done:          make(chan struct{}),
 		pending:       map[uint64]*pending{},
 		stateCaptures: map[string]*StateCapture{},
 	}
