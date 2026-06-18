@@ -14,36 +14,6 @@ import (
 	"github.com/marcelocantos/spyder/internal/appchannel"
 )
 
-// handleAppChannelStart opens a fresh appchannel TCP listener and
-// returns the host:port plus the listener_id callers use to address
-// it. Apps connect, send a hello, and
-// service subsequent RPC calls.
-func (h *Handler) handleAppChannelStart(args map[string]any) (*mcpgo.CallToolResult, error) {
-	if h.appChannel == nil {
-		return toolErr("app channel not configured")
-	}
-	l, err := h.appChannel.Start(appchannel.StartParams{Owner: optString(args, "owner")})
-	if err != nil {
-		return toolErr("app_channel_start: %v", err)
-	}
-	h.appChannelListenerMu.Lock()
-	h.appChannelListeners[l.ID] = l
-	h.appChannelListenerMu.Unlock()
-
-	hosts, _ := lanHosts()
-	return toolJSON(struct {
-		ListenerID string   `json:"listener_id"`
-		Port       int      `json:"port"`
-		Hosts      []string `json:"hosts"`
-		Owner      string   `json:"owner,omitempty"`
-	}{
-		ListenerID: l.ID,
-		Port:       l.Port,
-		Hosts:      hosts,
-		Owner:      l.Owner,
-	})
-}
-
 // lanHosts returns the LAN IPv4 candidates an app should dial to
 // reach this spyder.
 var lanHosts = func() ([]string, error) {
@@ -51,6 +21,8 @@ var lanHosts = func() ([]string, error) {
 }
 
 // handleAppChannelStop closes a listener and tears down its sessions.
+// Manual-GC entry point — the sweeper handles routine reaping after
+// the 24h idle TTL.
 func (h *Handler) handleAppChannelStop(args map[string]any) (*mcpgo.CallToolResult, error) {
 	if h.appChannel == nil {
 		return toolErr("app channel not configured")
@@ -64,23 +36,31 @@ func (h *Handler) handleAppChannelStop(args map[string]any) (*mcpgo.CallToolResu
 		return toolErr("app_channel_stop: no such listener: %s", id)
 	}
 	l.Stop()
-	h.appChannelListenerMu.Lock()
-	delete(h.appChannelListeners, id)
-	h.appChannelListenerMu.Unlock()
 	return toolText(fmt.Sprintf("listener %s stopped", id))
 }
 
-// handleAppChannelList returns metadata for every live session.
+// handleAppChannelList returns metadata for every keyed listener
+// (and the sessions accepted on it).
 func (h *Handler) handleAppChannelList(_ map[string]any) (*mcpgo.CallToolResult, error) {
 	if h.appChannel == nil {
 		return toolErr("app channel not configured")
 	}
-	out := []sessionInfo{}
-	for _, s := range h.appChannel.Sessions() {
-		info := sessionInfoFrom(s)
-		out = append(out, info)
+	listeners := h.appChannel.KeyedListeners()
+	out := make([]listenerInfo, 0, len(listeners))
+	for _, l := range listeners {
+		out = append(out, listenerInfoFrom(l))
 	}
-	return toolJSON(out)
+	return toolJSON(map[string]any{"listeners": out})
+}
+
+type listenerInfo struct {
+	ListenerID string        `json:"listener_id"`
+	DeviceID   string        `json:"device_id"`
+	BundleID   string        `json:"bundle_id"`
+	Port       int           `json:"port"`
+	Owner      string        `json:"owner,omitempty"`
+	IdleSince  string        `json:"idle_since,omitempty"`
+	Sessions   []sessionInfo `json:"sessions"`
 }
 
 type sessionInfo struct {
@@ -91,6 +71,26 @@ type sessionInfo struct {
 	AppName    string   `json:"app_name,omitempty"`
 	AppVersion string   `json:"app_version,omitempty"`
 	Methods    []string `json:"methods,omitempty"`
+}
+
+func listenerInfoFrom(l *appchannel.Listener) listenerInfo {
+	sessions := l.Sessions()
+	infos := make([]sessionInfo, 0, len(sessions))
+	for _, s := range sessions {
+		infos = append(infos, sessionInfoFrom(s))
+	}
+	info := listenerInfo{
+		ListenerID: l.ID,
+		DeviceID:   l.Key.DeviceID,
+		BundleID:   l.Key.BundleID,
+		Port:       l.Port,
+		Owner:      l.Owner,
+		Sessions:   infos,
+	}
+	if len(sessions) == 0 {
+		info.IdleSince = l.LastTouched().Format(time.RFC3339)
+	}
+	return info
 }
 
 func sessionInfoFrom(s *appchannel.Session) sessionInfo {
@@ -108,37 +108,85 @@ func sessionInfoFrom(s *appchannel.Session) sessionInfo {
 	return info
 }
 
-// requireSession resolves session_id (or, if a single session exists,
-// uses that as a default).
+// requireSession resolves the target session for an app_* tool call.
+//
+// Resolution precedence:
+//  1. session_id (explicit; backwards-compatible)
+//  2. (device, bundle_id) — looks up the keyed listener and picks
+//     its unique live session
+//  3. unique-live-session fallback (when only one is connected)
+//
+// The keyed listener is Touch()ed whenever it's involved in
+// resolution, so an active agent loop keeps the 24h idle timer
+// from firing.
 func (h *Handler) requireSession(args map[string]any) (*appchannel.Session, *mcpgo.CallToolResult) {
 	if h.appChannel == nil {
 		res, _ := toolErr("app channel not configured")
 		return nil, res
 	}
-	id := optString(args, "session_id")
-	if id == "" {
-		sessions := h.appChannel.Sessions()
-		if len(sessions) == 1 {
-			return sessions[0], nil
+	if id := optString(args, "session_id"); id != "" {
+		s, ok := h.appChannel.GetSession(id)
+		if !ok {
+			res, _ := toolErr("no such session: %s", id)
+			return nil, res
 		}
-		res, _ := toolErr("session_id is required (have %d active sessions)", len(sessions))
-		return nil, res
+		if s.Listener() != nil {
+			s.Listener().Touch()
+		}
+		return s, nil
 	}
-	s, ok := h.appChannel.GetSession(id)
-	if !ok {
-		res, _ := toolErr("no such session: %s", id)
-		return nil, res
+
+	dev := optString(args, "device")
+	bundleID := optString(args, "bundle_id")
+	if dev != "" && bundleID != "" {
+		_, _, deviceID, err := h.resolveAdapter(dev)
+		if err != nil {
+			res, _ := toolErr("resolve %q: %v", dev, err)
+			return nil, res
+		}
+		key := appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID}
+		l, ok := h.appChannel.LookupKeyed(key)
+		if !ok {
+			res, _ := toolErr("no app channel listener for device=%s bundle_id=%s (launch the app first?)", dev, bundleID)
+			return nil, res
+		}
+		l.Touch()
+		sessions := l.Sessions()
+		switch len(sessions) {
+		case 0:
+			res, _ := toolErr("no live app channel session for device=%s bundle_id=%s (waiting for app to connect?)", dev, bundleID)
+			return nil, res
+		case 1:
+			return sessions[0], nil
+		default:
+			res, _ := toolErr("multiple live sessions for device=%s bundle_id=%s — pass session_id", dev, bundleID)
+			return nil, res
+		}
 	}
-	return s, nil
+
+	sessions := h.appChannel.Sessions()
+	if len(sessions) == 1 {
+		if sessions[0].Listener() != nil {
+			sessions[0].Listener().Touch()
+		}
+		return sessions[0], nil
+	}
+	res, _ := toolErr("session_id (or device+bundle_id) is required (have %d active sessions)", len(sessions))
+	return nil, res
 }
 
+// findAppChannelListener finds a keyed listener by listener_id.
+// Returns nil if no keyed listener has that id.
 func (h *Handler) findAppChannelListener(id string) *appchannel.Listener {
 	if h.appChannel == nil {
 		return nil
 	}
-	h.appChannelListenerMu.Lock()
-	defer h.appChannelListenerMu.Unlock()
-	return h.appChannelListeners[id]
+	for _, l := range h.appChannel.KeyedListeners() {
+		if l.ID == id {
+			return l
+		}
+	}
+	return nil
 }
 
 // --- single-method handlers ----------------------------------------------
@@ -163,7 +211,9 @@ func (h *Handler) handleAppPing(args map[string]any) (*mcpgo.CallToolResult, err
 		return toolErr("ping: %v", err)
 	}
 	var pong map[string]any
-	_ = appchannel.UnpackParams(res, &pong)
+	if err := appchannel.UnpackParams(res, &pong); err != nil {
+		return toolErr("ping: decode pong: %v", err)
+	}
 	return toolJSON(pong)
 }
 
@@ -598,105 +648,147 @@ func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
 // appChannelDefinitions returns the MCP tool surface.
 func appChannelDefinitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
-		mcpgo.NewTool("app_channel_start",
-			mcpgo.WithDescription("Open a fresh TCP listener for the bidirectional MessagePack RPC channel (🎯T75). Returns {listener_id, port, hosts}. Apps configured with the matching host:port (e.g. via spyder's launch_app env=SPYDER_APP_CHANNEL=… or app-specific equivalent) connect, perform a `hello` handshake advertising their app_name/version/supported methods, and become addressable via the app_* tools below."),
-			mcpgo.WithString("owner", mcpgo.Description("Free-form owner string for visibility in app_channel_list")),
-		),
 		mcpgo.NewTool("app_channel_stop",
-			mcpgo.WithDescription("Close an appchannel listener and tear down all sessions accepted on it."),
-			mcpgo.WithString("listener_id", mcpgo.Required(), mcpgo.Description("listener_id returned by app_channel_start")),
+			mcpgo.WithDescription("Manually stop a per-(device, bundle_id) appchannel listener and tear down its sessions. Routine cleanup happens automatically — listeners with no live session and no recent activity are reaped after 24h. Use this when you want to force a teardown sooner (e.g. before swapping the app's binary)."),
+			mcpgo.WithString("listener_id", mcpgo.Required(), mcpgo.Description("listener_id as reported by app_channel_list")),
 		),
 		mcpgo.NewTool("app_channel_list",
-			mcpgo.WithDescription("List active appchannel sessions across all listeners. Returns session_id, port, owner, app_name, app_version, methods advertised in hello."),
+			mcpgo.WithDescription("List active per-(device, bundle_id) appchannel listeners and the sessions accepted on each. Each entry has listener_id, device_id, bundle_id, port, owner, idle_since (only when no session is currently connected), and a sessions array (session_id, started_at, app_name, app_version, methods advertised in hello). Listeners are created automatically by `launch_app` and `deploy_app`."),
 		),
 
 		mcpgo.NewTool("app_ping", mcpgo.WithDescription("Ping the app (round-trip liveness check). Returns the timestamp the app saw."),
-			mcpgo.WithString("session_id", mcpgo.Description("Defaults to the only live session if exactly one exists.")),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 		mcpgo.NewTool("app_quit", mcpgo.WithDescription("Ask the app to shut itself down cleanly (SDL_QUIT path → exit 0; no macOS crash notification). Falls back to terminate_app on timeout."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithNumber("timeout_ms", mcpgo.Description("How long to wait for the app to acknowledge the shutdown. Default 5000.")),
 		),
 		mcpgo.NewTool("app_flush", mcpgo.WithDescription("Ask the app to drain pending output (log queue, persistence) and acknowledge when done. Useful as a precondition for app_quit."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 		mcpgo.NewTool("app_background", mcpgo.WithDescription("Fire the platform background-transition notification in the app without touching device focus."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 		mcpgo.NewTool("app_foreground", mcpgo.WithDescription("Fire the platform foreground-transition notification in the app without touching device focus."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 		mcpgo.NewTool("app_low_memory", mcpgo.WithDescription("Fire the synthetic memory-pressure notification in the app (iOS: UIApplicationDidReceiveMemoryWarningNotification analog; Android: onTrimMemory)."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 
 		mcpgo.NewTool("app_pause", mcpgo.WithDescription("Pause the app's main loop (dt becomes 0; input/render continue so the app stays responsive)."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 		mcpgo.NewTool("app_resume", mcpgo.WithDescription("Resume normal pacing after app_pause/app_speed."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 		mcpgo.NewTool("app_step", mcpgo.WithDescription("Advance N frames while paused, then re-pause."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithNumber("frames", mcpgo.Description("Number of frames to advance (default 1)")),
 		),
 		mcpgo.NewTool("app_speed", mcpgo.WithDescription("Set a dt multiplier. 0.1 for slow-mo, 10.0 for soak. Persists until next app_speed or app_resume."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithNumber("multiplier", mcpgo.Required(), mcpgo.Description("Positive dt multiplier")),
 		),
 
 		mcpgo.NewTool("app_input", mcpgo.WithDescription("Inject a synthetic input event into the app's event loop. The `type` field determines the event shape; remaining args are passed through as params (e.g. {type: \"finger_down\", x: 0.5, y: 0.5}, {type: \"key_down\", key: \"a\"}, {type: \"accel\", x: 0.0, y: 1.0, z: 0.0})."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Event type: finger_down, finger_up, finger_motion, key_down, key_up, accel")),
 		),
 
 		mcpgo.NewTool("app_state", mcpgo.WithDescription("Query a named slice of the app's state. The app's hello advertises which slices it supports."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("slice", mcpgo.Required(), mcpgo.Description("State slice name (e.g. \"scene\", \"physics\", \"hud\")")),
 		),
 		mcpgo.NewTool("app_save_state", mcpgo.WithDescription("Ask the app to serialize its state. Returns {state_b64, size}; pass the b64 blob back via app_restore_state."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 		mcpgo.NewTool("app_restore_state", mcpgo.WithDescription("Load a previously-captured state blob (from app_save_state) back into the app."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("state_b64", mcpgo.Required(), mcpgo.Description("base64-encoded state blob")),
 		),
 		mcpgo.NewTool("app_screenshot", mcpgo.WithDescription("Request a screenshot from the app's own framebuffer (sibling to spyder's DTX-based `screenshot`; useful when DTX is wedged or you need state-correlated capture)."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 
 		mcpgo.NewTool("app_state_slices", mcpgo.WithDescription("Return the slice catalogue the app advertised in its hello. Each entry has a `name` and an optional `example` payload — agents that get an example can write jq filters immediately; agents that don't can call app_state_describe to learn the shape without paying the full-payload cost."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 		mcpgo.NewTool("app_state_describe", mcpgo.WithDescription("Call state_query{slice} once and return a recursive types-only sketch (`{\"marble\": {\"position\": {\"x\": \"float\", ...}}, ...}`). Lets the agent infer jq expressions without first ingesting the full payload. Works for any app supporting state_query — no protocol changes needed app-side."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("slice", mcpgo.Required(), mcpgo.Description("Slice name to describe.")),
 		),
 		mcpgo.NewTool("app_state_capture_start", mcpgo.WithDescription("Start a background poller that samples `state_query{slice}` at a fixed interval, accumulating timestamped samples until app_state_capture_stop is called. Mirrors the log_collect / app_perf_get pattern — lets an agent run an `app_input` sequence and observe state evolve frame-by-frame without a hand-rolled poll loop. Drain accumulated samples with app_state_capture_get.\n\nOptional `select` jq expression is applied at insert time — samples whose filter result is empty don't enter the ring buffer. Saves agent context budget and capture-buffer memory when only a small subset of a large slice is interesting."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("slice", mcpgo.Required(), mcpgo.Description("Slice name (e.g. \"scene\", \"physics\"). Must be one the app advertised in hello.")),
 			mcpgo.WithNumber("interval_ms", mcpgo.Description("Sample interval in milliseconds. Default 100 (~10 Hz). Minimum 10.")),
 			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to each sample before insertion. Samples whose filter result is empty are skipped. Bad expressions are caught at start time and returned as `select_error`.")),
 		),
 		mcpgo.NewTool("app_state_capture_get", mcpgo.WithDescription("Drain the buffered samples for a state capture without stopping it. Optional `select` filters the drained samples (applies in addition to any insert-time filter set at start)."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("capture_id", mcpgo.Required(), mcpgo.Description("capture_id returned by app_state_capture_start")),
 			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to each drained sample's data. Bad expressions return `select_error`.")),
 		),
 		mcpgo.NewTool("app_state_capture_stop", mcpgo.WithDescription("Stop a state capture poller and return the remaining samples. The capture is gone after this call."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("capture_id", mcpgo.Required(), mcpgo.Description("capture_id returned by app_state_capture_start")),
 		),
 		mcpgo.NewTool("app_state_capture_list", mcpgo.WithDescription("List the active state captures on a session. Returns capture_id, slice, interval_ms, started_at, sample/dropped/error counts."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 		),
 
 		mcpgo.NewTool("app_log_get", mcpgo.WithDescription("Drain structured log lines the app has pushed since the last call. Capture continues. Optional `select` filters the drained lines server-side."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to the lines array. Example: `map(select(.level == \"error\"))`.")),
 		),
 		mcpgo.NewTool("app_perf_get", mcpgo.WithDescription("Drain perf-counter samples the app has pushed since the last call. Capture continues. Optional `select` filters the drained samples server-side."),
-			mcpgo.WithString("session_id"),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to the samples array. Example: `[.[].samples.frame_ms] | max`.")),
 		),
 	}

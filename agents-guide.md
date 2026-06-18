@@ -132,9 +132,8 @@ everything it can see.
 | `pool_list` | Current pool state for all templates (available/running/reserved counts per template). | Read-only. Pool must be configured via `~/.spyder/pool.yaml`. |
 | `pool_warm` | Force pre-boot N additional instances for a template. | `{template, count}`. Moves instances from available to running tier. |
 | `pool_drain` | Shut down and delete all idle instances for a template. | `{template}`. Reserved instances are terminated first. |
-| `app_channel_start` | Open a fresh TCP listener for the bidirectional MessagePack RPC channel. Returns `{listener_id, port, hosts}`; apps dial host:port, send a `hello`, become addressable via the `app_*` tools. | See "Bidirectional app channel" below. |
-| `app_channel_stop` | Close a listener and tear down all sessions accepted on it. | `{listener_id}`. |
-| `app_channel_list` | List active sessions across all listeners (session_id, port, owner, app_name, app_version, methods). | Read-only. |
+| `app_channel_stop` | Manually stop a per-(device, bundle_id) listener and tear down its sessions. Routine cleanup is automatic (24h idle TTL). | `{listener_id}`. |
+| `app_channel_list` | List active per-(device, bundle_id) listeners and their sessions (listener_id, device_id, bundle_id, port, owner, idle_since, sessions[]). | Read-only. Listeners are created automatically by `launch_app`/`deploy_app`. |
 | `app_ping`, `app_quit`, `app_flush`, `app_background`, `app_foreground`, `app_low_memory` | Lifecycle / liveness methods. `quit` is the clean-exit primitive (no macOS crash notification). | `{session_id?}`. session_id is optional when exactly one session is connected. |
 | `app_pause`, `app_resume`, `app_step`, `app_speed` | Time-control over the app's main loop. `step` advances N frames; `speed` sets a dt multiplier. | `{session_id?, frames?, multiplier?}`. |
 | `app_input` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | `{session_id?, type, ...event-specific fields}`. |
@@ -247,31 +246,36 @@ curl -s -X POST http://127.0.0.1:3030/api/v1/deploy_app \
 
 ## Collecting logs
 
-App→spyder logging now goes through the **bidirectional app channel**
+App→spyder logging goes through the **bidirectional app channel**
 (see [Bidirectional app channel](#bidirectional-app-channel-t75) below) —
 apps send structured `log` push messages over the MessagePack RPC
 channel, and the agent drains them with `app_log_get`. The previous
-raw-text `log_collect_*` family was removed in v0.58.0; the
-`SPYDER_APP_CHANNEL=host:port` env-var convention now points at an
-`app_channel_start` listener rather than a text-only port.
+raw-text `log_collect_*` family was removed in v0.58.0.
+
+As of v0.60.0 (🎯T83) the agent no longer manages the listener
+lifecycle: `launch_app` / `deploy_app` automatically open (or reuse)
+the per-(device, bundle_id) listener and inject
+`SPYDER_APP_CHANNEL=host:port` into the launched process's env.
+Listeners survive crashes and relaunches (same port, fresh
+`session_id` each connect), and are reaped after 24h of no live
+session and no `app_*` activity.
 
 ```json
-// 1. Open an app-channel listener.
-{"name": "app_channel_start", "arguments": {"owner": "multimaze2"}}
-// → {"listener_id": "...", "port": 54321, "hosts": ["192.168.1.42"], ...}
-
-// 2. Deploy with SPYDER_APP_CHANNEL pointing at one of those hosts:port.
+// 1. Deploy (or launch). spyder auto-wires SPYDER_APP_CHANNEL.
 {"name": "deploy_app", "arguments": {
   "device": "Jevons",
-  "path": "/path/to/MyApp.app",
-  "env": {"SPYDER_APP_CHANNEL": "192.168.1.42:54321"}
+  "path": "/path/to/MyApp.app"
 }}
 
-// 3. App dials, sends `hello`, starts pushing structured `log` messages.
+// 2. App dials, sends `hello`, starts pushing structured `log` messages.
 //    Drain them whenever you want — capture continues:
-{"name": "app_log_get"}
+{"name": "app_log_get", "arguments": {"device": "Jevons", "bundle_id": "com.example.app"}}
 // → {"lines": [{"timestamp": ..., "level": "info", "format": "...", ...}], ...}
 ```
+
+You can still pass an explicit `SPYDER_APP_CHANNEL` in `env` to
+override the auto-injected value (e.g. for an app on one device
+dialing a listener on another host).
 
 Compared to the old raw-text path: structured fields (level,
 subsystem, format, args), no per-line regex parsing, server-side jq
@@ -286,11 +290,12 @@ ge T83's NetworkLogSink upgrade.
 The `SPYDER_APP_CHANNEL` env arrives on one specific launch. A user-tap
 relaunch from SpringBoard / the Android launcher loses it — the app
 restarts without the env, can't dial home, and the agent gets no
-session in `app_channel_list`. To resume, re-run `launch_app` (or
-`deploy_app`) with the same env, or have the app cache the value
-across launches (NSUserDefaults / SharedPreferences / a config file).
-In practice, manual relaunches during a debugging session are
-infrequent and re-running `launch_app` is cheap.
+session in `app_channel_list`. The keyed listener is still there
+on the same port (it survives for 24h of activity), so the easiest
+recovery is to re-run `launch_app` — that re-injects the same
+host:port the previous launch saw. Alternatively, have the app
+cache the value across launches (NSUserDefaults / SharedPreferences
+/ a config file).
 
 ## Bidirectional app channel (🎯T75)
 
@@ -317,23 +322,25 @@ more leverage.
 ### Worked example
 
 ```json
-// 1. Open a listener.
-{"name": "app_channel_start", "arguments": {"owner": "multimaze2"}}
-// → {"listener_id": "...", "port": 54321, "hosts": ["192.168.1.42", ...]}
-
-// 2. Deploy with the channel address in env (app reads it and dials).
+// 1. Deploy. spyder auto-creates the per-(device, bundle_id)
+//    listener and injects SPYDER_APP_CHANNEL into the launch env.
 {"name": "deploy_app", "arguments": {
   "device": "Jevons",
-  "path": "/path/to/MyApp.app",
-  "env": {"SPYDER_APP_CHANNEL": "192.168.1.42:54321"}
+  "path": "/path/to/MyApp.app"
 }}
 
-// 3. App connects, sends hello → app_channel_list shows the session.
+// 2. App connects, sends hello → app_channel_list shows the session.
 {"name": "app_channel_list"}
-// → [{"session_id": "...", "app_name": "MultiMaze", "methods": [...]}]
+// → {"listeners": [{
+//      "listener_id": "...", "device_id": "...", "bundle_id": "com.example.app",
+//      "port": 54321, "sessions": [{"session_id": "...", "app_name": "MultiMaze", ...}]
+//    }]}
 
-// 4. Drive the app.
-{"name": "app_state", "arguments": {"slice": "scene"}}
+// 3. Drive the app. Either pass session_id, or address by (device, bundle_id);
+//    or, when only one session is connected, omit all three.
+{"name": "app_state", "arguments": {
+  "device": "Jevons", "bundle_id": "com.example.app", "slice": "scene"
+}}
 {"name": "app_input", "arguments": {"type": "finger_down", "x": 0.5, "y": 0.5}}
 {"name": "app_pause"}
 {"name": "app_step", "arguments": {"frames": 3}}
@@ -355,9 +362,16 @@ gracefully refuse calls to anything the app didn't claim.
 
 ### Session addressing
 
-When exactly one session is connected, every `app_*` tool defaults to
-it (omit `session_id`). When multiple are connected, `session_id` is
-required to disambiguate. `app_channel_list` shows what's live.
+Every `app_*` tool resolves its target session in this order:
+
+1. **`session_id`** — explicit, fastest, unambiguous.
+2. **`device` + `bundle_id`** — looks up the keyed listener and picks
+   the unique session connected to it. Use when you want to address
+   a specific app without juggling session ids.
+3. **Single-session fallback** — when exactly one session is connected
+   across all listeners, omit all three.
+
+`app_channel_list` shows the listener + session topology.
 
 ### Discovering state slices (🎯T80, T81)
 

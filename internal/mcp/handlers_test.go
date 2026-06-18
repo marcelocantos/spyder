@@ -9,10 +9,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/network"
 )
@@ -413,9 +415,9 @@ func TestHandleLaunchApp_EnvPassthrough(t *testing.T) {
 		"device":    "iPad",
 		"bundle_id": "com.foo",
 		"env": map[string]any{
-			"SPYDER_APP_CHANNEL":  "192.168.1.42:9999",
-			"FEATURE_X":   "on",
-			"NUMERIC_VAL": 42,
+			"SPYDER_APP_CHANNEL": "192.168.1.42:9999",
+			"FEATURE_X":          "on",
+			"NUMERIC_VAL":        42,
 		},
 	})
 	if r.IsError {
@@ -429,6 +431,98 @@ func TestHandleLaunchApp_EnvPassthrough(t *testing.T) {
 	}
 	if got["NUMERIC_VAL"] != "42" {
 		t.Errorf("NUMERIC_VAL = %q; want 42 (stringified)", got["NUMERIC_VAL"])
+	}
+}
+
+// launch_app auto-injects SPYDER_APP_CHANNEL when the appchannel
+// manager is wired and the caller didn't supply one. (🎯T83)
+func TestHandleLaunchApp_AutoInjectsAppChannelEnv(t *testing.T) {
+	var got map[string]string
+	ios := &stubAdapter{launchApp: func(id, bundle string, env map[string]string) error {
+		got = env
+		return nil
+	}}
+	h := newHandlerWithStubs(t, ios, nil)
+	h.appChannel = appchannel.NewManager()
+	t.Cleanup(h.appChannel.Close)
+
+	r := dispatchJSON(t, h, "launch_app", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.foo.bar",
+	})
+	if r.IsError {
+		t.Fatalf("launch_app should succeed; body=%s", resultText(t, &r))
+	}
+	if got["SPYDER_APP_CHANNEL"] == "" {
+		t.Fatalf("SPYDER_APP_CHANNEL not injected; env=%v", got)
+	}
+	// Listener should exist under the resolved UUID and the injected
+	// host:port should match its port.
+	key := appchannel.AppKey{DeviceID: "00008103-001122334455667A", BundleID: "com.foo.bar"}
+	l, ok := h.appChannel.LookupKeyed(key)
+	if !ok {
+		t.Fatalf("no keyed listener after launch_app")
+	}
+	// The iPad fixture is a hardware UDID, so the host is the first
+	// LAN IPv4 (machine-dependent) — assert on the suffix only.
+	if !strings.HasSuffix(got["SPYDER_APP_CHANNEL"], ":"+strconv.Itoa(l.Port)) {
+		t.Errorf("SPYDER_APP_CHANNEL = %q; want suffix :%d", got["SPYDER_APP_CHANNEL"], l.Port)
+	}
+}
+
+// A second launch_app for the same (device, bundle_id) reuses the
+// same listener (and thus the same port) — that's the listener-
+// stability promise. (🎯T83)
+func TestHandleLaunchApp_RelaunchReusesListener(t *testing.T) {
+	var lastEnv map[string]string
+	ios := &stubAdapter{launchApp: func(id, bundle string, env map[string]string) error {
+		lastEnv = env
+		return nil
+	}}
+	h := newHandlerWithStubs(t, ios, nil)
+	h.appChannel = appchannel.NewManager()
+	t.Cleanup(h.appChannel.Close)
+
+	dispatchJSON(t, h, "launch_app", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.foo.bar",
+	})
+	first := lastEnv["SPYDER_APP_CHANNEL"]
+	dispatchJSON(t, h, "launch_app", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.foo.bar",
+	})
+	second := lastEnv["SPYDER_APP_CHANNEL"]
+	if first == "" || second == "" {
+		t.Fatalf("expected SPYDER_APP_CHANNEL in both launches: first=%q second=%q", first, second)
+	}
+	if first != second {
+		t.Errorf("second launch should reuse the same listener port; first=%q second=%q", first, second)
+	}
+}
+
+// An explicit SPYDER_APP_CHANNEL in the launch env wins over the
+// auto-injected value — caller opt-out / override path. (🎯T83)
+func TestHandleLaunchApp_ExplicitEnvOverridesAutoInjection(t *testing.T) {
+	var got map[string]string
+	ios := &stubAdapter{launchApp: func(id, bundle string, env map[string]string) error {
+		got = env
+		return nil
+	}}
+	h := newHandlerWithStubs(t, ios, nil)
+	h.appChannel = appchannel.NewManager()
+	t.Cleanup(h.appChannel.Close)
+
+	r := dispatchJSON(t, h, "launch_app", map[string]any{
+		"device":    "iPad",
+		"bundle_id": "com.foo.bar",
+		"env":       map[string]any{"SPYDER_APP_CHANNEL": "explicit:9999"},
+	})
+	if r.IsError {
+		t.Fatalf("launch_app should succeed; body=%s", resultText(t, &r))
+	}
+	if got["SPYDER_APP_CHANNEL"] != "explicit:9999" {
+		t.Errorf("SPYDER_APP_CHANNEL = %q; want explicit:9999", got["SPYDER_APP_CHANNEL"])
 	}
 }
 
