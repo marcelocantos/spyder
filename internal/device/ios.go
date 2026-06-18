@@ -879,6 +879,10 @@ type ipsHeader struct {
 	ExceptionInfo string `json:"exception_info"`
 }
 
+// IsSimulatorID is the exported wrapper for isSimulatorID, for callers
+// outside the device package (e.g. mcp's appchannel host picker).
+func IsSimulatorID(id string) bool { return isSimulatorID(id) }
+
 // isSimulatorID returns true when id looks like an iOS simulator UUID
 // rather than a hardware device UDID.
 //

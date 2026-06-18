@@ -59,10 +59,8 @@ type Handler struct {
 	bls                  *baselines.Store
 	recordings           *recording.Registry
 	logCapture           *logcapture.Manager
-	appChannel           *appchannel.Manager
-	appChannelListeners  map[string]*appchannel.Listener
-	appChannelListenerMu sync.Mutex
-	runsBaseDir          string                // base dir for active-run temp files; empty = os.TempDir()
+	appChannel  *appchannel.Manager
+	runsBaseDir string                // base dir for active-run temp files; empty = os.TempDir()
 	pool                 selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
 	poolMgr              PoolManager           // optional hook for 🎯T24 pool management
 
@@ -159,13 +157,12 @@ func WithAppChannel(m *appchannel.Manager) HandlerOption {
 // NewHandler creates a new spyder tool handler.
 func NewHandler(opts ...HandlerOption) *Handler {
 	h := &Handler{
-		inventory:           inventory.New(),
-		ios:                 device.NewIOSAdapter(),
-		android:             device.NewAndroidAdapter(),
-		recordings:          recording.NewRegistry(),
-		networkByDevice:     map[string]appliedNetwork{},
-		launchTimes:         map[launchKey]time.Time{},
-		appChannelListeners: map[string]*appchannel.Listener{},
+		inventory:       inventory.New(),
+		ios:             device.NewIOSAdapter(),
+		android:         device.NewAndroidAdapter(),
+		recordings:      recording.NewRegistry(),
+		networkByDevice: map[string]appliedNetwork{},
+		launchTimes:     map[launchKey]time.Time{},
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -369,9 +366,7 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 		return h.handleLogCaptureStop(args)
 	case "log_capture_list":
 		return h.handleLogCaptureList(args)
-	// --- bidirectional app channel (🎯T75) -------------------------------
-	case "app_channel_start":
-		return h.handleAppChannelStart(args)
+	// --- bidirectional app channel (🎯T75, 🎯T83) -----------------------
 	case "app_channel_stop":
 		return h.handleAppChannelStop(args)
 	case "app_channel_list":

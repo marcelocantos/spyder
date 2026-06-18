@@ -31,10 +31,26 @@ const (
 
 	// DefaultPerfBufferSamples bounds the per-session perf push buffer.
 	DefaultPerfBufferSamples = 10_000
-
-	// sessionTTLSweep is the cadence at which we GC closed sessions.
-	sessionTTLSweep = 30 * time.Second
 )
+
+// KeyedListenerIdleTTL is how long a per-(device, bundle_id) listener
+// survives with no live session and no activity before the sweeper
+// reaps it. Declared as a var so tests can shorten it.
+var KeyedListenerIdleTTL = 24 * time.Hour
+
+// KeyedListenerSweepInterval is how often the manager sweeps keyed
+// listeners looking for idle-reap candidates. Declared as a var so
+// tests can shorten it.
+var KeyedListenerSweepInterval = 5 * time.Minute
+
+// AppKey identifies a (device, bundle_id) pair that the manager
+// keeps a singleton listener for. Two launches of the same app on the
+// same device share a listener (and port); one app on two devices
+// gets two listeners.
+type AppKey struct {
+	DeviceID string
+	BundleID string
+}
 
 // LogPush is one structured log entry pushed by the app.
 type LogPush struct {
@@ -67,6 +83,8 @@ type Session struct {
 	Owner     string
 	StartedAt time.Time
 
+	listener *Listener // the listener that accepted this session; may be nil in tests
+
 	conn   net.Conn
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -93,6 +111,10 @@ type Session struct {
 	// is unique within a session.
 	stateCaptures map[string]*StateCapture
 }
+
+// Listener returns the listener that accepted this session. Nil for
+// sessions created outside the standard accept path (legacy tests).
+func (s *Session) Listener() *Listener { return s.listener }
 
 // HelloInfo returns the app's advertised identity + supported methods.
 // Returns nil before the handshake completes.
@@ -218,9 +240,18 @@ func (s *Session) DrainPerf() ([]PerfPush, int) {
 // Close terminates the session; any in-flight calls receive an error.
 // Background state captures are torn down so their goroutines don't
 // leak past session end.
+//
+// Closing s.conn directly is what actually unblocks the readLoop —
+// ctx cancellation cannot interrupt a blocking socket read. Without
+// this, a peer that vanished without a clean TCP close (the iOS
+// app-channel test case that wedged spyder for 4.8h) leaves Close()
+// parked on `<-s.done` forever, because readLoop's deferred
+// `conn.Close()` (the only path that would unblock the read) cannot
+// run until readLoop returns.
 func (s *Session) Close() error {
 	s.closeStateCaptures()
 	s.cancel()
+	_ = s.conn.Close()
 	<-s.done
 	return nil
 }
@@ -407,13 +438,17 @@ func SetSpyderVersion(v string) { spyderVersion = v }
 type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
+	keyed    map[AppKey]*Listener
 
 	closeFn func()
 }
 
 // NewManager returns a Manager with the GC sweeper running.
 func NewManager() *Manager {
-	m := &Manager{sessions: map[string]*Session{}}
+	m := &Manager{
+		sessions: map[string]*Session{},
+		keyed:    map[AppKey]*Listener{},
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.closeFn = cancel
 	go m.sweep(ctx)
@@ -423,28 +458,94 @@ func NewManager() *Manager {
 // StartParams configures a new listener.
 type StartParams struct {
 	Owner string
+	Key   AppKey // when non-zero, the listener is registered under this key
 }
 
-// Listener is a sentinel returned by Start; the underlying TCP listener
-// stays open until Stop is called. Each accepted connection becomes a
-// Session.
+// Listener is the sentinel returned by GetOrCreateListener; the
+// underlying TCP listener stays open until Stop is called or the
+// sweeper reaps it. Each accepted connection becomes a Session.
 type Listener struct {
 	ID    string
 	Port  int
 	Owner string
+	Key   AppKey // zero value when this listener is not keyed (legacy/test path)
 
 	mgr      *Manager
 	listener net.Listener
 	cancel   context.CancelFunc
 	done     chan struct{}
 
-	mu       sync.Mutex
-	sessions []*Session // sessions accepted on this listener
+	mu          sync.Mutex
+	sessions    []*Session // sessions accepted on this listener
+	lastTouched time.Time
 }
 
-// Start binds a kernel-assigned TCP port on all interfaces and accepts
-// app connections. Each connection becomes a Session.
+// GetOrCreateListener returns the keyed listener for `key`, creating
+// one (and binding a kernel-assigned TCP port) on first call. The
+// listener survives app crashes/relaunches — a new connection on the
+// same port becomes a fresh Session under the same listener_id and
+// port. The listener is reaped by the sweeper after
+// `KeyedListenerIdleTTL` with no live session and no Touch.
+func (m *Manager) GetOrCreateListener(key AppKey) (*Listener, error) {
+	if key.DeviceID == "" || key.BundleID == "" {
+		return nil, fmt.Errorf("appchannel: GetOrCreateListener: key.DeviceID and key.BundleID are required")
+	}
+	m.mu.Lock()
+	if l, ok := m.keyed[key]; ok {
+		m.mu.Unlock()
+		l.Touch()
+		return l, nil
+	}
+	m.mu.Unlock()
+
+	l, err := m.startListener(StartParams{Key: key})
+	if err != nil {
+		return nil, err
+	}
+	// Race-resolve: another caller may have created concurrently.
+	m.mu.Lock()
+	if existing, ok := m.keyed[key]; ok {
+		m.mu.Unlock()
+		// We lost the race; tear down the duplicate.
+		l.Stop()
+		existing.Touch()
+		return existing, nil
+	}
+	m.keyed[key] = l
+	m.mu.Unlock()
+	l.Touch()
+	return l, nil
+}
+
+// LookupKeyed returns the keyed listener for `key` if one exists.
+func (m *Manager) LookupKeyed(key AppKey) (*Listener, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	l, ok := m.keyed[key]
+	return l, ok
+}
+
+// KeyedListeners returns a snapshot of all keyed listeners.
+func (m *Manager) KeyedListeners() []*Listener {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*Listener, 0, len(m.keyed))
+	for _, l := range m.keyed {
+		out = append(out, l)
+	}
+	return out
+}
+
+// Start opens an unkeyed listener (the legacy/test path). Production
+// callers should use GetOrCreateListener so the listener is tracked
+// in the per-(device, bundle_id) registry.
 func (m *Manager) Start(p StartParams) (*Listener, error) {
+	return m.startListener(p)
+}
+
+// startListener binds a port and starts the accept loop. Internal —
+// public callers go through GetOrCreateListener or Start.
+func (m *Manager) startListener(p StartParams) (*Listener, error) {
 	ln, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		return nil, fmt.Errorf("appchannel: listen: %w", err)
@@ -456,21 +557,42 @@ func (m *Manager) Start(p StartParams) (*Listener, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &Listener{
-		ID:       id,
-		Port:     ln.Addr().(*net.TCPAddr).Port,
-		Owner:    p.Owner,
-		mgr:      m,
-		listener: ln,
-		cancel:   cancel,
-		done:     make(chan struct{}),
+		ID:          id,
+		Port:        ln.Addr().(*net.TCPAddr).Port,
+		Owner:       p.Owner,
+		Key:         p.Key,
+		mgr:         m,
+		listener:    ln,
+		cancel:      cancel,
+		done:        make(chan struct{}),
+		lastTouched: time.Now(),
 	}
 	go l.acceptLoop(ctx)
 	slog.Info("appchannel: listener started",
-		"listener_id", id, "port", l.Port, "owner", p.Owner)
+		"listener_id", id, "port", l.Port, "owner", p.Owner,
+		"device_id", p.Key.DeviceID, "bundle_id", p.Key.BundleID)
 	return l, nil
 }
 
-// Stop closes the listener and all sessions accepted on it.
+// Touch updates the listener's last-activity timestamp; the idle reaper
+// uses this to decide whether a listener with zero live sessions has
+// been quiet long enough to drop.
+func (l *Listener) Touch() {
+	l.mu.Lock()
+	l.lastTouched = time.Now()
+	l.mu.Unlock()
+}
+
+// LastTouched returns the listener's last-activity timestamp.
+func (l *Listener) LastTouched() time.Time {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lastTouched
+}
+
+// Stop closes the listener and all sessions accepted on it. If the
+// listener was keyed, it is also removed from the manager's keyed
+// registry.
 func (l *Listener) Stop() {
 	l.cancel()
 	_ = l.listener.Close()
@@ -486,6 +608,11 @@ func (l *Listener) Stop() {
 	l.mgr.mu.Lock()
 	for _, s := range sessions {
 		delete(l.mgr.sessions, s.ID)
+	}
+	if l.Key != (AppKey{}) {
+		if existing, ok := l.mgr.keyed[l.Key]; ok && existing == l {
+			delete(l.mgr.keyed, l.Key)
+		}
 	}
 	l.mgr.mu.Unlock()
 }
@@ -525,6 +652,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 		Port:          l.Port,
 		Owner:         l.Owner,
 		StartedAt:     time.Now(),
+		listener:      l,
 		conn:          conn,
 		cancel:        sCancel,
 		done:          make(chan struct{}),
@@ -541,6 +669,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 
 	l.mu.Lock()
 	l.sessions = append(l.sessions, s)
+	l.lastTouched = time.Now()
 	l.mu.Unlock()
 	l.mgr.mu.Lock()
 	l.mgr.sessions[id] = s
@@ -548,11 +677,21 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 
 	s.readLoop(sCtx)
 
-	// Session ended; reap from manager (Listener.Stop already touches
-	// l.sessions on Stop, so don't double-remove there).
+	// Session ended; reap from manager and from this listener's
+	// session list. Bump lastTouched so the idle reaper starts the
+	// TTL clock from the disconnect.
 	l.mgr.mu.Lock()
 	delete(l.mgr.sessions, id)
 	l.mgr.mu.Unlock()
+	l.mu.Lock()
+	for i, ls := range l.sessions {
+		if ls == s {
+			l.sessions = append(l.sessions[:i], l.sessions[i+1:]...)
+			break
+		}
+	}
+	l.lastTouched = time.Now()
+	l.mu.Unlock()
 }
 
 // GetSession returns the session by ID, if any.
@@ -580,16 +719,47 @@ func (m *Manager) Close() {
 }
 
 func (m *Manager) sweep(ctx context.Context) {
-	t := time.NewTicker(sessionTTLSweep)
+	t := time.NewTicker(KeyedListenerSweepInterval)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			// No-op for now — sessions auto-reap from readLoop.
-			// Reserved for explicit TTL behaviour if needed later.
+			m.ReapIdleKeyedListeners()
 		}
+	}
+}
+
+// ReapIdleKeyedListeners stops and removes any keyed listener that
+// has no live session and whose lastTouched is older than
+// KeyedListenerIdleTTL. Called by the background sweeper; exported
+// so tests (and operational tooling) can force a synchronous pass.
+func (m *Manager) ReapIdleKeyedListeners() {
+	m.mu.Lock()
+	candidates := make([]*Listener, 0, len(m.keyed))
+	for _, l := range m.keyed {
+		candidates = append(candidates, l)
+	}
+	m.mu.Unlock()
+
+	cutoff := time.Now().Add(-KeyedListenerIdleTTL)
+	for _, l := range candidates {
+		l.mu.Lock()
+		live := len(l.sessions)
+		last := l.lastTouched
+		l.mu.Unlock()
+		if live > 0 {
+			continue
+		}
+		if last.After(cutoff) {
+			continue
+		}
+		slog.Info("appchannel: reaping idle keyed listener",
+			"listener_id", l.ID, "port", l.Port,
+			"device_id", l.Key.DeviceID, "bundle_id", l.Key.BundleID,
+			"idle_for", time.Since(last).Round(time.Second).String())
+		l.Stop()
 	}
 }
 

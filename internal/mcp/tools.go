@@ -18,6 +18,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -414,15 +415,55 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 	if res := h.authorize(dev, owner); res != nil {
 		return res, nil
 	}
-	adapter, _, id, err := h.resolveAdapter(dev)
+	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		return toolErr("%v", err)
+	}
+	env, err = h.ensureAppChannelEnv(env, platform, id, bundleID)
+	if err != nil {
+		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
 	}
 	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
 		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
 	}
 	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
 	return toolText(fmt.Sprintf("launched %s on %s", bundleID, dev))
+}
+
+// ensureAppChannelEnv injects SPYDER_APP_CHANNEL=host:port into the
+// env map unless the caller already supplied a value (caller wins so
+// an explicit override or opt-out remains possible). The listener is
+// created lazily and shared across relaunches of the same
+// (device, bundle_id) pair (🎯T83).
+//
+// Returns an error if the channel can't be wired (no LAN address, or
+// listener creation failed) so the caller fails the launch — letting
+// the launch succeed without a channel would silently produce an app
+// that can't be observed via app_* tools.
+//
+// Returns (env, nil) unchanged when the appchannel manager isn't
+// wired (test handlers without WithAppChannel) — channel-less mode
+// is an explicit configuration choice, not a runtime failure.
+func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID, bundleID string) (map[string]string, error) {
+	if h.appChannel == nil {
+		return env, nil
+	}
+	if _, ok := env["SPYDER_APP_CHANNEL"]; ok {
+		return env, nil
+	}
+	host, err := pickAppChannelHost(platform, deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("appchannel: %w", err)
+	}
+	l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID})
+	if err != nil {
+		return nil, fmt.Errorf("appchannel: %w", err)
+	}
+	if env == nil {
+		env = map[string]string{}
+	}
+	env["SPYDER_APP_CHANNEL"] = fmt.Sprintf("%s:%d", host, l.Port)
+	return env, nil
 }
 
 // isRunningResult is the structured response of the is_running tool.
@@ -1450,6 +1491,10 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 	}
 
 	// Step 3: launch.
+	env, err = h.ensureAppChannelEnv(env, platform, id, bundleID)
+	if err != nil {
+		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
+	}
 	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
 		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
 	}

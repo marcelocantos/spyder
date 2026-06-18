@@ -184,26 +184,23 @@ func startAppChannelHandler(t *testing.T) *Handler {
 	t.Helper()
 	h := newTestHandler(t)
 	h.appChannel = appchannel.NewManager()
-	h.appChannelListeners = map[string]*appchannel.Listener{}
 	t.Cleanup(h.appChannel.Close)
 	return h
 }
 
+// testAppKey returns a stable AppKey for tests that don't otherwise
+// care about device/bundle identity.
+func testAppKey() appchannel.AppKey {
+	return appchannel.AppKey{DeviceID: "test-device", BundleID: "com.example.smoke"}
+}
+
 func openListener(t *testing.T, h *Handler) (listenerID string, port int) {
 	t.Helper()
-	r := dispatchJSON(t, h, "app_channel_start", map[string]any{"owner": "test"})
-	if r.IsError {
-		t.Fatalf("app_channel_start: %s", resultText(t, &r))
+	l, err := h.appChannel.GetOrCreateListener(testAppKey())
+	if err != nil {
+		t.Fatalf("GetOrCreateListener: %v", err)
 	}
-	var resp struct {
-		ListenerID string   `json:"listener_id"`
-		Port       int      `json:"port"`
-		Hosts      []string `json:"hosts"`
-	}
-	if err := json.Unmarshal([]byte(resultText(t, &r)), &resp); err != nil {
-		t.Fatalf("decode start response: %v", err)
-	}
-	return resp.ListenerID, resp.Port
+	return l.ID, l.Port
 }
 
 func waitForAppSession(t *testing.T, h *Handler) string {
@@ -222,21 +219,26 @@ func waitForAppSession(t *testing.T, h *Handler) string {
 
 // tests ----------------------------------------------------------------
 
-func TestAppChannel_StartListAndStop(t *testing.T) {
+func TestAppChannel_ListAndStop(t *testing.T) {
 	h := startAppChannelHandler(t)
 	id, port := openListener(t, h)
 	if port == 0 {
 		t.Fatal("port = 0")
 	}
 
-	// list should show one (no sessions yet because no app connected).
+	// list should show the keyed listener (no session yet because no app connected).
 	r := dispatchJSON(t, h, "app_channel_list", nil)
 	if r.IsError {
 		t.Fatalf("app_channel_list: %s", resultText(t, &r))
 	}
-	if !strings.Contains(resultText(t, &r), "[]") {
-		// no app sessions yet
-		t.Logf("list (pre-connect): %s", resultText(t, &r))
+	if !strings.Contains(resultText(t, &r), id) {
+		t.Errorf("list did not contain listener_id %s: %s", id, resultText(t, &r))
+	}
+	if !strings.Contains(resultText(t, &r), "test-device") {
+		t.Errorf("list did not include device_id: %s", resultText(t, &r))
+	}
+	if !strings.Contains(resultText(t, &r), "idle_since") {
+		t.Errorf("listener with no session should report idle_since: %s", resultText(t, &r))
 	}
 
 	// stop the listener.
@@ -461,11 +463,156 @@ func TestAppChannel_SessionRequiredWhenMultiple(t *testing.T) {
 	}
 }
 
+// app_channel_start was removed in T83 (auto-managed listeners) — the
+// dispatcher should now refuse it as an unknown tool.
+func TestAppChannel_StartRemoved(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, err := h.Dispatch("app_channel_start", map[string]any{})
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("Dispatch(app_channel_start) err = %v; want unknown tool", err)
+	}
+}
+
+// Resolving an app_* call by (device, bundle_id) when session_id is
+// omitted is the headline T83 ergonomic upgrade. The keyed registry
+// stores under the resolved device UUID, so this test mirrors
+// what the handler will do at lookup time.
+func TestAppChannel_ResolveSessionByDeviceAndBundleID(t *testing.T) {
+	h := startAppChannelHandler(t)
+	const iPadUUID = "00008103-001122334455667A"
+	l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{
+		DeviceID: iPadUUID, BundleID: "com.smoke.app",
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreateListener: %v", err)
+	}
+	client := dialSmoke(t, l.Port, []string{appchannel.MethodPing})
+	defer client.close()
+	_ = waitForAppSession(t, h)
+
+	// Address by alias — handler resolves "iPad" → iPadUUID before lookup.
+	r := dispatchJSON(t, h, "app_ping", map[string]any{
+		"device": "iPad", "bundle_id": "com.smoke.app",
+	})
+	if r.IsError {
+		t.Fatalf("ping by (device, bundle_id) should succeed: %s", resultText(t, &r))
+	}
+
+	r = dispatchJSON(t, h, "app_ping", map[string]any{
+		"device": "iPad", "bundle_id": "com.other.app",
+	})
+	if !r.IsError {
+		t.Fatal("ping for unknown bundle_id should error")
+	}
+}
+
+// GetOrCreateListener returns the same listener (and port) on a
+// repeat call for the same (device, bundle_id) — that's the listener-
+// reuse promise the auto-managed model rests on.
+func TestAppChannel_ListenerReuseSamePort(t *testing.T) {
+	h := startAppChannelHandler(t)
+	key := appchannel.AppKey{DeviceID: "iPad", BundleID: "com.app"}
+	first, err := h.appChannel.GetOrCreateListener(key)
+	if err != nil {
+		t.Fatalf("first GetOrCreateListener: %v", err)
+	}
+	second, err := h.appChannel.GetOrCreateListener(key)
+	if err != nil {
+		t.Fatalf("second GetOrCreateListener: %v", err)
+	}
+	if first.ID != second.ID || first.Port != second.Port {
+		t.Errorf("second call should return same listener; first=(%s,%d) second=(%s,%d)",
+			first.ID, first.Port, second.ID, second.Port)
+	}
+}
+
+// The idle reaper drops a keyed listener with zero live sessions
+// once its lastTouched is older than KeyedListenerIdleTTL. Tests
+// shrink the TTL so the wall-clock cost is microseconds.
+func TestAppChannel_IdleReaperDropsStaleListener(t *testing.T) {
+	prevTTL := appchannel.KeyedListenerIdleTTL
+	appchannel.KeyedListenerIdleTTL = time.Millisecond
+	t.Cleanup(func() { appchannel.KeyedListenerIdleTTL = prevTTL })
+
+	h := startAppChannelHandler(t)
+	l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{
+		DeviceID: "iPad", BundleID: "com.stale.app",
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreateListener: %v", err)
+	}
+	time.Sleep(5 * time.Millisecond)
+	h.appChannel.ReapIdleKeyedListeners()
+
+	if _, ok := h.appChannel.LookupKeyed(l.Key); ok {
+		t.Errorf("stale listener for %v should have been reaped", l.Key)
+	}
+}
+
+// A keyed listener with a live session is NOT reaped — even when
+// lastTouched is older than the TTL — because the agent is still
+// observing the app.
+func TestAppChannel_IdleReaperKeepsLiveSession(t *testing.T) {
+	prevTTL := appchannel.KeyedListenerIdleTTL
+	appchannel.KeyedListenerIdleTTL = time.Millisecond
+	t.Cleanup(func() { appchannel.KeyedListenerIdleTTL = prevTTL })
+
+	h := startAppChannelHandler(t)
+	key := appchannel.AppKey{DeviceID: "iPad", BundleID: "com.live.app"}
+	l, err := h.appChannel.GetOrCreateListener(key)
+	if err != nil {
+		t.Fatalf("GetOrCreateListener: %v", err)
+	}
+	client := dialSmoke(t, l.Port, []string{appchannel.MethodPing})
+	defer client.close()
+	_ = waitForAppSession(t, h)
+
+	time.Sleep(5 * time.Millisecond)
+	h.appChannel.ReapIdleKeyedListeners()
+
+	if _, ok := h.appChannel.LookupKeyed(key); !ok {
+		t.Errorf("listener with live session should not be reaped")
+	}
+}
+
+// Listener.Stop must complete promptly even when a connected peer
+// vanishes without a clean TCP close (the iOS test case that wedged
+// the installed spyder for ~4.8h). The deadlock was: Session.Close
+// waited on `<-s.done`, but s.done is closed by readLoop, which was
+// parked in a blocking ReadFrame that ctx cancellation can't
+// interrupt. Fix: close s.conn directly in Session.Close.
+func TestAppChannel_StopDoesNotDeadlockOnSilentPeer(t *testing.T) {
+	h := startAppChannelHandler(t)
+	l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{
+		DeviceID: "iPad", BundleID: "com.silent.app",
+	})
+	if err != nil {
+		t.Fatalf("GetOrCreateListener: %v", err)
+	}
+	// Dial + complete the handshake so a Session is registered, then
+	// hold the conn open without ever sending or closing it — the
+	// readLoop will be parked in ReadFrame.
+	client := dialSmoke(t, l.Port, []string{appchannel.MethodPing})
+	defer client.close()
+	_ = waitForAppSession(t, h)
+
+	done := make(chan struct{})
+	go func() {
+		l.Stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Listener.Stop deadlocked — Session.Close failed to unblock readLoop")
+	}
+}
+
 // Sanity: the daemon dispatcher recognises every new tool.
 func TestAppChannel_DispatchSurfaceCoverage(t *testing.T) {
 	h := startAppChannelHandler(t)
 	expected := []string{
-		"app_channel_start", "app_channel_stop", "app_channel_list",
+		"app_channel_stop", "app_channel_list",
 		"app_ping", "app_quit", "app_flush",
 		"app_background", "app_foreground", "app_low_memory",
 		"app_pause", "app_resume", "app_step", "app_speed",
