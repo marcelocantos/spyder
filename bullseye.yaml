@@ -3468,6 +3468,30 @@ targets:
     - synchronous-capture
     origin: manual
     discovered: 2026-06-15
+  T83:
+    name: app channel listener auto-managed per (device, bundle_id); explicit start removed from the agent API
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - launch_app injects SPYDER_APP_CHANNEL into the app env automatically; the agent never passes host:port
+    - Listener identity is keyed by (device_id, bundle_id); a second launch_app for the same pair reuses the existing listener and port
+    - A relaunched app (crash or app_quit + launch_app) reconnects to the same listener and gets a fresh session_id under the same listener
+    - Listener is reaped after 24h with no live session and no app_* tool call against the (device, bundle_id) pair
+    - app_channel_start is removed from the tool catalogue (or returns an error directing callers to launch_app)
+    - app_channel_list still works and reports listener_id, device, bundle_id, port, owner, idle-since plus the per-session info it already returns
+    - Existing app_* tools resolve session_id by (device, bundle_id) when the arg is omitted, not just by single-live-session heuristic
+    - 'Docs and tool descriptions updated: launch_app description mentions channel auto-wires; app_channel_start removal noted in CHANGELOG'
+    context: 'Today the agent must call app_channel_start, thread the returned host:port into launch_app env, then wait for hello — three pieces of lifecycle state the client should not own (violates the minimal-client-APIs rule: client declares intent, server owns lifecycle). There is no real use case for pointing an externally-launched app at an agent-chosen listener, so the explicit-port escape hatch can go. Design: spyder maintains one listener per (device_id, bundle_id). launch_app (and install_app where it forwards env) injects SPYDER_APP_CHANNEL automatically, lazily creating the listener on first use for that pair. The listener survives app crashes/restarts so a relaunched app reattaches to the same port. Idle timeout: 24h with no active session AND no app_* call against the (device, bundle_id), then the listener is reaped. app_channel_list stays as diagnostics; app_channel_start is removed from the public tool set; app_channel_stop becomes a manual-GC tool.'
+    tags:
+    - app-channel
+    - mcp
+    - minimal-api
+    - lifecycle
+    - agent-ux
+    origin: manual
+    discovered: 2026-06-19
+    achieved: 2026-06-19
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved
