@@ -121,6 +121,39 @@ func TestParseDevicectlConnectedIOSDevices_WiredOnly(t *testing.T) {
 	}
 }
 
+// --- classifyUSBMuxEntry (🎯T84) -------------------------------------------
+
+func TestClassifyUSBMuxEntry(t *testing.T) {
+	connected := map[string]bool{"READY-IOS": true}
+	cases := []struct {
+		name        string
+		major       int
+		lockdownOK  bool
+		udid        string
+		connected   map[string]bool
+		wantInclude bool
+		wantPending bool
+	}{
+		{"legacy-ok", 16, true, "OLD", connected, true, false},
+		{"legacy-no-lockdown", 16, false, "OLD", connected, false, false},
+		{"modern-tunnel-ready", 17, true, "READY-IOS", connected, true, false},
+		{"modern-tunnel-settling", 17, true, "STILL-SETTLING", connected, true, true},
+		{"modern-no-devicectl", 17, true, "ANY", nil, true, false},
+		{"unknown-major-treated-as-modern", 0, false, "STILL-SETTLING", connected, true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotInclude, gotPending := classifyUSBMuxEntry(tc.major, tc.lockdownOK, tc.udid, tc.connected)
+			if gotInclude != tc.wantInclude {
+				t.Errorf("include = %v; want %v", gotInclude, tc.wantInclude)
+			}
+			if gotPending != tc.wantPending {
+				t.Errorf("pending = %v; want %v", gotPending, tc.wantPending)
+			}
+		})
+	}
+}
+
 // --- mergeIOSDevices -------------------------------------------------------
 
 func TestMergeIOSDevices_OverlayByUDID(t *testing.T) {

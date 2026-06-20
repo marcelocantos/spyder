@@ -14,12 +14,14 @@
 // a vastly simpler deployment story (no system LaunchDaemon, no
 // privilege boundary).
 //
-// The supervisor is intentionally minimal: spawn, log, wait, kill.
-// No readiness handshake (the registry is just-an-HTTP-server, comes
-// up immediately), no auth tokens (the registry is loopback-only),
-// no liveness probes (a wedged tunnel surfaces as call-level errors
-// in goios.Resolver.Session, where the cache invalidation already
-// drives recovery).
+// The supervisor spawns the subprocess, restarts it on unexpected
+// exit, and runs an HTTP liveness probe against the registry to
+// catch the "process alive but tunnel info wedged" failure mode
+// (🎯T84) — a real symptom seen in the field where the daemon
+// responds with `TunnelInfoForDevice: unexpected end of JSON` while
+// the subprocess itself stays up indefinitely. On N consecutive
+// probe failures the supervisor sends SIGTERM so the existing exit-
+// driven restart loop respawns.
 package iostunnel
 
 import (
@@ -35,21 +37,49 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/danielpaulus/go-ios/ios/tunnel"
 	"github.com/marcelocantos/spyder/internal/paths"
+)
+
+// Tunables for the health probe. Declared as vars so tests can
+// shorten them; production defaults are conservative.
+var (
+	// HealthProbeInterval is the cadence at which the supervisor pings
+	// the tunnel registry to confirm it's responsive.
+	HealthProbeInterval = 10 * time.Second
+	// HealthProbeFailureThreshold is the number of consecutive failing
+	// probes that triggers a forced restart. 3 × 10 s = ~30 s tolerance
+	// before we declare the daemon wedged.
+	HealthProbeFailureThreshold = 3
 )
 
 // Supervisor manages an `ios tunnel start --userspace` subprocess.
 type Supervisor struct {
-	binPath string
+	binPath  string
+	probeHost string
+	probePort int
 
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	mu        sync.Mutex
+	cmd       *exec.Cmd
+	probeStop chan struct{} // closed to stop the current probe goroutine
 }
 
 // New returns a Supervisor for the ios binary at binPath. The
-// binary isn't invoked until Start.
-func New(binPath string) *Supervisor {
-	return &Supervisor{binPath: binPath}
+// binary isn't invoked until Start. probeHost/probePort target the
+// tunnel daemon's registry HTTP endpoint (typically 127.0.0.1:60105);
+// pass "" / 0 to use the defaults.
+func New(binPath, probeHost string, probePort int) *Supervisor {
+	if probeHost == "" {
+		probeHost = "127.0.0.1"
+	}
+	if probePort == 0 {
+		probePort = 60105
+	}
+	return &Supervisor{
+		binPath:   binPath,
+		probeHost: probeHost,
+		probePort: probePort,
+	}
 }
 
 // Start launches `ios tunnel start --userspace` and returns once the
@@ -106,6 +136,8 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 		return fmt.Errorf("iostunnel: start %s: %w", s.binPath, err)
 	}
 	s.cmd = cmd
+	probeStop := make(chan struct{})
+	s.probeStop = probeStop
 	slog.Info("iostunnel: started", "binary", s.binPath, "pid", cmd.Process.Pid)
 
 	// Reap the process when it exits so we don't leak zombies.
@@ -116,6 +148,11 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 		s.mu.Lock()
 		started := s.cmd != nil
 		s.cmd = nil
+		// Stop the health probe attached to this incarnation.
+		if s.probeStop == probeStop {
+			close(s.probeStop)
+			s.probeStop = nil
+		}
 		s.mu.Unlock()
 		// If Stop nilled cmd already, this is the orderly-shutdown path.
 		if !started {
@@ -129,7 +166,64 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 		go s.restartLoop(ctx)
 	}()
 
+	// Health probe: HTTP-pings the registry; if it stops responding,
+	// SIGTERM the daemon so the exit-driven restart loop above takes
+	// over. This is the only path that catches the
+	// "process up, registry wedged" failure mode (🎯T84).
+	go s.healthProbe(ctx, cmd.Process.Pid, probeStop)
+
 	return nil
+}
+
+// healthProbe pings the tunnel registry every HealthProbeInterval.
+// After HealthProbeFailureThreshold consecutive failures, SIGTERM the
+// subprocess so the Wait-driven goroutine in startLocked fires its
+// restartLoop. Returns when stopCh is closed (subprocess exited or
+// Stop was called) or ctx is cancelled.
+func (s *Supervisor) healthProbe(ctx context.Context, pid int, stopCh <-chan struct{}) {
+	t := time.NewTicker(HealthProbeInterval)
+	defer t.Stop()
+	consecFails := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stopCh:
+			return
+		case <-t.C:
+		}
+		_, err := tunnel.ListRunningTunnels(s.probeHost, s.probePort)
+		if err == nil {
+			if consecFails > 0 {
+				slog.Info("iostunnel: health probe recovered",
+					"pid", pid, "after_failures", consecFails)
+			}
+			consecFails = 0
+			continue
+		}
+		consecFails++
+		slog.Warn("iostunnel: health probe failed",
+			"pid", pid, "consec_fails", consecFails,
+			"threshold", HealthProbeFailureThreshold, "error", err.Error())
+		if consecFails < HealthProbeFailureThreshold {
+			continue
+		}
+		// Wedged. SIGKILL the daemon — a wedged process by definition
+		// isn't responding to graceful signals (its trap, if any,
+		// would already have let the registry recover). The Wait
+		// goroutine will see the exit and the restartLoop will
+		// respawn. Take the lock to avoid racing Stop.
+		s.mu.Lock()
+		cmd := s.cmd
+		s.mu.Unlock()
+		if cmd == nil || cmd.Process == nil {
+			return
+		}
+		slog.Error("iostunnel: registry wedged; killing for restart",
+			"pid", pid, "consec_fails", consecFails)
+		_ = cmd.Process.Kill()
+		return
+	}
 }
 
 func (s *Supervisor) restartLoop(ctx context.Context) {

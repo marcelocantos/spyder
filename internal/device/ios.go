@@ -126,18 +126,20 @@ func NewIOSAdapter() *IOSAdapter {
 }
 
 // List returns iOS devices that are currently reachable. The set is the
-// intersection of:
+// union of:
 //
 //   - go-ios's USBMux enumeration (with per-device lockdown enrichment
-//     for the human-friendly fields).
-//   - `xcrun devicectl list devices` filtered for tunnelState=connected
-//     OR a USB connection (USBMux-only iOS-<17 devices count too).
+//     for the human-friendly fields). iOS ≤16 entries need a
+//     successful lockdown probe to be included; iOS-17+ entries are
+//     always included but marked TunnelPending when devicectl hasn't
+//     reported `tunnelState=connected` yet (🎯T84).
+//   - `xcrun devicectl list devices` for any USBMux-invisible devices
+//     in the `connected` state (rare — usually devicectl is a subset
+//     of usbmux).
 //
-// Devices USBMux knows about but devicectl reports as `unavailable` are
-// dropped — they're paired but not currently usable, and surfacing them
-// produces useless install/launch attempts. When neither source is
-// available the function returns an empty list rather than an error —
-// matching the Android adapter's behaviour when adb is absent.
+// When neither source is available the function returns an empty list
+// rather than an error — matching the Android adapter's behaviour when
+// adb is absent.
 func (a *IOSAdapter) List() ([]Info, error) {
 	connected, _ := devicectlConnectedIOSDevices()
 
@@ -146,12 +148,14 @@ func (a *IOSAdapter) List() ([]Info, error) {
 	// Primary source: go-ios's usbmux enumeration, with per-device
 	// lockdown enrichment for the human-friendly fields.
 	//
-	// devicectl filtering (paired-but-not-actually-connected guard) is
-	// only valid for iOS-17+: CoreDevice doesn't talk to iOS ≤16
-	// devices at all, so they're always "unavailable" there regardless
-	// of whether they're currently connected and usable via lockdown.
-	// For iOS ≤16, lockdown's GetValues is the oracle — if it succeeds,
-	// the device is reachable; if it fails, skip the entry.
+	// For iOS-17+, devicectl's connected set is advisory (it gates
+	// the TunnelPending flag), not a filter — surfacing tunnel-
+	// pending devices instead of dropping them means USB-connected
+	// devices on a settling RSD tunnel still show up in `spyder
+	// devices` and the user can tell something's there even when
+	// install/launch would fail with a "tunnel not ready" error.
+	// CoreDevice doesn't talk to iOS ≤16 devices at all, so those
+	// gate purely on a successful lockdown probe (the legacy oracle).
 	if devList, err := goios_ios.ListDevices(); err == nil {
 		for _, dev := range devList.DeviceList {
 			udid := dev.Properties.SerialNumber
@@ -168,15 +172,11 @@ func (a *IOSAdapter) List() ([]Info, error) {
 			if gerr == nil {
 				major = goios.ParseIOSMajor(values.Value.ProductVersion)
 			}
-			// iOS-17+ (and unknown-version entries) gate on devicectl;
-			// iOS ≤16 entries gate on a successful lockdown enrichment.
-			if major != 0 && major < 17 {
-				if gerr != nil {
-					continue
-				}
-			} else if connected != nil && !connected[udid] {
+			include, pending := classifyUSBMuxEntry(major, gerr == nil, udid, connected)
+			if !include {
 				continue
 			}
+			info.TunnelPending = pending
 			devices = append(devices, info)
 		}
 	}
@@ -320,6 +320,31 @@ func parseDevicectlList(data []byte) ([]Info, error) {
 		out = append(out, info)
 	}
 	return out, nil
+}
+
+// classifyUSBMuxEntry decides whether a usbmux-visible iOS device
+// should be included in List() output, and if so whether its tunnel
+// is still pending the RSD handshake's settling (🎯T84).
+//
+// Rules:
+//
+//   - iOS ≤16 (no RSD): include iff lockdown enrichment succeeded
+//     (that's the oracle for "reachable" on the legacy path). Never
+//     marked pending — these devices have no tunnel.
+//   - iOS-17+ or unknown-major: always include. Marked TunnelPending
+//     when devicectl reports a `connected` set AND this UDID isn't
+//     in it — the user can see the device exists while the tunnel
+//     is settling rather than watching it silently disappear.
+//   - When devicectl isn't queryable (no `connected` map), nothing
+//     can be classified as pending — surface the device cleanly.
+func classifyUSBMuxEntry(major int, lockdownOK bool, udid string, connected map[string]bool) (include, pending bool) {
+	if major != 0 && major < 17 {
+		return lockdownOK, false
+	}
+	if connected == nil {
+		return true, false
+	}
+	return true, !connected[udid]
 }
 
 // mergeIOSDevices overlays devicectl-sourced entries onto a base list,

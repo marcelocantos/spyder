@@ -23,6 +23,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
+	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
 	"github.com/marcelocantos/spyder/internal/logcapture"
@@ -73,7 +74,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// per-call but the daemon stays up.
 	var tunnelSup *iostunnel.Supervisor
 	if binPath := resolveIOSTunnelBinary(); binPath != "" {
-		tunnelSup = iostunnel.New(binPath)
+		tunnelSup = iostunnel.New(binPath, goios.DefaultTunnelHost, goios.DefaultTunnelPort)
 		if err := tunnelSup.Start(ctx); err != nil {
 			slog.Error("iostunnel: start failed; iOS tools degraded", "error", err)
 			tunnelSup = nil
