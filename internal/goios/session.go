@@ -177,6 +177,54 @@ func (r *Resolver) Invalidate(udid string) {
 	r.mu.Unlock()
 }
 
+// TunnelInfoRetryAttempts is how many times r.tunnelInfoWithRetry will
+// call tunnel.TunnelInfoForDevice before giving up. Declared as a var
+// so tests can lower it. Three attempts at 200ms/500ms/1s backoff
+// covers the typical "RSD tunnel still settling after device connect"
+// window without inflating cold-call latency on a healthy daemon
+// (🎯T84).
+var TunnelInfoRetryAttempts = 3
+
+// tunnelInfoBackoffs is the per-attempt delay applied BEFORE the
+// retry. The slice length should be >= TunnelInfoRetryAttempts-1; the
+// last entry is reused if needed.
+var tunnelInfoBackoffs = []time.Duration{
+	200 * time.Millisecond,
+	500 * time.Millisecond,
+	1 * time.Second,
+}
+
+// tunnelInfoWithRetry wraps tunnel.TunnelInfoForDevice with a bounded
+// retry. The registry's per-device handler racing with go-ios's
+// internal tunnel state can briefly emit "unexpected end of JSON" /
+// EOF responses during settling (🎯T84); a retry with backoff
+// recovers without the caller having to know. Non-transient failures
+// (e.g. daemon unreachable) still surface — the call returns the
+// last error and the supervisor's health probe handles the wedge
+// case independently.
+func (r *Resolver) tunnelInfoWithRetry(udid string) (tunnel.Tunnel, error) {
+	var lastErr error
+	for attempt := 0; attempt < TunnelInfoRetryAttempts; attempt++ {
+		if attempt > 0 {
+			delay := tunnelInfoBackoffs[len(tunnelInfoBackoffs)-1]
+			if attempt-1 < len(tunnelInfoBackoffs) {
+				delay = tunnelInfoBackoffs[attempt-1]
+			}
+			time.Sleep(delay)
+		}
+		info, err := tunnel.TunnelInfoForDevice(udid, r.tunnelHost, r.tunnelPort)
+		if err == nil {
+			if attempt > 0 {
+				slog.Info("goios: tunnel-info recovered after retry",
+					"udid", udid, "attempts", attempt+1)
+			}
+			return info, nil
+		}
+		lastErr = err
+	}
+	return tunnel.Tunnel{}, lastErr
+}
+
 // resolveWithTimeout runs resolve under resolveTimeout. go-ios's RSD dial
 // has no internal deadline, so a wedged tunnel blocks resolve forever;
 // this bounds it. On timeout the in-flight resolve goroutine is abandoned
@@ -249,7 +297,7 @@ func (r *Resolver) resolve(udid string) (ios.DeviceEntry, int, error) {
 		return dev, major, nil
 	}
 
-	info, err := tunnel.TunnelInfoForDevice(udid, r.tunnelHost, r.tunnelPort)
+	info, err := r.tunnelInfoWithRetry(udid)
 	if err != nil {
 		return ios.DeviceEntry{}, major, fail("TunnelInfo", fmt.Errorf(
 			"goios: tunnel info for %s from %s:%d: %w (is `ios tunnel start` running?)",

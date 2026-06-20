@@ -98,7 +98,7 @@ everything it can see.
 
 | Tool | Purpose | Notes |
 |---|---|---|
-| `devices` | List connected iOS + Android devices, annotated with inventory alias. | `platform` filter: `ios`, `android`, or `all` (default). |
+| `devices` | List connected iOS + Android devices, annotated with inventory alias. iOS-17+ devices visible to USBMux but whose RSD tunnel hasn't settled yet appear with `tunnel_pending: true` (🎯T84) — they show up rather than disappearing during the settling window, but DTX-backed tools (screenshot, launch_app, …) may fail with a clear "tunnel not ready" error until the flag clears. | `platform` filter: `ios`, `android`, or `all` (default). |
 | `resolve` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
 | `device_state` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
 | `screenshot` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |

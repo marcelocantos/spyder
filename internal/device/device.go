@@ -22,6 +22,16 @@ type Info struct {
 	Model    string `json:"model,omitempty"`
 	OS       string `json:"os,omitempty"`
 	Alias    string `json:"alias,omitempty"` // populated from inventory
+
+	// TunnelPending is true for iOS-17+ devices that USBMux sees but
+	// whose RSD userspace tunnel hasn't reached devicectl's
+	// `tunnelState=connected` yet (🎯T84). Tools that need the RSD
+	// channel (screenshot, launch_app, …) may fail with a clear
+	// "tunnel not ready" error against such a device — but the device
+	// shows up in `spyder devices` instead of silently disappearing
+	// during the settling window after a connect/reconnect/tunnel
+	// restart. Always false for iOS ≤16 and Android.
+	TunnelPending bool `json:"tunnel_pending,omitempty"`
 }
 
 // LogFilter restricts which log lines are returned by LogRange or LogStream.
