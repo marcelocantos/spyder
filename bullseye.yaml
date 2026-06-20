@@ -3492,6 +3492,27 @@ targets:
     origin: manual
     discovered: 2026-06-19
     achieved: 2026-06-19
+  T84:
+    name: USB-connected iOS devices reliably appear in spyder devices, including iOS-17+ devices whose RSD tunnel is still settling
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`spyder devices` lists every iOS device that go-ios `ios list` (usbmux) reports, within a bounded settling window — it never returns a strict subset of usbmux-visible devices for more than a few seconds after a connect / reconnect / tunnel restart.'
+    - 'The iOS-17+ RSD userspace tunnel daemon (`ios tunnel start --userspace`) is supervised: health-checked and auto-restarted when it wedges (e.g. `TunnelInfoForDevice: unexpected end of JSON`), with no manual `pkill` or MCP reconnect needed to recover.'
+    - 'Device enumeration degrades gracefully: a usbmux-visible device whose RSD tunnel is still pending or transiently failing is surfaced (e.g. marked tunnel-pending) rather than dropped from `devices`, and TunnelInfoForDevice EOF/JSON errors are retried before giving up.'
+    - 'Verified end-to-end: connect multiple iOS-17+ devices via a USB hub, restart the tunnel daemon, and confirm all reappear in `spyder devices` automatically within the settling window with no manual intervention.'
+    context: 'Surfaced 2026-06-20 during multimaze2 on-device testing (consumer: multimaze2). Symptom: with 3 iOS devices on a 10-way USB hub, `spyder devices` intermittently listed only the one iOS-16 device (which needs no RSD tunnel), while go-ios `ios list` saw all 3 and `ios tunnel ls` showed healthy tunnels for the iOS-26 pair. So usbmux was fine; spyder''s device list omitted the tunneled (iOS-17+) devices until the tunnel daemon settled after an MCP reconnect. Distinct from T68 (usbmuxd''s OWN device list wedging — usbmux was healthy here) and complements T64 (go-ios DTX / keep-awake supervisor — same supervision idea, different connection); see also T79 (route by live-device match). User constraint: Wi-Fi / app-channel debugging is explicitly out of scope (too flaky) — USB-via-hub must be the reliable path.'
+    tags:
+    - ios
+    - device-discovery
+    - tunnel
+    - usbmux
+    - reliability
+    - multimaze2
+    origin: manual
+    discovered: 2026-06-20
+    achieved: 2026-06-20
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved
