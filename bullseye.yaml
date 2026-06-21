@@ -3513,6 +3513,40 @@ targets:
     origin: manual
     discovered: 2026-06-20
     achieved: 2026-06-20
+  T85:
+    name: 'spyder deploys + drives desktop apps the same way it drives iOS/Android — DesktopAdapter + "platform: desktop" inventory + app-channel auto-injection on macOS/Linux/Windows hosts'
+    status: identified
+    value: 5.0
+    cost: 5.0
+    acceptance:
+    - A DesktopAdapter implementing device.Adapter is registered in spyder, selected by inventory entries with platform="desktop"
+    - '`spyder devices --platform desktop` lists desktop entries from ~/.spyder/inventory.json with executable_path resolved'
+    - '`spyder launch_app device=<alias> bundle_id=<id>` starts the binary on the host with SPYDER_APP_CHANNEL auto-injected (🎯T83 keyed listener), and the app-channel session establishes the same way it does on iOS/Android'
+    - '`spyder terminate_app` cleanly stops the launched process; `is_running` and `app_pid` report state honestly'
+    - Unsupported tools (install_app, uninstall_app, screenshot, crashes, network, rotate, recording) return a clear `not supported on desktop` error rather than a stack trace or a silent no-op
+    - agents-guide.md documents the desktop inventory entry shape and the launch flow with at least one worked example (e.g. tiltbuggy desktop binary)
+    - 'End-to-end: a ge desktop sample (e.g. tiltbuggy or the solver) is launched via spyder, the app-channel connects, app_state / app_log_get / app_screenshot all work against it (those the desktop app implements)'
+    context: |-
+      Today spyder's device surface is iOS + Android only. The app-channel itself is platform-neutral (TCP + MessagePack) and ge's appchannel.cpp already works on desktop if the user manually starts the binary with SPYDER_APP_CHANNEL=host:port set and spyder is holding a listener on that port — but the rest of the spyder workflow (launch_app, terminate_app, the 🎯T83 keyed listener auto-management) is unreachable. So desktop ge consumers either skip the app-channel entirely (losing structured log / state / time-control / screenshot / save-restore) or hand-wire the env every time.
+
+      Surfaced 2026-06-21 while reviewing the ge player/server/dashboard backlog: desktop apps are increasingly first-class in the ge ecosystem (the standalone solver binary, the tiltbuggy dev loop, the headless server work behind T1 game-servers-in-the-player), and the app-channel is exactly the kind of dev-tooling that pays for itself most on desktop where the iteration loop is fastest.
+
+      Design intent:
+      - New DesktopAdapter implementing device.Adapter — LaunchApp shells out to the binary, TerminateApp via SIGTERM/SIGKILL, AppPID via pgrep / tracked-pid table, LogRange via captured stdout/stderr. Crashes / screenshot / network / install / uninstall return a clean "not supported on desktop" (or a sensible no-op for install — desktop "install" is "the binary exists on disk").
+      - inventory.Entry gains a "desktop" platform variant with executable_path (analogous to ios_uuid / android_serial) and optionally a working_directory.
+      - resolveAdapter adds the "desktop" case.
+      - App-channel auto-injection (🎯T83) needs zero changes — the keyed (device_id, bundle_id) registry is platform-neutral; for desktop, device_id = the inventory alias / host hint and bundle_id = the executable identity (path or declared id).
+
+      Scope ladder if it turns out larger than estimated: the MUST set is List + LaunchApp + TerminateApp + AppPID (these are what unlock app-channel auto-injection); LogRange-via-stdout is a SHOULD; screenshot/crashes/install/uninstall are MAY (each is a separate sub-target if it earns one).
+    tags:
+    - desktop
+    - device-adapter
+    - app-channel
+    - inventory
+    - cross-platform
+    - ge-consumer
+    origin: manual
+    discovered: 2026-06-21
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved
