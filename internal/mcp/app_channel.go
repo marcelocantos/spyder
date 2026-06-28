@@ -580,6 +580,18 @@ func (h *Handler) handleAppScreenshot(args map[string]any) (*mcpgo.CallToolResul
 	if err := appchannel.UnpackParams(res, &resp); err != nil {
 		return toolErr("screenshot_app: decode: %v", err)
 	}
+	if outPath := optString(args, "path"); outPath != "" {
+		abs, err := resolveOutputPath(outPath)
+		if err != nil {
+			return toolErr("%v", err)
+		}
+		if err := writeOutputFile(abs, resp.Data); err != nil {
+			return toolErr("saving app screenshot: %v", err)
+		}
+		return toolText(fmt.Sprintf(
+			"app screenshot %dx%d saved to %s (%d bytes)",
+			resp.Width, resp.Height, abs, len(resp.Data)))
+	}
 	return mcpgo.NewToolResultImage(
 		fmt.Sprintf("app screenshot %dx%d (%d bytes)", resp.Width, resp.Height, len(resp.Data)),
 		base64.StdEncoding.EncodeToString(resp.Data),
@@ -735,10 +747,11 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("state_b64", mcpgo.Required(), mcpgo.Description("base64-encoded state blob")),
 		),
-		mcpgo.NewTool("app_screenshot", mcpgo.WithDescription("Request a screenshot from the app's own framebuffer (sibling to spyder's DTX-based `screenshot`; useful when DTX is wedged or you need state-correlated capture)."),
+		mcpgo.NewTool("app_screenshot", mcpgo.WithDescription("Request a screenshot from the app's own framebuffer (sibling to spyder's DTX-based `screenshot`; useful when DTX is wedged or you need state-correlated capture). By default returns the image inline; pass path to instead save it to that file and return a text confirmation."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("path", mcpgo.Description("Optional output file path. When set, the image is written here (a leading ~ is expanded; parent directories are created) and the tool returns a text confirmation instead of the inline image.")),
 		),
 
 		mcpgo.NewTool("app_state_slices", mcpgo.WithDescription("Return the slice catalogue the app advertised in its hello. Each entry has a `name` and an optional `example` payload — agents that get an example can write jq filters immediately; agents that don't can call app_state_describe to learn the shape without paying the full-payload cost."),

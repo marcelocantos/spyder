@@ -321,6 +321,7 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 		return nil, err
 	}
 	owner := optString(args, "owner")
+	outPath := optString(args, "path")
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -334,6 +335,17 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 		return toolErr("screenshot on %s: %v", dev, err)
 	}
 	h.archiveArtefact(dev, owner, "screenshot", "image/png", ".png", png)
+	if outPath != "" {
+		abs, err := resolveOutputPath(outPath)
+		if err != nil {
+			return toolErr("%v", err)
+		}
+		if err := writeOutputFile(abs, png); err != nil {
+			return toolErr("saving screenshot: %v", err)
+		}
+		return toolText(fmt.Sprintf(
+			"screenshot of %s saved to %s (%d bytes)", dev, abs, len(png)))
+	}
 	return mcpgo.NewToolResultImage(
 		fmt.Sprintf("screenshot of %s (%d bytes)", dev, len(png)),
 		base64.StdEncoding.EncodeToString(png),
@@ -1356,6 +1368,40 @@ func sanitizeFilename(s string) string {
 
 // Compile-time check: recording.IsConflict must be callable.
 var _ = recording.IsConflict
+
+// resolveOutputPath expands a leading ~ and makes the path absolute.
+// Unlike validateAppPath the destination need not exist and ".." is
+// permitted: the caller is explicitly choosing where to save, so there
+// is no intended directory to escape. Parent directories are created at
+// write time by writeOutputFile.
+func resolveOutputPath(path string) (string, error) {
+	if path == "~" || strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("expanding ~: %w", err)
+		}
+		path = filepath.Join(home, strings.TrimPrefix(path, "~"))
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving path %q: %w", path, err)
+	}
+	return abs, nil
+}
+
+// writeOutputFile writes data to an absolute path, creating any missing
+// parent directories. The file is world-readable (0o644) because it is
+// a user-requested artefact at a user-chosen location, not internal
+// state.
+func writeOutputFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating directory: %w", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("writing %q: %w", path, err)
+	}
+	return nil
+}
 
 // validateAppPath rejects paths with ".." traversal components and
 // paths that do not exist. Returns the cleaned absolute path.
