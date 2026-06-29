@@ -57,7 +57,14 @@ done
 		_ = s.Stop(context.Background())
 	}()
 
-	deadline := time.Now().Add(5 * time.Second)
+	// Restart is restartLoop's initial 1s backoff plus a shell-subprocess
+	// re-spawn. Under the parallel full-suite run (`make test-report`) CPU
+	// contention occasionally pushed that past a 5s budget, failing the
+	// whole tier. 30s is generous headroom; the loop breaks as soon as
+	// attempts>=2, so the uncontended fast path is unaffected. (A separate
+	// cross-iteration stall under `go test -count=N` is tracked by 🎯T86 and
+	// is not addressed here.)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		attemptsBytes, err := os.ReadFile(attemptsPath)
 		if err == nil {
