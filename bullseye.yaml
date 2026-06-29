@@ -3585,6 +3585,152 @@ targets:
     - test-isolation
     origin: manual
     discovered: 2026-06-28
+  T87:
+    name: iOS log capture surfaces app os_log (named-subsystem INFO/WARN), not just the syslog-relay subset
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`spyder logs` / `log_capture_*` for an iOS device returns the app''s own os_log output — entries emitted via `os_log_create(<bundle-id>, <category>)` at INFO/NOTICE/WARN/ERROR — not only the legacy syslog-relay subset (CoreAnimation / CoreMotion / system Debug lines).'
+    - 'Verified against a ge-based app (e.g. multimaze, CFBundleExecutable `MultiMaze`): its SPDLOG_INFO/WARN lines (ge routes these to `os_log_with_type` via `os_log_create(<bundleID>, "ge")`) appear in the capture and are filterable.'
+    - The `bundle_id` filter resolves and returns the same app lines as `process` — today `bundle_id=com.squz.multimaze` returns empty while `process=MultiMaze` returns system-only logs.
+    - Mechanism + tradeoffs documented (unified-log streaming vs go-ios syslog relay; log volume; `<private>` redaction of os_log args).
+    context: |-
+      Surfaced 2026-06-29 while debugging a multimaze touch-freeze on an iPad mini A17 (alias Jevons, iOS 26.5). `spyder logs process=MultiMaze since=-90s` returned ~9000 lines of iOS SYSTEM logs attributed to the process (CoreAnimation `surfaceID`/`beginTime`, `[Accelerometer]` samples, watchdog ping) — useful for proving the app was alive (rendering + sensors flowing, not hung) — but ZERO of the app's own diagnostics. Every leveled entry was `\"level\": \"Debug\"` (system); there were no INFO/WARN lines, and none of the app's SPDLOG markers (`Edge-swipe`, `Selected level`, `🎯T62`, etc.). `bundle_id=com.squz.multimaze` returned empty entirely.
+
+      Root cause: go-ios's `syslog` service (com.apple.syslog_relay) streams the legacy syslog subset, which excludes os_log INFO/DEBUG entries from *named subsystems* — those persist only in the unified log (queryable via `log show/stream --predicate 'subsystem == \"…\"'`). So spyder can't surface a ge app's own logs on-device, which defeats the agents-guide \"exhaust programmatic checks before asking the user\" workflow exactly when it's most needed (diagnosing input/rendering bugs). The app-channel (`SPYDER_APP_CHANNEL`) is the structured alternative but is dev-network-dependent and out of scope for USB-only device testing.
+
+      ge's logging contract: ge/CLAUDE.md → \"Logging (🎯T66)\" — Apple sink is `os_log_with_type` via `os_log_create(<bundle-id>, \"ge\")`, INFO→OS_LOG_TYPE_INFO, WARN→DEFAULT, ERR→ERROR. A fix likely needs an `OSLogStore` / unified-log streaming path (or instruments) rather than the syslog relay. Likely related to the existing iOS-17-tunnel log gaps (spyder 🎯T78).
+    tags:
+    - ios
+    - logging
+    - os_log
+    - observability
+    - multimaze-debug
+    origin: manual
+    discovered: 2026-06-29
+  T88:
+    name: app_exec is spyder's single MCP entry point — every device/app/fleet operation is a Starlark builtin and the one-off MCP tools are removed
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - app_exec is spyder's sole MCP entry point and every prior operation is reachable as a Starlark builtin — i.e. 🎯T88.1 (engine), 🎯T88.2 (builtin coverage at parity), 🎯T88.3 (legacy tool removal), and 🎯T88.4 (agents-guide rewrite) are all achieved.
+    - 'A representative end-to-end exercise works through `app_exec`: tap, a timed `sleep`, a `pause`/`step`/`screenshot` frame-deterministic capture, a bounded `for`-loop poll, and a start/stop handle round-trip across two calls — all without per-action agent round-trips.'
+    context: |-
+      Surfaced 2026-06-30. Evolved from "fire tap+screenshot in quick succession without per-action LLM round-trips" -> app_sequence step-DSL -> interstitial app_delay (rejected: Claude Code parallel tool calls have no guaranteed wire order, so order can only be guaranteed inside one tool call) -> an embedded language (Starlark, chosen over Lua for hermeticity/determinism/bounded execution) -> **single entry point**.
+
+      DECISION (user, firmly): push EVERYTHING through app_exec; remove the one-off tools; no two pathways. Each of the agent's objections was addressed and accepted:
+      - Per-tool MCP permissioning: not a concern (personal tool, user's own test devices).
+      - Async/stateful lifecycle: a script is a transaction; the degenerate single-call script (start op, return handle) reproduces the old tool exactly, and state stays in spyder's server-side registries — so nothing is lost, composition is gained.
+      - Blast radius / device breakage: acceptable — all test devices.
+      - Arg validation moving into builtins: spyder already validates at runtime in handlers, not via rich MCP schema.
+
+      Rationale for single pathway: forcing function for a clean/complete/consistent verb API, minimises agent context (one tool schema), removes tool-vs-script confusion.
+
+      Scope note: app_exec subsumes spyder's EXISTING verbs only. spyder still has no device-level tap (mobile-mcp owns UI automation), so `input(...)` remains app-channel (cooperative apps); a device-level input builtin is a separate later decision. Distinct from 🎯T76.3 repl_eval (app-side eval). Generalises/absorbs 🎯T82 (its capture-window pattern becomes an app_exec script).
+
+      This is a large migration — strong candidate for subdivision into: (1) engine — app_exec tool + Starlark runtime + result/handle/emit model + caps; (2) verb-family builtin coverage; (3) removal of the legacy tool registrations at parity; (4) agents-guide rewrite. Propose subdividing before implementation planning.
+    depends_on:
+    - T88.1
+    - T88.2
+    - T88.3
+    - T88.4
+    tags:
+    - app-channel
+    - mcp
+    - scripting
+    - starlark
+    - single-entry-point
+    - api-surface
+    - migration
+    - agent-loop
+    - automation
+    origin: manual
+    discovered: 2026-06-30
+  T88.1:
+    name: app_exec engine — Starlark runtime, total result/handle/emit model, liveness caps, sandbox
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '`app_exec` MCP tool registered: `{script}` Starlark source runs server-side to completion in one call and returns ordered MCP content.'
+    - 'Result/return model is total: a Starlark->MCP-content mapping for image (image block), structured data (JSON), text, handle-string, and error (with script line/position); `emit(x)` appends ordered mid-script artifacts; a bare top-level expression returns its value (so a one-line `screenshot()` is as cheap as the legacy one-shot tool).'
+    - 'Durable-handle contract: handles are opaque strings backed by spyder''s server-side registries, returned from one `app_exec` and accepted by a later one; a single-call `start -> return handle` script reproduces a legacy tool''s semantics exactly.'
+    - 'Liveness caps enforced: wall-clock timeout + Starlark execution-step budget + max-duration; partial `emit`s are drained into the result on any breach; never a silent hang.'
+    - 'Sandbox: no host filesystem/network and no `load()` of host files — only predeclared builtins; plus a `help()`/`dir()` introspection builtin so the agent can learn the API from within.'
+    - go.starlark.net added to go.mod and vendored per project policy; BSD-3-Clause licence recorded in third-party attribution (NOTICES/THIRD_PARTY).
+    - 'Engine tests against fake clients: the result/error content mapping incl. bare-expression-returns-value; a durable-handle round-trip across two `app_exec` calls using a representative stateful builtin (e.g. record_start in one call, record_stop in the next); each liveness cap fires and drains partials; the sandbox denies host I/O.'
+    context: Engine/foundation phase of 🎯T88 (single-entry-point migration). Blocks all other phases. Proves the load-bearing mechanisms (result model, durable handles, caps, sandbox) against one or two representative builtins; full verb coverage is 🎯T88.2. Starlark = go.starlark.net (hermetic/deterministic, chosen over Lua). See [[project_app_exec_single_entry_point]].
+    tags:
+    - starlark
+    - engine
+    - mcp
+    - result-model
+    - handles
+    - sandbox
+    origin: manual
+    discovered: 2026-06-30
+  T88.2:
+    name: Every existing spyder verb is callable as an app_exec builtin at behavioural parity
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Builtins exist for every current MCP tool, grouped by family: device/inventory (devices, device_state, resolve, reserve/release/renew/rotate, reservations); app lifecycle (list_apps, launch/terminate/install/uninstall/deploy_app, is_running, crashes); capture/observe (screenshot, record_start/stop, logs, log_capture_*, network, diff, baselines); app-channel (input, app_screenshot, state, state_capture_*, pause/resume/step/speed, save/restore_state, ping/flush/foreground/background/quit/low_memory); sims/emus/pools; runs.'
+    - Each builtin is a thin wrapper over the existing handler logic — same args (runtime-validated), same effects, same return values mapped through the T88.1 content model.
+    - Stateful families round-trip handles across separate `app_exec` calls (recordings, captures, reservations, sessions, runs).
+    - 'Per-family parity tests vs the still-present legacy tools: equivalent inputs produce equivalent outputs/effects.'
+    - May be further subdivided per verb-family during implementation if it proves large; the families are mutually independent and parallelisable once T88.1 lands.
+    context: Coverage phase of 🎯T88. Depends on the engine (🎯T88.1) for the builtin-registration pattern + content/handle model; after that the work is mechanical per family. See [[project_app_exec_single_entry_point]].
+    depends_on:
+    - T88.1
+    tags:
+    - builtins
+    - parity
+    - migration
+    - verb-coverage
+    origin: manual
+    discovered: 2026-06-30
+  T88.3:
+    name: app_exec is the sole MCP tool — legacy one-off tool registrations removed at parity
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Definitions() exposes only `app_exec` (plus any unavoidable bootstrap), with every legacy one-off tool registration deleted.
+    - 'No dead code: handler logic now reached only via builtins is wired through the builtin layer; nothing references the removed tool dispatch cases.'
+    - A Definitions()/dispatch test asserts the surface is single-entry.
+    - Removal happens only after 🎯T88.2 parity, so no capability is lost in the cutover.
+    context: Removal phase of 🎯T88 — the cutover to a single pathway. Gated on builtin parity (🎯T88.2) so nothing is lost. The agents-guide change rides 🎯T88.4. See [[project_app_exec_single_entry_point]].
+    depends_on:
+    - T88.2
+    tags:
+    - removal
+    - cutover
+    - api-surface
+    - migration
+    origin: manual
+    discovered: 2026-06-30
+  T88.4:
+    name: agents-guide.md documents app_exec as spyder's single surface
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'agents-guide.md rewritten around `app_exec`: complete builtin reference, the `emit`/bare-expression result model, ordered/timed/looping + `pause`/`step` frame-deterministic patterns, durable-handle lifecycle, and the liveness caps.'
+    - The parallel `app_input` + `app_state_capture_window` (🎯T82) fire-and-observe pattern is re-expressed as an `app_exec` script.
+    - README quick-start and any tool listing updated to reflect the single tool.
+    - An agent can author a correct multi-step script from the guide alone (no per-tool schemas exist anymore).
+    context: Docs phase of 🎯T88. Depends on the final builtin surface (🎯T88.2); lands with/after removal (🎯T88.3). The single tool has to teach its own API since per-tool schemas are gone. See [[project_app_exec_single_entry_point]].
+    depends_on:
+    - T88.2
+    tags:
+    - docs
+    - agents-guide
+    - discoverability
+    origin: manual
+    discovered: 2026-06-30
   T9:
     name: 'App lifecycle MCP tools: list_apps, launch_app, terminate_app for iOS and Android'
     status: achieved
