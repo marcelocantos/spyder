@@ -470,13 +470,16 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("screenshot",
-			mcpgo.WithDescription("Capture a PNG screenshot of the device. Returns the image inline for the agent to inspect. iOS uses the in-process go-ios DTX `ScreenshotService` over lockdown (requires the bundled tunnel for iOS-17+; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted — open the device once in Xcode or `ios image auto <udid>`); Android uses adb shell screencap. Read-only; not subject to reservations — any session may screenshot any device. Pass owner to archive the PNG into the active run."),
+			mcpgo.WithDescription("Capture a PNG screenshot of the device. By default returns the image inline for the agent to inspect; pass path to instead save the PNG to that file and return a text confirmation (no inline image). iOS uses the in-process go-ios DTX `ScreenshotService` over lockdown (requires the bundled tunnel for iOS-17+; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted — open the device once in Xcode or `ios image auto <udid>`); Android uses adb shell screencap. Read-only; not subject to reservations — any session may screenshot any device. Pass owner to archive the PNG into the active run."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Description("Owner identity; when present and a run is active, the screenshot is archived into the run."),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Optional output file path. When set, the PNG is written here (a leading ~ is expanded; parent directories are created) and the tool returns a text confirmation instead of the inline image. Independent of owner/run archival."),
 			),
 		),
 
