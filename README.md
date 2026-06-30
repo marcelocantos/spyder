@@ -68,9 +68,25 @@ If you use an agentic coding tool, include
 everything below plus gotchas, device-inventory format, and the full
 `spyder run` wrapper semantics.
 
-## MCP tools
+## MCP interface: `app_exec`
 
-| Tool | Purpose |
+Spyder exposes a **single** MCP tool, `app_exec`, which runs a Starlark
+script with every spyder verb available as a builtin. This lets an agent
+drive ordered, timed, looping device action in one call — no per-action
+round-trips, so a transient UI state can't vanish between a tap and its
+screenshot:
+
+```starlark
+deploy_app(device="iPad", path="/path/to/MyApp.app")
+sleep(500)
+app_screenshot()          # final expression → returned as an image block
+```
+
+See [agents-guide.md](agents-guide.md#the-app_exec-entry-point) for the full
+model (emit/result semantics, frame-stepping, durable handles, caps). The
+verbs available as builtins:
+
+| Verb | Purpose |
 |---|---|
 | `devices` | List connected iOS + Android devices, annotated with inventory alias. |
 | `resolve` | Symbolic name → structured entry with all known UUIDs. |
@@ -96,7 +112,9 @@ everything below plus gotchas, device-inventory format, and the full
 
 ## REST API and live log streaming
 
-Every MCP tool is also exposed as plain HTTP+JSON on the same listener:
+Every spyder verb is also exposed directly as plain HTTP+JSON on the same
+listener — the REST transport keeps per-verb access by URL path (MCP is
+`app_exec`-only):
 
 ```bash
 # Human-or-script friendly: shares state with the MCP endpoint.

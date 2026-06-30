@@ -5,8 +5,10 @@ go 1.26.1
 require (
 	github.com/danielpaulus/go-ios v1.0.213
 	github.com/google/uuid v1.6.0
+	github.com/itchyny/gojq v0.12.19
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
+	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.50.0
 )
@@ -20,7 +22,6 @@ require (
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/google/pprof v0.0.0-20250317173921-a4b03ec1a45e // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
-	github.com/itchyny/gojq v0.12.19 // indirect
 	github.com/itchyny/timefmt-go v0.1.8 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/miekg/dns v1.1.57 // indirect

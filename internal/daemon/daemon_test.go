@@ -99,7 +99,12 @@ func TestBuild_InitializeRoundtrip(t *testing.T) {
 	}
 }
 
-func TestBuild_ToolsListHasAllTools(t *testing.T) {
+// TestBuild_ToolsListIsSingleEntryPoint verifies the 🎯T88.3 cutover:
+// app_exec is the only tool advertised on the wire. Every former one-off
+// tool (devices, screenshot, app_input, …) is now reachable only as a
+// Starlark builtin inside an app_exec script, so tools/list returns
+// exactly one entry.
+func TestBuild_ToolsListIsSingleEntryPoint(t *testing.T) {
 	base, teardown := mcpTestServer(t)
 	defer teardown()
 
@@ -132,13 +137,56 @@ func TestBuild_ToolsListHasAllTools(t *testing.T) {
 			names[n] = true
 		}
 	}
-	for _, want := range []string{
-		"devices", "resolve", "device_state",
-		"screenshot", "list_apps", "launch_app", "terminate_app",
-	} {
-		if !names[want] {
-			t.Errorf("tools/list missing %q; got %v", want, names)
-		}
+	if len(names) != 1 || !names["app_exec"] {
+		t.Errorf("tools/list should advertise only app_exec, got %v", names)
+	}
+}
+
+// TestBuild_AppExecRoutesToVerb exercises the whole path end-to-end:
+// HTTP MCP tools/call → handleAppExec → Starlark → the verb bridge → the
+// real reservations handler → back as a content block. reservations()
+// needs no device, so it runs in CI/laptop without hardware.
+func TestBuild_AppExecRoutesToVerb(t *testing.T) {
+	base, teardown := mcpTestServer(t)
+	defer teardown()
+
+	_, sid := postJSON(t, base+"/mcp", "", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "t", "version": "1"},
+		},
+	})
+
+	resp, _ := postJSON(t, base+"/mcp", sid, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "app_exec",
+			"arguments": map[string]any{"script": `emit(reservations())`},
+		},
+	})
+
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("no result in response: %v", resp)
+	}
+	if ie, _ := result["isError"].(bool); ie {
+		t.Fatalf("app_exec reported an error: %v", result["content"])
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("want at least one content block, got %v", result)
+	}
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	// reservations() returns a JSON array; the bridge decodes and re-renders it.
+	if !strings.HasPrefix(strings.TrimSpace(text), "[") {
+		t.Errorf("expected a JSON array from reservations(), got %q", text)
 	}
 }
 
