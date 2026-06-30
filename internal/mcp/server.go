@@ -284,152 +284,96 @@ func deviceArg(args map[string]any) string {
 }
 
 func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
-	switch name {
-	case "devices":
-		return h.handleDevices(args)
-	case "resolve":
-		return h.handleResolve(args)
-	case "device_state":
-		return h.handleDeviceState(args)
-	case "screenshot":
-		return h.handleScreenshot(args)
-	case "list_apps":
-		return h.handleListApps(args)
-	case "launch_app":
-		return h.handleLaunchApp(args)
-	case "terminate_app":
-		return h.handleTerminateApp(args)
-	case "install_app":
-		return h.handleInstallApp(args)
-	case "uninstall_app":
-		return h.handleUninstallApp(args)
-	case "deploy_app":
-		return h.handleDeployApp(args)
-	case "reserve":
-		return h.handleReserve(args)
-	case "release":
-		return h.handleRelease(args)
-	case "renew":
-		return h.handleRenew(args)
-	case "reservations":
-		return h.handleReservations(args)
-	case "runs_list":
-		return h.handleRunsList(args)
-	case "runs_show":
-		return h.handleRunsShow(args)
-	case "rotate":
-		return h.handleRotate(args)
-	case "crashes":
-		return h.handleCrashes(args)
-	// --- simulator tools --------------------------------------------------
-	case "sim_list":
-		return h.handleSimList(args)
-	case "sim_create":
-		return h.handleSimCreate(args)
-	case "sim_boot":
-		return h.handleSimBoot(args)
-	case "sim_shutdown":
-		return h.handleSimShutdown(args)
-	case "sim_delete":
-		return h.handleSimDelete(args)
-	// --- emulator tools ---------------------------------------------------
-	case "emu_list":
-		return h.handleEmuList(args)
-	case "emu_create":
-		return h.handleEmuCreate(args)
-	case "emu_boot":
-		return h.handleEmuBoot(args)
-	case "emu_shutdown":
-		return h.handleEmuShutdown(args)
-	case "emu_delete":
-		return h.handleEmuDelete(args)
-	// --- visual regression tools ------------------------------------------
-	case "baseline_update":
-		return h.handleBaselineUpdate(args)
-	case "diff":
-		return h.handleDiff(args)
-	case "baselines_list":
-		return h.handleBaselinesList(args)
-	case "record_start":
-		return h.handleRecordStart(args)
-	case "record_stop":
-		return h.handleRecordStop(args)
-	case "network":
-		return h.handleNetwork(args)
-	case "logs":
-		return h.handleLogsRange(args)
-	case "log_capture_start":
-		return h.handleLogCaptureStart(args)
-	case "log_capture_get":
-		return h.handleLogCaptureGet(args)
-	case "log_capture_stop":
-		return h.handleLogCaptureStop(args)
-	case "log_capture_list":
-		return h.handleLogCaptureList(args)
-	// --- bidirectional app channel (🎯T75, 🎯T83) -----------------------
-	case "app_channel_stop":
-		return h.handleAppChannelStop(args)
-	case "app_channel_list":
-		return h.handleAppChannelList(args)
-	case "app_ping":
-		return h.handleAppPing(args)
-	case "app_quit":
-		return h.handleAppQuit(args)
-	case "app_flush":
-		return h.handleAppFlush(args)
-	case "app_background":
-		return h.handleAppBackground(args)
-	case "app_foreground":
-		return h.handleAppForeground(args)
-	case "app_low_memory":
-		return h.handleAppLowMemory(args)
-	case "app_pause":
-		return h.handleAppPause(args)
-	case "app_resume":
-		return h.handleAppResume(args)
-	case "app_step":
-		return h.handleAppStep(args)
-	case "app_speed":
-		return h.handleAppSpeed(args)
-	case "app_input":
-		return h.handleAppInput(args)
-	case "app_state":
-		return h.handleAppState(args)
-	case "app_save_state":
-		return h.handleAppSaveState(args)
-	case "app_restore_state":
-		return h.handleAppRestoreState(args)
-	case "app_screenshot":
-		return h.handleAppScreenshot(args)
-	case "app_state_slices":
-		return h.handleAppStateSlices(args)
-	case "app_state_describe":
-		return h.handleAppStateDescribe(args)
-	case "app_state_capture_start":
-		return h.handleAppStateCaptureStart(args)
-	case "app_state_capture_get":
-		return h.handleAppStateCaptureGet(args)
-	case "app_state_capture_stop":
-		return h.handleAppStateCaptureStop(args)
-	case "app_state_capture_list":
-		return h.handleAppStateCaptureList(args)
-	case "app_log_get":
-		return h.handleAppLogGet(args)
-	case "app_perf_get":
-		return h.handleAppPerfGet(args)
-	case "is_running":
-		return h.handleIsRunning(args)
-	// --- pool tools (🎯T24) -----------------------------------------------
-	case "pool_list":
-		return h.handlePoolList(args)
-	case "pool_warm":
-		return h.handlePoolWarm(args)
-	case "pool_drain":
-		return h.handlePoolDrain(args)
-	case "pool_gc":
-		return h.handlePoolGC(args)
-	default:
+	fn, ok := h.toolHandlers()[name]
+	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", name)
+	}
+	return fn(args)
+}
+
+// toolHandlers is the verb table — the single source of truth for both
+// MCP dispatch and the app_exec Starlark builtin bridge (🎯T88), so the
+// two surfaces can never drift. Keep entries in the dispatch-group order
+// the definitions use.
+func (h *Handler) toolHandlers() map[string]toolFunc {
+	return map[string]toolFunc{
+		"devices":       h.handleDevices,
+		"resolve":       h.handleResolve,
+		"device_state":  h.handleDeviceState,
+		"screenshot":    h.handleScreenshot,
+		"list_apps":     h.handleListApps,
+		"launch_app":    h.handleLaunchApp,
+		"terminate_app": h.handleTerminateApp,
+		"install_app":   h.handleInstallApp,
+		"uninstall_app": h.handleUninstallApp,
+		"deploy_app":    h.handleDeployApp,
+		"reserve":       h.handleReserve,
+		"release":       h.handleRelease,
+		"renew":         h.handleRenew,
+		"reservations":  h.handleReservations,
+		"runs_list":     h.handleRunsList,
+		"runs_show":     h.handleRunsShow,
+		"rotate":        h.handleRotate,
+		"crashes":       h.handleCrashes,
+		// --- simulator tools ---
+		"sim_list":     h.handleSimList,
+		"sim_create":   h.handleSimCreate,
+		"sim_boot":     h.handleSimBoot,
+		"sim_shutdown": h.handleSimShutdown,
+		"sim_delete":   h.handleSimDelete,
+		// --- emulator tools ---
+		"emu_list":     h.handleEmuList,
+		"emu_create":   h.handleEmuCreate,
+		"emu_boot":     h.handleEmuBoot,
+		"emu_shutdown": h.handleEmuShutdown,
+		"emu_delete":   h.handleEmuDelete,
+		// --- visual regression tools ---
+		"baseline_update": h.handleBaselineUpdate,
+		"diff":            h.handleDiff,
+		"baselines_list":  h.handleBaselinesList,
+		"record_start":    h.handleRecordStart,
+		"record_stop":     h.handleRecordStop,
+		"network":         h.handleNetwork,
+		"logs":            h.handleLogsRange,
+		// --- log-capture sessions ---
+		"log_capture_start": h.handleLogCaptureStart,
+		"log_capture_get":   h.handleLogCaptureGet,
+		"log_capture_stop":  h.handleLogCaptureStop,
+		"log_capture_list":  h.handleLogCaptureList,
+		// --- bidirectional app channel (🎯T75, 🎯T83) ---
+		"app_channel_stop":        h.handleAppChannelStop,
+		"app_channel_list":        h.handleAppChannelList,
+		"app_ping":                h.handleAppPing,
+		"app_quit":                h.handleAppQuit,
+		"app_flush":               h.handleAppFlush,
+		"app_background":          h.handleAppBackground,
+		"app_foreground":          h.handleAppForeground,
+		"app_low_memory":          h.handleAppLowMemory,
+		"app_pause":               h.handleAppPause,
+		"app_resume":              h.handleAppResume,
+		"app_step":                h.handleAppStep,
+		"app_speed":               h.handleAppSpeed,
+		"app_input":               h.handleAppInput,
+		"app_state":               h.handleAppState,
+		"app_save_state":          h.handleAppSaveState,
+		"app_restore_state":       h.handleAppRestoreState,
+		"app_screenshot":          h.handleAppScreenshot,
+		"app_state_slices":        h.handleAppStateSlices,
+		"app_state_describe":      h.handleAppStateDescribe,
+		"app_state_capture_start": h.handleAppStateCaptureStart,
+		"app_state_capture_get":   h.handleAppStateCaptureGet,
+		"app_state_capture_stop":  h.handleAppStateCaptureStop,
+		"app_state_capture_list":  h.handleAppStateCaptureList,
+		"app_log_get":             h.handleAppLogGet,
+		"app_perf_get":            h.handleAppPerfGet,
+		"is_running":              h.handleIsRunning,
+		// --- pool tools (🎯T24) ---
+		"pool_list":  h.handlePoolList,
+		"pool_warm":  h.handlePoolWarm,
+		"pool_drain": h.handlePoolDrain,
+		"pool_gc":    h.handlePoolGC,
+		// --- scripting entry point (🎯T88) ---
+		"app_exec": h.handleAppExec,
 	}
 }
 
@@ -438,7 +382,8 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 func Definitions() []mcpgo.Tool {
 	defs := append(allBaseDefinitions(), visualDefinitions()...)
 	defs = append(defs, logCaptureDefinitions()...)
-	return append(defs, appChannelDefinitions()...)
+	defs = append(defs, appChannelDefinitions()...)
+	return append(defs, appExecDefinition())
 }
 
 // allBaseDefinitions returns the core (non-visual) tool definitions.
