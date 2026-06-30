@@ -287,6 +287,38 @@ func TestExec_SandboxBlocksLoadAndUnknownNames(t *testing.T) {
 	}
 }
 
+// Every verb spyder ever advertised as a one-off tool is reachable as an
+// app_exec builtin, and there are no orphan builtins. This is the parity
+// guarantee for the single-entry-point migration (🎯T88.2): it uses the
+// definition-builder functions (which outlive the T88.3 removal of the
+// tools from Definitions()), not Definitions() itself.
+func TestExec_BuiltinCoversEveryAdvertisedVerb(t *testing.T) {
+	h := &Handler{}
+	builtins := h.toolHandlers()
+
+	var legacy []mcpgo.Tool
+	legacy = append(legacy, allBaseDefinitions()...)
+	legacy = append(legacy, visualDefinitions()...)
+	legacy = append(legacy, logCaptureDefinitions()...)
+	legacy = append(legacy, appChannelDefinitions()...)
+
+	legacyNames := make(map[string]bool, len(legacy))
+	for _, tool := range legacy {
+		legacyNames[tool.Name] = true
+		if _, ok := builtins[tool.Name]; !ok {
+			t.Errorf("verb %q is advertised but has no app_exec builtin", tool.Name)
+		}
+	}
+	for name := range builtins {
+		if name == "app_exec" {
+			continue
+		}
+		if !legacyNames[name] {
+			t.Errorf("builtin %q has no advertised definition (orphan)", name)
+		}
+	}
+}
+
 // help() lists the available verbs from within a script.
 func TestExec_HelpListsVerbs(t *testing.T) {
 	res := runScript(t, `help()`, stubVerbs(), defaultLim())
