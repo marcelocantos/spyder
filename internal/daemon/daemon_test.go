@@ -142,6 +142,54 @@ func TestBuild_ToolsListIsSingleEntryPoint(t *testing.T) {
 	}
 }
 
+// TestBuild_AppExecRoutesToVerb exercises the whole path end-to-end:
+// HTTP MCP tools/call → handleAppExec → Starlark → the verb bridge → the
+// real reservations handler → back as a content block. reservations()
+// needs no device, so it runs in CI/laptop without hardware.
+func TestBuild_AppExecRoutesToVerb(t *testing.T) {
+	base, teardown := mcpTestServer(t)
+	defer teardown()
+
+	_, sid := postJSON(t, base+"/mcp", "", map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2024-11-05",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "t", "version": "1"},
+		},
+	})
+
+	resp, _ := postJSON(t, base+"/mcp", sid, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      "app_exec",
+			"arguments": map[string]any{"script": `emit(reservations())`},
+		},
+	})
+
+	result, ok := resp["result"].(map[string]any)
+	if !ok {
+		t.Fatalf("no result in response: %v", resp)
+	}
+	if ie, _ := result["isError"].(bool); ie {
+		t.Fatalf("app_exec reported an error: %v", result["content"])
+	}
+	content, _ := result["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("want at least one content block, got %v", result)
+	}
+	first, _ := content[0].(map[string]any)
+	text, _ := first["text"].(string)
+	// reservations() returns a JSON array; the bridge decodes and re-renders it.
+	if !strings.HasPrefix(strings.TrimSpace(text), "[") {
+		t.Errorf("expected a JSON array from reservations(), got %q", text)
+	}
+}
+
 // TestExePathReal_FollowsSymlink verifies that exePathReal resolves a
 // Homebrew-style symlink to the real binary path. Without EvalSymlinks,
 // resolveIOSTunnelBinary computes /opt/homebrew/libexec/… instead of the
