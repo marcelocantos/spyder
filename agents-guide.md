@@ -12,6 +12,20 @@ it. iOS physical-device support is in-process via the bundled
 [go-ios](https://github.com/danielpaulus/go-ios) Go library — usbmux, lockdown,
 DTX, and RSD all run inside spyder rather than fronting a Python subprocess.
 
+## Reading this guide
+
+Every device action goes through the single MCP tool `app_exec`. The Starlark
+snippets shown throughout this guide are the value of the `script` argument —
+e.g. a snippet `devices(platform="ios")` means:
+
+```json
+{"name": "app_exec", "arguments": {"script": "devices(platform=\"ios\")"}}
+```
+
+The REST transport (`POST /api/v1/<verb>`) is the one place individual verb
+names still appear directly in URLs. All REST sections in this guide are
+preserved as-is and are accurate for that transport.
+
 ## Installation (not a one-liner — do **all** the steps)
 
 Installing spyder is a **multi-step process**. Do not stop after `brew install` —
@@ -41,8 +55,11 @@ not ready" and enter a diagnostic loop. Use these checks instead:
 # Pre-restart: is the process listening on :3030?
 lsof -iTCP:3030 -sTCP:LISTEN
 
-# Post-restart, from inside the agent session: call any spyder tool.
-# (devices with platform=all is the lightest ping.)
+# Post-restart, from inside the agent session: call devices via app_exec.
+```
+
+```json
+{"name": "app_exec", "arguments": {"script": "devices(platform=\"all\")"}}
 ```
 
 If `lsof` returns nothing, the service isn't running — check
@@ -90,81 +107,202 @@ map symbolic aliases to platform-specific identifiers:
 Alias lookup is case-insensitive. Raw identifiers that aren't in the inventory
 are classified by format (iOS UDID vs. Android serial) and passed through.
 
-## Tool reference
+## The `app_exec` entry point
 
-All tools accept a `device` parameter that resolves against the inventory
+`app_exec` is spyder's only MCP tool. It runs a Starlark script with every
+spyder verb available as a builtin.
+
+**Arguments:**
+
+| Argument | Type | Description |
+|---|---|---|
+| `script` | string (required) | Starlark source to execute. |
+| `max_duration_ms` | number (optional) | Wall-clock cap in ms. Default 30 000; max 120 000. |
+
+**Result model:** an ordered list of emitted values returned as MCP content
+blocks. A value is emitted by `emit(x)` OR by being the **final top-level
+expression** in the script (REPL-style "last value"). Intermediate bare
+expressions are discarded — a bare `app_input(...)` in the middle of a script
+produces no output; its acknowledgement is dropped.
+
+- Image-returning verbs (`screenshot`, `app_screenshot`) emit image blocks.
+- JSON-returning verbs return dicts/lists you can index directly:
+  `d = app_state(slice="hud"); emit(d["score"])`.
+- Text-returning verbs return strings.
+
+**Controls:**
+
+- `sleep(ms)` — server-side wall-clock delay, ms-accurate. The way to time a
+  sequence; does not burn the Starlark step budget.
+- `help()` — returns the verb list.
+- `emit(x)` — emit a value explicitly. Required for all but the final value.
+
+**Control flow:** bounded `for i in range(N):` and `if` are allowed at top
+level; variables, dict/list indexing, comparisons, and arithmetic work. No
+`while` and no recursion — by design.
+
+**Caps (liveness, to protect the agent's tool slot):** default 30 s
+wall-clock, max 120 s via `max_duration_ms`; plus a Starlark step budget. On
+breach, whatever was emitted so far is returned with an error note — never a
+hang.
+
+**Errors:** a verb that fails aborts the script, reported as an error result
+citing the script position.
+
+**Determinism:** all calls in one script run in script order with zero agent
+round-trips. For frame-perfect capture: `app_pause(session_id=s)`,
+`app_input(...)`, `app_step(session_id=s, frames=1)`,
+`emit(app_screenshot(session_id=s))`, `app_resume(session_id=s)`.
+
+**Durable handles:** a returned id is a plain string backed by a server-side
+registry. Capture it in a variable and reuse it in the same script, OR pass it
+back in a later `app_exec` call.
+
+### Worked examples
+
+**One-liner — list all devices (full MCP envelope):**
+
+```json
+{"name": "app_exec", "arguments": {"script": "devices(platform=\"all\")"}}
+```
+
+**Timed tap then screenshot** — tap the screen, wait 500 ms, capture:
+
+```starlark
+app_input(type="finger_down", x=0.5, y=0.5)
+app_input(type="finger_up", x=0.5, y=0.5)
+sleep(500)
+app_screenshot()
+```
+
+**Frame-deterministic capture** — pause, inject input, advance exactly one
+frame, capture, resume:
+
+```starlark
+s = "my-session-id"
+app_pause(session_id=s)
+app_input(session_id=s, type="finger_down", x=0.5, y=0.5)
+app_step(session_id=s, frames=1)
+emit(app_screenshot(session_id=s))
+app_resume(session_id=s)
+```
+
+**Bounded poll loop** — check app state every 200 ms for up to 10 samples:
+
+```starlark
+for i in range(10):
+    emit(app_state(slice="hud"))
+    sleep(200)
+```
+
+**Handle round-trip across two calls** — first call starts a recording and
+emits the handle:
+
+```starlark
+h = record_start(device="iPad", owner="me")
+emit(h)
+```
+
+A later `app_exec` call uses the saved handle to stop it:
+
+```starlark
+record_stop(id="<that id>", owner="me")
+```
+
+## Builtin reference
+
+All builtins accept a `device` parameter that resolves against the inventory
 (alias, raw UUID, or raw serial). The exception is `devices`, which lists
 everything it can see.
 
-| Tool | Purpose | Notes |
+Arguments below are shown in keyword-call form. A `?` suffix means optional.
+
+| Builtin | Purpose | Notes |
 |---|---|---|
-| `devices` | List connected iOS + Android devices, annotated with inventory alias. iOS-17+ devices visible to USBMux but whose RSD tunnel hasn't settled yet appear with `tunnel_pending: true` (🎯T84) — they show up rather than disappearing during the settling window, but DTX-backed tools (screenshot, launch_app, …) may fail with a clear "tunnel not ready" error until the flag clears. | `platform` filter: `ios`, `android`, or `all` (default). |
-| `resolve` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
-| `device_state` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
-| `screenshot` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
-| `list_apps` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
-| `launch_app` | Foreground an arbitrary app by bundle id. Optional `env: {KEY: VALUE, ...}` map injects environment variables into the launched process — see "Launching with env" below. | iOS-17+ uses go-ios's `appservice.LaunchApp` (CoreDevice/RemoteXPC, needs tunnel); iOS ≤16 uses `instruments.ProcessControl` (DTX-over-lockdown, no tunnel, needs DDI mounted). Path selection automatic per device. Android uses `adb monkey -c LAUNCHER` (no env) or `am start --es KEY VALUE` (with env). |
-| `terminate_app` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
-| `rotate` | Rotate an iOS simulator or Android emulator to a named orientation. Physical iOS/Android devices return a clear error. | Orientations: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. iOS uses `xcrun simctl io <udid> rotate`; Android uses `adb emu rotate` (driven N times to reach the target). |
-| `install_app` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | iOS: `xcrun devicectl device install app`; Android: `adb install -r`. |
-| `uninstall_app` | Remove an app by bundle id / package name. | iOS: `xcrun devicectl device uninstall app --bundle-identifier`; Android: `adb uninstall`. |
-| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. Optional `env` map forwarded to the launch step — see "Launching with env" below. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
-| `reserve` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
-| `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Also stops any active recording owned by the releaser. |
-| `release` | Free a reservation. | `{device, owner}`. Non-owner releases conflict. Any applied network profile is cleared automatically. |
-| `renew` | Extend a reservation's TTL. | `{device, owner, ttl_seconds?}`. |
-| `reservations` | List active reservations. | Read-only. |
-| `runs_list` | List run-artefact bundles under `~/.spyder/runs/`, newest first. | Read-only. |
-| `runs_show` | Return a single run's full manifest (device, owner, timestamps, artefacts). | Read-only. `{run_id}`. |
-| `baseline_update` | Store a new visual baseline for `suite/case/variant`. | Supply PNG via `screenshot_path` or `screenshot_base64`. Optional `manifest` JSON enables structural diffing. |
-| `diff` | Compare a candidate screenshot against the stored baseline. | Returns a structured JSON report with RMS pixel error, manifest structural diff (added/removed/moved elements with bounding boxes), and a `pass` verdict. Supply PNG via `screenshot_path` or `screenshot_base64`. |
-| `baselines_list` | List all baselines stored for a suite. | Read-only. Returns `[{case, variant, has_png, has_manifest}]`. |
-| `sim_list` | List all iOS simulators (UDID, name, state, runtime). Booted sims appear in `devices`. | `state` filter: `Booted`, `Shutdown`, etc. |
-| `sim_create` | Create a new iOS simulator; returns its UDID. | `{name, device_type_id, runtime_id}`. IDs from `xcrun simctl list devicetypes/runtimes --json`. |
-| `sim_boot` | Boot an iOS simulator by UDID. | `{udid}`. Sim appears in `devices` once booted. |
-| `sim_shutdown` | Shut down an iOS simulator by UDID. | `{udid}`. |
-| `sim_delete` | Delete an iOS simulator by UDID (must be shut down first). | `{udid}`. Irreversible. |
-| `emu_list` | List all Android Virtual Devices (name, path, target, ABI). Booted emus appear in `devices`. | Read-only. |
-| `emu_create` | Create a new Android AVD. | `{name, system_image, device_profile}`. System image must be pre-installed. |
-| `emu_boot` | Start an Android emulator (headless). Appears in `devices` once fully booted (~30–90 s). | `{name}`. Returns the serial once the process is launched. |
-| `emu_shutdown` | Shut down an Android emulator by serial (e.g. `emulator-5554`). | `{serial}`. Sends `adb emu kill`. |
-| `emu_delete` | Delete an AVD by name. | `{name}`. Irreversible. |
-| `pool_list` | Current pool state for all templates (available/running/reserved counts per template). | Read-only. Pool must be configured via `~/.spyder/pool.yaml`. |
-| `pool_warm` | Force pre-boot N additional instances for a template. | `{template, count}`. Moves instances from available to running tier. |
-| `pool_drain` | Shut down and delete all idle instances for a template. | `{template}`. Reserved instances are terminated first. |
-| `app_channel_stop` | Manually stop a per-(device, bundle_id) listener and tear down its sessions. Routine cleanup is automatic (24h idle TTL). | `{listener_id}`. |
-| `app_channel_list` | List active per-(device, bundle_id) listeners and their sessions (listener_id, device_id, bundle_id, port, owner, idle_since, sessions[]). | Read-only. Listeners are created automatically by `launch_app`/`deploy_app`. |
-| `app_ping`, `app_quit`, `app_flush`, `app_background`, `app_foreground`, `app_low_memory` | Lifecycle / liveness methods. `quit` is the clean-exit primitive (no macOS crash notification). | `{session_id?}`. session_id is optional when exactly one session is connected. |
-| `app_pause`, `app_resume`, `app_step`, `app_speed` | Time-control over the app's main loop. `step` advances N frames; `speed` sets a dt multiplier. | `{session_id?, frames?, multiplier?}`. |
-| `app_input` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | `{session_id?, type, ...event-specific fields}`. |
-| `app_state` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `{session_id?, slice}`. |
-| `app_save_state` / `app_restore_state` | Serialize / deserialize app state. Returns/accepts a base64-encoded blob; the app picks the schema. | `{session_id?, state_b64?}`. |
-| `app_screenshot` | Request a PNG from the app's own framebuffer (sibling to the OS-path `screenshot`). | `{session_id?}`. |
-| `app_log_get`, `app_perf_get` | Drain structured logs / perf-counter samples the app has pushed since the last call. | `{session_id?}`. |
+| `devices(platform?)` | List connected iOS + Android devices, annotated with inventory alias. iOS-17+ devices visible to USBMux but whose RSD tunnel hasn't settled yet appear with `tunnel_pending: true` (🎯T84) — they show up rather than disappearing during the settling window, but DTX-backed tools (screenshot, launch_app, …) may fail with a clear "tunnel not ready" error until the flag clears. | `platform` filter: `ios`, `android`, or `all` (default). |
+| `resolve(device)` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
+| `device_state(device)` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
+| `screenshot(device, owner?)` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
+| `list_apps(device)` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
+| `launch_app(device, bundle_id, env?)` | Foreground an arbitrary app by bundle id. Optional `env` dict injects environment variables into the launched process — see "Launching with env" below. | iOS-17+ uses go-ios's `appservice.LaunchApp` (CoreDevice/RemoteXPC, needs tunnel); iOS ≤16 uses `instruments.ProcessControl` (DTX-over-lockdown, no tunnel, needs DDI mounted). Path selection automatic per device. Android uses `adb monkey -c LAUNCHER` (no env) or `am start --es KEY VALUE` (with env). |
+| `terminate_app(device, bundle_id)` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
+| `rotate(device, orientation)` | Rotate an iOS simulator or Android emulator to a named orientation. Physical iOS/Android devices return a clear error. | Orientations: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. iOS uses `xcrun simctl io <udid> rotate`; Android uses `adb emu rotate` (driven N times to reach the target). |
+| `install_app(device, path)` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | iOS: `xcrun devicectl device install app`; Android: `adb install -r`. |
+| `uninstall_app(device, bundle_id)` | Remove an app by bundle id / package name. | iOS: `xcrun devicectl device uninstall app --bundle-identifier`; Android: `adb uninstall`. |
+| `deploy_app(device, path, bundle_id?, env?)` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. Optional `env` dict forwarded to the launch step — see "Launching with env" below. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
+| `reserve(device?, selector?, owner, ttl_seconds?, note?)` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
+| `release(device, owner)` | Free a reservation. | Non-owner releases conflict. Also stops any active recording owned by the releaser. Any applied network profile is cleared automatically. |
+| `renew(device, owner, ttl_seconds?)` | Extend a reservation's TTL. | |
+| `reservations()` | List active reservations. | Read-only. |
+| `runs_list()` | List run-artefact bundles under `~/.spyder/runs/`, newest first. | Read-only. |
+| `runs_show(run_id)` | Return a single run's full manifest (device, owner, timestamps, artefacts). | Read-only. |
+| `baseline_update(suite, case, variant?, screenshot_path?, screenshot_base64?, manifest?)` | Store a new visual baseline for `suite/case/variant`. | Supply PNG via `screenshot_path` or `screenshot_base64`. Optional `manifest` JSON enables structural diffing. |
+| `diff(suite, case, variant?, screenshot_path?, screenshot_base64?)` | Compare a candidate screenshot against the stored baseline. | Returns a structured JSON report with RMS pixel error, manifest structural diff (added/removed/moved elements with bounding boxes), and a `pass` verdict. Supply PNG via `screenshot_path` or `screenshot_base64`. |
+| `baselines_list(suite)` | List all baselines stored for a suite. | Read-only. Returns `[{case, variant, has_png, has_manifest}]`. |
+| `sim_list(state?)` | List all iOS simulators (UDID, name, state, runtime). Booted sims appear in `devices`. | `state` filter: `Booted`, `Shutdown`, etc. |
+| `sim_create(name, device_type_id, runtime_id)` | Create a new iOS simulator; returns its UDID. | IDs from `xcrun simctl list devicetypes/runtimes --json`. |
+| `sim_boot(udid)` | Boot an iOS simulator by UDID. | Sim appears in `devices` once booted. |
+| `sim_shutdown(udid)` | Shut down an iOS simulator by UDID. | |
+| `sim_delete(udid)` | Delete an iOS simulator by UDID (must be shut down first). | Irreversible. |
+| `emu_list()` | List all Android Virtual Devices (name, path, target, ABI). Booted emus appear in `devices`. | Read-only. |
+| `emu_create(name, system_image, device_profile)` | Create a new Android AVD. | System image must be pre-installed. |
+| `emu_boot(name)` | Start an Android emulator (headless). Appears in `devices` once fully booted (~30–90 s). | Returns the serial once the process is launched. |
+| `emu_shutdown(serial)` | Shut down an Android emulator by serial (e.g. `emulator-5554`). | Sends `adb emu kill`. |
+| `emu_delete(name)` | Delete an AVD by name. | Irreversible. |
+| `pool_list()` | Current pool state for all templates (available/running/reserved counts per template). | Read-only. Pool must be configured via `~/.spyder/pool.yaml`. |
+| `pool_warm(template, count)` | Force pre-boot N additional instances for a template. | Moves instances from available to running tier. |
+| `pool_drain(template)` | Shut down and delete all idle instances for a template. | Reserved instances are terminated first. |
+| `pool_gc()` | Garbage-collect pool instances that are no longer tracked. | |
+| `app_channel_stop(listener_id)` | Manually stop a per-(device, bundle_id) listener and tear down its sessions. Routine cleanup is automatic (24h idle TTL). | |
+| `app_channel_list()` | List active per-(device, bundle_id) listeners and their sessions (listener_id, device_id, bundle_id, port, owner, idle_since, sessions[]). | Read-only. Listeners are created automatically by `launch_app`/`deploy_app`. |
+| `app_ping(session_id?)` | Liveness check. | `session_id` is optional when exactly one session is connected. |
+| `app_quit(session_id?)` | Clean-exit primitive (no macOS crash notification). | |
+| `app_flush(session_id?)` | Flush pending app→spyder messages. | |
+| `app_background(session_id?)` | Send the app to background. | |
+| `app_foreground(session_id?)` | Bring the app to foreground. | |
+| `app_low_memory(session_id?)` | Simulate a low-memory warning. | |
+| `app_pause(session_id?)` | Pause the app's main loop. | |
+| `app_resume(session_id?)` | Resume the app's main loop. | |
+| `app_step(session_id?, frames?)` | Advance N frames while paused. | |
+| `app_speed(session_id?, multiplier?)` | Set a dt multiplier for the app's main loop. | |
+| `app_input(session_id?, type, ...)` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | Event-type-specific fields vary. |
+| `app_state(session_id?, slice, select?)` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `select` is an optional jq expression evaluated server-side. |
+| `app_save_state(session_id?)` | Serialize app state. Returns a base64-encoded blob; the app picks the schema. | |
+| `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
+| `app_screenshot(session_id?)` | Request a PNG from the app's own framebuffer (sibling to the OS-path `screenshot`). | |
+| `app_state_slices(session_id?)` | Return the list of named state slices the app has registered. | |
+| `app_state_describe(session_id?, slice)` | Return a types-only structural sketch of a slice without the full payload. | |
+| `app_state_capture_start(session_id?, slice, interval_ms?, select?)` | Start a polling capture of a state slice. Returns a `capture_id`. | Default 100 ms interval. Minimum 10 ms. |
+| `app_state_capture_get(capture_id)` | Drain accumulated samples; capture continues. | Clears the buffer. |
+| `app_state_capture_stop(capture_id)` | Stop the capture and drain remaining samples. | |
+| `app_state_capture_list()` | List all active captures with metadata. | Read-only. |
+| `app_log_get(session_id?, select?)` | Drain structured logs the app has pushed since the last call. | |
+| `app_perf_get(session_id?, select?)` | Drain perf-counter samples the app has pushed since the last call. | |
+| `is_running(device, bundle_id)` | Check whether an app is currently running. | |
+| `record_start(device, owner?)` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | iOS simulators only — physical devices return an immediate error. Observational; not gated by device reservation. Only one recording per device at a time. The `owner` you pass here is the one that must stop the recording. |
+| `record_stop(device, owner?)` | Stop the active recording and return the local mp4 path. | Owner must match the one that started the recording (not the device reservation). Waits for the recorder to flush. On Android, pulls the file from the device. |
+| `network(device, owner, profile?, clear?)` | Apply or clear network condition shaping. | Android emulators only — see gotchas below. |
+| `logs(device, since?, until?, bundle_id?, process?, subsystem?, tag?, regex?)` | Fetch log lines between two timestamps. | Read-only. iOS routes through go-ios's `syslog_relay` shim; Android uses `adb logcat`. For live tailing use REST SSE (see below). |
+| `log_capture_start(device, owner?, bundle_id?, process?, subsystem?, regex?, ttl_sec?, max_bytes?, max_lines?)` | Start a managed log-capture session. | Returns `{session_id, started_at, expires_at}`. |
+| `log_capture_get(session_id)` | Peek at buffered lines; clears the buffer. Capture continues. | |
+| `log_capture_stop(session_id)` | Stop and drain remaining lines. | |
+| `log_capture_list()` | List all active capture sessions. | Read-only. |
+| `crashes(device)` | Fetch recent crash reports from the device. | |
 
 ## Launching with env
 
-Both `launch_app` and `deploy_app` accept an optional `env` map that
+Both `launch_app` and `deploy_app` accept an optional `env` dict that
 forwards environment variables to the launched app process. Useful for
 runtime configuration that shouldn't be baked into the binary —
 debug-feature flags, sandbox markers, and (the motivating use case)
 network log targets.
 
-The map is plain JSON `{string: string}` — non-string values are
-coerced via `fmt.Sprintf("%v", ...)`:
-
-```json
-{
-  "name": "deploy_app",
-  "arguments": {
-    "device": "Jevons",
-    "path": "/path/to/MyApp.app",
-    "env": {
-      "SPYDER_APP_CHANNEL": "192.168.1.42:9999",
-      "FEATURE_FLAG_X": "on"
-    }
-  }
-}
+```starlark
+deploy_app(
+    device="Jevons",
+    path="/path/to/MyApp.app",
+    env={"SPYDER_APP_CHANNEL": "192.168.1.42:9999", "FEATURE_FLAG_X": "on"},
+)
 ```
 
 The `env` parameter is a generic mechanism — spyder doesn't know what
@@ -184,7 +322,7 @@ lookup. Everything else (other env keys) is between you and your app.
 | Platform | Delivery | Pickup |
 |---|---|---|
 | **iOS device** | go-ios `appservice.LaunchApp` passes the map as the launched process environment. | Standard `getenv("KEY")` in the app. No app-side shim required. |
-| **iOS simulator** | `xcrun simctl launch` reads `SIMCTL_CHILD_<KEY>=<VALUE>` entries from its own environment and exposes them as `<KEY>=<VALUE>` to the simulated app. spyder builds these from the `env` map. | Standard `getenv("KEY")`. |
+| **iOS simulator** | `xcrun simctl launch` reads `SIMCTL_CHILD_<KEY>=<VALUE>` entries from its own environment and exposes them as `<KEY>=<VALUE>` to the simulated app. spyder builds these from the `env` dict. | Standard `getenv("KEY")`. |
 | **Android (device or emulator)** | `adb shell am start --es KEY VALUE ...` passes the entries as Intent string-extras. Spyder switches from `monkey` to `am start` whenever `env` is non-empty. | The app's Java/Kotlin shim must extract the extras in `onCreate()` and call `setenv()` via JNI before native code runs — see the shim pattern below. |
 
 ### Android shim pattern
@@ -238,6 +376,8 @@ have an Android side of itself to inject the shim into.
 
 ### REST equivalent
 
+REST is the direct-verb transport; MCP is app_exec-only.
+
 ```sh
 curl -s -X POST http://127.0.0.1:3030/api/v1/deploy_app \
   -H 'Content-Type: application/json' \
@@ -260,17 +400,15 @@ Listeners survive crashes and relaunches (same port, fresh
 `session_id` each connect), and are reaped after 24h of no live
 session and no `app_*` activity.
 
-```json
-// 1. Deploy (or launch). spyder auto-wires SPYDER_APP_CHANNEL.
-{"name": "deploy_app", "arguments": {
-  "device": "Jevons",
-  "path": "/path/to/MyApp.app"
-}}
+```starlark
+# 1. Deploy (or launch). spyder auto-wires SPYDER_APP_CHANNEL.
+deploy_app(device="Jevons", path="/path/to/MyApp.app")
 
-// 2. App dials, sends `hello`, starts pushing structured `log` messages.
-//    Drain them whenever you want — capture continues:
-{"name": "app_log_get", "arguments": {"device": "Jevons", "bundle_id": "com.example.app"}}
-// → {"lines": [{"timestamp": ..., "level": "info", "format": "...", ...}], ...}
+# 2. App dials, sends `hello`, starts pushing structured `log` messages.
+#    Drain them whenever you want — capture continues.
+#    (In a second app_exec call, after the app has connected:)
+app_log_get(device="Jevons", bundle_id="com.example.app")
+# → {"lines": [{"timestamp": ..., "level": "info", "format": "...", ...}], ...}
 ```
 
 You can still pass an explicit `SPYDER_APP_CHANNEL` in `env` to
@@ -321,31 +459,26 @@ more leverage.
 
 ### Worked example
 
-```json
-// 1. Deploy. spyder auto-creates the per-(device, bundle_id)
-//    listener and injects SPYDER_APP_CHANNEL into the launch env.
-{"name": "deploy_app", "arguments": {
-  "device": "Jevons",
-  "path": "/path/to/MyApp.app"
-}}
+```starlark
+# 1. Deploy. spyder auto-creates the per-(device, bundle_id)
+#    listener and injects SPYDER_APP_CHANNEL into the launch env.
+deploy_app(device="Jevons", path="/path/to/MyApp.app")
 
-// 2. App connects, sends hello → app_channel_list shows the session.
-{"name": "app_channel_list"}
-// → {"listeners": [{
-//      "listener_id": "...", "device_id": "...", "bundle_id": "com.example.app",
-//      "port": 54321, "sessions": [{"session_id": "...", "app_name": "MultiMaze", ...}]
-//    }]}
+# 2. App connects, sends hello → app_channel_list shows the session.
+emit(app_channel_list())
+# → {"listeners": [{
+#      "listener_id": "...", "device_id": "...", "bundle_id": "com.example.app",
+#      "port": 54321, "sessions": [{"session_id": "...", "app_name": "MultiMaze", ...}]
+#    }]}
 
-// 3. Drive the app. Either pass session_id, or address by (device, bundle_id);
-//    or, when only one session is connected, omit all three.
-{"name": "app_state", "arguments": {
-  "device": "Jevons", "bundle_id": "com.example.app", "slice": "scene"
-}}
-{"name": "app_input", "arguments": {"type": "finger_down", "x": 0.5, "y": 0.5}}
-{"name": "app_pause"}
-{"name": "app_step", "arguments": {"frames": 3}}
-{"name": "app_screenshot"}
-{"name": "app_quit"}  // clean exit, no macOS crash notification
+# 3. Drive the app. Either pass session_id, or address by (device, bundle_id);
+#    or, when only one session is connected, omit all three.
+emit(app_state(device="Jevons", bundle_id="com.example.app", slice="scene"))
+app_input(type="finger_down", x=0.5, y=0.5)
+app_pause()
+app_step(frames=3)
+emit(app_screenshot())
+app_quit()  # clean exit, no macOS crash notification
 ```
 
 ### Method catalogue
@@ -357,12 +490,12 @@ The full v1 method set (🎯T75): `ping`, `quit`, `flush`,
 the app: `log` (structured), `perf` (key/value counter batches).
 
 Apps need only implement the subset they care about — advertise the
-list in `hello.methods` and spyder's per-method MCP tools will
+list in `hello.methods` and spyder's per-method builtins will
 gracefully refuse calls to anything the app didn't claim.
 
 ### Session addressing
 
-Every `app_*` tool resolves its target session in this order:
+Every `app_*` builtin resolves its target session in this order:
 
 1. **`session_id`** — explicit, fastest, unambiguous.
 2. **`device` + `bundle_id`** — looks up the keyed listener and picks
@@ -371,23 +504,20 @@ Every `app_*` tool resolves its target session in this order:
 3. **Single-session fallback** — when exactly one session is connected
    across all listeners, omit all three.
 
-`app_channel_list` shows the listener + session topology.
+`app_channel_list()` shows the listener + session topology.
 
 ### Discovering state slices (🎯T80, T81)
 
-`state_query{slice}` is the catch-all readout the app exposes per
-named "slice" of its state (`scene`, `physics`, `hud`, whatever the
-app registered). To find out *what* slices a connected game exposes
-without prior knowledge:
+`app_state_slices()` lists what slices a connected app exposes. `app_state_describe(slice=...)` returns a types-only sketch:
 
-```json
-{"name": "app_state_slices"}
-// → {"session_id": "...",
-//    "slices": [
-//      {"name": "scene"},
-//      {"name": "physics",
-//       "example": {"marble": {"position": {"x": 0.0, "y": 0.0, "z": 0.0}}}}
-//    ]}
+```starlark
+emit(app_state_slices())
+# → {"session_id": "...",
+#    "slices": [
+#      {"name": "scene"},
+#      {"name": "physics",
+#       "example": {"marble": {"position": {"x": 0.0, "y": 0.0, "z": 0.0}}}}
+#    ]}
 ```
 
 Each entry has a `name` (required) and an optional `example` payload —
@@ -399,14 +529,14 @@ cleanly as name-only descriptors.
 ### Knowing what to query for (🎯T81)
 
 When a slice doesn't have an inline example, ask the server for a
-types-only sketch — one `state_query` call walked into a structure-
-only view, much smaller than the full payload:
+types-only sketch — one call walked into a structure-only view, much
+smaller than the full payload:
 
-```json
-{"name": "app_state_describe", "arguments": {"slice": "physics"}}
-// → {"slice": "physics",
-//    "shape": {"marble": {"position": {"x": "float", "y": "float", "z": "float"}},
-//              "doors": [{"id": "int", "open": "bool"}]}}
+```starlark
+app_state_describe(slice="physics")
+# → {"slice": "physics",
+#    "shape": {"marble": {"position": {"x": "float", "y": "float", "z": "float"}},
+#              "doors": [{"id": "int", "open": "bool"}]}}
 ```
 
 The agent reads the shape, writes a jq filter for the part it cares
@@ -416,15 +546,14 @@ changes required).
 
 ### Filtering server-side with jq (🎯T81)
 
-Every state/log/perf readout tool accepts an optional `select` jq
+Every state/log/perf readout builtin accepts an optional `select` jq
 expression. Spyder evaluates it server-side and returns only the
 filtered result, keeping agent context budgets manageable when slices
 are large:
 
-```json
-{"name": "app_state",
- "arguments": {"slice": "physics", "select": ".marble.position"}}
-// → {"x": 1.2, "y": 0.3, "z": 0.0}
+```starlark
+app_state(slice="physics", select=".marble.position")
+# → {"x": 1.2, "y": 0.3, "z": 0.0}
 ```
 
 Works on:
@@ -442,25 +571,31 @@ can distinguish a busted filter from a busted device.
 ### Watching state evolve under inputs
 
 For "tilt the device and read the ball position each frame" workflows,
-use the state-capture session pattern — same shape as `app_log_get` /
-`app_perf_get`:
+fire the input then poll state in a single `app_exec` call — no
+agent round-trips, no parallel tool calls needed (this supersedes the
+old "parallel tool calls" framing):
 
-```json
-// 1. Start a poller. Default 100 ms interval (~10 Hz). Minimum 10 ms.
-{"name": "app_state_capture_start",
- "arguments": {"slice": "physics", "interval_ms": 16}}
-// → {"capture_id": "...", "slice": "physics", "interval_ms": 16, ...}
+```starlark
+# Fire an accelerometer input, then sample physics state at ~60 Hz for ~1 s.
+app_input(type="accel", x=0.3, y=0.0, z=0.0)
+for i in range(60):
+    emit(app_state(slice="physics", select=".marble.position"))
+    sleep(16)
+```
 
-// 2. Drive the app while the poller accumulates samples.
-{"name": "app_input", "arguments": {"type": "accel", "x": 0.3, "y": 0.0, "z": 0.0}}
-// ... do other things ...
+For a lossless capture with server-side buffering, use the
+state-capture session pattern:
 
-// 3. Drain accumulated samples. Capture keeps running.
-{"name": "app_state_capture_get", "arguments": {"capture_id": "..."}}
-// → {"samples": [{"timestamp": "...", "data": {...}}, ...], "errors": 0}
+```starlark
+# 1. Start a poller at 60 Hz.
+cap = app_state_capture_start(slice="physics", interval_ms=16)
 
-// 4. Stop and drain.
-{"name": "app_state_capture_stop", "arguments": {"capture_id": "..."}}
+# 2. Drive the app while the poller accumulates samples.
+app_input(type="accel", x=0.3, y=0.0, z=0.0)
+sleep(1000)
+
+# 3. Stop and drain.
+emit(app_state_capture_stop(capture_id=cap["capture_id"]))
 ```
 
 Samples are bounded (100k per capture by default, FIFO eviction); the
@@ -483,7 +618,7 @@ capture. Active captures stop automatically when the session closes.
   "*App* would like to find and connect to devices on your local
   network" prompt. The channel doesn't connect until you tap *Allow*
   once per (device, app) pair. If the agent times out on the
-  handshake and `app_channel_list` shows no session, check the
+  handshake and `app_channel_list()` shows no session, check the
   device — the prompt is likely sitting on screen.
 
 ## Sim/emu pool
@@ -564,12 +699,18 @@ spyder pool warm iphone16 --count 2
 spyder pool drain iphone16
 ```
 
-Via MCP:
+Via `app_exec`:
 
-```json
-{"name": "pool_list", "arguments": {}}
-{"name": "pool_warm", "arguments": {"template": "iphone16", "count": 2}}
-{"name": "pool_drain", "arguments": {"template": "pixel9"}}
+```starlark
+pool_list()
+```
+
+```starlark
+pool_warm(template="iphone16", count=2)
+```
+
+```starlark
+pool_drain(template="pixel9")
 ```
 
 ### Android AVD cloning
@@ -591,59 +732,81 @@ UDID each time. There is no template AVD to pre-create for iOS.
 
 ## Simulator and emulator lifecycle
 
-iOS simulators and Android emulators are managed through dedicated tool groups (`sim_*` and `emu_*`). Booted simulators and running emulators appear automatically in `spyder devices` output — the existing iOS adapter calls `xcrun simctl` which includes both physical and simulator devices, and the Android adapter calls `adb devices` which lists running emulators alongside physical devices.
+iOS simulators and Android emulators are managed through dedicated builtin groups (`sim_*` and `emu_*`). Booted simulators and running emulators appear automatically in `devices()` output — the existing iOS adapter calls `xcrun simctl` which includes both physical and simulator devices, and the Android adapter calls `adb devices` which lists running emulators alongside physical devices.
 
 ### iOS simulators
 
 ```bash
 # List all simulators (state: Booted, Shutdown, etc.)
-# {"name":"sim_list","arguments":{}}
-
-# Create a new simulator
-# {"name":"sim_create","arguments":{"name":"MyTestPhone",
-#   "device_type_id":"com.apple.CoreSimulator.SimDeviceType.iPhone-15",
-#   "runtime_id":"com.apple.CoreSimulator.SimRuntime.iOS-17-5"}}
-
-# Boot and shut down
-# {"name":"sim_boot","arguments":{"udid":"ABCD-1234-..."}}
-# {"name":"sim_shutdown","arguments":{"udid":"ABCD-1234-..."}}
-```
-
-CLI:
-
-```bash
 spyder sim list
 spyder sim list --state Booted --json
+
+# Create a new simulator
 spyder sim create MyPhone \
   --type com.apple.CoreSimulator.SimDeviceType.iPhone-15 \
   --runtime com.apple.CoreSimulator.SimRuntime.iOS-17-5
+
+# Boot and shut down
 spyder sim boot <udid>
 spyder sim shutdown <udid>
 spyder sim delete <udid>
+```
+
+Via `app_exec`:
+
+```starlark
+sim_list()
+```
+
+```starlark
+sim_create(
+    name="MyTestPhone",
+    device_type_id="com.apple.CoreSimulator.SimDeviceType.iPhone-15",
+    runtime_id="com.apple.CoreSimulator.SimRuntime.iOS-17-5",
+)
+```
+
+```starlark
+sim_boot(udid="ABCD-1234-...")
+```
+
+```starlark
+sim_shutdown(udid="ABCD-1234-...")
 ```
 
 ### Android emulators
 
 ```bash
 # List AVDs
-# {"name":"emu_list","arguments":{}}
+spyder emu list --json
 
 # Boot an emulator (headless; takes 30–90 s to fully start)
-# {"name":"emu_boot","arguments":{"name":"Pixel6_API34"}}
+spyder emu boot Pixel6_API34
 
 # Shut down by adb serial
-# {"name":"emu_shutdown","arguments":{"serial":"emulator-5554"}}
+spyder emu shutdown emulator-5554
 ```
 
 CLI:
 
 ```bash
-spyder emu list --json
 spyder emu create Pixel6_API34 \
   --image 'system-images;android-34;google_apis;arm64-v8a' --device pixel_6
-spyder emu boot Pixel6_API34
-spyder emu shutdown emulator-5554
 spyder emu delete Pixel6_API34
+```
+
+Via `app_exec`:
+
+```starlark
+emu_list()
+```
+
+```starlark
+emu_boot(name="Pixel6_API34")
+```
+
+```starlark
+emu_shutdown(serial="emulator-5554")
 ```
 
 ### Boot-on-demand / reservation policy
@@ -652,11 +815,11 @@ You can reserve a device identifier (alias, UDID, or AVD name) before it is boot
 
 1. `reserve` the sim/emu name.
 2. `sim_boot` or `emu_boot` to start it.
-3. Wait for it to appear in `devices` (simulators: immediate; emulators: poll `spyder devices --platform android` until the serial appears).
+3. Wait for it to appear in `devices` (simulators: immediate; emulators: poll `devices(platform="android")` until the serial appears).
 4. Use the booted device's UDID or serial for operations.
 5. `release` when done (optionally shut it down first).
 
-**Operations that target a device must use the live UDID/serial**, not the AVD name. The `devices` tool returns the identifier once the sim/emu is booted.
+**Operations that target a device must use the live UDID/serial**, not the AVD name. The `devices` builtin returns the identifier once the sim/emu is booted.
 
 ## Visual regression
 
@@ -670,7 +833,7 @@ comparison pipeline:
 2. **Pixel diff (RMS)** — root-mean-square error across all channels, in [0, 1].
    Configurable tolerance (default 0.01). SSIM is stubbed in v1 (returns NaN).
 
-The `diff` tool runs both tiers and returns a unified report. If both sides have
+The `diff` builtin runs both tiers and returns a unified report. If both sides have
 a manifest, structural changes cause `pass=false` regardless of RMS. The VLM
 natural-language summary interface is defined but not implemented in v1.
 
@@ -717,27 +880,26 @@ spyder baseline update login-flow/main-screen login.png --variant ipad-landscape
 spyder diff login-flow/main-screen new-screenshot.png --variant ipad-landscape
 ```
 
-Via MCP, the same operations are:
+Via `app_exec`:
 
-```json
-{"name": "baseline_update", "arguments": {"suite": "login-flow", "case": "main-screen", "screenshot_path": "/tmp/login.png"}}
-{"name": "diff", "arguments": {"suite": "login-flow", "case": "main-screen", "screenshot_path": "/tmp/new.png"}}
+```starlark
+baseline_update(suite="login-flow", case="main-screen", screenshot_path="/tmp/login.png")
 ```
-| `record_start` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | `{device, owner?}`. iOS simulators only — physical devices return an immediate error. Observational; not gated by device reservation. Only one recording per device at a time. The `owner` you pass here is the one that must stop the recording. |
-| `record_stop` | Stop the active recording and return the local mp4 path. | `{device, owner?}`. Owner must match the one that started the recording (not the device reservation). Waits for the recorder to flush. On Android, pulls the file from the device. |
-| `network` | Apply or clear network condition shaping. | `{device, owner, profile?}` or `{device, owner, clear:true}`. Android emulators only — see gotchas below. |
-| `logs` | Fetch log lines between two timestamps. | Read-only. iOS routes through go-ios's `syslog_relay` shim (BSD-style syslog stream); Android uses `adb logcat`. For live tailing use REST SSE (see below). |
+
+```starlark
+diff(suite="login-flow", case="main-screen", screenshot_path="/tmp/new.png")
+```
 
 ### Log queries — range vs. live
 
-The `logs` MCP tool returns a bounded JSON array of `LogLine` records. It
+The `logs` builtin returns a bounded list of `LogLine` records. It
 accepts:
 
 - `device` (required) — alias or UUID.
 - `since` / `until` — window bounds. Each accepts either an RFC3339 absolute
   (e.g. `2026-04-19T14:00:00Z`) or a Go duration relative to now (e.g.
-  `since=-2m` for "the last two minutes", `since=-1h`, `until=+30s`,
-  `until=now`). Additionally, `since=launch` is shorthand for "everything
+  `since="-2m"` for "the last two minutes", `since="-1h"`, `until="+30s"`,
+  `until="now"`). Additionally, `since="launch"` is shorthand for "everything
   since spyder last called `launch_app` for `bundle_id` on this device" — it
   requires `bundle_id` and errors if no such call was recorded in this
   daemon's lifetime (so it's not a substitute for absolute times if the
@@ -814,8 +976,8 @@ not the device reservation.
 
 Pin a specific device by alias or UUID:
 
-```json
-{"name": "reserve", "arguments": {"device": "iPad", "owner": "tiltbuggy", "ttl_seconds": 3600, "note": "UI regression run"}}
+```starlark
+reserve(device="iPad", owner="tiltbuggy", ttl_seconds=3600, note="UI regression run")
 ```
 
 ### Fuzzy reservation (selector)
@@ -841,7 +1003,7 @@ best available candidate, and returns a reservation bound to a concrete UUID.
 ```
 
 `model_family` is matched case-insensitively against the `model` field returned
-by `spyder devices` and against the `tags` array on the inventory entry. This
+by `devices()` and against the `tags` array on the inventory entry. This
 means you can add `"ipad"` to the `tags` of a physical iPad entry to make it
 participate in `model_family: ipad` selection.
 
@@ -873,38 +1035,26 @@ can now carry these optional fields:
 
 iOS iPad (any):
 
-```json
-{"name": "reserve", "arguments": {
-  "selector": "{\"platform\":\"ios\",\"model_family\":\"ipad\"}",
-  "owner": "tiltbuggy"
-}}
+```starlark
+reserve(selector="{\"platform\":\"ios\",\"model_family\":\"ipad\"}", owner="tiltbuggy")
 ```
 
 Android phone with API ≥ 33:
 
-```json
-{"name": "reserve", "arguments": {
-  "selector": "{\"platform\":\"android\",\"model_family\":\"phone\",\"os_min\":\"33\"}",
-  "owner": "tiltbuggy"
-}}
+```starlark
+reserve(selector="{\"platform\":\"android\",\"model_family\":\"phone\",\"os_min\":\"33\"}", owner="tiltbuggy")
 ```
 
 iOS simulator only (for rotation tests):
 
-```json
-{"name": "reserve", "arguments": {
-  "selector": "{\"platform\":\"ios\",\"orientation_capable\":true}",
-  "owner": "tiltbuggy"
-}}
+```starlark
+reserve(selector="{\"platform\":\"ios\",\"orientation_capable\":true}", owner="tiltbuggy")
 ```
 
 Device with CI-environment tag:
 
-```json
-{"name": "reserve", "arguments": {
-  "selector": "{\"platform\":\"ios\",\"tags\":[\"ci\"]}",
-  "owner": "tiltbuggy"
-}}
+```starlark
+reserve(selector="{\"platform\":\"ios\",\"tags\":[\"ci\"]}", owner="tiltbuggy")
 ```
 
 #### CLI
@@ -931,7 +1081,7 @@ renews, and releases on exit — no explicit reserve/release needed for the
 common test-run pattern.
 
 To pass owner-authentication on a mutating call while someone else holds
-the device, pass `"owner": "<your-owner>"` in the arguments map. The
+the device, pass `owner="<your-owner>"` in the builtin call. The
 server resolves canonical identity via the inventory, so reserving
 "iPad" also blocks operations on her raw UDID and vice versa.
 
@@ -944,7 +1094,7 @@ equivalent `spyder run` exit path) closes the run. The run's
 `manifest.json` enumerates every artefact with its source tool,
 timestamp, mime type, and size.
 
-Currently the `screenshot` tool writes its PNG into the active run's
+Currently the `screenshot` builtin writes its PNG into the active run's
 directory in addition to returning it inline. Future tools (recording,
 log capture, crash collection) will follow the same convention.
 
@@ -974,7 +1124,7 @@ service (e.g. `launchctl setenv SPYDER_RUNS_MAX_AGE_DAYS 60`).
 
 ## Network condition shaping
 
-The `network` tool applies named network profiles to emulators for
+The `network` builtin applies named network profiles to emulators for
 streaming-protocol testing (adaptive bitrate, reconnection, loss recovery).
 
 ### Supported platforms
@@ -1001,12 +1151,14 @@ streaming-protocol testing (adaptive bitrate, reconnection, loss recovery).
 
 ### Usage
 
-```json
-// Apply a profile
-{"name": "network", "arguments": {"device": "Pixel8", "owner": "myagent", "profile": "3g"}}
+```starlark
+# Apply a profile
+network(device="Pixel8", owner="myagent", profile="3g")
+```
 
-// Clear — restore full speed
-{"name": "network", "arguments": {"device": "Pixel8", "owner": "myagent", "clear": true}}
+```starlark
+# Clear — restore full speed
+network(device="Pixel8", owner="myagent", clear=True)
 ```
 
 CLI equivalent:
@@ -1044,17 +1196,17 @@ daemon restart.
 
 ## REST API and CLI subcommands
 
-Every MCP tool is also exposed over plain HTTP+JSON on the same
-listener, at `POST /api/v1/<tool>`. The request body is the tool's
-arguments (same as MCP); the response is a JSON-encoded
-`mcp.CallToolResult`:
+Every spyder verb is also exposed over plain HTTP+JSON on the same
+listener, at `POST /api/v1/<verb>`. REST is the direct-verb transport —
+MCP is app_exec-only. The request body is the verb's arguments; the response
+is a JSON-encoded `mcp.CallToolResult`:
 
 ```bash
-# Shell scripts: call a tool directly.
+# Shell scripts: call a verb directly.
 curl -s -X POST http://127.0.0.1:3030/api/v1/devices \
   -H 'Content-Type: application/json' -d '{"platform":"android"}'
 
-# Zero-arg tools accept an empty body.
+# Zero-arg verbs accept an empty body.
 curl -s -X POST http://127.0.0.1:3030/api/v1/reservations
 ```
 
@@ -1116,7 +1268,7 @@ machine-parseable when asked, bounded latency).
 
 `spyder reserve --on PREDICATE`, `spyder run --on PREDICATE`, and
 `spyder resolve --on PREDICATE` all parse a comma-separated key=value
-selector into the same struct the MCP `reserve` tool consumes. Useful
+selector into the same struct the `reserve` builtin consumes. Useful
 for Make targets that can't hard-code a device alias. `spyder resolve`
 also auto-detects predicates in the positional argument when it
 contains `=` (so `spyder resolve platform=ios` works without an
@@ -1203,21 +1355,27 @@ Agent-driven log capture used to require shell glue: `spyder log --follow > /tmp
 
 The managed-session API replaces all of that. The lifecycle:
 
-1. **Start a session.** Pick whichever filter set the existing `logs` tool would have used (bundle_id, process, subsystem, regex). Returns a `session_id` plus `expires_at`.
+1. **Start a session.** Pick whichever filter set the existing `logs` builtin would have used (bundle_id, process, subsystem, regex). Returns a `session_id` plus `expires_at`.
+
+   ```starlark
+   log_capture_start(device="iPhone", bundle_id="com.example.app", owner="calibration-loop")
+   # → {"session_id": "a1b2c3d4e5f6...", "started_at": "...", "expires_at": "..."}
    ```
-   log_capture_start({device: "iPhone", bundle_id: "com.example.app", owner: "calibration-loop"})
-   → {"session_id": "a1b2c3d4e5f6...", "started_at": "...", "expires_at": "..."}
-   ```
+
 2. **Reproduce the scenario.** The server buffers lines into a per-session ring (default 50 MB / 100k lines, FIFO eviction). The agent does whatever else it needs to in the meantime.
+
 3. **(Optional) Peek incrementally.** `log_capture_get` returns whatever is currently buffered and **clears the buffer** so subsequent calls see only new lines. Capture continues. Useful for "wait for marker X, then keep waiting for marker Y."
+
+   ```starlark
+   log_capture_get(session_id="a1b2c3d4e5f6...")
+   # → {"lines": [...], "dropped_lines": 0}
    ```
-   log_capture_get({session_id: "a1b2c3d4e5f6..."})
-   → {"lines": [...], "dropped_lines": 0}
-   ```
+
 4. **Stop and drain.** `log_capture_stop` returns the remaining buffer and tears the session down. Subsequent get/stop calls on the same session_id return an error.
-   ```
-   log_capture_stop({session_id: "a1b2c3d4e5f6..."})
-   → {"lines": [...], "stopped_at": "...", "dropped_lines": 0}
+
+   ```starlark
+   log_capture_stop(session_id="a1b2c3d4e5f6...")
+   # → {"lines": [...], "stopped_at": "...", "dropped_lines": 0}
    ```
 
 **Eviction policy.** When the buffer hits either bound (configurable via `max_bytes` / `max_lines`), the oldest entry is dropped and `dropped_lines` is incremented. Non-zero `dropped_lines` in a get/stop response means the capture wasn't lossless across that interval — increase the bound or peek more often. The counter resets on each get/stop drain so it tracks "drops since last drain," not cumulative drops.
@@ -1226,7 +1384,7 @@ The managed-session API replaces all of that. The lifecycle:
 
 **Per-session isolation.** Each session opens its own underlying tap against the device — there's no shared device-wide capture today (filed as future work in 🎯T65 once it exists). Two agents capturing the same device for two different bundle ids each pay one tap of device load. For 1–2 concurrent sessions this is fine; if you find yourself running many, profile first.
 
-**Inspection.** `log_capture_list` returns metadata for every live session (id, device, owner, started_at, expires_at, buffer_lines, buffer_bytes, dropped_lines, filter) without disturbing any of them — useful when an agent loses track of a session it started earlier in the conversation.
+**Inspection.** `log_capture_list()` returns metadata for every live session (id, device, owner, started_at, expires_at, buffer_lines, buffer_bytes, dropped_lines, filter) without disturbing any of them — useful when an agent loses track of a session it started earlier in the conversation.
 
 **CLI mirrors.**
 
@@ -1329,10 +1487,21 @@ screenshots miss multi-frame visual bugs (rotation flashes, animation glitches,
 transition artifacts). Use recording to capture a short mp4 around a dynamic
 event.
 
-```json
-{"name": "record_start", "arguments": {"device": "iphone-16-sim", "owner": "tiltbuggy"}}
-// … trigger the event …
-{"name": "record_stop", "arguments": {"device": "iphone-16-sim", "owner": "tiltbuggy"}}
+```starlark
+# Start recording, trigger the event, stop.
+record_start(device="iphone-16-sim", owner="tiltbuggy")
+# … trigger the event in a subsequent app_exec call …
+```
+
+```starlark
+record_stop(device="iphone-16-sim", owner="tiltbuggy")
+```
+
+Or as a handle round-trip if you want to keep the id for later:
+
+```starlark
+h = record_start(device="iphone-16-sim", owner="tiltbuggy")
+emit(h)
 ```
 
 **Platform notes:**
