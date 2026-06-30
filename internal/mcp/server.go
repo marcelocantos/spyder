@@ -380,10 +380,22 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 // Definitions returns the complete MCP tool definition list — core tools
 // plus visual-regression tools plus log-capture-session tools.
 func Definitions() []mcpgo.Tool {
+	// 🎯T88.3: app_exec is spyder's single MCP entry point. Every former
+	// one-off tool is reachable as a Starlark builtin inside app_exec (see
+	// toolHandlers — the same verb table dispatch uses). The definition
+	// builders below are retained as the per-verb arg-schema reference
+	// (consumed by the parity test, and available for in-script help) but
+	// are no longer advertised on the wire.
+	return []mcpgo.Tool{appExecDefinition()}
+}
+
+// legacyDefinitions is the union of the former one-off tool schemas, no
+// longer advertised (🎯T88.3) but retained as the verb-argument reference
+// and parity oracle for the app_exec builtin surface.
+func legacyDefinitions() []mcpgo.Tool {
 	defs := append(allBaseDefinitions(), visualDefinitions()...)
 	defs = append(defs, logCaptureDefinitions()...)
-	defs = append(defs, appChannelDefinitions()...)
-	return append(defs, appExecDefinition())
+	return append(defs, appChannelDefinitions()...)
 }
 
 // allBaseDefinitions returns the core (non-visual) tool definitions.

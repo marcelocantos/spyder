@@ -296,12 +296,7 @@ func TestExec_BuiltinCoversEveryAdvertisedVerb(t *testing.T) {
 	h := &Handler{}
 	builtins := h.toolHandlers()
 
-	var legacy []mcpgo.Tool
-	legacy = append(legacy, allBaseDefinitions()...)
-	legacy = append(legacy, visualDefinitions()...)
-	legacy = append(legacy, logCaptureDefinitions()...)
-	legacy = append(legacy, appChannelDefinitions()...)
-
+	legacy := legacyDefinitions()
 	legacyNames := make(map[string]bool, len(legacy))
 	for _, tool := range legacy {
 		legacyNames[tool.Name] = true
@@ -316,6 +311,19 @@ func TestExec_BuiltinCoversEveryAdvertisedVerb(t *testing.T) {
 		if !legacyNames[name] {
 			t.Errorf("builtin %q has no advertised definition (orphan)", name)
 		}
+	}
+}
+
+// The advertised MCP surface is app_exec alone (🎯T88.3) — the daemon
+// registers exactly Definitions(), so this is what clients can call.
+func TestDefinitions_SingleEntryPoint(t *testing.T) {
+	defs := Definitions()
+	if len(defs) != 1 || defs[0].Name != "app_exec" {
+		names := make([]string, len(defs))
+		for i, d := range defs {
+			names[i] = d.Name
+		}
+		t.Fatalf("Definitions() must expose only app_exec, got %v", names)
 	}
 }
 

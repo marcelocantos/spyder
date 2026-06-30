@@ -99,7 +99,12 @@ func TestBuild_InitializeRoundtrip(t *testing.T) {
 	}
 }
 
-func TestBuild_ToolsListHasAllTools(t *testing.T) {
+// TestBuild_ToolsListIsSingleEntryPoint verifies the 🎯T88.3 cutover:
+// app_exec is the only tool advertised on the wire. Every former one-off
+// tool (devices, screenshot, app_input, …) is now reachable only as a
+// Starlark builtin inside an app_exec script, so tools/list returns
+// exactly one entry.
+func TestBuild_ToolsListIsSingleEntryPoint(t *testing.T) {
 	base, teardown := mcpTestServer(t)
 	defer teardown()
 
@@ -132,13 +137,8 @@ func TestBuild_ToolsListHasAllTools(t *testing.T) {
 			names[n] = true
 		}
 	}
-	for _, want := range []string{
-		"devices", "resolve", "device_state",
-		"screenshot", "list_apps", "launch_app", "terminate_app",
-	} {
-		if !names[want] {
-			t.Errorf("tools/list missing %q; got %v", want, names)
-		}
+	if len(names) != 1 || !names["app_exec"] {
+		t.Errorf("tools/list should advertise only app_exec, got %v", names)
 	}
 }
 
