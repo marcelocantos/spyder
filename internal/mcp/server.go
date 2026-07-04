@@ -374,6 +374,7 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_spawn":               h.handleAppSpawn,
 		"app_acquire":             h.handleAppAcquire,
 		"app_release":             h.handleAppRelease,
+		"games":                   h.handleGames,
 		"app_save_state":          h.handleAppSaveState,
 		"app_restore_state":       h.handleAppRestoreState,
 		"app_screenshot":          h.handleAppScreenshot,

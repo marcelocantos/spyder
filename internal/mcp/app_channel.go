@@ -816,6 +816,46 @@ func (h *Handler) handleAppRelease(args map[string]any) (*mcpgo.CallToolResult, 
 	return toolJSON(map[string]any{"released": sessionID})
 }
 
+// handleGames returns the game catalog (🎯T92 clause 3): the launchable
+// games alongside the device inventory — desktop targets (platform=desktop
+// inventory entries) and connected server-mode FACTORIES (app-channel
+// sessions advertising spawn_instance, which can manufacture instances). It
+// unifies "what can I start, and where" across media.
+func (h *Handler) handleGames(_ map[string]any) (*mcpgo.CallToolResult, error) {
+	desktop := []map[string]string{}
+	for _, e := range h.inventory.Entries() {
+		if e.Platform == "desktop" {
+			desktop = append(desktop, map[string]string{
+				"alias":           e.Alias,
+				"executable_path": e.ExecutablePath,
+			})
+		}
+	}
+	factories := []map[string]string{}
+	if h.appChannel != nil {
+		for _, s := range h.appChannel.Sessions() {
+			hi := s.HelloInfo()
+			if hi == nil {
+				continue
+			}
+			isFactory := false
+			for _, m := range hi.Methods {
+				if m == appchannel.MethodSpawnInstance {
+					isFactory = true
+					break
+				}
+			}
+			if isFactory {
+				factories = append(factories, map[string]string{
+					"session_id": s.ID,
+					"app_name":   hi.AppName,
+				})
+			}
+		}
+	}
+	return toolJSON(map[string]any{"desktop": desktop, "factories": factories})
+}
+
 // appChannelDefinitions returns the MCP tool surface.
 func appChannelDefinitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
@@ -936,6 +976,7 @@ func appChannelDefinitions() []mcpgo.Tool {
 		mcpgo.NewTool("app_release", mcpgo.WithDescription("Release a previously acquired game instance back to its factory pool; it is GC'd after a linger window unless re-acquired (🎯T92.1)."),
 			mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("The instance session id returned by app_acquire.")),
 		),
+		mcpgo.NewTool("games", mcpgo.WithDescription("The game catalog (🎯T92): launchable games across media — desktop targets (platform=desktop inventory entries with executable_path) and connected server-mode factories (sessions advertising spawn_instance, which manufacture instances via app_spawn / app_acquire). Complements `devices` (physical / sim / emu).")),
 		mcpgo.NewTool("app_save_state", mcpgo.WithDescription("Ask the app to serialize its state. Returns {state_b64, size}; pass the b64 blob back via app_restore_state."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
