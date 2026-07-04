@@ -92,6 +92,37 @@ func TestDesktopLaunch_Tiltbuggy_Live(t *testing.T) {
 	}
 }
 
+// TestDesktopDevicesList verifies `devices(platform="desktop")` surfaces
+// platform=desktop inventory entries with their executable_path (🎯T85
+// acceptance clause 2). Headless — no process launched.
+func TestDesktopDevicesList(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	spyderDir := filepath.Join(home, ".spyder")
+	if err := os.MkdirAll(spyderDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	entries := []inventory.Entry{{
+		Alias:          "tiltbuggy-desktop",
+		Platform:       "desktop",
+		ExecutablePath: "/opt/games/tiltbuggy",
+	}}
+	data, _ := json.Marshal(entries)
+	if err := os.WriteFile(filepath.Join(spyderDir, "inventory.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHandler()
+	res, err := h.Dispatch("devices", map[string]any{"platform": "desktop"})
+	if err != nil || res.IsError {
+		t.Fatalf("devices(platform=desktop): err=%v %s", err, callText(res))
+	}
+	txt := callText(res)
+	if !strings.Contains(txt, "tiltbuggy-desktop") || !strings.Contains(txt, "/opt/games/tiltbuggy") {
+		t.Fatalf("devices(platform=desktop) missing the desktop entry: %s", txt)
+	}
+}
+
 // callText concatenates the text content blocks of a tool result.
 func callText(res *mcpgo.CallToolResult) string {
 	var b strings.Builder

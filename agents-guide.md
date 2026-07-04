@@ -102,10 +102,48 @@ map symbolic aliases to platform-specific identifiers:
   `xcrun xctrace list devices`).
 - `ios_coredevice` — CoreDevice UUID from `devicectl list devices`.
 - `android_serial` — adb serial from `adb devices`.
+- `executable_path` — for `"platform": "desktop"` entries, the binary spyder
+  launches. It doubles as the desktop "device id". `working_dir` optionally
+  overrides the launched process's cwd (default: the binary's own directory).
 - A missing inventory file is treated as empty, not an error.
 
 Alias lookup is case-insensitive. Raw identifiers that aren't in the inventory
 are classified by format (iOS UDID vs. Android serial) and passed through.
+
+### Desktop targets (🎯T85)
+
+Spyder starts and monitors games on any medium — device, sim/emu, or the
+**desktop host** — through the same tools. A desktop game is just a local
+process: add a `"platform": "desktop"` entry and spyder runs and drives it
+exactly like an iOS/Android app.
+
+```json
+{
+  "alias": "tiltbuggy-desktop",
+  "platform": "desktop",
+  "executable_path": "/Users/me/ge/sample/tiltbuggy/bin/tiltbuggy"
+}
+```
+
+Then launch and monitor it with the ordinary flow — spyder auto-injects
+`SPYDER_APP_CHANNEL` (a `127.0.0.1` listener) so the app dials back:
+
+```jsonc
+// Start it. spyder execs the binary in its own process group with the
+// app-channel env injected; the app connects and app_channel_list shows it.
+devices(platform="desktop")                          // lists desktop entries
+launch_app(device="tiltbuggy-desktop", bundle_id="com.squz.tiltbuggy")
+// → app_state / app_log_get / app_screenshot / app_tweak_* / the dashboard
+//   all work against it, no device required.
+terminate_app(device="tiltbuggy-desktop", bundle_id="com.squz.tiltbuggy")
+```
+
+Desktop targets support the launch/monitor surface (List, launch_app,
+terminate_app, is_running, app_pid, logs from captured stdout/stderr) plus the
+full app-channel. Device-only operations (screenshot via DTX, rotate, crashes,
+screen recording, install/uninstall, network shaping) return a clear
+"not supported on desktop" — use the app-channel equivalents (e.g.
+`app_screenshot`) instead.
 
 ## The `app_exec` entry point
 
