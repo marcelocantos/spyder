@@ -94,6 +94,17 @@ func (r *Resolver) ReestablishTunnel(udid string) error {
 	}
 }
 
+// DropTunnel drops udid's tunnel from the daemon registry and our cache
+// without waiting for a rebuild. Used on usbmux detach (🎯T89.2): the
+// device is gone, so there is nothing to rebuild — we only want no stale
+// entry lingering in the registry (and no stale DeviceEntry in our
+// cache) for the next time the device re-appears. A missing tunnel (404)
+// is folded into success by deleteTunnel.
+func (r *Resolver) DropTunnel(udid string) error {
+	r.Invalidate(udid)
+	return deleteTunnel(r.tunnelHost, r.tunnelPort, udid)
+}
+
 // deleteTunnel issues DELETE /tunnel/{udid} to the tunnel daemon,
 // forcing it to stop (and thus, on its next 1s reconcile, rebuild) the
 // device's tunnel. A 404 means there was no tunnel to drop — not an

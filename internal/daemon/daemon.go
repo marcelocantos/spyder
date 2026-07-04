@@ -66,7 +66,7 @@ func Start(cfg Config) error {
 func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version)
-	handler, _, _, logCapMgr, appChanMgr := Build(cfg)
+	httpHandler, _, mcpHandler, logCapMgr, appChanMgr := Build(cfg)
 
 	// Bundled go-ios tunnel daemon. Spawned as a child process so its
 	// lifecycle is tied to spyder's — stop on shutdown. Missing binary
@@ -81,6 +81,15 @@ func Run(ctx context.Context, cfg Config) error {
 		}
 	}
 
+	// Keep the RemoteXPC tunnel registry fresh across device
+	// re-enumeration: subscribe to usbmux attach/detach and drop /
+	// re-establish tunnels proactively (🎯T89.2). Only meaningful when
+	// the tunnel daemon is up — its registry is what the listener
+	// grooms. Tied to ctx; exits on shutdown.
+	if tunnelSup != nil && mcpHandler != nil {
+		go mcpHandler.StartDeviceListeners(ctx)
+	}
+
 	// Wedge monitor. Detects the usbmuxd third-party-table desync
 	// (🎯T68) via a 30s polling timer + an opportunistic log-stream
 	// tail of `log stream --process usbmuxd`. On detection, fires a
@@ -91,7 +100,7 @@ func Run(ctx context.Context, cfg Config) error {
 	slog.Info("spyder listening",
 		"addr", cfg.Addr, "mcp", "/mcp", "rest", rest.Prefix)
 
-	srv := &http.Server{Addr: cfg.Addr, Handler: handler}
+	srv := &http.Server{Addr: cfg.Addr, Handler: httpHandler}
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.ListenAndServe() }()
 

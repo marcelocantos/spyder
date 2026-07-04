@@ -8,6 +8,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -187,6 +188,25 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 		h.android = android
 	}
 	return h
+}
+
+// tunnelListenerStarter is implemented by device adapters that maintain
+// a background usbmux attach/detach listener (currently only the iOS
+// adapter, 🎯T89.2). Optional: stub adapters injected in tests don't
+// implement it.
+type tunnelListenerStarter interface {
+	StartTunnelListener(ctx context.Context)
+}
+
+// StartDeviceListeners starts any device-adapter background listeners —
+// currently the iOS usbmux tunnel listener that keeps the RemoteXPC
+// tunnel registry fresh across device re-enumeration (🎯T89.2). It
+// blocks until ctx is cancelled, so callers run it in a goroutine. A
+// no-op for adapters that don't maintain a listener.
+func (h *Handler) StartDeviceListeners(ctx context.Context) {
+	if s, ok := h.ios.(tunnelListenerStarter); ok {
+		s.StartTunnelListener(ctx)
+	}
 }
 
 // ResolveAdapterForStream exposes adapter resolution for the REST SSE

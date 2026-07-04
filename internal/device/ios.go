@@ -125,6 +125,59 @@ func NewIOSAdapter() *IOSAdapter {
 	}
 }
 
+// iosTunnelRecovery adapts the adapter's Resolver + service pools to
+// goios.TunnelRecovery: every tunnel-registry action also flushes the
+// per-device pooled service connections and state cache, which a device
+// re-enumeration silently invalidates. Without this, a re-attached
+// device could keep serving from a dead pooled installation_proxy /
+// appservice / screenshot connection until the first per-call error
+// lazily evicted it.
+type iosTunnelRecovery struct{ a *IOSAdapter }
+
+func (r iosTunnelRecovery) Invalidate(udid string) {
+	r.a.goios.Invalidate(udid)
+	r.a.invalidatePools(udid)
+}
+
+func (r iosTunnelRecovery) DropTunnel(udid string) error {
+	r.a.invalidatePools(udid)
+	return r.a.goios.DropTunnel(udid)
+}
+
+func (r iosTunnelRecovery) ReestablishTunnel(udid string) error {
+	r.a.invalidatePools(udid)
+	return r.a.goios.ReestablishTunnel(udid)
+}
+
+// invalidatePools evicts every per-device cached resource for udid: the
+// three service-connection pools and the state snapshot cache. The
+// Resolver's own DeviceEntry cache is handled by its Invalidate.
+func (a *IOSAdapter) invalidatePools(udid string) {
+	a.ipPool.Invalidate(udid)
+	a.asPool.Invalidate(udid)
+	a.ssPool.Invalidate(udid)
+	a.mu.Lock()
+	delete(a.cache, udid)
+	a.mu.Unlock()
+}
+
+// StartTunnelListener subscribes to usbmux attach/detach notifications
+// and keeps the tunnel registry (and this adapter's pooled connections)
+// fresh across device re-enumeration (🎯T89.2). It blocks until ctx is
+// cancelled, so callers run it in a goroutine. Missing/unavailable
+// usbmux is non-fatal: it logs and returns, leaving the lazy
+// consumer-side recovery (🎯T89.1) as the backstop.
+func (a *IOSAdapter) StartTunnelListener(ctx context.Context) {
+	src, err := goios.NewUsbmuxEventSource()
+	if err != nil {
+		slog.Warn("ios: usbmux listener unavailable; tunnel registry self-heals lazily only",
+			"error", err)
+		return
+	}
+	slog.Info("ios: usbmux tunnel listener started")
+	goios.NewListener(iosTunnelRecovery{a}).Run(ctx, src)
+}
+
 // List returns iOS devices that are currently reachable. The set is the
 // union of:
 //
