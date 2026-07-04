@@ -54,6 +54,7 @@ type Handler struct {
 	inventory    *inventory.Store
 	ios          device.Adapter
 	android      device.Adapter
+	desktop      device.Adapter
 	reservations *reservations.Store
 	runs         *runs.Store
 	bls          *baselines.Store
@@ -167,6 +168,11 @@ func NewHandler(opts ...HandlerOption) *Handler {
 	for _, opt := range opts {
 		opt(h)
 	}
+	// Constructed after options so the desktop adapter sees the final
+	// inventory (WithInventory may have replaced the default).
+	if h.desktop == nil {
+		h.desktop = device.NewDesktopAdapter(h.inventory)
+	}
 	return h
 }
 
@@ -186,6 +192,7 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 	if android != nil {
 		h.android = android
 	}
+	h.desktop = device.NewDesktopAdapter(h.inventory)
 	return h
 }
 

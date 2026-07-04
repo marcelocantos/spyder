@@ -31,6 +31,9 @@ func pickAppChannelHost(platform, deviceID string) (string, error) {
 		if strings.HasPrefix(deviceID, "emulator-") {
 			return "10.0.2.2", nil
 		}
+	case "desktop":
+		// Desktop apps run on the same host as spyder.
+		return "127.0.0.1", nil
 	}
 	hosts, err := lanHosts()
 	if err != nil {
