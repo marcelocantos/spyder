@@ -300,6 +300,32 @@ func (m *Model) MarkAbsent(id ID, expected bool, detail string) {
 	m.fire(t)
 }
 
+// MarkNeedsAttention transitions the entity directly to NeedsAttention for
+// a classifier-immediate, human-required condition that is NOT the product
+// of recovery exhaustion — e.g. a pinned device that is physically absent.
+// (Raw probe failures still never escalate on their own; only this explicit
+// call and RecoveryFailed exhaustion reach NeedsAttention.) Auto-registers
+// if unknown; appends evidence; fires a transition if the state changes.
+func (m *Model) MarkNeedsAttention(id ID, detail string) {
+	m.mu.Lock()
+	now := m.now()
+	e := m.ensureEntity(id)
+	obs := Observation{At: now, OK: false, Detail: detail}
+	e.appendEvidence(obs)
+	e.lastProbe = now
+
+	from := e.state
+	e.state = NeedsAttention
+	m.mu.Unlock()
+
+	// Do not fire a no-op self-transition — the notifier dedup already handles
+	// active-entity suppression, but generating a transition that goes
+	// NeedsAttention → NeedsAttention would still propagate to every subscriber.
+	if from != NeedsAttention {
+		m.fire(Transition{ID: id, From: from, To: NeedsAttention, At: now})
+	}
+}
+
 // NextBackoff returns the exponential backoff duration for the entity's
 // next recovery attempt: BaseBackoff * 2^(attempts-1) for attempts≥1,
 // or BaseBackoff for attempts==0. Returns 0 if the entity is unknown or

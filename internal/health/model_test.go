@@ -354,6 +354,76 @@ func TestModel_NextBackoffDoublesPerAttempt(t *testing.T) {
 	}
 }
 
+// TestModel_MarkNeedsAttention verifies that MarkNeedsAttention transitions
+// an entity to NeedsAttention immediately (not via recovery exhaustion), fires
+// a transition exactly once, and is idempotent — a second call from an already-
+// NeedsAttention entity must not fire a self-transition.
+func TestModel_MarkNeedsAttention(t *testing.T) {
+	m, clk := newTestModel()
+	id := idFor(KindDevice, "pinned-ipad")
+
+	// Register the observer BEFORE Register so we capture the synthetic
+	// "" → Healthy transition that Register fires on new entities.
+	var mu sync.Mutex
+	var transitions []pair
+	m.OnTransition(func(tr Transition) {
+		mu.Lock()
+		transitions = append(transitions, pair{tr.From, tr.To})
+		mu.Unlock()
+	})
+
+	m.Register(id, KindDevice, Policy{})
+
+	snapshot := func() []pair {
+		mu.Lock()
+		cp := make([]pair, len(transitions))
+		copy(cp, transitions)
+		mu.Unlock()
+		return cp
+	}
+
+	// Verify the Register synthetic transition was captured: "" → Healthy.
+	got0 := snapshot()
+	if len(got0) != 1 || got0[0] != (pair{"", Healthy}) {
+		t.Fatalf("after Register: want [{'' Healthy}], got %v", got0)
+	}
+
+	// First MarkNeedsAttention call: Healthy → NeedsAttention.
+	clk.Advance(time.Second)
+	m.MarkNeedsAttention(id, "pinned device absent — please reconnect")
+
+	snap, ok := m.Get(id)
+	if !ok {
+		t.Fatal("entity not found after MarkNeedsAttention")
+	}
+	if snap.State != NeedsAttention {
+		t.Fatalf("after first MarkNeedsAttention: want NeedsAttention, got %s", snap.State)
+	}
+
+	// Transition slice should now be: [0] "" → Healthy, [1] Healthy → NeedsAttention.
+	got := snapshot()
+	if len(got) != 2 {
+		t.Fatalf("want 2 transitions (Register + MarkNeedsAttention), got %d: %v", len(got), got)
+	}
+	if got[1] != (pair{Healthy, NeedsAttention}) {
+		t.Errorf("transition[1]: want (Healthy → NeedsAttention), got %v", got[1])
+	}
+
+	// Second call: idempotent — must NOT fire a self-transition.
+	clk.Advance(time.Second)
+	m.MarkNeedsAttention(id, "still absent")
+
+	got2 := snapshot()
+	if len(got2) != 2 {
+		t.Errorf("second MarkNeedsAttention must not fire a self-transition; got %d transitions total", len(got2))
+	}
+	// State must remain NeedsAttention.
+	snap2, _ := m.Get(id)
+	if snap2.State != NeedsAttention {
+		t.Fatalf("after second MarkNeedsAttention: want NeedsAttention, got %s", snap2.State)
+	}
+}
+
 // fakeProber is a scripted Prober for TestRunPoll_AppliesProberResults.
 // It closes notifyCh after the first Probe() so the test can synchronise
 // on at least one applied cycle without racing on time.
