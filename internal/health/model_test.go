@@ -400,12 +400,19 @@ func TestRunPoll_AppliesProberResults(t *testing.T) {
 		t.Fatal("timed out waiting for first Probe() call")
 	}
 
-	// Verify model state reflects the probe results.
-	if got := stateOf(m, healthyID); got != Healthy {
-		t.Errorf("healthyID: want Healthy, got %s", got)
-	}
-	if got := stateOf(m, absentID); got != AbsentUnexpected {
-		t.Errorf("absentID: want AbsentUnexpected, got %s", got)
+	// notifyCh closes INSIDE Probe(), before RunPoll's apply() mutates the
+	// model, so poll (bounded) for the expected states rather than reading
+	// once — a single read here would race the apply().
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if stateOf(m, healthyID) == Healthy && stateOf(m, absentID) == AbsentUnexpected {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("RunPoll did not apply probe results in time: healthy=%s absent=%s",
+				stateOf(m, healthyID), stateOf(m, absentID))
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	// Cancel and wait for RunPoll to exit.
