@@ -68,6 +68,16 @@ type Resolver struct {
 	cache map[string]*entry
 	// inflight gates concurrent first-time resolution of the same UDID.
 	inflight map[string]chan struct{}
+
+	// resolveFn and reestablishFn are indirections over r.resolve and
+	// r.ReestablishTunnel. They exist so the stale-tunnel
+	// detect → re-establish → retry-once wiring (🎯T89.1) is unit-testable
+	// without a real device or a live tunnel daemon, and they are the
+	// first, minimal instance of the injectable probe/event seams
+	// 🎯T90.1 generalises. Production code always uses the defaults set
+	// in New; only same-package tests override them.
+	resolveFn     func(udid string) (ios.DeviceEntry, int, error)
+	reestablishFn func(udid string) error
 }
 
 type entry struct {
@@ -105,12 +115,15 @@ func New(host string, port int) *Resolver {
 	if port == 0 {
 		port = DefaultTunnelPort
 	}
-	return &Resolver{
+	r := &Resolver{
 		tunnelHost: host,
 		tunnelPort: port,
 		cache:      map[string]*entry{},
 		inflight:   map[string]chan struct{}{},
 	}
+	r.resolveFn = r.resolve
+	r.reestablishFn = r.ReestablishTunnel
+	return r
 }
 
 // Session returns an enriched DeviceEntry for udid, ready to pass to
@@ -156,7 +169,7 @@ func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error)
 		r.inflight[udid] = done
 		r.mu.Unlock()
 
-		dev, major, err := r.resolveWithTimeout(udid)
+		dev, major, err := r.resolveWithRecovery(udid)
 
 		r.mu.Lock()
 		delete(r.inflight, udid)
@@ -225,6 +238,32 @@ func (r *Resolver) tunnelInfoWithRetry(udid string) (tunnel.Tunnel, error) {
 	return tunnel.Tunnel{}, lastErr
 }
 
+// resolveWithRecovery runs one resolve and, if it fails specifically
+// with a stale-tunnel fault (the device is attached but the daemon has
+// no live tunnel — see ErrStaleTunnel), re-establishes the tunnel and
+// retries the resolve exactly once before surfacing any error (🎯T89.1).
+//
+// The re-establish + retry happen while SessionWithVersion still holds
+// the per-UDID inflight gate, so concurrent callers wait for the
+// recovered result rather than each triggering their own recovery.
+//
+// Non-stale failures (daemon unreachable, RSD handshake error, timeout)
+// are returned as-is: those are not the "force-drop and let the daemon
+// rebuild" failure mode, and retrying them here would only add latency.
+func (r *Resolver) resolveWithRecovery(udid string) (ios.DeviceEntry, int, error) {
+	dev, major, err := r.resolveWithTimeout(udid)
+	if err == nil || !errors.Is(err, ErrStaleTunnel) {
+		return dev, major, err
+	}
+	slog.Warn("goios: stale tunnel detected; re-establishing and retrying once", "udid", udid)
+	if reErr := r.reestablishFn(udid); reErr != nil {
+		slog.Error("goios: tunnel re-establish failed; surfacing original error",
+			"udid", udid, "error", reErr.Error())
+		return dev, major, err
+	}
+	return r.resolveWithTimeout(udid)
+}
+
 // resolveWithTimeout runs resolve under resolveTimeout. go-ios's RSD dial
 // has no internal deadline, so a wedged tunnel blocks resolve forever;
 // this bounds it. On timeout the in-flight resolve goroutine is abandoned
@@ -238,7 +277,7 @@ func (r *Resolver) resolveWithTimeout(udid string) (ios.DeviceEntry, int, error)
 	}
 	ch := make(chan result, 1)
 	go func() {
-		dev, major, err := r.resolve(udid)
+		dev, major, err := r.resolveFn(udid)
 		ch <- result{dev, major, err}
 	}()
 	select {
@@ -299,9 +338,13 @@ func (r *Resolver) resolve(udid string) (ios.DeviceEntry, int, error) {
 
 	info, err := r.tunnelInfoWithRetry(udid)
 	if err != nil {
+		// GetDevice above already succeeded, so the device is attached at
+		// the usbmux/lockdown layer; a tunnel-info failure here therefore
+		// means "attached but tunnel stale/missing". Tag it ErrStaleTunnel
+		// so resolveWithRecovery can force-drop-and-retry once (🎯T89.1).
 		return ios.DeviceEntry{}, major, fail("TunnelInfo", fmt.Errorf(
-			"goios: tunnel info for %s from %s:%d: %w (is `ios tunnel start` running?)",
-			udid, r.tunnelHost, r.tunnelPort, err))
+			"%w: tunnel info for %s from %s:%d: %w (is `ios tunnel start` running?)",
+			ErrStaleTunnel, udid, r.tunnelHost, r.tunnelPort, err))
 	}
 	dev.UserspaceTUN = info.UserspaceTUN
 	dev.UserspaceTUNHost = r.tunnelHost
