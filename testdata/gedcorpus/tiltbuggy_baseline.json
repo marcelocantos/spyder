@@ -1,0 +1,26 @@
+{
+  "fixture": "tiltbuggy",
+  "samples": [
+    {
+      "capability": "info",
+      "label": "t0",
+      "response": {
+        "connected": true,
+        "servers": [
+          {
+            "id": "srv1",
+            "name": "tiltbuggy",
+            "pid": 63639,
+            "sessions": 0
+          }
+        ],
+        "sessions": 0
+      }
+    },
+    {
+      "capability": "tweaks",
+      "label": "t0",
+      "response": []
+    }
+  ]
+}
