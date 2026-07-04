@@ -55,7 +55,7 @@ var (
 
 // Supervisor manages an `ios tunnel start --userspace` subprocess.
 type Supervisor struct {
-	binPath  string
+	binPath   string
 	probeHost string
 	probePort int
 

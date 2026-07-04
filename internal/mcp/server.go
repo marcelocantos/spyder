@@ -50,19 +50,19 @@ type PoolManager interface {
 
 // Handler implements the spyder tool handler.
 type Handler struct {
-	mu                   sync.Mutex
-	inventory            *inventory.Store
-	ios                  device.Adapter
-	android              device.Adapter
-	reservations         *reservations.Store
-	runs                 *runs.Store
-	bls                  *baselines.Store
-	recordings           *recording.Registry
-	logCapture           *logcapture.Manager
-	appChannel  *appchannel.Manager
-	runsBaseDir string                // base dir for active-run temp files; empty = os.TempDir()
-	pool                 selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
-	poolMgr              PoolManager           // optional hook for 🎯T24 pool management
+	mu           sync.Mutex
+	inventory    *inventory.Store
+	ios          device.Adapter
+	android      device.Adapter
+	reservations *reservations.Store
+	runs         *runs.Store
+	bls          *baselines.Store
+	recordings   *recording.Registry
+	logCapture   *logcapture.Manager
+	appChannel   *appchannel.Manager
+	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
+	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
+	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
