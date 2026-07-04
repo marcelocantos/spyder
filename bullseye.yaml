@@ -4089,7 +4089,6 @@ targets:
     depends_on:
     - T85
     - T92.1
-    - T92.2
     origin: manual
     discovered: 2026-07-05
   T92.1:
@@ -4113,7 +4112,11 @@ targets:
     - '[class 1] A player client connects to spyder (spyder''s protocol, not ged''s), lists streamable game instances/factories, and requests one — reserving a live instance or spawning a fresh one via the T92.1 factory.'
     - '[class 1] Once attached, the player receives the instance''s H.264 stream through spyder''s opaque relay (T91.4) and its input reaches the instance, with no bin/ged in the path. One tiltbuggy session round-trips server→spyder→player over the LAN.'
     - '[boundary] The player''s protocol is spyder''s; the player''s rendering/codec stays GE''s (or a browser player using WebRTC/MSE). spyder brokers and routes; it never decodes or alters the stream.'
-    context: 'The third spyder client role: producer (the game, dialing in over the app-channel) and agent (MCP/REST) already exist; the player is a CONSUMER. This is the genuinely net-new protocol from the T91.4 discussion — discover + reserve/spawn + attach. It composes T92.1 (spawn/reserve an instance) with T91.4 (the opaque stream transport). The player could be a standalone GE app pointed at spyder, a `spyder play <session>` CLI, or a live-stream panel in the T91.5 dashboard (WebRTC/MSE) — an open UX fork to decide when this lands.'
+    context: |-
+      DECOUPLED from T92 2026-07-05: T92.2 is the live H.264 player/data plane (watch + drive remote pixels). T92's clause-1 "start + MONITOR" is the CONTROL plane (tweaks/logs/state/screenshot/dashboard) — explicitly not the video stream — and that works on all four media today. So the player stream is a separable, ge-gated SIBLING capability under the launcher umbrella, not a blocker of T92. It stays identified and depends on T91.4 (the opaque relay); both need real ge-side video encode + a decode/render player that doesn't exist yet. Pursue when ge does the streaming; do not let it gate T92's start+monitor achievement.
+
+      --- original ---
+      The third spyder client role: producer (the game, dialing in over the app-channel) and agent (MCP/REST) already exist; the player is a CONSUMER. This is the genuinely net-new protocol from the T91.4 discussion — discover + reserve/spawn + attach. It composes T92.1 (spawn/reserve an instance) with T91.4 (the opaque stream transport). The player could be a standalone GE app pointed at spyder, a `spyder play <session>` CLI, or a live-stream panel in the T91.5 dashboard (WebRTC/MSE) — an open UX fork to decide when this lands.
     depends_on:
     - T91.4
     - T92.1
