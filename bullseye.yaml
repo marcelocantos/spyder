@@ -3968,6 +3968,7 @@ targets:
     context: 'The ''itself + its subprocessors'' half of the user''s ask. Unifies the fragmented supervision that exists today (iostunnel supervisor, wedge recovery, pool tiers) under one abstraction plugged into the T90.1 model, and adds daemon-self liveness beyond process-alive. T89.4 (tunnel watchdog) becomes the device-tunnel instance of this general subprocess/entity probing. ORACLE-FIRST (2026-07-04 reshape): the subprocess spawn/probe is an injectable seam so crash-loop -> needs_attention and wedged-but-alive detection are class-1 (fake process / synthetic stall); real crash-loop and real deadlock are the class-4 residue only.'
     depends_on:
     - T90.1
+    - T90.5.1
     tags:
     - health
     - subprocess
@@ -3975,6 +3976,28 @@ targets:
     - watchdog
     - daemon
     - deadlock
+    origin: manual
+    discovered: 2026-07-04
+  T90.5.1:
+    name: The iostunnel supervisor's restart loop + wedge-kill and internal/wedge.AttemptRecovery are driven by health.Supervisor.Supervise, not their own bespoke loops
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'internal/iostunnel.Supervisor implements health.ManagedProcess (Name/Start/Alive/Stop): Start ensures a fresh child (kill-if-running then spawn), Alive = process-running AND registry-responsive (ListRunningTunnels), Stop = SIGTERM/SIGKILL; its bespoke restartLoop + healthProbe goroutines are removed.'
+    - spyder serve drives it via health.Supervisor.Supervise(ctx, tunnelSup, policy, interval) so restart/backoff/needs_attention escalation is owned by the health model — a tunnel that can't be rebuilt after policy exhaustion reaches needs_attention (notified) instead of retrying forever silently. The C1 tunnelRegistryProber is removed as redundant.
+    - 'ORACLE (gating, class-1): iostunnel''s tests are rewritten to the ManagedProcess surface (Start spawns; Start-while-running kills+respawns; Alive reflects registry; Stop reaps) with a fake/stub binary; restart-on-death + wedge-kill behaviour is covered by health.Supervisor''s existing oracle. No double-spawn.'
+    - 'RESIDUE (class-4, HIL, gating-for-merge-of-THIS-target): on real hardware, the bundled ios tunnel daemon still comes up on `spyder serve`, survives a kill (health.Supervisor respawns it), and iOS screenshot/app_exec keep working. Confirmed once in the live tier BEFORE this target is retired — this is the real-device oracle the fold''s correctness depends on.'
+    context: 'Carved out of T90.5 on 2026-07-04 during the T90 build. T90.5''s abstraction (health.Supervisor.Supervise + ManagedProcess), daemon-self ProgressWatchdog, and ios-tunnel health SURFACING (a probe-only tunnelRegistryProber, degraded/healthy) are done and tested. What remains is replacing iostunnel''s bespoke restartLoop+healthProbe with health.Supervisor-driven supervision. Deferred deliberately: it refactors the critical iOS-supporting process/signal code, and its correctness is partly class-4 (real tunnel behaviour) — verifiable only against a paired device (the live tier), which was not available in the build session. Doing it unit-tests-only would be negative-value autonomy (oracle-first rule 10). Needs a session with a device to run the class-4 residue oracle before retiring.'
+    tags:
+    - health
+    - subprocess
+    - iostunnel
+    - fold
+    - supervisor
+    - ios
+    - deferred
+    - needs-device
     origin: manual
     discovered: 2026-07-04
   T91:
