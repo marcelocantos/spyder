@@ -89,6 +89,17 @@ func TestTweakEndToEnd_Tiltbuggy(t *testing.T) {
 		if n, ok := tw["name"].(string); ok {
 			names[n] = true
 		}
+		// Contract parity with ged: each entry must carry the same fields
+		// ged's tweak_list emits (both proxy tweak::allToJson) — name, value,
+		// default, and the scale/speed metadata. This is the migration's
+		// shape-parity gate: a live-ged differential is impossible (it needs
+		// the retiring streaming push), so we assert conformance to the shared
+		// allToJson contract that ged's tweak_list also produces.
+		for _, field := range []string{"name", "value", "default", "scale", "speed"} {
+			if _, ok := tw[field]; !ok {
+				t.Errorf("tweak_list entry %v missing ged-parity field %q", tw["name"], field)
+			}
+		}
 	}
 	if !names["camera.zoom"] || !names["physics.grip_scale"] {
 		t.Fatalf("tweak_list missing demo tweaks; got %v", names)
