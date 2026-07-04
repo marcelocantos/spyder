@@ -744,6 +744,36 @@ func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
 	return out, nil
 }
 
+// handleAppSpawn asks a game-server factory session (one advertising
+// spawn_instance) to fork a game instance and returns the new instance's
+// session once it dials back (🎯T92.1). The target session is the factory
+// (resolved from session_id or device+bundle_id); the instance dials the same
+// app-channel listener the factory is on, so it connects as its own session
+// with the full monitor surface.
+func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.appChannel == nil {
+		return toolErr("app channel not configured")
+	}
+	factory, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	game, err := requireString(args, "game")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	// The instance dials the same listener the factory is on (127.0.0.1 for
+	// the local/server-mode case this path targets — LAN/dev only, per T91.4).
+	addr := fmt.Sprintf("127.0.0.1:%d", factory.Port)
+	inst, err := h.appChannel.SpawnInstance(context.Background(), factory,
+		appchannel.SpawnRequest{Game: game, AppChannel: addr, InstanceID: optString(args, "instance_id")},
+		30*time.Second)
+	if err != nil {
+		return toolErr("spawn: %v", err)
+	}
+	return toolJSON(sessionInfoFrom(inst))
+}
+
 // appChannelDefinitions returns the MCP tool surface.
 func appChannelDefinitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
@@ -846,6 +876,13 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("name", mcpgo.Description("Tweak name to reset; omit to reset all tweaks.")),
+		),
+		mcpgo.NewTool("app_spawn", mcpgo.WithDescription("Ask a game-server FACTORY session (one advertising spawn_instance) to fork a new game instance; returns the instance's app-channel session once it connects (🎯T92.1 — a game server is a device factory). The instance is its own session with the full monitor surface (tweaks/logs/state/screenshot)."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target FACTORY session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("game", mcpgo.Required(), mcpgo.Description("Name/identifier of the game the factory should instantiate.")),
+			mcpgo.WithString("instance_id", mcpgo.Description("Optional caller-supplied instance id passed to the factory.")),
 		),
 		mcpgo.NewTool("app_save_state", mcpgo.WithDescription("Ask the app to serialize its state. Returns {state_b64, size}; pass the b64 blob back via app_restore_state."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),

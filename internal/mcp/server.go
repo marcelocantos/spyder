@@ -366,6 +366,7 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_tweak_get":           h.handleAppTweakGet,
 		"app_tweak_set":           h.handleAppTweakSet,
 		"app_tweak_reset":         h.handleAppTweakReset,
+		"app_spawn":               h.handleAppSpawn,
 		"app_save_state":          h.handleAppSaveState,
 		"app_restore_state":       h.handleAppRestoreState,
 		"app_screenshot":          h.handleAppScreenshot,
