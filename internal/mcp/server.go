@@ -220,12 +220,25 @@ type tunnelListenerStarter interface {
 	StartTunnelListener(ctx context.Context)
 }
 
+// healthModelSetter is implemented by device adapters that report
+// per-device health (the iOS adapter, 🎯T90). Optional.
+type healthModelSetter interface {
+	SetHealthModel(m *health.Model, pinned func(udid string) bool)
+}
+
 // StartDeviceListeners starts any device-adapter background listeners —
 // currently the iOS usbmux tunnel listener that keeps the RemoteXPC
-// tunnel registry fresh across device re-enumeration (🎯T89.2). It
-// blocks until ctx is cancelled, so callers run it in a goroutine. A
-// no-op for adapters that don't maintain a listener.
+// tunnel registry fresh across device re-enumeration (🎯T89.2) and feeds
+// per-device health into the model (🎯T90). It blocks until ctx is
+// cancelled, so callers run it in a goroutine. A no-op for adapters that
+// don't maintain a listener.
 func (h *Handler) StartDeviceListeners(ctx context.Context) {
+	if s, ok := h.ios.(healthModelSetter); ok {
+		// pinned predicate is nil until the inventory grows an
+		// expected_present flag (🎯T90.2 follow-up); every device is then
+		// non-pinned, so unplugs stay informational.
+		s.SetHealthModel(h.health.Model(), nil)
+	}
 	if s, ok := h.ios.(tunnelListenerStarter); ok {
 		s.StartTunnelListener(ctx)
 	}

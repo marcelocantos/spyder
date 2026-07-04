@@ -90,6 +90,12 @@ func Run(ctx context.Context, cfg Config) error {
 		go mcpHandler.StartDeviceListeners(ctx)
 	}
 
+	// Self-monitoring: attach the attention notifier to the live health
+	// model and start the background probes that populate it (🎯T90).
+	if mcpHandler != nil {
+		startHealthWiring(ctx, mcpHandler.Health(), tunnelSup != nil)
+	}
+
 	// Wedge monitor. Detects the usbmuxd third-party-table desync
 	// (🎯T68) via a 30s polling timer + an opportunistic log-stream
 	// tail of `log stream --process usbmuxd`. On detection, fires a
