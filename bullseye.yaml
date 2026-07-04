@@ -4078,9 +4078,10 @@ targets:
     discovered: 2026-07-05
   T92:
     name: spyder is the single control point to start and monitor a game on any medium — device, sim/emu, desktop, or server-spawned instance
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 8.0
     acceptance:
     - '[class 1] spyder can start a game and attach its full app-channel monitor surface (tweaks/logs/state/screenshot/dashboard) on each medium through one launcher interface: physical device, sim/emu, desktop host, and server-spawned instance.'
     - '[principle] A medium is either a DEVICE (found in inventory) or a FACTORY (manufactures game-bearing instances on demand). sim/emu, desktop-host, and game-server are all factories, differing only in spawn mechanism: simctl / local-exec / RPC. Monitoring is uniform over the app-channel; each instance connects as its own session (the per-instance rule). GE renders and feeds; spyder observes and brokers.'
@@ -4091,11 +4092,13 @@ targets:
     - T92.1
     origin: manual
     discovered: 2026-07-05
+    achieved: 2026-07-05
   T92.1:
     name: A game server registers with spyder as a device factory; spyder spawns instances on demand under its existing pool/reservation/capacity machinery, each instance its own app-channel session
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 5.0
     acceptance:
     - '[class 1] A game-server process connects over the app-channel and advertises a spawn capability in its hello. spyder can ask it to spawn an instance of a game, and the spawned instance connects back as its own app-channel session (an abstract ''device'') with the full monitor surface.'
     - '[class 1] Instance lifecycle is governed by spyder''s existing pool/reservation/capacity machinery (T23/T24): reserve acquires-or-spawns, capacity caps concurrent instances, idle instances are GC''d. A player ''coming in'' is a reservation against the factory.'
@@ -4103,20 +4106,18 @@ targets:
     context: 'The ''factory'' backend of the T92 launcher. A game server is a device factory whose spawn mechanism is an RPC (vs the sim/emu pool''s simctl and the desktop host''s local-exec). This is the same pool abstraction spyder already has (T24: warm/drain/GC/capacity + the SQLite hold ledger) with a new remote spawn backend. It also decides and dissolves T91.6: the per-instance-connection rule makes parallel games native. Reservation semantics follow the minimal-client-API principle: the player declares intent (need an instance of game X); spyder owns lifecycle/scheduling/capacity; the factory supplies the instance.'
     origin: manual
     discovered: 2026-07-05
+    achieved: 2026-07-05
   T92.2:
-    name: 'The consumer/player protocol: a player discovers streamable game instances via spyder, reserves or spawns one, and attaches to its H.264 stream with input flowing back'
+    name: 'The dev streaming data plane: a real ge server instance round-trips H.264 server→spyder→dashboard-player with input back, no ged'
     status: identified
     value: 0.0
     cost: 0.0
     acceptance:
-    - '[class 1] A player client connects to spyder (spyder''s protocol, not ged''s), lists streamable game instances/factories, and requests one — reserving a live instance or spawning a fresh one via the T92.1 factory.'
-    - '[class 1] Once attached, the player receives the instance''s H.264 stream through spyder''s opaque relay (T91.4) and its input reaches the instance, with no bin/ged in the path. One tiltbuggy session round-trips server→spyder→player over the LAN.'
-    - '[boundary] The player''s protocol is spyder''s; the player''s rendering/codec stays GE''s (or a browser player using WebRTC/MSE). spyder brokers and routes; it never decodes or alters the stream.'
-    context: |-
-      DECOUPLED from T92 2026-07-05: T92.2 is the live H.264 player/data plane (watch + drive remote pixels). T92's clause-1 "start + MONITOR" is the CONTROL plane (tweaks/logs/state/screenshot/dashboard) — explicitly not the video stream — and that works on all four media today. So the player stream is a separable, ge-gated SIBLING capability under the launcher umbrella, not a blocker of T92. It stays identified and depends on T91.4 (the opaque relay); both need real ge-side video encode + a decode/render player that doesn't exist yet. Pursue when ge does the streaming; do not let it gate T92's start+monitor achievement.
-
-      --- original ---
-      The third spyder client role: producer (the game, dialing in over the app-channel) and agent (MCP/REST) already exist; the player is a CONSUMER. This is the genuinely net-new protocol from the T91.4 discussion — discover + reserve/spawn + attach. It composes T92.1 (spawn/reserve an instance) with T91.4 (the opaque stream transport). The player could be a standalone GE app pointed at spyder, a `spyder play <session>` CLI, or a live-stream panel in the T91.5 dashboard (WebRTC/MSE) — an open UX fork to decide when this lands.
+    - '[class 1] A streaming ge server instance sends H.264 to spyder''s relay (T91.4); spyder fans frames to attached players and relays input back. Decidable oracle: a test client attached through spyder receives ordered, valid H.264 access units from a REAL streaming tiltbuggy instance, and injected input reaches the game (observable via app_state).'
+    - '[class 1] One real tiltbuggy instance round-trips server->spyder->player over localhost/LAN with NO bin/ged in the path; relay fidelity holds (spyder does not alter the stream).'
+    - '[class 3] The human opens the spyder dashboard''s stream panel, sees the live game rendered, drives it with keyboard/mouse, and accepts the UX. Sole perceptual gate.'
+    - '[decision 2026-07-05] Player form = the spyder DASHBOARD browser player (WebCodecs VideoDecoder -> canvas; input over WebSocket). No separate app; integrates the T91.5 dashboard. Pivot to a native ge player only if in-browser H.264 decode proves unworkable.'
+    context: 'Full authority on BOTH repos (spyder + ge); ge agent stood down 2026-07-05. Build order is spyder-defines-first, ge-conforms (same pattern as spawn_instance): (1) spyder builds T91.4, the opaque relay + wire protocol (frame framing, input framing, attach/detach) — oracle-first with a test-double server+player; (2) ge conforms — repoint ServerWireBridge''s EXISTING H.264 video wire from ged to spyder''s relay endpoint (injected at launch like SPYDER_APP_CHANNEL) and feed relayed input into the game event loop; (3) spyder builds the dashboard browser player (WebCodecs). Boundary held: ge owns codec/command-stream/render; spyder is a payload-agnostic pipe. This is the last data-plane piece; achieving it also lets ged/bin be fully retired (closes the T91 umbrella''s relay dependency).'
     depends_on:
     - T91.4
     - T92.1
