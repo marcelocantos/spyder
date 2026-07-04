@@ -161,21 +161,61 @@ func (a *IOSAdapter) invalidatePools(udid string) {
 	a.mu.Unlock()
 }
 
+// listenerReconnectDelay is the pause before re-opening the usbmux
+// listen connection after it drops. usbmuxd itself restarts in this
+// repo's problem space (the wedge-killer, OS updates), which tears down
+// the listen socket — a one-shot listener would silently stop grooming
+// the registry after the first such blip.
+const listenerReconnectDelay = 2 * time.Second
+
 // StartTunnelListener subscribes to usbmux attach/detach notifications
 // and keeps the tunnel registry (and this adapter's pooled connections)
 // fresh across device re-enumeration (🎯T89.2). It blocks until ctx is
-// cancelled, so callers run it in a goroutine. Missing/unavailable
-// usbmux is non-fatal: it logs and returns, leaving the lazy
-// consumer-side recovery (🎯T89.1) as the backstop.
+// cancelled, so callers run it in a goroutine.
+//
+// The listen connection is reconnected with a fixed backoff when it
+// drops (usbmuxd restart, transient error) so a single blip doesn't
+// permanently disable event-based recovery; the lazy consumer-side
+// recovery (🎯T89.1) remains the backstop in any gap. One Listener
+// instance spans reconnects so its re-enumeration bookkeeping persists.
+// (🎯T90.5 folds this ad-hoc loop into the general supervised-stream
+// abstraction.)
 func (a *IOSAdapter) StartTunnelListener(ctx context.Context) {
-	src, err := goios.NewUsbmuxEventSource()
-	if err != nil {
-		slog.Warn("ios: usbmux listener unavailable; tunnel registry self-heals lazily only",
-			"error", err)
-		return
+	l := goios.NewListener(iosTunnelRecovery{a})
+	for ctx.Err() == nil {
+		src, err := goios.NewUsbmuxEventSource()
+		if err != nil {
+			slog.Warn("ios: usbmux listener unavailable; will retry",
+				"error", err, "retry_in", listenerReconnectDelay.String())
+			if !sleepCtx(ctx, listenerReconnectDelay) {
+				return
+			}
+			continue
+		}
+		slog.Info("ios: usbmux tunnel listener started")
+		l.Run(ctx, src) // blocks until the stream errors or ctx is cancelled
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Info("ios: usbmux listener stream ended; reconnecting",
+			"retry_in", listenerReconnectDelay.String())
+		if !sleepCtx(ctx, listenerReconnectDelay) {
+			return
+		}
 	}
-	slog.Info("ios: usbmux tunnel listener started")
-	goios.NewListener(iosTunnelRecovery{a}).Run(ctx, src)
+}
+
+// sleepCtx sleeps for d or until ctx is cancelled. Returns true if the
+// full duration elapsed, false if ctx was cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // List returns iOS devices that are currently reachable. The set is the
