@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/marcelocantos/spyder/internal/health"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -72,15 +73,17 @@ func (h *Handler) handleAppExec(args map[string]any) (*mcpgo.CallToolResult, err
 
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 	defer cancel()
-	return runExec(ctx, script, verbs, execLimits{MaxSteps: defaultExecSteps, MaxDuration: dur})
+	// h.Health() is always non-nil (NewHandler seeds a default supervisor),
+	// so the health() builtin can read the live model in-process.
+	return runExec(ctx, script, verbs, h.Health().Model(), execLimits{MaxSteps: defaultExecSteps, MaxDuration: dur})
 }
 
 // runExec compiles and runs a Starlark script with verbs exposed as
 // builtins, returning the ordered emitted artifacts as MCP content. A
 // runtime error (including a cap breach) is reported as IsError with
 // whatever was emitted before the failure preserved — never a hang.
-func runExec(ctx context.Context, script string, verbs map[string]toolFunc, lim execLimits) (*mcpgo.CallToolResult, error) {
-	st := &execState{ctx: ctx}
+func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *health.Model, lim execLimits) (*mcpgo.CallToolResult, error) {
+	st := &execState{ctx: ctx, health: hm}
 
 	predeclared := st.builtins(verbs)
 	prog, err := compileExec(script, predeclared)
@@ -118,21 +121,35 @@ func runExec(ctx context.Context, script string, verbs map[string]toolFunc, lim 
 
 // execState accumulates the ordered output buffer across one run.
 type execState struct {
-	ctx context.Context
-	out []starlark.Value
+	ctx    context.Context
+	out    []starlark.Value
+	health *health.Model // live health model, read by the health() builtin
 }
 
 // builtins constructs the predeclared environment: one bridge builtin per
-// verb, plus emit/sleep/help.
+// verb, plus emit/sleep/help/health.
 func (st *execState) builtins(verbs map[string]toolFunc) starlark.StringDict {
-	g := make(starlark.StringDict, len(verbs)+3)
+	g := make(starlark.StringDict, len(verbs)+4)
 	for name, fn := range verbs {
 		g[name] = st.verbBuiltin(name, fn)
 	}
 	g["emit"] = starlark.NewBuiltin("emit", st.emit)
 	g["sleep"] = starlark.NewBuiltin("sleep", st.sleep)
 	g["help"] = starlark.NewBuiltin("help", helpBuiltin(verbs))
+	g["health"] = starlark.NewBuiltin("health", st.healthBuiltin)
 	return g
+}
+
+// healthBuiltin returns the live health model snapshot as a Starlark dict —
+// the SAME in-process model.Snapshot() that /api/v1/health serialises, so an
+// agent can inspect device/subprocess/daemon health mid-script and relay it.
+// It returns the value (does not auto-emit); a bare `health()` line or an
+// explicit emit(health()) adds it to the result.
+func (st *execState) healthBuiltin(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) > 0 || len(kwargs) > 0 {
+		return nil, fmt.Errorf("health: takes no arguments")
+	}
+	return snapshotToStarlark(st.health.Snapshot()), nil
 }
 
 // verbBuiltin bridges one spyder verb to a Starlark builtin: keyword args
@@ -164,6 +181,38 @@ func (st *execState) verbBuiltin(name string, fn toolFunc) *starlark.Builtin {
 		}
 		return resultToStarlark(name, res)
 	})
+}
+
+// snapshotToStarlark renders a health.Snapshot as a Starlark dict mirroring
+// the JSON surface: {"at": <rfc3339>, "entities": [ {"kind","name","layer",
+// "state","attempts","last_probe","evidence":[{"at","ok","detail"} …]} … ]}.
+// The ID's Kind/Name/Layer are flattened onto each entity so a script reads
+// e["kind"] directly rather than e["id"]["kind"].
+func snapshotToStarlark(snap health.Snapshot) starlark.Value {
+	entities := make([]starlark.Value, 0, len(snap.Entities))
+	for _, e := range snap.Entities {
+		ev := make([]starlark.Value, 0, len(e.Evidence))
+		for _, o := range e.Evidence {
+			d := starlark.NewDict(3)
+			_ = d.SetKey(starlark.String("at"), starlark.String(o.At.Format(time.RFC3339)))
+			_ = d.SetKey(starlark.String("ok"), starlark.Bool(o.OK))
+			_ = d.SetKey(starlark.String("detail"), starlark.String(o.Detail))
+			ev = append(ev, d)
+		}
+		d := starlark.NewDict(7)
+		_ = d.SetKey(starlark.String("kind"), starlark.String(string(e.Kind)))
+		_ = d.SetKey(starlark.String("name"), starlark.String(e.ID.Name))
+		_ = d.SetKey(starlark.String("layer"), starlark.String(e.ID.Layer))
+		_ = d.SetKey(starlark.String("state"), starlark.String(string(e.State)))
+		_ = d.SetKey(starlark.String("attempts"), starlark.MakeInt(e.Attempts))
+		_ = d.SetKey(starlark.String("last_probe"), starlark.String(e.LastProbe.Format(time.RFC3339)))
+		_ = d.SetKey(starlark.String("evidence"), starlark.NewList(ev))
+		entities = append(entities, d)
+	}
+	top := starlark.NewDict(2)
+	_ = top.SetKey(starlark.String("at"), starlark.String(snap.At.Format(time.RFC3339)))
+	_ = top.SetKey(starlark.String("entities"), starlark.NewList(entities))
+	return top
 }
 
 // emit appends a value to the output buffer in order. None is ignored, so
@@ -225,7 +274,7 @@ func helpBuiltin(verbs map[string]toolFunc) func(*starlark.Thread, *starlark.Bui
 	}
 	sort.Strings(names)
 	text := "verbs: " + strings.Join(names, ", ") +
-		"\ncontrol: emit(value), sleep(ms)\n" +
+		"\ncontrol: emit(value), sleep(ms), health()\n" +
 		"call verbs by keyword, e.g. app_screenshot(session_id=\"...\"); " +
 		"a bare expression or emit() adds to the result."
 	return func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
@@ -462,7 +511,7 @@ func contentText(content []mcpgo.Content) string {
 // in agents-guide.md; call help() from a script for the verb list).
 func appExecDefinition() mcpgo.Tool {
 	return mcpgo.NewTool("app_exec",
-		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)` (wall-clock delay, ms-accurate), `emit(value)` (append a value to the result), and `help()` (list verbs).\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result — image values become image blocks, other values become JSON/text. So `app_screenshot(session_id=\"s1\")` on its own line returns the image; a verb with no useful return (e.g. app_input) adds nothing. All artifacts come back from the one call, in order.\n\nDeterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot` freezes the exact frame regardless of jitter. Use a bounded `for _ in range(N): ... ; sleep(ms)` to poll. Caps: wall-clock timeout (default 30s, max 120s) and a step budget; on breach, whatever was emitted is returned with an error note."),
+		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)` (wall-clock delay, ms-accurate), `emit(value)` (append a value to the result), `health()` (live daemon/subprocess/device health snapshot as a dict), and `help()` (list verbs).\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result — image values become image blocks, other values become JSON/text. So `app_screenshot(session_id=\"s1\")` on its own line returns the image; a verb with no useful return (e.g. app_input) adds nothing. All artifacts come back from the one call, in order.\n\nDeterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot` freezes the exact frame regardless of jitter. Use a bounded `for _ in range(N): ... ; sleep(ms)` to poll. Caps: wall-clock timeout (default 30s, max 120s) and a step budget; on breach, whatever was emitted is returned with an error note."),
 		mcpgo.WithString("script",
 			mcpgo.Required(),
 			mcpgo.Description("Starlark source. Call verbs by keyword; use emit()/bare expressions to produce output; sleep(ms) to pace; bounded for-loops to repeat (no while/recursion)."),

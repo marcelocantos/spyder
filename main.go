@@ -56,6 +56,7 @@ Commands:
   serve         Start the HTTP MCP server (default :3030, endpoints /mcp and /api/v1/)
   run           Run a command under an auto-acquired device reservation
   doctor        Diagnose iOS device-stack state (--fix to restart usbmuxd via the bundled helper)
+  status        Print the daemon's live health model (--json for raw JSON)
   version       Print version and exit
   help-agent    Print the usage above followed by the agent guide
 
@@ -125,6 +126,8 @@ func main() {
 		fmt.Printf("spyder %s\n", version)
 	case "doctor":
 		runDoctor(os.Args[2:])
+	case "status":
+		runStatus(os.Args[2:])
 	case "help", "--help", "-help":
 		fmt.Print(usage)
 	case "help-agent", "--help-agent", "-help-agent":

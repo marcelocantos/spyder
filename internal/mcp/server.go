@@ -19,6 +19,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/device"
+	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -64,6 +65,7 @@ type Handler struct {
 	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
 	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
 	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
+	health       *health.Supervisor    // live health model + subprocess supervisor (🎯T90)
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -155,6 +157,24 @@ func WithAppChannel(m *appchannel.Manager) HandlerOption {
 	return func(h *Handler) { h.appChannel = m }
 }
 
+// WithHealth injects the live health supervisor (🎯T90). When omitted,
+// NewHandler creates a default one so the health() builtin and REST
+// surface always have a model to read, even before the daemon wires in
+// probes and subprocess supervision.
+func WithHealth(s *health.Supervisor) HandlerOption {
+	return func(h *Handler) {
+		if s != nil {
+			h.health = s
+		}
+	}
+}
+
+// Health returns the handler's health supervisor. Always non-nil.
+// The daemon uses it to run supervise loops, feed device probes, and
+// attach the notifier; the health() builtin and /api/v1/health read its
+// model.
+func (h *Handler) Health() *health.Supervisor { return h.health }
+
 // NewHandler creates a new spyder tool handler.
 func NewHandler(opts ...HandlerOption) *Handler {
 	h := &Handler{
@@ -164,6 +184,7 @@ func NewHandler(opts ...HandlerOption) *Handler {
 		recordings:      recording.NewRegistry(),
 		networkByDevice: map[string]appliedNetwork{},
 		launchTimes:     map[launchKey]time.Time{},
+		health:          health.NewSupervisor(health.New()),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -180,6 +201,7 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 		ios:         device.NewIOSAdapter(),
 		android:     device.NewAndroidAdapter(),
 		launchTimes: map[launchKey]time.Time{},
+		health:      health.NewSupervisor(health.New()),
 	}
 	if ios != nil {
 		h.ios = ios

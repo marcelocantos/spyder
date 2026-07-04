@@ -31,6 +31,11 @@ import (
 //   - 3: setup error (binary missing, command unavailable)
 //
 // (🎯T66.)
+//
+// TODO(🎯T90.3): fold doctor into the health model view. doctor is a
+// standalone iOS-stack probe that predates the health supervisor; its
+// findings should feed KindDevice entities in the model so `spyder status`
+// surfaces the same wedge diagnosis rather than living in a parallel path.
 func runDoctor(args []string) {
 	fix := false
 	jsonOut := false
