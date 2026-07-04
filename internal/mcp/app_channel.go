@@ -774,6 +774,48 @@ func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, er
 	return toolJSON(sessionInfoFrom(inst))
 }
 
+// handleAppAcquire reserves a game instance from a factory, spawning one if
+// none is idle and capacity allows (🎯T92.1 clause 2). A player/agent "coming
+// in" is exactly this call; the returned instance has the full monitor
+// surface. Release it with app_release.
+func (h *Handler) handleAppAcquire(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.appChannel == nil || h.instances == nil {
+		return toolErr("app channel not configured")
+	}
+	factory, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	game, err := requireString(args, "game")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	holder := optString(args, "owner")
+	if holder == "" {
+		holder = "agent"
+	}
+	inst, err := h.instances.Acquire(context.Background(), factory, game, holder, 30*time.Second)
+	if err != nil {
+		return toolErr("acquire: %v", err)
+	}
+	return toolJSON(sessionInfoFrom(inst))
+}
+
+// handleAppRelease releases a previously acquired instance back to its factory
+// pool; it is GC'd (asked to quit) after a linger window unless re-acquired
+// (🎯T92.1 clause 2).
+func (h *Handler) handleAppRelease(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.appChannel == nil || h.instances == nil {
+		return toolErr("app channel not configured")
+	}
+	sessionID, err := requireString(args, "session_id")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	h.instances.Release(sessionID)
+	return toolJSON(map[string]any{"released": sessionID})
+}
+
 // appChannelDefinitions returns the MCP tool surface.
 func appChannelDefinitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
@@ -883,6 +925,16 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("game", mcpgo.Required(), mcpgo.Description("Name/identifier of the game the factory should instantiate.")),
 			mcpgo.WithString("instance_id", mcpgo.Description("Optional caller-supplied instance id passed to the factory.")),
+		),
+		mcpgo.NewTool("app_acquire", mcpgo.WithDescription("Reserve a game instance from a FACTORY session, spawning one if none is idle and capacity allows (🎯T92.1). The target session is the factory (session_id or device+bundle_id). Returns the reserved instance's session with the full monitor surface. Release with app_release."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target FACTORY session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("game", mcpgo.Required(), mcpgo.Description("Name/identifier of the game to acquire an instance of.")),
+			mcpgo.WithString("owner", mcpgo.Description("Holder identity for the reservation (default \"agent\").")),
+		),
+		mcpgo.NewTool("app_release", mcpgo.WithDescription("Release a previously acquired game instance back to its factory pool; it is GC'd after a linger window unless re-acquired (🎯T92.1)."),
+			mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("The instance session id returned by app_acquire.")),
 		),
 		mcpgo.NewTool("app_save_state", mcpgo.WithDescription("Ask the app to serialize its state. Returns {state_b64, size}; pass the b64 blob back via app_restore_state."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),

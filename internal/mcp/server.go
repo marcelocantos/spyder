@@ -61,9 +61,10 @@ type Handler struct {
 	recordings   *recording.Registry
 	logCapture   *logcapture.Manager
 	appChannel   *appchannel.Manager
-	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
-	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
-	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
+	instances    *appchannel.InstancePool // 🎯T92.1 factory-spawned instance lifecycle
+	runsBaseDir  string                   // base dir for active-run temp files; empty = os.TempDir()
+	pool         selector.PoolResolver    // optional hook for 🎯T23 fuzzy selector
+	poolMgr      PoolManager              // optional hook for 🎯T24 pool management
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -172,6 +173,10 @@ func NewHandler(opts ...HandlerOption) *Handler {
 	// inventory (WithInventory may have replaced the default).
 	if h.desktop == nil {
 		h.desktop = device.NewDesktopAdapter(h.inventory)
+	}
+	// The factory instance pool needs the app-channel manager (🎯T92.1).
+	if h.appChannel != nil && h.instances == nil {
+		h.instances = appchannel.NewInstancePool(h.appChannel)
 	}
 	return h
 }
@@ -367,6 +372,8 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_tweak_set":           h.handleAppTweakSet,
 		"app_tweak_reset":         h.handleAppTweakReset,
 		"app_spawn":               h.handleAppSpawn,
+		"app_acquire":             h.handleAppAcquire,
+		"app_release":             h.handleAppRelease,
 		"app_save_state":          h.handleAppSaveState,
 		"app_restore_state":       h.handleAppRestoreState,
 		"app_screenshot":          h.handleAppScreenshot,
