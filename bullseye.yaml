@@ -3527,9 +3527,10 @@ targets:
     achieved: 2026-06-20
   T85:
     name: 'spyder deploys + drives desktop apps the same way it drives iOS/Android — DesktopAdapter + "platform: desktop" inventory + app-channel auto-injection on macOS/Linux/Windows hosts'
-    status: identified
+    status: achieved
     value: 5.0
     cost: 5.0
+    actual_cost: 3.0
     acceptance:
     - A DesktopAdapter implementing device.Adapter is registered in spyder, selected by inventory entries with platform="desktop"
     - '`spyder devices --platform desktop` lists desktop entries from ~/.spyder/inventory.json with executable_path resolved'
@@ -3554,6 +3555,7 @@ targets:
     - ge-consumer
     origin: manual
     discovered: 2026-06-21
+    achieved: 2026-07-05
   T86:
     name: iostunnel supervisor restarts the child reliably across `go test -count=N` iterations (no cross-iteration stall)
     status: identified
