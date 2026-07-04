@@ -10,7 +10,7 @@
           {
             "id": "srv1",
             "name": "tiltbuggy",
-            "pid": 63639,
+            "pid": 67802,
             "sessions": 0
           }
         ],
@@ -21,6 +21,11 @@
       "capability": "tweaks",
       "label": "t0",
       "response": []
+    },
+    {
+      "capability": "logs",
+      "label": "t0",
+      "response": "(no log entries)"
     }
   ]
 }

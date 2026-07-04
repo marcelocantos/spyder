@@ -84,9 +84,8 @@ func runRecord(args []string) error {
 	client := gedharness.NewClient(*url)
 	corpus := &gedharness.Corpus{Fixture: *fixture}
 
-	// info and tweaks are the plain-HTTP capabilities. logs has no HTTP
-	// route (see gedharness.ErrLogsUnavailable), so it is skipped here
-	// rather than recorded as an error sample.
+	// info and tweaks are the plain-HTTP capabilities; logs is captured via
+	// ged's /mcp `logs` tool (no plain-HTTP route).
 	info, err := client.Info(ctx)
 	if err != nil {
 		return fmt.Errorf("record info: %w", err)
@@ -105,8 +104,21 @@ func runRecord(args []string) error {
 	})
 	fmt.Printf("recorded tweaks @ %s: %s\n", waypointT0, compactLine(tweaks))
 
-	if _, err := client.Logs(ctx, 0); errors.Is(err, gedharness.ErrLogsUnavailable) {
-		fmt.Printf("skipped logs: %v\n", err)
+	// logs: ged serves them only as an MCP tool (no plain-HTTP route), so
+	// capture via the /mcp streamable-HTTP endpoint. A ged with no active
+	// session returns "(no log entries)" — a valid, recordable baseline.
+	logText, logErr := gedharness.LogsViaMCP(ctx, *url, gedharness.DefaultLogCount)
+	if logErr != nil {
+		fmt.Printf("logs unavailable (mcp): %v\n", logErr)
+	} else {
+		logJSON, err := json.Marshal(logText)
+		if err != nil {
+			return fmt.Errorf("record logs: encode: %w", err)
+		}
+		corpus.Samples = append(corpus.Samples, gedharness.Sample{
+			Capability: "logs", Label: waypointT0, Response: logJSON,
+		})
+		fmt.Printf("recorded logs @ %s: %s\n", waypointT0, compactLine(logJSON))
 	}
 
 	if err := corpus.WriteFile(*out); err != nil {
