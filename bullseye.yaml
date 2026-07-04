@@ -3539,17 +3539,12 @@ targets:
     - agents-guide.md documents the desktop inventory entry shape and the launch flow with at least one worked example (e.g. tiltbuggy desktop binary)
     - 'End-to-end: a ge desktop sample (e.g. tiltbuggy or the solver) is launched via spyder, the app-channel connects, app_state / app_log_get / app_screenshot all work against it (those the desktop app implements)'
     context: |-
-      Today spyder's device surface is iOS + Android only. The app-channel itself is platform-neutral (TCP + MessagePack) and ge's appchannel.cpp already works on desktop if the user manually starts the binary with SPYDER_APP_CHANNEL=host:port set and spyder is holding a listener on that port — but the rest of the spyder workflow (launch_app, terminate_app, the 🎯T83 keyed listener auto-management) is unreachable. So desktop ge consumers either skip the app-channel entirely (losing structured log / state / time-control / screenshot / save-restore) or hand-wire the env every time.
+      UPDATE 2026-07-05 (T92 reshape): T85 is the DESKTOP FACTORY BACKEND of the T92 universal launcher — a factory whose spawn is local-exec (vs sim/emu's simctl and the game-server's RPC). It is the cheapest launch backend and the intended EARLY VALIDATOR of the launcher abstraction (prove the one-interface/pluggable-backend model on the easy medium before the harder server-factory, T92.1). CRUCIAL scope reduction: the MONITOR half is already PROVEN — this session's entire app-channel control plane and the T91.5 dashboard ran against a desktop tiltbuggy manually launched with SPYDER_APP_CHANNEL; app_state / app_log_get / app_screenshot / tweaks all work, so the last acceptance clause below is already satisfied. Remaining work is purely the LAUNCH/lifecycle side (DesktopAdapter: launch/terminate/pid + platform=desktop inventory + T83 keyed-listener auto-injection), which the throwaway cmd/dashdev harness already prototyped end-to-end. Blocks T92.
 
-      Surfaced 2026-06-21 while reviewing the ge player/server/dashboard backlog: desktop apps are increasingly first-class in the ge ecosystem (the standalone solver binary, the tiltbuggy dev loop, the headless server work behind T1 game-servers-in-the-player), and the app-channel is exactly the kind of dev-tooling that pays for itself most on desktop where the iteration loop is fastest.
+      --- original context (2026-06-21) ---
+      Today spyder's device surface is iOS + Android only. The app-channel itself is platform-neutral (TCP + MessagePack) and ge's appchannel.cpp already works on desktop if the user manually starts the binary with SPYDER_APP_CHANNEL=host:port set and spyder is holding a listener on that port — but the rest of the spyder workflow (launch_app, terminate_app, the T83 keyed listener auto-management) is unreachable.
 
-      Design intent:
-      - New DesktopAdapter implementing device.Adapter — LaunchApp shells out to the binary, TerminateApp via SIGTERM/SIGKILL, AppPID via pgrep / tracked-pid table, LogRange via captured stdout/stderr. Crashes / screenshot / network / install / uninstall return a clean "not supported on desktop" (or a sensible no-op for install — desktop "install" is "the binary exists on disk").
-      - inventory.Entry gains a "desktop" platform variant with executable_path (analogous to ios_uuid / android_serial) and optionally a working_directory.
-      - resolveAdapter adds the "desktop" case.
-      - App-channel auto-injection (🎯T83) needs zero changes — the keyed (device_id, bundle_id) registry is platform-neutral; for desktop, device_id = the inventory alias / host hint and bundle_id = the executable identity (path or declared id).
-
-      Scope ladder if it turns out larger than estimated: the MUST set is List + LaunchApp + TerminateApp + AppPID (these are what unlock app-channel auto-injection); LogRange-via-stdout is a SHOULD; screenshot/crashes/install/uninstall are MAY (each is a separate sub-target if it earns one).
+      Design intent: a DesktopAdapter implementing device.Adapter — LaunchApp shells out to the binary, TerminateApp via SIGTERM/SIGKILL, AppPID via pgrep / tracked-pid table, LogRange via captured stdout/stderr. Crashes / screenshot / network / install / uninstall return a clean "not supported on desktop". inventory.Entry gains a "desktop" platform variant with executable_path; resolveAdapter adds the "desktop" case. App-channel auto-injection (T83) needs zero changes — the keyed (device_id, bundle_id) registry is platform-neutral. MUST set: List + LaunchApp + TerminateApp + AppPID; LogRange-via-stdout is a SHOULD; screenshot/crashes/install/uninstall are MAY.
     tags:
     - desktop
     - device-adapter
@@ -4037,15 +4032,16 @@ targets:
     origin: manual
     discovered: 2026-07-04
   T91.4:
-    name: spyder brokers the dev H.264 stream (server render+encode → player display), replacing ged's relay, for LAN/trusted dev use only
+    name: spyder relays the dev H.264 stream as an opaque server↔player pipe (must not alter the stream), replacing ged's relay, LAN/trusted dev only
     status: identified
     value: 0.0
     cost: 0.0
     acceptance:
-    - '[class 1] spyder relays a dev H.264 session server→player with input flowing back, no `bin/ged`; relay fidelity passes the T91.1 frame-diff (spyder must not alter the stream).'
-    - '[class 1] One tiltbuggy session round-trips server→spyder→player over the LAN.'
-    - '[explicit non-goal] No authn/authz, onboarding, or connectivity hardening — dev / LAN / trusted only, same trust model as the app-channel (assert-and-abort on a malformed stream from our own encoder). A future production streaming, if it ever happens, is a separate clean-slate design and must NOT be accommodated here.'
-    context: 'The dev data plane. This is where a slimmed T128 (command-stream) / T34 (player) actually land — as an optional dev-preview capability in spyder, wanted only when you need remote pixels rather than remote control. Deprioritized relative to the control-plane trio (T91.2/T91.3): the app-channel already gives inspect/drive/tweak without any streaming, so this is the lower-value tail. Set this aside if the control-plane consolidation is the near-term goal — but ged cannot be fully deleted until the relay moves, so it blocks the umbrella and the ge-side retirement.'
+    - '[class 1] spyder relays a dev H.264 session server→player with input flowing back, no bin/ged; relay fidelity passes the T91.1 frame-diff (spyder must not alter the stream — it is a dumb, payload-agnostic pipe).'
+    - '[class 1] One tiltbuggy session''s frames round-trip server→spyder→player over the LAN, byte-preserved.'
+    - '[explicit non-goal] No authn/authz, onboarding, or connectivity hardening — dev / LAN / trusted only, same trust model as the app-channel. A future production streaming is a separate clean-slate design and must NOT be accommodated here.'
+    - '[scope] This target is the TRANSPORT only. Discovery, reserve/spawn, and player attach live in T92.2 (consumer protocol); instance manufacture lives in T92.1 (factory).'
+    context: 'Reshaped 2026-07-05: split into transport (this target — the opaque relay, the last ged data-plane piece) and the consumer/factory model (T92). Keeping the relay a payload-agnostic pipe is what protects spyder''s boundary: it routes frames + input, GE owns the codec, the command-stream protocol, and the player''s rendering. This is where a slimmed T128 (command-stream) / T34 (player) land as an optional dev-preview data plane, and it is the last thing pinning bin/ged alive.'
     depends_on:
     - T91.1
     origin: manual
@@ -4064,3 +4060,60 @@ targets:
     - T91.3
     origin: manual
     discovered: 2026-07-04
+  T91.6:
+    name: Server-mode processes hosting multiple parallel games are each addressable as independent clients
+    status: set_aside
+    value: 0.0
+    cost: 0.0
+    set_aside_reason: 'Dissolved into the T92 factory model 2026-07-05. Under "a game server is a device factory," parallel games are just multiple instances in the factory''s pool, each connecting back as its own app-channel session — so multi-game is native, not a special case. The open question T91.6 parked (one connection per game vs one connection multiplexing games) is decided: ONE app-channel connection per instance, so N games = N independently addressable sessions/dashboard rows. That rule now lives as an acceptance clause on 🎯T92.1 (the game-server factory backend). No standalone work remains here.'
+    acceptance:
+    - '[class 1] A ge server-mode process hosting N parallel games exposes N independently-addressable clients across spyder''s app-channel surface and the dashboard — tweaks/logs/state/screenshot resolve per game, not ambiguously per process.'
+    - '[deferred] Parked by the user (2026-07-05). The leading resolution is one app-channel connection per game (a ge-side choice), under which the current per-session model (session_id = client) already satisfies this with no spyder change. The only unhandled case is one process multiplexing N games over a single connection; not to be solved until the ge-side connection-granularity decision is made.'
+    context: Discovered during T91.5 (dashboard). The app-channel and dashboard key on session_id (one connection = one client); direct-mode apps are one game per process, so this is latent today. It surfaces only for brokered/server mode (T91.4), where a server can run multiple games in parallel. Whether that maps to one connection per game (fits the current model) or one connection multiplexing games (needs new addressing) is an unmade ge-side design decision — hence parked, not designed.
+    depends_on:
+    - T91.4
+    origin: manual
+    discovered: 2026-07-05
+  T92:
+    name: spyder is the single control point to start and monitor a game on any medium — device, sim/emu, desktop, or server-spawned instance
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[class 1] spyder can start a game and attach its full app-channel monitor surface (tweaks/logs/state/screenshot/dashboard) on each medium through one launcher interface: physical device, sim/emu, desktop host, and server-spawned instance.'
+    - '[principle] A medium is either a DEVICE (found in inventory) or a FACTORY (manufactures game-bearing instances on demand). sim/emu, desktop-host, and game-server are all factories, differing only in spawn mechanism: simctl / local-exec / RPC. Monitoring is uniform over the app-channel; each instance connects as its own session (the per-instance rule). GE renders and feeds; spyder observes and brokers.'
+    - '[concept] spyder grows a GAME CATALOG (launchable games: desktop binaries, server endpoints) alongside its device inventory, so ''start game X on medium Y'' resolves uniformly regardless of medium.'
+    context: 'Emerged 2026-07-05 from the T91 ged-retirement discussion. Once ged''s control plane folds into spyder''s app-channel (T91: tweaks/logs/state/screenshot/dashboard, modality-independent and already proven against a desktop app this session), the natural generalization is that a game-server is just a device factory and a desktop game is just a local-exec factory — so spyder becomes the universal start+monitor point for games. This broadens spyder''s charter from "connect to devices" to "start and monitor games on any medium." The uniform monitor surface already exists (app-channel, T75/T91); what''s new is (a) a launcher interface with pluggable spawn backends, (b) the game-server factory backend, (c) the consumer/player protocol, and (d) the game catalog. The stream transport itself is T91.4 (opaque relay). NOTE: spyder''s own CLAUDE.md "What spyder owns" should be broadened to reflect this when T92 work lands (do not edit ahead of implementation).'
+    depends_on:
+    - T85
+    - T92.1
+    - T92.2
+    origin: manual
+    discovered: 2026-07-05
+  T92.1:
+    name: A game server registers with spyder as a device factory; spyder spawns instances on demand under its existing pool/reservation/capacity machinery, each instance its own app-channel session
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[class 1] A game-server process connects over the app-channel and advertises a spawn capability in its hello. spyder can ask it to spawn an instance of a game, and the spawned instance connects back as its own app-channel session (an abstract ''device'') with the full monitor surface.'
+    - '[class 1] Instance lifecycle is governed by spyder''s existing pool/reservation/capacity machinery (T23/T24): reserve acquires-or-spawns, capacity caps concurrent instances, idle instances are GC''d. A player ''coming in'' is a reservation against the factory.'
+    - '[decided rule, supersedes T91.6] Multi-game is native: a server hosting N parallel games opens ONE app-channel connection per instance, so N games = N independently addressable sessions/rows — not a special case.'
+    context: 'The ''factory'' backend of the T92 launcher. A game server is a device factory whose spawn mechanism is an RPC (vs the sim/emu pool''s simctl and the desktop host''s local-exec). This is the same pool abstraction spyder already has (T24: warm/drain/GC/capacity + the SQLite hold ledger) with a new remote spawn backend. It also decides and dissolves T91.6: the per-instance-connection rule makes parallel games native. Reservation semantics follow the minimal-client-API principle: the player declares intent (need an instance of game X); spyder owns lifecycle/scheduling/capacity; the factory supplies the instance.'
+    origin: manual
+    discovered: 2026-07-05
+  T92.2:
+    name: 'The consumer/player protocol: a player discovers streamable game instances via spyder, reserves or spawns one, and attaches to its H.264 stream with input flowing back'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[class 1] A player client connects to spyder (spyder''s protocol, not ged''s), lists streamable game instances/factories, and requests one — reserving a live instance or spawning a fresh one via the T92.1 factory.'
+    - '[class 1] Once attached, the player receives the instance''s H.264 stream through spyder''s opaque relay (T91.4) and its input reaches the instance, with no bin/ged in the path. One tiltbuggy session round-trips server→spyder→player over the LAN.'
+    - '[boundary] The player''s protocol is spyder''s; the player''s rendering/codec stays GE''s (or a browser player using WebRTC/MSE). spyder brokers and routes; it never decodes or alters the stream.'
+    context: 'The third spyder client role: producer (the game, dialing in over the app-channel) and agent (MCP/REST) already exist; the player is a CONSUMER. This is the genuinely net-new protocol from the T91.4 discussion — discover + reserve/spawn + attach. It composes T92.1 (spawn/reserve an instance) with T91.4 (the opaque stream transport). The player could be a standalone GE app pointed at spyder, a `spyder play <session>` CLI, or a live-stream panel in the T91.5 dashboard (WebRTC/MSE) — an open UX fork to decide when this lands.'
+    depends_on:
+    - T91.4
+    - T92.1
+    origin: manual
+    discovered: 2026-07-05
