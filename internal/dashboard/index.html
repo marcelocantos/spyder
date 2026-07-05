@@ -101,6 +101,7 @@
       <div class="tab sel" data-tab="tweaks">Tweaks</div>
       <div class="tab" data-tab="logs">Logs</div>
       <div class="tab" data-tab="state">State</div>
+      <div class="tab" data-tab="stream">Stream</div>
     </div>
     <div class="content">
       <div id="none" class="empty">Select a connected app on the left.</div>
@@ -130,6 +131,19 @@
         <div class="row"><h2 style="margin:0">State</h2><button class="sm" id="state-refresh">Refresh</button></div>
         <div class="slices" id="state-slices"></div>
         <pre id="state-body">Pick a slice.</pre>
+      </div>
+
+      <div id="tab-stream" class="tabpane hidden">
+        <div class="row">
+          <h2 style="margin:0">Stream</h2>
+          <select id="stream-server" class="tw"></select>
+          <button class="sm" id="stream-connect">Watch</button>
+          <button class="sm" id="stream-stop">Stop</button>
+          <span class="muted" id="stream-stat">no streaming servers</span>
+        </div>
+        <canvas id="stream-canvas" tabindex="0"
+          style="max-width:100%;border:1px solid var(--line);border-radius:8px;background:#000;outline:none"></canvas>
+        <div class="muted" style="margin-top:6px;font-size:11px">Click the canvas and hold Shift + drag to drive (tiltbuggy).</div>
       </div>
     </div>
   </div>
@@ -223,15 +237,17 @@ function selectApp(id) {
 
 // ---- tabs -----------------------------------------------------------------
 function showTab(tab, force) {
-  if (!sel) return;
+  if (tab !== "stream" && !sel) return; // stream is server-based, not app-based
   curTab = tab;
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("sel", t.dataset.tab === tab);
   for (const p of document.querySelectorAll(".tabpane")) p.classList.add("hidden");
   $("tab-" + tab).classList.remove("hidden");
+  $("none").classList.add("hidden");
   stopLogPoll();
   if (tab === "tweaks") loadTweaks();
   else if (tab === "logs") startLogPoll();
   else if (tab === "state") loadSlices();
+  else if (tab === "stream") loadStreamServers();
 }
 for (const t of document.querySelectorAll(".tab")) t.onclick = () => showTab(t.dataset.tab);
 
@@ -379,6 +395,152 @@ $("shot-take").onclick = () => { if (sel) grabScreenshot(sel, false); };
 // ---- helpers --------------------------------------------------------------
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
 function fmt(v) { return typeof v === "object" ? JSON.stringify(v) : String(v); }
+
+// ---- stream (WebCodecs H.264 player, 🎯T92.2) -----------------------------
+const K_VIDEO = 0x47453256;  // "GE2V" server→player H.264
+const K_SDLEVT = 0x47453249; // "GE2I" player→server SDL_Event
+let streamWS = null, streamDec = null, streamCfg = false, streamFrames = 0;
+
+async function loadStreamServers() {
+  const box = $("stream-server");
+  try {
+    const r = await fetch("/stream/servers").then(x => x.json());
+    const servers = r.servers || [];
+    const prev = box.value;
+    box.innerHTML = "";
+    for (const s of servers) {
+      const o = document.createElement("option");
+      o.value = s.name; o.textContent = `${s.name} (${s.sessions} watching)`;
+      box.appendChild(o);
+    }
+    if (prev) box.value = prev;
+    $("stream-stat").textContent = servers.length
+      ? `${servers.length} streaming server(s)` : "no streaming servers (launch a game with GE_STREAM=<host:port>)";
+  } catch (e) { $("stream-stat").textContent = "offline"; }
+}
+
+function stopStream() {
+  if (streamWS) { try { streamWS.close(); } catch {} streamWS = null; }
+  if (streamDec) { try { streamDec.close(); } catch {} streamDec = null; }
+  streamCfg = false; streamFrames = 0;
+}
+
+function connectStream() {
+  stopStream();
+  const server = $("stream-server").value;
+  if (!server) { $("stream-stat").textContent = "no server selected"; return; }
+  if (!("VideoDecoder" in window)) { $("stream-stat").textContent = "this browser lacks WebCodecs"; return; }
+  const canvas = $("stream-canvas");
+  const cctx = canvas.getContext("2d");
+  streamDec = new VideoDecoder({
+    output: (frame) => {
+      if (canvas.width !== frame.displayWidth) canvas.width = frame.displayWidth;
+      if (canvas.height !== frame.displayHeight) canvas.height = frame.displayHeight;
+      cctx.drawImage(frame, 0, 0);
+      frame.close();
+    },
+    error: (e) => { $("stream-stat").textContent = "decode error: " + e.message; },
+  });
+  streamWS = new WebSocket(`ws://${location.host}/stream/player/${encodeURIComponent(server)}`);
+  streamWS.binaryType = "arraybuffer";
+  streamWS.onopen = () => { $("stream-stat").textContent = "watching " + server; canvas.focus(); };
+  streamWS.onclose = () => { $("stream-stat").textContent = "stream closed"; };
+  streamWS.onerror = () => { $("stream-stat").textContent = "stream error"; };
+  streamWS.onmessage = (ev) => onStreamMsg(new Uint8Array(ev.data), new DataView(ev.data));
+  installStreamInput(canvas);
+}
+
+function onStreamMsg(buf, dv) {
+  if (buf.length < 8 || dv.getUint32(0, true) !== K_VIDEO) return; // skip SessionConfig etc.
+  if (buf.length <= 13) return;
+  const keyframe = (buf[8] & 1) === 1;
+  const avcc = buf.subarray(13); // header(8) + flags(1) + seq(4)
+  if (!streamCfg) {
+    if (!keyframe) return;               // wait for a keyframe (carries SPS/PPS)
+    const codec = codecFromAVCC(avcc);
+    if (!codec) return;
+    try { streamDec.configure({ codec, optimizeForLatency: true }); streamCfg = true; }
+    catch (e) { $("stream-stat").textContent = "configure failed: " + e.message; return; }
+  }
+  try {
+    streamDec.decode(new EncodedVideoChunk({
+      type: keyframe ? "key" : "delta",
+      timestamp: (streamFrames++) * 16666,
+      data: avccToAnnexB(avcc),
+    }));
+  } catch (e) { /* drop a frame */ }
+}
+
+// AVCC (4-byte BE length + NAL) → Annex-B (00 00 00 01 + NAL). SPS/PPS ride
+// keyframes inline, so no out-of-band decoder description is needed.
+function avccToAnnexB(a) {
+  const out = [];
+  for (let i = 0; i + 4 <= a.length;) {
+    const len = (a[i] << 24) | (a[i+1] << 16) | (a[i+2] << 8) | a[i+3];
+    i += 4;
+    if (len <= 0 || i + len > a.length) break;
+    out.push(0, 0, 0, 1);
+    for (let j = 0; j < len; j++) out.push(a[i + j]);
+    i += len;
+  }
+  return new Uint8Array(out);
+}
+
+// Codec string "avc1.PPCCLL" from the SPS NAL (type 7) in an AVCC buffer.
+function codecFromAVCC(a) {
+  for (let i = 0; i + 4 <= a.length;) {
+    const len = (a[i] << 24) | (a[i+1] << 16) | (a[i+2] << 8) | a[i+3];
+    i += 4;
+    if (i + len > a.length || len < 4) break;
+    if ((a[i] & 0x1f) === 7) {
+      const h = (n) => n.toString(16).padStart(2, "0");
+      return "avc1." + h(a[i+1]) + h(a[i+2]) + h(a[i+3]);
+    }
+    i += len;
+  }
+  return null;
+}
+
+// Input: canvas mouse/keyboard → SDL_Event bytes → relay → game. tiltbuggy is
+// driven by Shift+drag (AccelSynth). SDL_Event is a 128-byte union; we pack the
+// leading common fields for the few event types the game reads.
+const SDL = { KEY_DOWN: 0x300, KEY_UP: 0x301, MOUSE_MOTION: 0x400,
+  MOUSE_DOWN: 0x401, MOUSE_UP: 0x402, SCANCODE_LSHIFT: 225, KMOD_LSHIFT: 0x0002 };
+function sendSDL(build) {
+  if (!streamWS || streamWS.readyState !== 1) return;
+  const ev = new ArrayBuffer(128), v = new DataView(ev);
+  build(v);
+  const msg = new Uint8Array(8 + 128);
+  const mv = new DataView(msg.buffer);
+  mv.setUint32(0, K_SDLEVT, true); mv.setUint32(4, 128, true);
+  msg.set(new Uint8Array(ev), 8);
+  streamWS.send(msg);
+}
+function gameXY(canvas, e) {
+  const r = canvas.getBoundingClientRect();
+  return [ (e.clientX - r.left) / r.width * canvas.width,
+           (e.clientY - r.top) / r.height * canvas.height ];
+}
+function installStreamInput(canvas) {
+  canvas.onmousemove = (e) => { const [x,y]=gameXY(canvas,e); sendSDL(v => {
+    v.setUint32(0, SDL.MOUSE_MOTION, true); v.setUint32(16, 1, true);
+    v.setUint32(24, (e.buttons & 1) ? 1 : 0, true);
+    v.setFloat32(28, x, true); v.setFloat32(32, y, true); }); };
+  canvas.onmousedown = (e) => { const [x,y]=gameXY(canvas,e); sendSDL(v => {
+    v.setUint32(0, SDL.MOUSE_DOWN, true); v.setUint32(16, 1, true);
+    v.setUint8(28, 1); v.setUint8(30, 1); v.setFloat32(32, x, true); v.setFloat32(36, y, true); }); };
+  canvas.onmouseup = (e) => { const [x,y]=gameXY(canvas,e); sendSDL(v => {
+    v.setUint32(0, SDL.MOUSE_UP, true); v.setUint32(16, 1, true);
+    v.setUint8(28, 1); v.setUint8(30, 0); v.setFloat32(32, x, true); v.setFloat32(36, y, true); }); };
+  const key = (type, down) => (e) => { if (e.key !== "Shift") return; e.preventDefault(); sendSDL(v => {
+    v.setUint32(0, type, true); v.setUint32(16, 1, true);
+    v.setUint32(24, SDL.SCANCODE_LSHIFT, true); v.setUint16(32, SDL.KMOD_LSHIFT, true);
+    v.setUint8(36, down ? 1 : 0); }); };
+  canvas.onkeydown = key(SDL.KEY_DOWN, true);
+  canvas.onkeyup = key(SDL.KEY_UP, false);
+}
+$("stream-connect").onclick = connectStream;
+$("stream-stop").onclick = () => { stopStream(); $("stream-stat").textContent = "stopped"; };
 
 refreshApps();
 setInterval(refreshApps, 5000);
