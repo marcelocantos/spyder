@@ -74,28 +74,53 @@ func TestStream_Tiltbuggy_Live(t *testing.T) {
 	player.SetReadLimit(maxFrameBytes)
 	t.Cleanup(func() { _ = player.Close(websocket.StatusNormalClosure, "") })
 
-	// Read until a real H.264 video frame arrives (skip SessionConfig etc.).
+	// Read video frames; also verify a keyframe is self-decodable (carries
+	// SPS+PPS+IDR inline) so a WebCodecs player can initialize from it.
 	var frames, videoBytes int
+	keyframeOK := false
 	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		typ, data, rerr := player.Read(ctx)
 		if rerr != nil {
 			break
 		}
-		if typ != websocket.MessageBinary || len(data) < 8 {
+		if typ != websocket.MessageBinary || len(data) <= 13 { // 8 hdr + 1 flags + 4 seq
 			continue
 		}
-		magic := binary.LittleEndian.Uint32(data[:4])
-		if magic == kVideoStreamMagic && len(data) > 8+1+4 {
-			frames++
-			videoBytes += len(data) - (8 + 1 + 4)
-			if frames >= 3 { // a few frames = the pipeline is live
-				break
-			}
+		if binary.LittleEndian.Uint32(data[:4]) != kVideoStreamMagic {
+			continue
+		}
+		frames++
+		videoBytes += len(data) - 13
+		if data[8]&1 == 1 && !keyframeOK { // keyframe flag
+			keyframeOK = selfDecodableKeyframe(data[13:])
+		}
+		if frames >= 3 && keyframeOK {
+			break
 		}
 	}
 	if frames < 3 {
 		t.Fatalf("expected H.264 frames from tiltbuggy, got %d (%d payload bytes)", frames, videoBytes)
 	}
-	t.Logf("received %d H.264 frames (%d payload bytes) server→spyder→player, no ged", frames, videoBytes)
+	if !keyframeOK {
+		t.Fatal("no self-decodable keyframe (SPS+PPS+IDR inline) seen — a browser decoder could not initialize")
+	}
+	t.Logf("received %d valid H.264 frames (%d payload bytes) server→spyder→player, no ged", frames, videoBytes)
+}
+
+// selfDecodableKeyframe reports whether an AVCC access unit carries an SPS
+// (NAL type 7), PPS (8), and IDR slice (5) — a keyframe a decoder can start
+// from with no out-of-band parameter sets.
+func selfDecodableKeyframe(avcc []byte) bool {
+	seen := map[byte]bool{}
+	for i := 0; i+4 <= len(avcc); {
+		l := int(binary.BigEndian.Uint32(avcc[i : i+4]))
+		i += 4
+		if l <= 0 || i+l > len(avcc) {
+			break
+		}
+		seen[avcc[i]&0x1f] = true
+		i += l
+	}
+	return seen[7] && seen[8] && seen[5]
 }
