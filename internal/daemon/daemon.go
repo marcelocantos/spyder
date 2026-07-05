@@ -35,6 +35,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/streamrelay"
 	"github.com/marcelocantos/spyder/internal/wedge"
 )
 
@@ -265,6 +266,13 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	dash := dashboard.NewHandler()
 	mux.Handle(dashboard.Path, dash)
 	mux.Handle(dashboard.Path+"/", dash)
+	// 🎯T91.4/T92.2 dev H.264 stream relay — replaces ged between a ge server
+	// and the dashboard browser player. Speaks ge's brokered wire.
+	relay := streamrelay.New()
+	mux.HandleFunc("/ws/server", relay.HandleServerSideband)
+	mux.HandleFunc("/ws/server/wire/", relay.HandleServerWire)
+	mux.HandleFunc("/stream/player/", relay.HandlePlayerConnect)
+	mux.HandleFunc("/stream/servers", relay.HandleServerList)
 	return mux, resvStore, handler, logCapMgr, appChanMgr
 }
 
