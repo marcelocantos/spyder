@@ -4035,9 +4035,10 @@ targets:
     discovered: 2026-07-04
   T91.4:
     name: spyder relays the dev H.264 stream as an opaque server↔player pipe (must not alter the stream), replacing ged's relay, LAN/trusted dev only
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 3.0
     acceptance:
     - '[class 1] spyder relays a dev H.264 session server→player with input flowing back, no bin/ged; relay fidelity passes the T91.1 frame-diff (spyder must not alter the stream — it is a dumb, payload-agnostic pipe).'
     - '[class 1] One tiltbuggy session''s frames round-trip server→spyder→player over the LAN, byte-preserved.'
@@ -4048,6 +4049,7 @@ targets:
     - T91.1
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-05
   T91.5:
     name: A single spyder dashboard presents any ge app (direct or streaming) — tweaks, logs, state, screenshot — and the human accepts the unified UX
     status: identified
@@ -4108,18 +4110,108 @@ targets:
     discovered: 2026-07-05
     achieved: 2026-07-05
   T92.2:
-    name: 'The dev streaming data plane: a real ge server instance round-trips H.264 server→spyder→dashboard-player with input back, no ged'
+    name: The dashboard is a full in-browser player for HEADLESS server-mode ge games via spyder — render + accelerometer + touch — no local window, no GE_STREAM, no native player
+    status: identified
+    value: 0.0
+    cost: 0.0
+    actual_cost: 13.0
+    acceptance:
+    - '[class 1] A ge game launched in SERVER mode (headless, no local window) renders each attached player''s session offscreen and streams valid H.264; the dashboard browser player decodes+renders it and drives it (accelerometer sim + touch/mouse) — all through spyder, no native player — verified by T92.2.1''s differential oracles plus a headless-browser round-trip (frames self-decodable + input moves the game).'
+    - '[class 3] The human opens the dashboard, picks a game, and plays it in-browser with no separate window; accepts the feel in one review. Sole perceptual gate.'
+    - '[decision] GE_STREAM (the direct-mirror shortcut) is deleted. There are exactly three app modes: mobile, desktop, and server (a headless variant of desktop that spawns sessions on demand via spyder).'
+    context: 'REOPENED 2026-07-05 (reshaped): the earlier GE_STREAM-based version was retired against the WRONG spec (oracle-first rule 11 — the H.264 pipeline demonstrably worked end-to-end, but the architecture was a shortcut that mirrors a VISIBLE desktop window rather than a headless server). Correct model (user): the dashboard is a browser PLAYER — decode/render + accelerometer-sim + touch — logically identical to a native player connected to a game via spyder, but running in the browser. REUSES the proven parts (T91.4 relay; WebCodecs decode/render; VideoToolbox encode; the whole downstream pipeline was validated via the shortcut). REPLACES the frame source (mirror-a-window → real headless offscreen render) and the input model (raw mouse + server-side AccelSynth → in-browser AccelSynth → SENSOR_UPDATE).'
+    depends_on:
+    - T92.2.4
+    origin: manual
+    discovered: 2026-07-05
+    achieved: 2026-07-05
+  T92.2.1:
+    name: Render-diff oracle gates the headless server render against the proven direct render (T124 goldens)
     status: identified
     value: 0.0
     cost: 0.0
     acceptance:
-    - '[class 1] A streaming ge server instance sends H.264 to spyder''s relay (T91.4); spyder fans frames to attached players and relays input back. Decidable oracle: a test client attached through spyder receives ordered, valid H.264 access units from a REAL streaming tiltbuggy instance, and injected input reaches the game (observable via app_state).'
-    - '[class 1] One real tiltbuggy instance round-trips server->spyder->player over localhost/LAN with NO bin/ged in the path; relay fidelity holds (spyder does not alter the stream).'
-    - '[class 3] The human opens the spyder dashboard''s stream panel, sees the live game rendered, drives it with keyboard/mouse, and accepts the UX. Sole perceptual gate.'
-    - '[decision 2026-07-05] Player form = the spyder DASHBOARD browser player (WebCodecs VideoDecoder -> canvas; input over WebSocket). No separate app; integrates the T91.5 dashboard. Pivot to a native ge player only if in-browser H.264 decode proves unworkable.'
-    context: 'Full authority on BOTH repos (spyder + ge); ge agent stood down 2026-07-05. Build order is spyder-defines-first, ge-conforms (same pattern as spawn_instance): (1) spyder builds T91.4, the opaque relay + wire protocol (frame framing, input framing, attach/detach) — oracle-first with a test-double server+player; (2) ge conforms — repoint ServerWireBridge''s EXISTING H.264 video wire from ged to spyder''s relay endpoint (injected at launch like SPYDER_APP_CHANNEL) and feed relayed input into the game event loop; (3) spyder builds the dashboard browser player (WebCodecs). Boundary held: ge owns codec/command-stream/render; spyder is a payload-agnostic pipe. This is the last data-plane piece; achieving it also lets ged/bin be fully retired (closes the T91 umbrella''s relay dependency).'
+    - '[class 1] LANDED: an encode→decode round-trip fidelity oracle (ge src/VideoRoundtrip_test.cpp, committed) feeds a known RED/BLUE frame through VideoEncoder→VideoDecoder and asserts red stays red, blue stays blue — the committed gate for the R↔B channel-swap fault class that escaped to human eyes. MUTATION-PROVEN: reverting the encoder swap turns it red (R=3 vs B=283); green on the fixed code. Runs in `make unit-test`, no browser/ffmpeg/network.'
+    - '[class 1] EXTENSION (not yet committed): a full render-vs-golden diff — decode a streamed game frame, compare to the T124 `tiltbuggy render` golden — to catch RENDER-geometry defects the encode round-trip cannot (proven working as a throwaway: directErr 0.5 << swapErr 26.3). Commit it + add a region/per-pixel check per rule 12 (mean-channel alone is weak against spatial defects).'
+    - '[class 1] EXTENSION (browser phase, T92.2.4): accelsynth-diff — browser-JS AccelSynth vs ge C++ AccelSynth for identical input tapes.'
+    context: 'RESHAPED 2026-07-05 to reflect what actually landed + the oracle-first lesson. The channel-swap escape (dirt blue, no red tail lights) happened because the maker built T92.2.2''s code and DEMOED it before this oracle existed (demo-before-V + oracle-substitution: ''self-decodable H.264 frames flow'' was treated as fidelity coverage). Now landed as the committed, mutation-proven encode→decode round-trip (the ''V'' node). The skill (~/.claude/skills/oracle-first) was updated + published to codify O/C/V (oracle & code are siblings; V=oracle-run-against-code gates demo/retire, not coding). Remaining extensions accrete per rule 12. The render-geometry diff + accelsynth-diff are the next oracle growth; the encode-fidelity gate is sufficient to unblock resuming T92.2.2 behind it.'
+    origin: manual
+    discovered: 2026-07-05
+  T92.2.2:
+    name: Server mode is a BUILD VARIANT, not a runtime switch — a headless-streaming build of an app, separate from its desktop/mobile (direct) build
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[class 1] ''Server'' is a separate BUILD of an app, chosen at COMPILE time (a GE_SERVER_BUILD flag / a second build target, e.g. tiltbuggy-server), NOT a runtime env switch on one binary. ge::run stays the desktop/mobile (windowed DirectRenderHost) entry; ge::runServer (wire source group) is the headless-streaming entry that renders a hidden DirectRenderHost and streams ge''s canonical H.264 wire. The relay address is a RUNTIME parameter of the server build (GE_SERVER=host:port / --relay), an address not a mode.'
+    - '[class 1] The DESKTOP/MOBILE build links NO wire/encode/server code: its main never references runServer/ServerSession, so the static linker drops the wire objects. The shipped direct build cannot be coerced into a screen-streaming server (security) and carries no VideoToolbox-encode/WebSocket weight (size). Mobile = a direct build that never defines GE_SERVER_BUILD.'
+    - '[class 1] The server build renders each player session HEADLESS (hidden-window DirectRenderHost, proven) and streams real self-decodable H.264 with correct colours (gated by T92.2.1''s oracle). No StreamClient, no dormant brokered host (both deleted).'
+    context: 'RESHAPED 2026-07-05 per user decision: ''a desktop version of each app and a server version of each app, different builds'' — the mode is a BUILD boundary, not a runtime env switch. The mid-session refactor implemented a single binary with a GE_SERVER/GE_STREAM env switch (ServerSession + runServer dispatched from SessionHostConfig.serverHost); that is being corrected to a compile-time variant. Rationale (user endorsed): aligns with ge''s existing GE_SRC_DIRECT vs wire source split; keeps shipping/mobile builds lean + secure (no server code linked); makes the three modes (mobile/desktop/server) distinct artifacts. Work: ge::run → always windowed (drop the serverHost dispatch); add ge::runServer(factory,config) in the wire group reading the relay addr from env/arg; remove serverHost/serverPort/serverName from SessionHostConfig; tiltbuggy main #ifdef GE_SERVER_BUILD; add a tiltbuggy-server build target; spyder''s stream_live_test + the factory spawn tiltbuggy-server. User: ''get this one right up front'' even though it slows things.'
     depends_on:
-    - T91.4
-    - T92.1
+    - T92.2.1
+    origin: manual
+    discovered: 2026-07-05
+  T92.2.3:
+    name: The native standalone player plays a headless server-mode game through spyder — canonical wire, input round-trips, no ged
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[class 1] The ge native player plays a headless SERVER-mode game through spyder: decodes + displays it, no ged. VERIFIED (decoder init, sessions:1, colours correct vs golden).'
+    - '[class 1] INPUT FIDELITY (not just motion): driving the player tilts the game in the CORRECT direction — mouse-down tilts the same way as direct desktop Shift+drag, not inverted. (Regression found 2026-07-05: motion worked but direction was reversed; the driven>0 oracle was too weak to catch a sign/flip defect.)'
+    - '[class 1] ORIENTATION: the game''s orientation intent (wire::SessionConfig.orientation, e.g. kOrientationAnyLandscape) is RESPECTED by the player — the player sizes/orients its surface to the game''s requested orientation rather than displaying a mismatched/letterboxed frame.'
+    - '[class 1] A render-diff strong enough to catch SPATIAL defects (per-pixel/region, catching a vertical flip or rotation) gates the above — the mean-colour diff is flip-invariant and missed this (oracle-first rule 12: the escape becomes an encoded property).'
+    context: 'REOPENED 2026-07-05: user testing found two input-fidelity bugs the weak oracles missed. (1) TILT DIRECTION INVERTED through the player — mouse-down tilts forward, should be backward; the ''driven=652527'' oracle proved motion, not direction (oracle substitution again). Hypotheses: a vertical FLIP in the streamed video (Metal bottom-up vs decode top-down — invisible to the mean-colour colordiff, which is flip-invariant; this is the checker''s exact ''mean is weak against spatial defects'' warning), or a Y-sign difference in the player''s input forwarding vs a real desktop mouse. (2) ORIENTATION not respected — tiltbuggy requests kOrientationAnyLandscape (already carried on the wire in SessionConfig.orientation), but the player doesn''t orient/size its surface to it. Both may share a root cause (orientation/flip mismatch). Fix requires a SPATIAL render-diff oracle (per-pixel/region) added to T92.2.1 — the flip escaped because the committed oracle only checked mean channels.'
+    depends_on:
+    - T92.2.2
+    origin: manual
+    discovered: 2026-07-05
+  T92.2.4:
+    name: The dashboard browser player is a proper dumb player — WebCodecs render + DeviceInfo + raw input forwarding (server-side engine owns all synthesis)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[class 1] The browser player (WebCodecs decode/render + DeviceInfo) plays a headless server-mode game via spyder by forwarding RAW input verbatim (Shift keys + mouse motion with xrel/yrel, buttons, touch) — NO in-browser accelerometer synthesis; the server-side engine''s AccelSynth interprets the gesture, exactly as it does for the native player. Differential-validated against the native player (both dumb, same wire behaviour).'
+    - '[class 3] The human opens the dashboard, picks a game, and plays it in-browser with no separate window; accepts the feel once. Sole perceptual gate.'
+    context: 'REWRITTEN 2026-07-05 after the AccelSynth architecture review. Previous acceptance (''in-browser AccelSynth → SENSOR_UPDATE'' + a JS-vs-C++ accelsynth-diff oracle) is REVERSED: the user''s design contract is game/engine, not server/player — games consume ONLY sensor events; the ENGINE makes an accelerometer exist (real or synthesized). In the remote topology the engine host is the server, so synthesis is server-side; players are dumb peripherals forwarding raw input. The browser player ALREADY works this way (proven: drives the buggy through the server synth); the native player is being dumbed down to match (its own AccelSynth + tilt composite deleted — the composite carried the sign bug). The accelsynth-diff oracle is unnecessary (no JS synth exists). Presentation tilt is server-side via T94 ge::ortho::tilt in the game''s projection — true re-projection, one implementation; a device player with a REAL accelerometer forwards real sensor events, the synth stays dormant, video renders flat, physical tilt supplies the presentation — no doubling, no protocol addition.'
+    depends_on:
+    - T92.2.3
+    origin: manual
+    discovered: 2026-07-05
+  T93:
+    name: The spyder↔player streaming integration is rebuilt on pigeon 0.25 (E2E-encrypted relay + pairing + datagram video), replacing the plain-WebSocket streamrelay
+    status: set_aside
+    value: 0.0
+    cost: 0.0
+    set_aside_reason: 'Deferred by user (2026-07-05): a big transport pivot (streamrelay → pigeon 0.25 E2E relay/pairing) that must NOT stack on the in-flight T92.2 pivot. Land T92.2 (native player + headless server) on the current plain-WebSocket streamrelay first, then revisit. Parked, not rejected.'
+    acceptance:
+    - '[class 1] The player↔server transport runs on pigeon 0.25 (Register/Connect + LAN bypass, E2E X25519/AES-GCM) instead of spyder''s plain-WebSocket streamrelay; H.264 frames flow over pigeon datagram channels, input over reliable streams. Neither spyder nor the relay sees plaintext.'
+    - '[class 1] Pairing uses pigeon PairingArtifacts (spyder mints them via the pairing host; the dashboard/QR carries them), replacing name-based /stream/player and /ws/wire lookup.'
+    - '[decision] spyder''s runtime role becomes pairing-artifact issuance + dashboard + game-instance factory; once player and server are paired, spyder is OFF the data path (pigeon relay/LAN carries it).'
+    context: 'Filed 2026-07-05 at the user''s explicit request, and DEFERRED deliberately: a big transport pivot the user does NOT want to stack on the current T92.2 pivot. Sequence: land T92.2 (native player + headless server) on the current plain-WebSocket streamrelay FIRST, then rebuild on pigeon. pigeon = the importable E2E-encrypted QUIC relay/pairing library (Go/Swift/Kotlin/C); ge''s T11 tracks the ge-side transport migration onto it (its context references pigeon v0.20.0 — this target targets 0.25). This would replace T92.2''s streamrelay + the /ws/wire + /stream/player endpoints with pigeon channels, and fold pairing into the QR/dashboard. Independent of current work (no blocker edges) so it does not gate T92.2; revisit after T92.2 lands to avoid two simultaneous big pivots.'
+    origin: manual
+    discovered: 2026-07-05
+  T94:
+    name: The dev-stream color path does zero redundant CPU channel swaps — deliver native BGRA capture→encoder (or GPU swizzle), not the current double CPU swap
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[class 1] The server→player H.264 path performs NO redundant per-pixel CPU channel swap. Today: the Metal swapchain (native BGRA) is read back with a CPU BGRA→RGBA swap (SokolContext''s uniform capture contract), then swapped back RGBA→BGRA in VideoEncoder for VideoToolbox — two full-frame CPU passes per frame for the stream where ZERO are needed. Fix: deliver native BGRA from the readback straight to the encoder on the stream sink (skip both swaps), or move the swizzle to the GPU. The RGBA normalization stays for the PNG/screenshot consumers.'
+    - '[class 1] If any path genuinely needs a CPU pass, it uses a vectorized permute (vImage/SIMD/uint32), not the scalar byte loop.'
+    - '[class 1] The T92.2.1 round-trip oracle stays GREEN (colors preserved) and there is no per-frame CPU regression.'
+    context: 'Filed 2026-07-05 at the user''s request. The T92.2 channel-swap fix (VideoEncoder swaps RGBA→BGRA per pixel, correct + oracle-guarded by T92.2.1) does redundant CPU work: capture already swaps BGRA→RGBA and the encoder swaps back, a double full-frame swap for the stream — pointless because the Metal swapchain is natively BGRA, which is exactly VideoToolbox''s wanted format. Implementation is GE-SIDE (SokolContext capture + VideoEncoder_apple.mm). Deferred deliberately: NOT an easy fix now — the zero-swap version needs capture↔encoder coordination and would tangle with the in-flight T92.2.2 server-mode refactor; a band-aid (vImage) would be thrown away by the real fix. Correctness is already gated by T92.2.1, so this is a pure perf/cleanliness pass. Revisit after the server-mode refactor settles. Independent — does not block T92.2.3.'
+    origin: manual
+    discovered: 2026-07-05
+  T95:
+    name: Local server↔relay↔player streaming can use a Unix domain socket, not just TCP loopback (lower latency, no network port exposed)
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[investigation] Measure the win of a Unix domain socket vs TCP loopback for same-machine streaming (H.264 frame latency/throughput) and the security benefit (filesystem-permissioned, no listening network port a local game server could be reached on off-box).'
+    - '[class 1] If worthwhile: the relay advertises a UDS endpoint (socket path) alongside its TCP host:port; co-located servers (ServerSession) and players connect via the socket when available, falling back to TCP for cross-machine. spyder''s factory hands local instances the socket path.'
+    context: 'Filed 2026-07-05 at the user''s request ("just file a target, investigate later"). Today the relay + server (ServerSession) + native/browser players use WebSocket over TCP (host:port). Same-machine streaming is common (dev + the factory-spawns-local-instance model), where a UDS avoids the TCP/IP stack and exposes no network port. Distinct from T93 (pigeon E2E relay — has LAN peer-to-peer bypass but not same-host UDS) and T94 (CPU-swap perf). Deferred; investigate after the T92.2.2 server-mode build-variant lands. Note: browser players cannot use a UDS (no raw socket in-browser), so any UDS path is for native server↔relay and native player↔relay; the browser stays on ws/TCP.'
     origin: manual
     discovered: 2026-07-05
