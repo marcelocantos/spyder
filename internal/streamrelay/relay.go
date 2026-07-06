@@ -162,14 +162,36 @@ func (r *Relay) HandleServerWire(w http.ResponseWriter, req *http.Request) {
 }
 
 // HandlePlayerConnect handles GET /stream/player/<name>: a browser attaching to
-// server <name>. Allocates a session, asks the server to open a wire, then
-// pipes frames wire→player and input player→wire until either side closes.
+// server <name> (the name is the last path segment).
 func (r *Relay) HandlePlayerConnect(w http.ResponseWriter, req *http.Request) {
 	name := strings.TrimPrefix(req.URL.Path, "/stream/player/")
 	if name == "" || strings.Contains(name, "/") {
 		http.Error(w, "server name required", http.StatusBadRequest)
 		return
 	}
+	r.servePlayer(w, req, name)
+}
+
+// HandlePlayerWire handles GET /ws/wire?preference=<name>&name=<name>: ge's
+// NATIVE player (PlayerWireBridge) attaching to server <name>. Same pairing as
+// the browser path — the native player just dials a different URL (it was built
+// to reach ged), so spyder serves it here and repoints are unnecessary.
+func (r *Relay) HandlePlayerWire(w http.ResponseWriter, req *http.Request) {
+	name := req.URL.Query().Get("preference")
+	if name == "" {
+		name = req.URL.Query().Get("name")
+	}
+	if name == "" {
+		http.Error(w, "preference or name query param required", http.StatusBadRequest)
+		return
+	}
+	r.servePlayer(w, req, name)
+}
+
+// servePlayer pairs a connecting player with server <name>: allocate a session,
+// ask the server to open a wire, then pipe frames wire→player and input
+// player→wire until either side closes. Shared by the browser and native paths.
+func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name string) {
 	r.mu.Lock()
 	sc := r.servers[name]
 	r.mu.Unlock()
