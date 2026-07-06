@@ -4131,17 +4131,17 @@ targets:
     value: 0.0
     cost: 0.0
     acceptance:
-    - '[class 1] LANDED: an encode→decode round-trip fidelity oracle (ge src/VideoRoundtrip_test.cpp, committed) feeds a known RED/BLUE frame through VideoEncoder→VideoDecoder and asserts red stays red, blue stays blue — the committed gate for the R↔B channel-swap fault class that escaped to human eyes. MUTATION-PROVEN: reverting the encoder swap turns it red (R=3 vs B=283); green on the fixed code. Runs in `make unit-test`, no browser/ffmpeg/network.'
-    - '[class 1] EXTENSION (not yet committed): a full render-vs-golden diff — decode a streamed game frame, compare to the T124 `tiltbuggy render` golden — to catch RENDER-geometry defects the encode round-trip cannot (proven working as a throwaway: directErr 0.5 << swapErr 26.3). Commit it + add a region/per-pixel check per rule 12 (mean-channel alone is weak against spatial defects).'
-    - '[class 1] EXTENSION (browser phase, T92.2.4): accelsynth-diff — browser-JS AccelSynth vs ge C++ AccelSynth for identical input tapes.'
-    context: 'RESHAPED 2026-07-05 to reflect what actually landed + the oracle-first lesson. The channel-swap escape (dirt blue, no red tail lights) happened because the maker built T92.2.2''s code and DEMOED it before this oracle existed (demo-before-V + oracle-substitution: ''self-decodable H.264 frames flow'' was treated as fidelity coverage). Now landed as the committed, mutation-proven encode→decode round-trip (the ''V'' node). The skill (~/.claude/skills/oracle-first) was updated + published to codify O/C/V (oracle & code are siblings; V=oracle-run-against-code gates demo/retire, not coding). Remaining extensions accrete per rule 12. The render-geometry diff + accelsynth-diff are the next oracle growth; the encode-fidelity gate is sufficient to unblock resuming T92.2.2 behind it.'
+    - '[class 1] LANDED (ge master, v0.72.0): the encode→decode round-trip fidelity oracle (ge src/VideoRoundtrip_test.cpp) runs in `make unit-test`, mutation-proven (reverting the encoder R↔B swap turns it red: R=3 vs B=283).'
+    - '[class 1] REMAINING: the spatial render-vs-golden diff (streamed frame vs T124 `tiltbuggy render` golden, 3×3-region — catches flips/rotation a mean diff cannot; proven as throwaway scripts: region directErr 5.2 vs flipped 448.4) is committed as a REPEATABLE gated check (live-gated like stream_live_test), not a /tmp script. Rides T92.2.4''s browser-differential work — same harness.'
+    context: 'RE-SCOPED 2026-07-06 post-release. Core oracle landed + merged (ge #170, v0.72.0). The accelsynth-diff extension clause is DELETED as obsolete: the dumb-player architecture decision (T92.2.4 rewrite) removed in-browser/JS synthesis entirely — there is no second AccelSynth implementation to differential-test; the C++ engine synth is the sole implementation. What remains is committing the spatial region render-diff (ran as throwaway /tmp/regiondiff.js + colordiff.js during the tilt/orientation bug hunt) so the flip/rotation fault class has a standing catch-rate, not a one-shot attestation (oracle-first rule 9).'
     origin: manual
     discovered: 2026-07-05
   T92.2.2:
     name: Server mode is a BUILD VARIANT, not a runtime switch — a headless-streaming build of an app, separate from its desktop/mobile (direct) build
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 8.0
     acceptance:
     - '[class 1] ''Server'' is a separate BUILD of an app, chosen at COMPILE time (a GE_SERVER_BUILD flag / a second build target, e.g. tiltbuggy-server), NOT a runtime env switch on one binary. ge::run stays the desktop/mobile (windowed DirectRenderHost) entry; ge::runServer (wire source group) is the headless-streaming entry that renders a hidden DirectRenderHost and streams ge''s canonical H.264 wire. The relay address is a RUNTIME parameter of the server build (GE_SERVER=host:port / --relay), an address not a mode.'
     - '[class 1] The DESKTOP/MOBILE build links NO wire/encode/server code: its main never references runServer/ServerSession, so the static linker drops the wire objects. The shipped direct build cannot be coerced into a screen-streaming server (security) and carries no VideoToolbox-encode/WebSocket weight (size). Mobile = a direct build that never defines GE_SERVER_BUILD.'
@@ -4151,11 +4151,13 @@ targets:
     - T92.2.1
     origin: manual
     discovered: 2026-07-05
+    achieved: 2026-07-06
   T92.2.3:
     name: The native standalone player plays a headless server-mode game through spyder — canonical wire, input round-trips, no ged
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 5.0
     acceptance:
     - '[class 1] The ge native player plays a headless SERVER-mode game through spyder: decodes + displays it, no ged. VERIFIED (decoder init, sessions:1, colours correct vs golden).'
     - '[class 1] INPUT FIDELITY (not just motion): driving the player tilts the game in the CORRECT direction — mouse-down tilts the same way as direct desktop Shift+drag, not inverted. (Regression found 2026-07-05: motion worked but direction was reversed; the driven>0 oracle was too weak to catch a sign/flip defect.)'
@@ -4166,6 +4168,7 @@ targets:
     - T92.2.2
     origin: manual
     discovered: 2026-07-05
+    achieved: 2026-07-06
   T92.2.4:
     name: The dashboard browser player is a proper dumb player — WebCodecs render + DeviceInfo + raw input forwarding (server-side engine owns all synthesis)
     status: identified
