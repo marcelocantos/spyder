@@ -241,11 +241,13 @@ type imageValue struct {
 	b64  string
 }
 
-func (imageValue) Type() string          { return "image" }
-func (imageValue) Freeze()                {}
-func (imageValue) Truth() starlark.Bool   { return starlark.True }
-func (i imageValue) String() string       { return fmt.Sprintf("<image %s, %d b64 bytes>", i.mime, len(i.b64)) }
-func (imageValue) Hash() (uint32, error)  { return 0, fmt.Errorf("image is unhashable") }
+func (imageValue) Type() string         { return "image" }
+func (imageValue) Freeze()              {}
+func (imageValue) Truth() starlark.Bool { return starlark.True }
+func (i imageValue) String() string {
+	return fmt.Sprintf("<image %s, %d b64 bytes>", i.mime, len(i.b64))
+}
+func (imageValue) Hash() (uint32, error) { return 0, fmt.Errorf("image is unhashable") }
 
 // compileExec parses the script and compiles it. REPL-style, only the
 // FINAL top-level expression statement is rewritten into emit(<expr>), so

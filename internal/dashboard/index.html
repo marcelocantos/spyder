@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<!--
+  Copyright 2026 Marcelo Cantos
+  SPDX-License-Identifier: Apache-2.0
+
+  spyder dashboard (🎯T91.5) — a single UI over the app-channel control
+  surface (info/tweaks/logs/state/screenshot). Talks only to spyder's REST
+  layer (POST /api/v1/<tool>); no ged. Vanilla JS, no build step, embedded
+  and served by the daemon.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>spyder dashboard</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --panel2: #1c2230; --line: #2b3240;
+    --fg: #d6deeb; --dim: #8a95a5; --accent: #5ac8fa; --accent2: #7ee787;
+    --warn: #ffab70; --err: #ff6b6b; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 13px/1.5 system-ui, -apple-system, sans-serif; height: 100vh; display: flex; }
+  a { color: var(--accent); }
+  .sidebar { width: 250px; flex: 0 0 250px; background: var(--panel);
+             border-right: 1px solid var(--line); display: flex; flex-direction: column; }
+  .brand { padding: 14px 16px; font-weight: 600; font-size: 15px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; justify-content: space-between; }
+  .brand small { color: var(--dim); font-weight: 400; font-size: 11px; }
+  .apps { overflow-y: auto; flex: 1; }
+  .app { padding: 10px 14px; border-bottom: 1px solid var(--line); cursor: pointer; display: flex; gap: 10px; align-items: center; }
+  .app:hover { background: var(--panel2); }
+  .app.sel { background: var(--panel2); border-left: 3px solid var(--accent); padding-left: 11px; }
+  .thumb { width: 64px; height: 48px; flex: 0 0 64px; border-radius: 4px; border: 1px solid var(--line);
+           background: #000 center/cover no-repeat; object-fit: cover; }
+  .thumb.empty { display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 9px; }
+  .app .name { font-weight: 600; }
+  .app .meta { color: var(--dim); font-size: 11px; font-family: var(--mono); }
+  .app .badge { color: var(--accent2); font-size: 10px; }
+  .empty { padding: 16px; color: var(--dim); }
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+  .tabs { display: flex; gap: 2px; padding: 8px 12px 0; background: var(--panel);
+          border-bottom: 1px solid var(--line); }
+  .tab { padding: 7px 16px; cursor: pointer; color: var(--dim); border-radius: 6px 6px 0 0; }
+  .tab:hover { color: var(--fg); }
+  .tab.sel { color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-bottom: none; }
+  .content { flex: 1; overflow: auto; padding: 16px; }
+  .hidden { display: none !important; }
+  h2 { margin: 0 0 12px; font-size: 14px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { color: var(--dim); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  td.name { font-family: var(--mono); }
+  td.def { color: var(--dim); font-family: var(--mono); font-size: 12px; }
+  input.tw { background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
+             border-radius: 5px; padding: 4px 8px; width: 140px; font-family: var(--mono); }
+  input.tw:focus { outline: none; border-color: var(--accent); }
+  input.tw.dirty { border-color: var(--warn); }
+  input.tw.ok { border-color: var(--accent2); }
+  button { background: var(--panel2); border: 1px solid var(--line); color: var(--fg);
+           border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.sm { padding: 2px 8px; font-size: 11px; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+        padding: 12px; overflow: auto; font-family: var(--mono); font-size: 12px; margin: 0; }
+  .logs { font-family: var(--mono); font-size: 12px; }
+  .logline { padding: 1px 0; white-space: pre-wrap; word-break: break-word; }
+  .lvl-info { color: var(--fg); } .lvl-debug { color: var(--dim); }
+  .lvl-warn, .lvl-warning { color: var(--warn); } .lvl-error, .lvl-err { color: var(--err); }
+  .ts { color: var(--dim); } .sub { color: var(--accent); }
+  .slices { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+  .slice { padding: 4px 10px; border: 1px solid var(--line); border-radius: 14px; cursor: pointer; color: var(--dim); }
+  .slice.sel { color: var(--fg); border-color: var(--accent); background: var(--panel2); }
+  /* right-hand screenshot panel */
+  .shotpanel { width: 340px; flex: 0 0 340px; background: var(--panel); border-left: 1px solid var(--line);
+               display: flex; flex-direction: column; }
+  .shothead { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center;
+              justify-content: space-between; }
+  .shothead h2 { margin: 0; }
+  .shotwrap { flex: 1; overflow: auto; padding: 12px; }
+  .shotwrap img { width: 100%; border: 1px solid var(--line); border-radius: 8px; display: block; background: #000; }
+  .shotmeta { padding: 8px 14px; border-top: 1px solid var(--line); color: var(--dim);
+              font-size: 11px; font-family: var(--mono); display: flex; align-items: center; gap: 10px; }
+  .toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); background: var(--panel2);
+           border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; max-width: 360px; }
+  .toast.err { border-color: var(--err); color: var(--err); }
+  .muted { color: var(--dim); }
+  label.tog { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="sidebar">
+    <div class="brand">spyder <small id="conn">connecting…</small></div>
+    <div class="apps" id="apps"><div class="empty">Loading apps…</div></div>
+  </div>
+
+  <div class="main">
+    <div class="tabs" id="tabs">
+      <div class="tab sel" data-tab="tweaks">Tweaks</div>
+      <div class="tab" data-tab="logs">Logs</div>
+      <div class="tab" data-tab="state">State</div>
+      <div class="tab" data-tab="stream">Stream</div>
+    </div>
+    <div class="content">
+      <div id="none" class="empty">Select a connected app on the left.</div>
+
+      <div id="tab-tweaks" class="tabpane hidden">
+        <div class="row">
+          <h2 style="margin:0">Tweaks</h2>
+          <button class="sm" id="tw-refresh">Refresh</button>
+          <button class="sm" id="tw-reset-all">Reset all</button>
+        </div>
+        <table id="tw-table"><thead><tr><th>Name</th><th>Value</th><th>Default</th><th></th></tr></thead>
+          <tbody id="tw-body"></tbody></table>
+        <div id="tw-empty" class="muted hidden">This app registers no tweaks.</div>
+      </div>
+
+      <div id="tab-logs" class="tabpane hidden">
+        <div class="row">
+          <h2 style="margin:0">Logs</h2>
+          <label class="tog"><input type="checkbox" id="log-follow" checked> follow</label>
+          <button class="sm" id="log-clear">Clear</button>
+          <span class="muted" id="log-stat"></span>
+        </div>
+        <div class="logs" id="log-body"></div>
+      </div>
+
+      <div id="tab-state" class="tabpane hidden">
+        <div class="row"><h2 style="margin:0">State</h2><button class="sm" id="state-refresh">Refresh</button></div>
+        <div class="slices" id="state-slices"></div>
+        <pre id="state-body">Pick a slice.</pre>
+      </div>
+
+      <div id="tab-stream" class="tabpane hidden">
+        <div class="row">
+          <h2 style="margin:0">Stream</h2>
+          <select id="stream-server" class="tw"></select>
+          <button class="sm" id="stream-connect">Watch</button>
+          <button class="sm" id="stream-stop">Stop</button>
+          <span class="muted" id="stream-stat">no streaming servers</span>
+        </div>
+        <canvas id="stream-canvas" tabindex="0"
+          style="max-width:100%;border:1px solid var(--line);border-radius:8px;background:#000;outline:none"></canvas>
+        <div class="muted" style="margin-top:6px;font-size:11px">Click the canvas and hold Shift + drag to drive (tiltbuggy).</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="shotpanel">
+    <div class="shothead">
+      <h2>Screenshot</h2>
+      <div class="row" style="margin:0">
+        <label class="tog"><input type="checkbox" id="shot-auto" checked> auto</label>
+        <button class="sm" id="shot-take">Refresh</button>
+      </div>
+    </div>
+    <div class="shotwrap" id="shot-wrap"><div class="muted">Select an app.</div></div>
+    <div class="shotmeta"><span id="shot-meta">—</span></div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+let sel = null;         // selected session_id
+let curTab = "tweaks";
+let logTimer = null, logDropped = 0;
+let shotTimer = null, shotBusy = false;
+const shots = {};       // session_id -> {url, w, h, at} last screenshot (shared by thumb + panel)
+
+function toast(msg, isErr) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = "toast" + (isErr ? " err" : "");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.add("hidden"), isErr ? 6000 : 2500);
+}
+
+// callTool POSTs to the spyder REST surface and returns the tool's result. If
+// any content block is an image (e.g. app_screenshot returns a text summary
+// AND an image block), it's returned as {image}. Otherwise the first text
+// block is parsed as JSON. Throws on tool/transport error.
+async function callTool(tool, args) {
+  const res = await fetch("/api/v1/" + tool, {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(args || {}),
+  });
+  if (!res.ok) throw new Error(tool + ": HTTP " + res.status + " " + (await res.text()).trim());
+  const body = await res.json();
+  const blocks = body.content || [];
+  if (body.isError) throw new Error(tool + ": " + ((blocks[0] || {}).text || "error"));
+  const img = blocks.find(b => b.type === "image");
+  if (img) return {image: img, text: (blocks.find(b => b.type === "text") || {}).text};
+  const txt = (blocks.find(b => b.type === "text") || {}).text || "";
+  try { return JSON.parse(txt); } catch { return txt; }
+}
+
+// ---- app list -------------------------------------------------------------
+async function refreshApps() {
+  let sessions = [];
+  try {
+    const r = await callTool("app_channel_list", {});
+    for (const l of (r.listeners || [])) for (const s of (l.sessions || [])) sessions.push(s);
+    $("conn").textContent = sessions.length + " app" + (sessions.length === 1 ? "" : "s");
+  } catch (e) { $("conn").textContent = "offline"; }
+  const box = $("apps");
+  if (!sessions.length) { box.innerHTML = '<div class="empty">No apps connected.<br>Launch a ge app with SPYDER_APP_CHANNEL set.</div>'; return; }
+  box.innerHTML = "";
+  for (const s of sessions) {
+    const el = document.createElement("div");
+    el.className = "app" + (s.session_id === sel ? " sel" : "");
+    const tweakable = (s.methods || []).includes("tweak_list");
+    const cached = shots[s.session_id];
+    const thumb = cached
+      ? `<img class="thumb" src="${cached.url}">`
+      : `<div class="thumb empty">no image</div>`;
+    el.innerHTML = `${thumb}<div style="min-width:0">
+      <div class="name">${esc(s.app_name || "app")}</div>
+      <div class="meta">${s.session_id.slice(0,12)}</div>
+      <div class="badge">${tweakable ? "tweaks • " : ""}${(s.methods||[]).length} methods</div></div>`;
+    el.onclick = () => selectApp(s.session_id);
+    box.appendChild(el);
+    if ((s.methods || []).includes("screenshot_app") && shouldThumb(s.session_id)) grabScreenshot(s.session_id, true);
+  }
+}
+
+function selectApp(id) {
+  sel = id;
+  refreshApps();
+  $("none").classList.add("hidden");
+  showTab(curTab, true);
+  startShotPoll();
+}
+
+// ---- tabs -----------------------------------------------------------------
+function showTab(tab, force) {
+  if (tab !== "stream" && !sel) return; // stream is server-based, not app-based
+  curTab = tab;
+  for (const t of document.querySelectorAll(".tab")) t.classList.toggle("sel", t.dataset.tab === tab);
+  for (const p of document.querySelectorAll(".tabpane")) p.classList.add("hidden");
+  $("tab-" + tab).classList.remove("hidden");
+  $("none").classList.add("hidden");
+  stopLogPoll();
+  if (tab === "tweaks") loadTweaks();
+  else if (tab === "logs") startLogPoll();
+  else if (tab === "state") loadSlices();
+  else if (tab === "stream") loadStreamServers();
+}
+for (const t of document.querySelectorAll(".tab")) t.onclick = () => showTab(t.dataset.tab);
+
+// ---- tweaks ---------------------------------------------------------------
+async function loadTweaks() {
+  const body = $("tw-body"); body.innerHTML = "";
+  let list;
+  try { list = await callTool("app_tweak_list", {session_id: sel}); }
+  catch (e) { toast(e.message, true); return; }
+  $("tw-empty").classList.toggle("hidden", list.length > 0);
+  for (const tw of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td class="name">${esc(tw.name)}</td><td></td>
+      <td class="def">${fmt(tw.default)}</td><td></td>`;
+    const inp = document.createElement("input");
+    inp.className = "tw"; inp.value = fmt(tw.value);
+    inp.oninput = () => inp.classList.add("dirty");
+    inp.onkeydown = (e) => { if (e.key === "Enter") setTweak(tw.name, inp); };
+    tr.children[1].appendChild(inp);
+    const b = document.createElement("button");
+    b.className = "sm"; b.textContent = "Set"; b.onclick = () => setTweak(tw.name, inp);
+    tr.children[3].appendChild(b);
+    body.appendChild(tr);
+  }
+}
+async function setTweak(name, inp) {
+  let value = inp.value.trim();
+  try { value = JSON.parse(value); } catch { /* keep as string */ }
+  try {
+    await callTool("app_tweak_set", {session_id: sel, name, value});
+    inp.classList.remove("dirty"); inp.classList.add("ok");
+    setTimeout(() => inp.classList.remove("ok"), 900);
+    toast("set " + name);
+  } catch (e) { toast(e.message, true); }
+}
+$("tw-refresh").onclick = loadTweaks;
+$("tw-reset-all").onclick = async () => {
+  try { await callTool("app_tweak_reset", {session_id: sel, all: true}); toast("reset all"); loadTweaks(); }
+  catch (e) { toast(e.message, true); }
+};
+
+// ---- logs -----------------------------------------------------------------
+function startLogPoll() {
+  $("log-body").innerHTML = ""; logDropped = 0;
+  const tick = async () => {
+    try {
+      const r = await callTool("app_log_get", {session_id: sel});
+      logDropped += (r.dropped_lines || 0);
+      for (const ln of (r.lines || [])) appendLog(ln);
+      $("log-stat").textContent = logDropped ? ("(" + logDropped + " dropped)") : "";
+    } catch (e) { /* transient */ }
+  };
+  tick();
+  logTimer = setInterval(tick, 1500);
+}
+function stopLogPoll() { if (logTimer) { clearInterval(logTimer); logTimer = null; } }
+function appendLog(ln) {
+  const div = document.createElement("div");
+  const lvl = (ln.level || "info").toLowerCase();
+  div.className = "logline lvl-" + lvl;
+  const ts = ln.timestamp ? new Date(ln.timestamp * (ln.timestamp > 1e12 ? 1 : 1000)).toLocaleTimeString() : "";
+  const sub = ln.subsystem ? `<span class="sub">[${esc(ln.subsystem)}]</span> ` : "";
+  div.innerHTML = `<span class="ts">${ts}</span> ${sub}${esc(renderFmt(ln))}`;
+  const box = $("log-body");
+  box.appendChild(div);
+  if ($("log-follow").checked) box.scrollTop = box.scrollHeight;
+}
+function renderFmt(ln) {
+  let s = ln.format || "";
+  if (ln.args && ln.args.length) s += "  " + ln.args.map(fmt).join(" ");
+  return s;
+}
+$("log-clear").onclick = () => { $("log-body").innerHTML = ""; };
+
+// ---- state ----------------------------------------------------------------
+async function loadSlices() {
+  const box = $("state-slices"); box.innerHTML = "";
+  let slices = [];
+  try { const r = await callTool("app_state_slices", {session_id: sel}); slices = r.slices || []; }
+  catch (e) { toast(e.message, true); }
+  if (!slices.length) { box.innerHTML = '<span class="muted">App advertises no state slices.</span>'; $("state-body").textContent = ""; return; }
+  for (const sl of slices) {
+    const name = typeof sl === "string" ? sl : sl.name;
+    const el = document.createElement("div");
+    el.className = "slice"; el.textContent = name;
+    el.onclick = () => { for (const x of box.children) x.classList.remove("sel"); el.classList.add("sel"); loadState(name); };
+    box.appendChild(el);
+  }
+}
+async function loadState(slice) {
+  $("state-body").textContent = "…";
+  try { const r = await callTool("app_state", {session_id: sel, slice}); $("state-body").textContent = JSON.stringify(r, null, 2); }
+  catch (e) { $("state-body").textContent = e.message; }
+}
+$("state-refresh").onclick = loadSlices;
+
+// ---- screenshots (thumbnail + right panel) --------------------------------
+// grabScreenshot fetches one frame for a session and caches it. isThumb=true
+// only updates the sidebar thumbnail; the selected app also fills the panel.
+function shouldThumb(id) {
+  const c = shots[id];
+  return !c || (Date.now() - c.at) > 8000; // refresh sidebar thumbs at most ~8s
+}
+async function grabScreenshot(id, isThumb) {
+  try {
+    const r = await callTool("app_screenshot", {session_id: id});
+    if (!r.image) return;
+    const url = "data:" + r.image.mimeType + ";base64," + r.image.data;
+    let w = 0, h = 0;
+    const m = /(\d+)x(\d+)/.exec(r.text || "");
+    if (m) { w = +m[1]; h = +m[2]; }
+    shots[id] = {url, w, h, at: Date.now()};
+    // update the sidebar thumbnail in place (no full re-render / flicker)
+    for (const el of document.querySelectorAll(".app")) {
+      if (el.querySelector(".meta") && el.querySelector(".meta").textContent === id.slice(0,12)) {
+        const t = el.querySelector(".thumb");
+        if (t) { const img = document.createElement("img"); img.className = "thumb"; img.src = url; t.replaceWith(img); }
+      }
+    }
+    if (id === sel && !isThumb) paintPanel(id);
+  } catch (e) { if (!isThumb) toast(e.message, true); }
+}
+function paintPanel(id) {
+  const c = shots[id];
+  if (!c) { $("shot-wrap").innerHTML = '<div class="muted">No image.</div>'; return; }
+  $("shot-wrap").innerHTML = `<img src="${c.url}">`;
+  const dims = c.w ? `${c.w}×${c.h}` : "";
+  $("shot-meta").textContent = `${dims}  ·  ${new Date(c.at).toLocaleTimeString()}`;
+}
+function startShotPoll() {
+  stopShotPoll();
+  paintPanel(sel);
+  const tick = async () => {
+    if (!sel || shotBusy || !$("shot-auto").checked) return;
+    shotBusy = true;
+    await grabScreenshot(sel, false);
+    shotBusy = false;
+  };
+  tick();
+  shotTimer = setInterval(tick, 2000);
+}
+function stopShotPoll() { if (shotTimer) { clearInterval(shotTimer); shotTimer = null; } }
+$("shot-take").onclick = () => { if (sel) grabScreenshot(sel, false); };
+
+// ---- helpers --------------------------------------------------------------
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function fmt(v) { return typeof v === "object" ? JSON.stringify(v) : String(v); }
+
+// ---- stream (WebCodecs H.264 player, 🎯T92.2) -----------------------------
+const K_VIDEO = 0x47453256;  // "GE2V" server→player H.264
+const K_SDLEVT = 0x47453249; // "GE2I" player→server SDL_Event
+let streamWS = null, streamDec = null, streamCfg = false, streamFrames = 0;
+
+async function loadStreamServers() {
+  const box = $("stream-server");
+  try {
+    const r = await fetch("/stream/servers").then(x => x.json());
+    const servers = r.servers || [];
+    const prev = box.value;
+    box.innerHTML = "";
+    for (const s of servers) {
+      const o = document.createElement("option");
+      o.value = s.name; o.textContent = `${s.name} (${s.sessions} watching)`;
+      box.appendChild(o);
+    }
+    if (prev) box.value = prev;
+    $("stream-stat").textContent = servers.length
+      ? `${servers.length} streaming server(s)` : "no streaming servers (launch a game with GE_STREAM=<host:port>)";
+  } catch (e) { $("stream-stat").textContent = "offline"; }
+}
+
+function stopStream() {
+  if (streamWS) { try { streamWS.close(); } catch {} streamWS = null; }
+  if (streamDec) { try { streamDec.close(); } catch {} streamDec = null; }
+  streamCfg = false; streamFrames = 0;
+}
+
+function connectStream() {
+  stopStream();
+  const server = $("stream-server").value;
+  if (!server) { $("stream-stat").textContent = "no server selected"; return; }
+  if (!("VideoDecoder" in window)) { $("stream-stat").textContent = "this browser lacks WebCodecs"; return; }
+  const canvas = $("stream-canvas");
+  const cctx = canvas.getContext("2d");
+  streamDec = new VideoDecoder({
+    output: (frame) => {
+      if (canvas.width !== frame.displayWidth) canvas.width = frame.displayWidth;
+      if (canvas.height !== frame.displayHeight) canvas.height = frame.displayHeight;
+      cctx.drawImage(frame, 0, 0);
+      frame.close();
+    },
+    error: (e) => { $("stream-stat").textContent = "decode error: " + e.message; },
+  });
+  streamWS = new WebSocket(`ws://${location.host}/stream/player/${encodeURIComponent(server)}`);
+  streamWS.binaryType = "arraybuffer";
+  streamWS.onopen = () => { $("stream-stat").textContent = "watching " + server; canvas.focus(); };
+  streamWS.onclose = () => { $("stream-stat").textContent = "stream closed"; };
+  streamWS.onerror = () => { $("stream-stat").textContent = "stream error"; };
+  streamWS.onmessage = (ev) => onStreamMsg(new Uint8Array(ev.data), new DataView(ev.data));
+  installStreamInput(canvas);
+}
+
+function onStreamMsg(buf, dv) {
+  if (buf.length < 8 || dv.getUint32(0, true) !== K_VIDEO) return; // skip SessionConfig etc.
+  if (buf.length <= 13) return;
+  const keyframe = (buf[8] & 1) === 1;
+  const avcc = buf.subarray(13); // header(8) + flags(1) + seq(4)
+  if (!streamCfg) {
+    if (!keyframe) return;               // wait for a keyframe (carries SPS/PPS)
+    const codec = codecFromAVCC(avcc);
+    if (!codec) return;
+    try { streamDec.configure({ codec, optimizeForLatency: true }); streamCfg = true; }
+    catch (e) { $("stream-stat").textContent = "configure failed: " + e.message; return; }
+  }
+  try {
+    streamDec.decode(new EncodedVideoChunk({
+      type: keyframe ? "key" : "delta",
+      timestamp: (streamFrames++) * 16666,
+      data: avccToAnnexB(avcc),
+    }));
+  } catch (e) { /* drop a frame */ }
+}
+
+// AVCC (4-byte BE length + NAL) → Annex-B (00 00 00 01 + NAL). SPS/PPS ride
+// keyframes inline, so no out-of-band decoder description is needed.
+function avccToAnnexB(a) {
+  const out = [];
+  for (let i = 0; i + 4 <= a.length;) {
+    const len = (a[i] << 24) | (a[i+1] << 16) | (a[i+2] << 8) | a[i+3];
+    i += 4;
+    if (len <= 0 || i + len > a.length) break;
+    out.push(0, 0, 0, 1);
+    for (let j = 0; j < len; j++) out.push(a[i + j]);
+    i += len;
+  }
+  return new Uint8Array(out);
+}
+
+// Codec string "avc1.PPCCLL" from the SPS NAL (type 7) in an AVCC buffer.
+function codecFromAVCC(a) {
+  for (let i = 0; i + 4 <= a.length;) {
+    const len = (a[i] << 24) | (a[i+1] << 16) | (a[i+2] << 8) | a[i+3];
+    i += 4;
+    if (i + len > a.length || len < 4) break;
+    if ((a[i] & 0x1f) === 7) {
+      const h = (n) => n.toString(16).padStart(2, "0");
+      return "avc1." + h(a[i+1]) + h(a[i+2]) + h(a[i+3]);
+    }
+    i += len;
+  }
+  return null;
+}
+
+// Input: canvas mouse/keyboard → SDL_Event bytes → relay → game. tiltbuggy is
+// driven by Shift+drag (AccelSynth). SDL_Event is a 128-byte union; we pack the
+// leading common fields for the few event types the game reads.
+const SDL = { KEY_DOWN: 0x300, KEY_UP: 0x301, MOUSE_MOTION: 0x400,
+  MOUSE_DOWN: 0x401, MOUSE_UP: 0x402, SCANCODE_LSHIFT: 225, KMOD_LSHIFT: 0x0002 };
+function sendSDL(build) {
+  if (!streamWS || streamWS.readyState !== 1) return;
+  const ev = new ArrayBuffer(128), v = new DataView(ev);
+  build(v);
+  const msg = new Uint8Array(8 + 128);
+  const mv = new DataView(msg.buffer);
+  mv.setUint32(0, K_SDLEVT, true); mv.setUint32(4, 128, true);
+  msg.set(new Uint8Array(ev), 8);
+  streamWS.send(msg);
+}
+function gameXY(canvas, e) {
+  const r = canvas.getBoundingClientRect();
+  return [ (e.clientX - r.left) / r.width * canvas.width,
+           (e.clientY - r.top) / r.height * canvas.height ];
+}
+function installStreamInput(canvas) {
+  let px = null, py = null;
+  canvas.onmousemove = (e) => { const [x,y]=gameXY(canvas,e);
+    const xrel = px === null ? 0 : x - px, yrel = py === null ? 0 : y - py;
+    px = x; py = y;
+    sendSDL(v => {
+    v.setUint32(0, SDL.MOUSE_MOTION, true); v.setUint32(16, 1, true);
+    v.setUint32(24, (e.buttons & 1) ? 1 : 0, true);
+    v.setFloat32(28, x, true); v.setFloat32(32, y, true);
+    v.setFloat32(36, xrel, true); v.setFloat32(40, yrel, true); }); }; // AccelSynth uses xrel/yrel
+  canvas.onmousedown = (e) => { const [x,y]=gameXY(canvas,e); sendSDL(v => {
+    v.setUint32(0, SDL.MOUSE_DOWN, true); v.setUint32(16, 1, true);
+    v.setUint8(28, 1); v.setUint8(30, 1); v.setFloat32(32, x, true); v.setFloat32(36, y, true); }); };
+  canvas.onmouseup = (e) => { const [x,y]=gameXY(canvas,e); sendSDL(v => {
+    v.setUint32(0, SDL.MOUSE_UP, true); v.setUint32(16, 1, true);
+    v.setUint8(28, 1); v.setUint8(30, 0); v.setFloat32(32, x, true); v.setFloat32(36, y, true); }); };
+  const key = (type, down) => (e) => { if (e.key !== "Shift") return; e.preventDefault(); sendSDL(v => {
+    v.setUint32(0, type, true); v.setUint32(16, 1, true);
+    v.setUint32(24, SDL.SCANCODE_LSHIFT, true); v.setUint16(32, SDL.KMOD_LSHIFT, true);
+    v.setUint8(36, down ? 1 : 0); }); };
+  canvas.onkeydown = key(SDL.KEY_DOWN, true);
+  canvas.onkeyup = key(SDL.KEY_UP, false);
+}
+$("stream-connect").onclick = connectStream;
+$("stream-stop").onclick = () => { stopStream(); $("stream-stat").textContent = "stopped"; };
+
+refreshApps();
+setInterval(refreshApps, 5000);
+</script>
+</body>
+</html>

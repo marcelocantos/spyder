@@ -23,6 +23,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
+	"github.com/marcelocantos/spyder/internal/dashboard"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
@@ -34,6 +35,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/streamrelay"
 	"github.com/marcelocantos/spyder/internal/wedge"
 )
 
@@ -259,6 +261,19 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv,
 		server.WithHeartbeatInterval(30*time.Second)))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
+	// 🎯T91.5 the single-page dashboard over the app-channel surface. Pure
+	// presentation on top of the same REST tools; served at /dashboard.
+	dash := dashboard.NewHandler()
+	mux.Handle(dashboard.Path, dash)
+	mux.Handle(dashboard.Path+"/", dash)
+	// 🎯T91.4/T92.2 dev H.264 stream relay — replaces ged between a ge server
+	// and the dashboard browser player. Speaks ge's brokered wire.
+	relay := streamrelay.New()
+	mux.HandleFunc("/ws/server", relay.HandleServerSideband)
+	mux.HandleFunc("/ws/server/wire/", relay.HandleServerWire)
+	mux.HandleFunc("/stream/player/", relay.HandlePlayerConnect)
+	mux.HandleFunc("/ws/wire", relay.HandlePlayerWire) // ge's native player (PlayerWireBridge)
+	mux.HandleFunc("/stream/servers", relay.HandleServerList)
 	return mux, resvStore, handler, logCapMgr, appChanMgr
 }
 

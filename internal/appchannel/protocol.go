@@ -229,6 +229,20 @@ const (
 	MethodRestoreState     = "restore_state"
 	MethodScreenshotApp    = "screenshot_app"
 
+	// Tweak control (🎯T91.2): ged's tweak plane, ported onto the
+	// app-channel so a direct-mode app is tunable without ged.
+	MethodTweakList  = "tweak_list"
+	MethodTweakGet   = "tweak_get"
+	MethodTweakSet   = "tweak_set"
+	MethodTweakReset = "tweak_reset"
+
+	// MethodSpawnInstance (🎯T92.1): a game server that advertises this
+	// method is a device FACTORY — spyder calls it to fork a new game
+	// instance, which dials the given app-channel address back as its own
+	// session (an abstract "device"). This is the spawn backend that lets
+	// a game server take part in spyder's launcher/pool model.
+	MethodSpawnInstance = "spawn_instance"
+
 	// Push (app → spyder) message methods.
 	PushLog          = "log"
 	PushPerfCounters = "perf"
@@ -253,4 +267,9 @@ var KnownMethods = []string{
 	MethodSaveState,
 	MethodRestoreState,
 	MethodScreenshotApp,
+	MethodTweakList,
+	MethodTweakGet,
+	MethodTweakSet,
+	MethodTweakReset,
+	MethodSpawnInstance,
 }
