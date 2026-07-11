@@ -494,9 +494,9 @@ func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, er
 }
 
 // handleAppTweakList / Get / Set / Reset expose the app's tweak plane over
-// the app-channel (🎯T91.2) — ged's tweak_* control, ported so a direct-mode
-// app is tunable from spyder without ged. The app answers with the shared
-// tweak:: library's serialisation, so the shapes match ged's.
+// the app-channel (🎯T91.2) — ported so a direct-mode
+// app is tunable from spyder via spyder only. The app answers with the shared
+// tweak:: library's serialisation, so the shapes match the engine's allToJson contract.
 func (h *Handler) handleAppTweakList(args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
@@ -562,7 +562,7 @@ func (h *Handler) handleAppTweakReset(args map[string]any) (*mcpgo.CallToolResul
 	if errRes != nil {
 		return errRes, nil
 	}
-	// name resets one tweak; its absence resets all — mirrors ged's payload.
+	// name resets one tweak; its absence resets all — mirrors the engine tweak_reset payload.
 	params := map[string]any{}
 	if name := optString(args, "name"); name != "" {
 		params["name"] = name
@@ -935,7 +935,7 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("slice", mcpgo.Required(), mcpgo.Description("State slice name (e.g. \"scene\", \"physics\", \"hud\")")),
 		),
-		mcpgo.NewTool("app_tweak_list", mcpgo.WithDescription("List the app's tweaks — name, current value, default, and metadata — over the app-channel (🎯T91.2: ged's tweak_list, ported so a direct-mode app is tunable without ged)."),
+		mcpgo.NewTool("app_tweak_list", mcpgo.WithDescription("List the app's tweaks — name, current value, default, and metadata — over the app-channel (🎯T91.2: list tweaks over the app-channel)."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),

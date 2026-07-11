@@ -24,7 +24,7 @@ const kVideoStreamMagic = 0x47453256
 // TestStream_Tiltbuggy_Live is the 🎯T92.2 class-1 oracle: a REAL tiltbuggy in
 // GE_STREAM mode connects to the relay, a player attaches, and real H.264
 // frames captured+encoded from the running game flow server→spyder→player — no
-// ged. Proves the whole ge streaming path (capture hook + VideoToolbox encode +
+// Proves the whole ge streaming path (capture hook + VideoToolbox encode +
 // wire) end-to-end.
 //
 // Gated on SPYDER_GE_TILTBUGGY (launches a real GUI app); skips headless.
@@ -105,7 +105,7 @@ func TestStream_Tiltbuggy_Live(t *testing.T) {
 	if !keyframeOK {
 		t.Fatal("no self-decodable keyframe (SPS+PPS+IDR inline) seen — a browser decoder could not initialize")
 	}
-	t.Logf("received %d valid H.264 frames (%d payload bytes) server→spyder→player, no ged", frames, videoBytes)
+	t.Logf("received %d valid H.264 frames (%d payload bytes) server→spyder→player", frames, videoBytes)
 }
 
 // selfDecodableKeyframe reports whether an AVCC access unit carries an SPS

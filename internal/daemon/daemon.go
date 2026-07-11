@@ -266,7 +266,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	dash := dashboard.NewHandler()
 	mux.Handle(dashboard.Path, dash)
 	mux.Handle(dashboard.Path+"/", dash)
-	// 🎯T91.4/T92.2 dev H.264 stream relay — replaces ged between a ge server
+	// 🎯T91.4/T92.2 dev H.264 stream relay — between a ge server
 	// and the dashboard browser player. Speaks ge's brokered wire.
 	relay := streamrelay.New()
 	mux.HandleFunc("/ws/server", relay.HandleServerSideband)
