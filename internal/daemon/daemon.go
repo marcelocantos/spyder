@@ -68,7 +68,7 @@ func Start(cfg Config) error {
 func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version)
-	handler, _, _, logCapMgr, appChanMgr := Build(cfg)
+	handler, _, mcpHandler, logCapMgr, appChanMgr := Build(cfg)
 
 	// Bundled go-ios tunnel daemon. Spawned as a child process so its
 	// lifecycle is tied to spyder's — stop on shutdown. Missing binary
@@ -81,6 +81,13 @@ func Run(ctx context.Context, cfg Config) error {
 			slog.Error("iostunnel: start failed; iOS tools degraded", "error", err)
 			tunnelSup = nil
 		}
+	}
+
+	// 🎯T89.2: proactive tunnel recovery on usbmux attach/detach so a
+	// hub power-cycle never leaves the tunnel registry permanently
+	// stale. Lazy T89.1 recovery remains the safety net on next call.
+	if mcpHandler != nil {
+		mcpHandler.StartUsbmuxWatch(ctx)
 	}
 
 	// Wedge monitor. Detects the usbmuxd third-party-table desync
