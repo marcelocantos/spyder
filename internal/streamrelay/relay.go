@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package streamrelay is spyder's dev H.264 stream relay (🎯T91.4 / T92.2) —
-// the payload-agnostic middle-man that replaces ged between a ge game SERVER
+// the payload-agnostic middle-man between a ge game SERVER
 // and a PLAYER. It speaks ge's existing brokered wire so a ge server only has
-// to repoint its connect URL from ged to spyder:
+// to repoint its connect URL to spyder:
 //
 //   - server control  : GET /ws/server?name=<name>   (WebSocket, JSON text)
 //   - per-session wire : GET /ws/server/wire/<id>     (WebSocket, binary)
@@ -175,7 +175,7 @@ func (r *Relay) HandlePlayerConnect(w http.ResponseWriter, req *http.Request) {
 // HandlePlayerWire handles GET /ws/wire?preference=<name>&name=<name>: ge's
 // NATIVE player (PlayerWireBridge) attaching to server <name>. Same pairing as
 // the browser path — the native player just dials a different URL (it was built
-// to reach ged), so spyder serves it here and repoints are unnecessary.
+// to reach the old broker), so spyder serves it here and repoints are unnecessary.
 func (r *Relay) HandlePlayerWire(w http.ResponseWriter, req *http.Request) {
 	name := req.URL.Query().Get("preference")
 	if name == "" {

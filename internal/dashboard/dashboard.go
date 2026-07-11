@@ -5,7 +5,7 @@
 // browser view over the app-channel surface (info/tweaks/logs/state/
 // screenshot) for any connected ge app, direct or streaming. It is pure
 // presentation — every datum it renders comes from the same REST tool
-// surface (POST /api/v1/<tool>) an agent uses, so there is no ged and no
+// surface (POST /api/v1/<tool>) an agent uses, so there is no legacy broker and no
 // dashboard-specific backend to keep in sync.
 package dashboard
 

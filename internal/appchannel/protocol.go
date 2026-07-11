@@ -229,8 +229,8 @@ const (
 	MethodRestoreState     = "restore_state"
 	MethodScreenshotApp    = "screenshot_app"
 
-	// Tweak control (🎯T91.2): ged's tweak plane, ported onto the
-	// app-channel so a direct-mode app is tunable without ged.
+	// Tweak control (🎯T91.2): tweak plane on the
+	// app-channel so a direct-mode app is tunable via spyder only.
 	MethodTweakList  = "tweak_list"
 	MethodTweakGet   = "tweak_get"
 	MethodTweakSet   = "tweak_set"

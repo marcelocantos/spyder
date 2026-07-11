@@ -19,7 +19,7 @@ import (
 // a REAL ge factory: spyder launches tiltbuggy in GE_FACTORY mode (which
 // advertises spawn_instance), then app_spawn makes the factory fork an actual
 // tiltbuggy game instance that dials spyder back as its own session — and the
-// full monitor surface (app_tweak_list) works on that instance. No ged, no
+// full monitor surface (app_tweak_list) works on that instance. No
 // test-double: this is start-and-monitor on the server medium, end to end.
 //
 // Gated on SPYDER_GE_TILTBUGGY (launches real GUI processes); skips headless.

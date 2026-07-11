@@ -18,7 +18,7 @@ ge server instance ──H.264──▶ spyder relay ──H.264──▶ dashbo
 
 ## DONE — spyder relay (T91.4), `internal/streamrelay/relay.go`
 
-Reimplements ged's relay role, speaking ge's existing brokered wire:
+Implements the stream relay role (formerly ged's), speaking ge's existing brokered wire:
 - `GET /ws/server?name=<name>` — server control (JSON sideband)
 - `GET /ws/server/wire/<id>` — per-session video wire (binary)
 - `GET /stream/player/<name>` — browser player attaches (binary)
@@ -45,8 +45,8 @@ Binary messages are `wire::MessageHeader{uint32 magic, uint32 length}` + payload
   the server renders at `width/2`.
 - `kSessionConfigMagic` "GE2C" (server→player): header + `wire::SessionConfig`
   {sensors,orientation}.
-- Sideband JSON (server→ged/spyder): `{"type":"hello","name","pid","version"}`;
-  ged/spyder→server: `player_attached` / `player_detached` with `session_id`.
+- Sideband JSON (server→spyder): `{"type":"hello","name","pid","version"}`;
+  spyder→server: `player_attached` / `player_detached` with `session_id`.
 
 Server dials (currently hardcoded `localhost:42069` in
 `SessionHost_brokered.mm:65,108`). WebSocket client = `connectWebSocket(host,
@@ -132,5 +132,4 @@ A "Stream" panel in `internal/dashboard/index.html`:
 ## Sequencing
 
 relay (done) → ge server streaming (1–3) → class-1 oracle (4) → browser player
-→ input (prefer JSON format) → perceptual acceptance in the dashboard. ged is
-fully retired once this lands (T91.4 was its last pin).
+→ input (prefer JSON format) → perceptual acceptance in the dashboard. the old ged daemon is fully retired (T91.4 was its last pin).
