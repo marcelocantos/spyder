@@ -4218,7 +4218,7 @@ targets:
     discovered: 2026-07-05
   T93:
     name: The spyder↔player streaming integration is rebuilt on pigeon ≥0.30 (E2E-encrypted relay + pairing + datagram video), replacing the plain-WebSocket streamrelay
-    status: set_aside
+    status: identified
     value: 0.0
     cost: 0.0
     set_aside_reason: Cutover gates closed in pigeon v0.30.0 (T48/T50/T52/T53/T57). T92.2 WebSocket path remains the live stream. Reopen T93 when ready to rebuild on pigeon ≥0.30; residual pigeon polish (T43/T44.4/T55/T58) is non-blocking.
@@ -4226,7 +4226,10 @@ targets:
     - '[class 1] The player↔server transport runs on pigeon 0.25 (Register/Connect + LAN bypass, E2E X25519/AES-GCM) instead of spyder''s plain-WebSocket streamrelay; H.264 frames flow over pigeon datagram channels, input over reliable streams. Neither spyder nor the relay sees plaintext.'
     - '[class 1] Pairing uses pigeon PairingArtifacts (spyder mints them via the pairing host; the dashboard/QR carries them), replacing name-based /stream/player and /ws/wire lookup.'
     - '[decision] spyder''s runtime role becomes pairing-artifact issuance + dashboard + game-instance factory; once player and server are paired, spyder is OFF the data path (pigeon relay/LAN carries it).'
-    context: 'Filed 2026-07-05 at the user''s explicit request, and DEFERRED deliberately: a big transport pivot the user does NOT want to stack on the current T92.2 pivot. Sequence: land T92.2 (native player + headless server) on the current plain-WebSocket streamrelay FIRST, then rebuild on pigeon. pigeon = the importable E2E-encrypted QUIC relay/pairing library (Go/Swift/Kotlin/C); ge''s T11 tracks the ge-side transport migration onto it (its context references pigeon v0.20.0 — this target targets 0.25). This would replace T92.2''s streamrelay + the /ws/wire + /stream/player endpoints with pigeon channels, and fold pairing into the QR/dashboard. Independent of current work (no blocker edges) so it does not gate T92.2; revisit after T92.2 lands to avoid two simultaneous big pivots.'
+    context: |-
+      Reopened 2026-07-11: user unparked pigeon work after pigeon ≥0.30 cutover gates. T92.2 WebSocket streamrelay remains the live path until T93 lands. Pair with ge 🎯T11.
+
+      Originally deferred so T92.2 (native player + headless server on plain WebSocket) could land first. That sequence is complete enough to rebuild the spyder↔player stream integration on pigeon ≥0.30 (E2E relay + pairing + datagram video). Residual pigeon polish (T43/T44.4/T55/T58) non-blocking.
     origin: manual
     discovered: 2026-07-05
   T94:
