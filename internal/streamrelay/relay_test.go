@@ -238,3 +238,26 @@ func waitFor(d time.Duration, cond func() bool) bool {
 	}
 	return false
 }
+
+func TestHopRates_Snapshot(t *testing.T) {
+	var h hopRates
+	for i := 0; i < 10; i++ {
+		h.note(1000)
+	}
+	// Partial window (≥250ms) should report non-zero rates after a short sleep.
+	time.Sleep(300 * time.Millisecond)
+	h.note(1000)
+	frames, bytes, maxSz, lastSz, fps1s, bps1s, fpsAvg, bpsAvg := h.snapshot(time.Second)
+	if frames != 11 || bytes != 11000 {
+		t.Fatalf("totals: frames=%d bytes=%d", frames, bytes)
+	}
+	if maxSz != 1000 || lastSz != 1000 {
+		t.Fatalf("sizes: max=%d last=%d", maxSz, lastSz)
+	}
+	if fps1s <= 0 || bps1s <= 0 {
+		t.Fatalf("1s rates should be positive after partial window: fps=%v bps=%v", fps1s, bps1s)
+	}
+	if fpsAvg <= 0 || bpsAvg <= 0 {
+		t.Fatalf("avg rates: fps=%v bps=%v", fpsAvg, bpsAvg)
+	}
+}

@@ -65,6 +65,86 @@ func (s *serverConn) send(ctx context.Context, v any) error {
 	return s.sideband.Write(ctx, websocket.MessageText, b)
 }
 
+// hopRates tracks lifetime totals plus a ~1s rolling window of message
+// counts/sizes for one pipe direction. Opaque pipe telemetry: every WebSocket
+// message is one "frame" (video AU or input blob) — no codec decode required.
+type hopRates struct {
+	frames atomic.Uint64
+	bytes  atomic.Uint64
+	maxSz  atomic.Uint64
+	lastSz atomic.Uint64
+
+	mu            sync.Mutex
+	winStart      time.Time
+	winFrames     uint64
+	winBytes      uint64
+	// Last completed ≥1s window (0 until the first window closes).
+	fps1s         float64
+	bytesPerSec1s float64
+}
+
+func (h *hopRates) note(n int) {
+	if n < 0 {
+		n = 0
+	}
+	sz := uint64(n)
+	h.frames.Add(1)
+	h.bytes.Add(sz)
+	h.lastSz.Store(sz)
+	for {
+		old := h.maxSz.Load()
+		if sz <= old || h.maxSz.CompareAndSwap(old, sz) {
+			break
+		}
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	if h.winStart.IsZero() {
+		h.winStart = now
+	}
+	h.winFrames++
+	h.winBytes += sz
+	if d := now.Sub(h.winStart); d >= time.Second {
+		sec := d.Seconds()
+		if sec > 0 {
+			h.fps1s = float64(h.winFrames) / sec
+			h.bytesPerSec1s = float64(h.winBytes) / sec
+		}
+		h.winFrames = 0
+		h.winBytes = 0
+		h.winStart = now
+	}
+}
+
+func (h *hopRates) snapshot(age time.Duration) (frames, bytes, maxSz, lastSz uint64, fps1s, bps1s, fpsAvg, bpsAvg float64) {
+	frames = h.frames.Load()
+	bytes = h.bytes.Load()
+	maxSz = h.maxSz.Load()
+	lastSz = h.lastSz.Load()
+	h.mu.Lock()
+	fps1s = h.fps1s
+	bps1s = h.bytesPerSec1s
+	// If the current window is already ≥250ms and we have samples, expose a
+	// partial window so early GETs are not stuck at 0 until the first full second.
+	if fps1s == 0 && h.winFrames > 0 && !h.winStart.IsZero() {
+		if d := time.Since(h.winStart); d >= 250*time.Millisecond {
+			sec := d.Seconds()
+			if sec > 0 {
+				fps1s = float64(h.winFrames) / sec
+				bps1s = float64(h.winBytes) / sec
+			}
+		}
+	}
+	h.mu.Unlock()
+	if sec := age.Seconds(); sec > 0 {
+		fpsAvg = float64(frames) / sec
+		bpsAvg = float64(bytes) / sec
+	}
+	return
+}
+
 type session struct {
 	id           string
 	server       *serverConn
@@ -74,28 +154,12 @@ type session struct {
 	wireCh       chan *websocket.Conn
 	started      time.Time
 
-	framesS2P        atomic.Uint64
-	bytesS2P         atomic.Uint64
-	framesP2S        atomic.Uint64
-	bytesP2S         atomic.Uint64
-	maxFrameBytesS2P atomic.Uint64
+	s2p hopRates // server → player (video messages)
+	p2s hopRates // player → server (input messages)
 }
 
-func (s *session) noteS2P(n int) {
-	s.framesS2P.Add(1)
-	s.bytesS2P.Add(uint64(n))
-	for {
-		old := s.maxFrameBytesS2P.Load()
-		if uint64(n) <= old || s.maxFrameBytesS2P.CompareAndSwap(old, uint64(n)) {
-			return
-		}
-	}
-}
-
-func (s *session) noteP2S(n int) {
-	s.framesP2S.Add(1)
-	s.bytesP2S.Add(uint64(n))
-}
+func (s *session) noteS2P(n int) { s.s2p.note(n) }
+func (s *session) noteP2S(n int) { s.p2s.note(n) }
 
 // ServerInfo is a connected streaming server (for the dashboard catalogue).
 type ServerInfo struct {
@@ -106,21 +170,40 @@ type ServerInfo struct {
 }
 
 // SessionInfo is a live player↔server pairing with hop telemetry (🎯T96).
+// Rates need no codec: each WebSocket binary message is one counted "frame".
 type SessionInfo struct {
-	ID               string    `json:"session_id"`
-	ServerName       string    `json:"server_name"`
-	PlayerRemote     string    `json:"player_remote"`
-	PlayerPathClass  PathClass `json:"player_path_class"`
-	ServerRemote     string    `json:"server_remote"`
-	ServerPathClass  PathClass `json:"server_path_class"`
-	WireRemote       string    `json:"wire_remote,omitempty"`
-	WirePathClass    PathClass `json:"wire_path_class,omitempty"`
-	FramesS2P        uint64    `json:"frames_s2p"`
-	BytesS2P         uint64    `json:"bytes_s2p"`
-	FramesP2S        uint64    `json:"frames_p2s"`
-	BytesP2S         uint64    `json:"bytes_p2s"`
-	MaxFrameBytesS2P uint64    `json:"max_frame_bytes_s2p"`
-	AgeMs            int64     `json:"age_ms"`
+	ID              string    `json:"session_id"`
+	ServerName      string    `json:"server_name"`
+	PlayerRemote    string    `json:"player_remote"`
+	PlayerPathClass PathClass `json:"player_path_class"`
+	ServerRemote    string    `json:"server_remote"`
+	ServerPathClass PathClass `json:"server_path_class"`
+	WireRemote      string    `json:"wire_remote,omitempty"`
+	WirePathClass   PathClass `json:"wire_path_class,omitempty"`
+	AgeMs           int64     `json:"age_ms"`
+
+	// Lifetime totals (server → player / player → server).
+	FramesS2P uint64 `json:"frames_s2p"`
+	BytesS2P  uint64 `json:"bytes_s2p"`
+	FramesP2S uint64 `json:"frames_p2s"`
+	BytesP2S  uint64 `json:"bytes_p2s"`
+
+	// Size extremes for the video direction (opaque message length).
+	MaxFrameBytesS2P  uint64 `json:"max_frame_bytes_s2p"`
+	LastFrameBytesS2P uint64 `json:"last_frame_bytes_s2p"`
+	AvgFrameBytesS2P  uint64 `json:"avg_frame_bytes_s2p,omitempty"`
+
+	// Lifetime average rates since session start.
+	FPSAvgS2P       float64 `json:"fps_avg_s2p"`
+	BytesPerSecAvgS2P float64 `json:"bytes_per_sec_avg_s2p"`
+	FPSAvgP2S       float64 `json:"fps_avg_p2s"`
+	BytesPerSecAvgP2S float64 `json:"bytes_per_sec_avg_p2s"`
+
+	// ~1s rolling window rates (best for spotting hitch windows).
+	FPS1sS2P          float64 `json:"fps_1s_s2p"`
+	BytesPerSec1sS2P  float64 `json:"bytes_per_sec_1s_s2p"`
+	FPS1sP2S          float64 `json:"fps_1s_p2s"`
+	BytesPerSec1sP2S  float64 `json:"bytes_per_sec_1s_p2s"`
 }
 
 // Servers lists connected streaming servers.
@@ -150,20 +233,35 @@ func (r *Relay) Sessions() []SessionInfo {
 	now := time.Now()
 	out := make([]SessionInfo, 0, len(r.sessions))
 	for _, s := range r.sessions {
+		age := now.Sub(s.started)
+		fS2P, bS2P, maxS2P, lastS2P, fps1sS2P, bps1sS2P, fpsAvgS2P, bpsAvgS2P := s.s2p.snapshot(age)
+		fP2S, bP2S, _, _, fps1sP2S, bps1sP2S, fpsAvgP2S, bpsAvgP2S := s.p2s.snapshot(age)
 		info := SessionInfo{
-			ID:               s.id,
-			ServerName:       s.server.name,
-			PlayerRemote:     s.playerRemote,
-			PlayerPathClass:  ClassifyRemote(s.playerRemote),
-			ServerRemote:     s.server.remote,
-			ServerPathClass:  ClassifyRemote(s.server.remote),
-			WireRemote:       s.wireRemote,
-			FramesS2P:        s.framesS2P.Load(),
-			BytesS2P:         s.bytesS2P.Load(),
-			FramesP2S:        s.framesP2S.Load(),
-			BytesP2S:         s.bytesP2S.Load(),
-			MaxFrameBytesS2P: s.maxFrameBytesS2P.Load(),
-			AgeMs:            now.Sub(s.started).Milliseconds(),
+			ID:                s.id,
+			ServerName:        s.server.name,
+			PlayerRemote:      s.playerRemote,
+			PlayerPathClass:   ClassifyRemote(s.playerRemote),
+			ServerRemote:      s.server.remote,
+			ServerPathClass:   ClassifyRemote(s.server.remote),
+			WireRemote:        s.wireRemote,
+			AgeMs:             age.Milliseconds(),
+			FramesS2P:         fS2P,
+			BytesS2P:          bS2P,
+			FramesP2S:         fP2S,
+			BytesP2S:          bP2S,
+			MaxFrameBytesS2P:  maxS2P,
+			LastFrameBytesS2P: lastS2P,
+			FPSAvgS2P:         fpsAvgS2P,
+			BytesPerSecAvgS2P: bpsAvgS2P,
+			FPSAvgP2S:         fpsAvgP2S,
+			BytesPerSecAvgP2S: bpsAvgP2S,
+			FPS1sS2P:          fps1sS2P,
+			BytesPerSec1sS2P:  bps1sS2P,
+			FPS1sP2S:          fps1sP2S,
+			BytesPerSec1sP2S:  bps1sP2S,
+		}
+		if fS2P > 0 {
+			info.AvgFrameBytesS2P = bS2P / fS2P
 		}
 		if s.wireRemote != "" {
 			info.WirePathClass = ClassifyRemote(s.wireRemote)
@@ -343,18 +441,21 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 
 	ctx := req.Context()
 	defer func() {
-		info := SessionInfo{}
+		var (
+			framesS2P, bytesS2P, maxS2P uint64
+			framesP2S, bytesP2S         uint64
+			ageMs                       int64
+			fpsAvg, bpsAvg              float64
+		)
 		r.mu.Lock()
 		if s := r.sessions[id]; s != nil {
-			info = SessionInfo{
-				FramesS2P:        s.framesS2P.Load(),
-				BytesS2P:         s.bytesS2P.Load(),
-				FramesP2S:        s.framesP2S.Load(),
-				BytesP2S:         s.bytesP2S.Load(),
-				MaxFrameBytesS2P: s.maxFrameBytesS2P.Load(),
-				AgeMs:            time.Since(s.started).Milliseconds(),
-				WireRemote:       s.wireRemote,
-			}
+			age := time.Since(s.started)
+			ageMs = age.Milliseconds()
+			var fps1s, bps1s float64
+			framesS2P, bytesS2P, maxS2P, _, fps1s, bps1s, fpsAvg, bpsAvg = s.s2p.snapshot(age)
+			framesP2S, bytesP2S, _, _, _, _, _, _ = s.p2s.snapshot(age)
+			_ = fps1s
+			_ = bps1s
 		}
 		delete(r.sessions, id)
 		r.mu.Unlock()
@@ -365,12 +466,14 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 			"session", id,
 			"player_remote", playerRemote,
 			"player_path_class", ClassifyRemote(playerRemote),
-			"frames_s2p", info.FramesS2P,
-			"bytes_s2p", info.BytesS2P,
-			"frames_p2s", info.FramesP2S,
-			"bytes_p2s", info.BytesP2S,
-			"max_frame_bytes_s2p", info.MaxFrameBytesS2P,
-			"age_ms", info.AgeMs,
+			"frames_s2p", framesS2P,
+			"bytes_s2p", bytesS2P,
+			"frames_p2s", framesP2S,
+			"bytes_p2s", bytesP2S,
+			"max_frame_bytes_s2p", maxS2P,
+			"fps_avg_s2p", fpsAvg,
+			"bytes_per_sec_avg_s2p", bpsAvg,
+			"age_ms", ageMs,
 		)
 	}()
 
