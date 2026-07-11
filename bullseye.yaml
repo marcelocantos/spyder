@@ -3752,7 +3752,7 @@ targets:
     achieved: 2026-06-30
   T89:
     name: Spyder self-recovers from stale RemoteXPC tunnels after iOS device re-enumeration — a hub power-cycle or unplug/replug never needs a manual daemon restart
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3766,9 +3766,10 @@ targets:
     - T89.2
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-11
   T89.1:
     name: A tunnel-consuming spyder command transparently re-establishes a stale tunnel and retries once before erroring (and builds the shared re-establish primitive)
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3779,9 +3780,10 @@ targets:
     context: 'Cheapest, highest-value fix and the foundation for the others: it introduces the shared re-establish primitive and wraps the tunnel-consuming path with detect-stale -> re-establish -> retry-once. Would have made the 2026-07-04 hub-cycle failure invisible. MECHANISM (verified against vendored go-ios d78573d186a3): the go-ios daemon''s tunnel-info GET returns 404 with an EMPTY body when FindTunnel(udid) has no live tunnel, so TunnelInfoForDevice (which never checks status code) fails json.Unmarshal with ''unexpected end of JSON input'' — that IS the stale symptom. go-ios exposes exactly one mutating HTTP lever, DELETE /tunnel/{udid} -> tm.stopTunnel; the daemon''s 1s UpdateTunnels loop then rebuilds because the device is still in ios.ListDevices(). ORACLE-FIRST: acceptance split by verification class per the 2026-07-04 graph reshape.'
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-11
   T89.2:
     name: Spyder invalidates and re-establishes a device's tunnel on usbmux attach/detach events, so the tunnel registry never goes stale across re-enumeration
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3793,6 +3795,7 @@ targets:
     - T89.1
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-11
   T89.3:
     name: spyder doctor detects per-device tunnel liveness, --fix re-establishes stale tunnels, and the consumer error names the true condition
     status: set_aside
