@@ -2148,9 +2148,10 @@ targets:
     achieved: 2026-05-19
   T64:
     name: Investigate go-ios DTX connection leak and reinstate iOS keep-awake supervisor
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: go-ios DTX investigation parked as long-horizon upstream research, not migration.'
     acceptance:
     - Root cause of the go-ios `instruments.ListenAppStateNotifications.Close()` leak documented — either confirmed in current upstream (https://github.com/danielpaulus/go-ios) or determined that newer versions ship a fixed Close(). Reproducer recorded.
     - Either (a) an upstream PR is open / merged that makes Close() actually tear down the DTX conn, or (b) spyder vendors a forked go-ios with the fix, or (c) spyder uses a different go-ios API that doesn't have the bug, or (d) we conclude the leak is fundamental and document a different keep-awake mechanism.
@@ -2259,9 +2260,10 @@ targets:
     achieved: 2026-05-20
   T68:
     name: Identify the macOS-side trigger that wedges usbmuxd's third-party device list
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: usbmuxd wedge root-cause investigation parked; doctor workaround remains until post-P reliability theme.'
     acceptance:
     - Reproducer script in scripts/ that reliably wedges usbmuxd's third-party device visibility within ≤5 minutes against a paired iOS device, without involving Xcode or system reboot.
     - Either (a) a `dtrace` / `fs_usage` / `nettop` trace captured during the wedge that identifies the offending RPC pattern or kernel transition, or (b) a clear write-up of why the trigger couldn't be isolated and the next investigation step.
@@ -2322,9 +2324,10 @@ targets:
     achieved: 2026-05-23
   T69:
     name: Remove spyder doctor --install-sudoers + spyder-killusbmuxd once usbmuxd wedge has a real fix
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: blocked on T68 usbmuxd fix; parked with that investigation.'
     acceptance:
     - spyder doctor --install-sudoers, spyder doctor --fix, the cmd/spyder-killusbmuxd helper binary, the Makefile rule for it, the agents-guide section, and the /etc/sudoers.d/spyder-killusbmuxd entry pattern are all retired from the tree.
     - STABILITY.md notes the historical role of the workaround (v0.41-v0.4x era) and points at whatever permanent fix landed (e.g. connection pooling alone, a different go-ios API, an Apple-side fix, a libimobiledevice replacement).
@@ -2412,9 +2415,10 @@ targets:
     achieved: 2026-05-29
   T71:
     name: Track upstream go-ios for divergence relevant to spyder's pinned fork
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: go-ios fork tracking is ongoing maintenance, not an open product target — handle as release checklist item.'
     acceptance:
     - 'Periodically (when you next happen to touch the fork for any reason, or at most every few months), fetch upstream and compare against spyder-patches. The check is: `cd /tmp/go-ios-fix && git fetch upstream && git log --oneline upstream/main..spyder-patches` (commits we carry) and `git log --oneline spyder-patches..upstream/main` (commits upstream has that we don''t). Equivalent without a local clone: `gh api repos/danielpaulus/go-ios/compare/main...marcelocantos:go-ios:spyder-patches --jq ''.ahead_by, .behind_by''`.'
     - If commits upstream touch any of the paths spyder actively uses — `ios/dtx_codec/`, `ios/instruments/`, `ios/installationproxy/`, `ios/appservice/`, `ios/ostrace/`, `ios/crashreport/`, `ios/syslog/`, `ios/zipconduit/`, `ios/tunnel/`, `ios/{utils,lockdown}.go` — read them. Decide whether to pull them in via a rebase (see 🎯T70 for the safe workflow) or whether they're irrelevant.
@@ -3067,9 +3071,10 @@ targets:
     achieved: 2026-06-01
   T76:
     name: Bidirectional MessagePack RPC channel — deferred extensions
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: app-channel v1 backbone is done; hot_reload/repl/auth/fanout/file-push are post-P feature themes, not migration blockers.'
     acceptance:
     - Every sub-target (T76.1–T76.7) either lands or carries a concrete won't-fix disposition referencing real usage data.
     - Adoption decisions are re-evaluated *after* the T75 v1 slice has been used in anger — the channel may grow naturally into these or they may prove unnecessary once the simpler set is in hand.
@@ -3096,9 +3101,10 @@ targets:
     discovered: 2026-06-01
   T76.1:
     name: Test-event push — structured per-assertion events from XCTest/instrumented Android tests
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: deferred app-channel extension (parent T76 parked).'
     acceptance:
     - 'Test framework emits `test_event` push messages with params `{event: "started"|"passed"|"failed"|"skipped", suite, name, duration_ms?, message?, assertion_detail?}`.'
     - Spyder MCP tool `app_test_events` returns a session-bounded list, with filtering by suite/event.
@@ -3120,9 +3126,10 @@ targets:
     discovered: 2026-06-01
   T76.2:
     name: '`hot_reload` — push config / asset blobs, app reloads in place without rebuild'
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: deferred app-channel extension (parent T76 parked).'
     acceptance:
     - 'Spyder→app `hot_reload` with params `{kind: "config"|"shader"|"level"|"texture"|...", payload: <bin>, ref?: str}`. App routes to the matching reloader and responds with `{reloaded: true, applied_at: ts}` or a structured error.'
     - Spyder MCP tool `app_hot_reload` exposes this; convenience wrapper `app_hot_reload_file` reads a local file and pushes its contents.
@@ -3142,9 +3149,10 @@ targets:
     discovered: 2026-06-01
   T76.3:
     name: '`repl_eval` — push embedded-script snippets, app evaluates against live state'
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: deferred app-channel extension (parent T76 parked).'
     acceptance:
     - 'Spyder→app `repl_eval` with params `{lang: "lua"|"wren"|"...", source: str}`. App evaluates the snippet in the game context, responds with `{result: any}` or `{error: {...}}`.'
     - Spyder MCP tool `app_eval` exposes this; convenience aliases per supported language.
@@ -3166,9 +3174,10 @@ targets:
     discovered: 2026-06-01
   T76.4:
     name: Auth + encryption — gate the channel behind a token / TLS for non-LAN use
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: deferred app-channel extension (parent T76 parked).'
     acceptance:
     - Channel optionally enforces a shared-secret token (passed via env var alongside LOG_TARGET) and / or TLS for connections originating outside RFC 1918 ranges.
     - MCP tool surface unchanged — the auth is below the protocol layer.
@@ -3189,9 +3198,10 @@ targets:
     discovered: 2026-06-01
   T76.5:
     name: Multi-client fan-out — multiple spyders / agents observing one app concurrently
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: deferred app-channel extension (parent T76 parked).'
     acceptance:
     - App accepts multiple concurrent RPC connections; pushes (logs, perf, etc.) fan out to all subscribed clients.
     - Per-client request/response correlation works correctly under concurrent in-flight requests from different clients.
@@ -3212,9 +3222,10 @@ targets:
     discovered: 2026-06-01
   T76.6:
     name: Spyder→app file push — upload assets / save files / configs via the framing protocol
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: deferred app-channel extension (parent T76 parked).'
     acceptance:
     - 'Spyder→app `file_push` with params `{dest_path: str, data: <bin>, mode?: int}` writes the file into the app''s sandbox at a path the app permits.'
     - App declares allowed destination paths (e.g. `Documents/<subdir>/`) in its hello capabilities to bound the surface; rejects writes outside.
@@ -3235,9 +3246,10 @@ targets:
     discovered: 2026-06-01
   T76.7:
     name: Pub/sub event categories — filtered subscription for high-volume push streams
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: deferred app-channel extension (parent T76 parked).'
     acceptance:
     - 'Spyder→app `subscribe` with params `{categories: [str]}` (e.g. `["log:error", "perf:frame_time", "state:scene_change"]`). App only pushes matching events to that client.'
     - 'App-side default: subscribe-to-all on connect (preserves current behaviour); explicit subscribe call narrows.'
@@ -3258,9 +3270,10 @@ targets:
     discovered: 2026-06-01
   T77:
     name: implicit-workflow-reservations
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: UX sugar for reservations; post-P polish.'
     acceptance:
     - Spyder grows a notion of an implicit "device workflow" so that parallel agent sessions across the 10-device fleet don't manually coordinate to avoid stepping on each other.
     - Workflow-starting calls (deploy_app / install_app / launch_app and similar) acquire a renewable reservation on the device under the calling session's identity; the call blocks for a configurable timeout if the device is already reserved by another session, then fails cleanly.
@@ -3317,9 +3330,10 @@ targets:
     achieved: 2026-06-08
   T79:
     name: resolveAdapter routes by live-device match, not inventory + ClassifyRaw — inventory becomes purely opt-in
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: resolver UX improvement; post-P polish, not migration.'
     acceptance:
     - '`resolveAdapter(ref)` consults the live device lists between the inventory Lookup and the ClassifyRaw fallback. Resolution order: (1) inventory alias / UUID / CoreDevice / Android-serial exact match (existing behaviour); (2) live iOS device whose `DeviceName`, `UniqueDeviceID`, or `CoreDevice ID` matches `ref` (case-insensitive on DeviceName); (3) live Android device whose serial matches `ref`; (4) ClassifyRaw fallback for the offline case.'
     - Step (2) and step (3) call the adapter `List()` methods directly. Cost is enumeration latency (~100ms) per resolveAdapter call when inventory misses; cache the live snapshot in the Handler with a short TTL (e.g. 5s) so back-to-back operations against the same device don't re-enumerate.
@@ -3445,9 +3459,10 @@ targets:
     achieved: 2026-06-14
   T82:
     name: app_state_capture_window — synchronous bounded capture
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: capture window convenience; post-P agent-loop polish.'
     acceptance:
     - '**`app_state_capture_window` MCP tool**: takes `{session_id?, slice, interval_ms?, duration_ms, select?}`, opens a state capture for the duration, returns `{slice, samples: [...]}` when the window closes. One tool call — no `capture_id` to track, no start/get/stop ceremony, no possibility of forgotten captures leaking goroutines.'
     - '**Duration cap**: `duration_ms` enforced at `MaxStateCaptureWindow` (suggest 30s). Longer observation uses the existing `app_state_capture_start` / `_get` / `_stop` flow where the agent can interleave other work.'
@@ -3558,9 +3573,10 @@ targets:
     achieved: 2026-07-05
   T86:
     name: iostunnel supervisor restarts the child reliably across `go test -count=N` iterations (no cross-iteration stall)
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: test isolation flake; post-P hygiene, not migration.'
     acceptance:
     - '`go test -run TestSupervisorRestartsUnexpectedExit -count=50 ./internal/iostunnel/` passes every iteration'
     - Root cause of the ~8% cross-iteration restart stall (restart not observed within 30s under -count) is identified — e.g. a restartLoop goroutine or child process from a prior iteration not fully reaped on Stop, or a test-isolation leak — and fixed at its source, not by widening the per-iteration deadline
@@ -3584,9 +3600,10 @@ targets:
     discovered: 2026-06-28
   T87:
     name: iOS log capture surfaces app os_log (named-subsystem INFO/WARN), not just the syslog-relay subset
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: os_log depth improvement parked into post-P reliability/observability theme with T89.'
     acceptance:
     - '`spyder logs` / `log_capture_*` for an iOS device returns the app''s own os_log output — entries emitted via `os_log_create(<bundle-id>, <category>)` at INFO/NOTICE/WARN/ERROR — not only the legacy syslog-relay subset (CoreAnimation / CoreMotion / system Debug lines).'
     - 'Verified against a ge-based app (e.g. multimaze, CFBundleExecutable `MultiMaze`): its SPDLOG_INFO/WARN lines (ge routes these to `os_log_with_type` via `os_log_create(<bundleID>, "ge")`) appear in the capture and are filterable.'
@@ -3830,9 +3847,10 @@ targets:
     achieved: 2026-04-18
   T90:
     name: spyder self-monitors the health of the daemon, its subprocesses, and connected devices — classifies faults resiliently and surfaces to the developer only when it can't self-heal
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: full health-supervisor platform is a post-P reliability theme (R1). Migration closure does not depend on it. Leave T89.1 as the single high-value reliability residue if desired.'
     acceptance:
     - All of T90.1 (health model + injectable seams), T90.2 (pure classifier), T90.3 (status/health query), T90.4 (notifier), T90.5 (subprocess + self supervision), and T89 (device-tunnel recovery, the first instance) are achieved.
     - 'GATING ORACLE (class-1, injection integration tests over the T90.1 seams): (a) SELF-HEAL, NO HUMAN — a synthetic device-layer fault (stale RemoteXPC tunnel) is detected, classified recoverable, self-healed, and emits NOTHING to the fake notifier; (b) BENIGN, NO ALARM — a synthetic detach of a non-pinned device emits nothing and shows as absent_unexpected/informational in the status snapshot; (c) GENUINE PROBLEM, SURFACED ONCE — an un-self-healable synthetic condition (tunnel un-buildable after retries, pinned device absent, or subprocess that won''t restart) emits exactly one auto-clearing notification to the fake sink and is visible in the status snapshot.'
@@ -3857,9 +3875,10 @@ targets:
     discovered: 2026-07-04
   T90.1:
     name: A daemon health supervisor maintains a live per-entity health model (daemon-self, each subprocess, each device × stack layer)
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - 'A supervisor in `spyder serve` tracks three entity kinds — daemon-self, subprocess (the `ios` tunnel daemon, adb, pool sim/emu instances, active recordings), and device (per stack layer: usbmux / pairing / RemoteXPC tunnel / DTX) — each with a state in {healthy, degraded, recovering, needs_attention, absent_expected, absent_unexpected}, an evidence set, and a last-probe timestamp.'
     - 'The supervisor exposes THREE INJECTABLE SEAMS that constitute the test harness for the whole T90 umbrella and are built with the model: (a) a probe seam — synthetic probe results drive transitions; (b) an event seam — synthetic usbmux attach/detach and subprocess-exit events (the same interface T89.2 introduces); (c) reuse of the T89.1 fake-tunnel-daemon. Every downstream T90 target is verified against these seams; no downstream test requires real hardware to gate.'
@@ -3881,9 +3900,10 @@ targets:
     discovered: 2026-07-04
   T90.2:
     name: spyder classifies a device/subprocess state change as problem-vs-benign resiliently — never on a single signal or a single instant
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - Classification is a PURE FUNCTION `Classify(evidence, context) -> Assessment` over an injected evidence/context struct (per-layer states, recent events with timestamps, oracle readings from usbmux/devicectl/IOUSB, intent/reservation flags, expected_present flags) — no live device I/O inside the function. The Assessment carries a confidence level and the supporting evidence, never a bare boolean.
     - 'ORACLE (gating, class-1): a scenario table drives the pure function, one row per case: (a) LAYER LOCALIZATION — usbmux attached but RemoteXPC dead -> recoverable spyder-side fault, not physical removal; (b) EVENT-AUTHORITATIVE — usbmux detach -> USB/physical removal, unusable-without-detach -> higher-layer fault; (c) ORACLE CORROBORATION — usbmux/devicectl/IOUSB agree gone -> physical, disagreement -> stack-inconsistency/wedge; (d) DEBOUNCE + COALESCING — detach->attach within window -> silent self-heal, a fault must persist past debounce AND exhaust self-heal before needs_attention; (e) INTENT WEIGHTING — reserved/in-operation device escalates faster and to the agent, idle non-pinned stays informational; (f) EXPECTED_PRESENT — pinned absent -> needs_attention, non-pinned absent -> informational. Each row asserts the expected Assessment {state, confidence, evidence}.'
@@ -3903,9 +3923,10 @@ targets:
     discovered: 2026-07-04
   T90.3:
     name: spyder exposes its live health via `spyder status`, `/api/v1/health`, and a `health()` app_exec builtin so an agent can query and relay it
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - '`spyder status` (CLI) prints daemon + subprocess + per-device health from the T90.1 model — per-entity state, evidence, and any in-progress recovery; `--json` emits the machine-readable model.'
     - '`/api/v1/health` returns the same model over REST; a `health()` builtin exposes it inside app_exec so an agent can check health at task start/end or on any error and relay it to the developer in plain language.'
@@ -3927,9 +3948,10 @@ targets:
     discovered: 2026-07-04
   T90.4:
     name: spyder pushes an actionable macOS notification (generalized alerter) only when a fault is un-self-healable or needs physical action — deduped and auto-cleared
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - Notification decisions route through an injectable `Notifier` interface; a recording fake is the oracle. A macOS delivery implementation (existing `alerter` path, terminal-notifier -> osascript fallback) sits behind the interface.
     - The notifier fires ONLY for entities in needs_attention — never for self-healed, recovering, degraded-but-working, or benign-absent states.
@@ -3953,9 +3975,10 @@ targets:
     discovered: 2026-07-04
   T90.5:
     name: Every spyder subprocess is health-supervised through one abstraction, and the daemon self-detects wedged-but-alive states
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - A single supervised-subprocess abstraction (liveness probe + restart policy + backoff + surfacing-on-repeated-failure) governs the `ios` tunnel daemon, adb, pool sim/emu instances, and active recordings; the existing internal/iostunnel supervisor and internal/wedge.AttemptRecovery are folded into it rather than remaining bespoke. The subprocess is spawned/probed through an injectable seam (the event seam's subprocess-exit half from T90.1) so restart behaviour is testable with a fake process.
     - Repeated restart failure of a subprocess transitions it to needs_attention (surfaced via T90.4) instead of silent flapping.
@@ -3976,7 +3999,7 @@ targets:
     discovered: 2026-07-04
   T91:
     name: Every ged capability is available from any ge app in any modality through spyder; the ged daemon is retired
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3993,11 +4016,13 @@ targets:
     - T91.5
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-11
   T91.1:
     name: A headless ged↔spyder differential harness records ged's behaviour as a normalized golden corpus and gates every capability migration against it
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P (2026-07-11): wrong oracle for the completed migration. Control plane moved to app-channel by construction (same ge tweak::allToJson / log sink); a live ged golden corpus is obsolete once ged is deleted (ge T145). Prefer contract/e2e tests already in internal/appchannel. Superseded as a gate.'
     acceptance:
     - '[class 1] The harness drives a fixture ge app (sample/tiltbuggy) through a fixed set of states + control inputs, records ged''s responses — `tweak_list/get/set/reset` JSON, `logs` lines, `info` — as a golden corpus with non-deterministic fields (timestamps, session IDs, ordering) normalized or excluded.'
     - '[class 1] The same harness replays the identical sequence against spyder''s app-channel path and diffs per capability; any mismatch outside the normalized fields fails the check, with no human in the loop.'
@@ -4008,7 +4033,7 @@ targets:
     discovered: 2026-07-04
   T91.2:
     name: The tweak system (list/get/set/reset) is reachable over spyder's app-channel for a direct-mode app, at parity with ged
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -4020,9 +4045,10 @@ targets:
     - T91.1
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-11
   T91.3:
     name: App logs and session/info introspection are served over spyder's app-channel at parity with ged's logs/info
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -4033,6 +4059,7 @@ targets:
     - T91.1
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-11
   T91.4:
     name: spyder relays the dev H.264 stream as an opaque server↔player pipe (must not alter the stream), replacing ged's relay, LAN/trusted dev only
     status: achieved
@@ -4052,7 +4079,7 @@ targets:
     achieved: 2026-07-05
   T91.5:
     name: A single spyder dashboard presents any ge app (direct or streaming) — tweaks, logs, state, screenshot — and the human accepts the unified UX
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -4064,6 +4091,7 @@ targets:
     - T91.3
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-11
   T91.6:
     name: Server-mode processes hosting multiple parallel games are each addressable as independent clients
     status: set_aside
@@ -4111,10 +4139,11 @@ targets:
     achieved: 2026-07-05
   T92.2:
     name: The dashboard is a full in-browser player for HEADLESS server-mode ge games via spyder — render + accelerometer + touch — no local window, no GE_STREAM, no native player
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
     actual_cost: 13.0
+    set_aside_reason: 'Plateau P: native player path (T92.2.2/T92.2.3) is the supported stream consumer; browser dumb-player polish is post-P (R3). Leaves T92.2.1/T92.2.4 parked with umbrella.'
     acceptance:
     - '[class 1] A ge game launched in SERVER mode (headless, no local window) renders each attached player''s session offscreen and streams valid H.264; the dashboard browser player decodes+renders it and drives it (accelerometer sim + touch/mouse) — all through spyder, no native player — verified by T92.2.1''s differential oracles plus a headless-browser round-trip (frames self-decodable + input moves the game).'
     - '[class 3] The human opens the dashboard, picks a game, and plays it in-browser with no separate window; accepts the feel in one review. Sole perceptual gate.'
@@ -4127,9 +4156,10 @@ targets:
     achieved: 2026-07-05
   T92.2.1:
     name: Render-diff oracle gates the headless server render against the proven direct render (T124 goldens)
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: browser/stream oracle polish parked with T92.2 (native player is supported path).'
     acceptance:
     - '[class 1] LANDED (ge master, v0.72.0): the encode→decode round-trip fidelity oracle (ge src/VideoRoundtrip_test.cpp) runs in `make unit-test`, mutation-proven (reverting the encoder R↔B swap turns it red: R=3 vs B=283).'
     - '[class 1] REMAINING: the spatial render-vs-golden diff (streamed frame vs T124 `tiltbuggy render` golden, 3×3-region — catches flips/rotation a mean diff cannot; proven as throwaway scripts: region directErr 5.2 vs flipped 448.4) is committed as a REPEATABLE gated check (live-gated like stream_live_test), not a /tmp script. Rides T92.2.4''s browser-differential work — same harness.'
@@ -4171,9 +4201,10 @@ targets:
     achieved: 2026-07-06
   T92.2.4:
     name: The dashboard browser player is a proper dumb player — WebCodecs render + DeviceInfo + raw input forwarding (server-side engine owns all synthesis)
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: browser dumb-player polish parked with T92.2 (post-P R3).'
     acceptance:
     - '[class 1] The browser player (WebCodecs decode/render + DeviceInfo) plays a headless server-mode game via spyder by forwarding RAW input verbatim (Shift keys + mouse motion with xrel/yrel, buttons, touch) — NO in-browser accelerometer synthesis; the server-side engine''s AccelSynth interprets the gesture, exactly as it does for the native player. Differential-validated against the native player (both dumb, same wire behaviour).'
     - '[class 3] The human opens the dashboard, picks a game, and plays it in-browser with no separate window; accepts the feel once. Sole perceptual gate.'
@@ -4197,9 +4228,10 @@ targets:
     discovered: 2026-07-05
   T94:
     name: The dev-stream color path does zero redundant CPU channel swaps — deliver native BGRA capture→encoder (or GPU swizzle), not the current double CPU swap
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: stream performance polish; H.264 path already works. Post-P stream-quality theme (R3).'
     acceptance:
     - '[class 1] The server→player H.264 path performs NO redundant per-pixel CPU channel swap. Today: the Metal swapchain (native BGRA) is read back with a CPU BGRA→RGBA swap (SokolContext''s uniform capture contract), then swapped back RGBA→BGRA in VideoEncoder for VideoToolbox — two full-frame CPU passes per frame for the stream where ZERO are needed. Fix: deliver native BGRA from the readback straight to the encoder on the stream sink (skip both swaps), or move the swizzle to the GPU. The RGBA normalization stays for the PNG/screenshot consumers.'
     - '[class 1] If any path genuinely needs a CPU pass, it uses a vectorized permute (vImage/SIMD/uint32), not the scalar byte loop.'
@@ -4209,9 +4241,10 @@ targets:
     discovered: 2026-07-05
   T95:
     name: Local server↔relay↔player streaming can use a Unix domain socket, not just TCP loopback (lower latency, no network port exposed)
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: 'Plateau P: UDS optimization; TCP loopback is fine for the closed migration. Post-P stream-quality theme (R3).'
     acceptance:
     - '[investigation] Measure the win of a Unix domain socket vs TCP loopback for same-machine streaming (H.264 frame latency/throughput) and the security benefit (filesystem-permissioned, no listening network port a local game server could be reached on off-box).'
     - '[class 1] If worthwhile: the relay advertises a UDS endpoint (socket path) alongside its TCP host:port; co-located servers (ServerSession) and players connect via the socket when available, falling back to TCP for cross-machine. spyder''s factory hands local instances the socket path.'
