@@ -4218,15 +4218,17 @@ targets:
     discovered: 2026-07-05
   T93:
     name: The spyder↔player streaming integration is rebuilt on pigeon ≥0.30 (E2E-encrypted relay + pairing + datagram video), replacing the plain-WebSocket streamrelay
-    status: set_aside
+    status: identified
     value: 0.0
     cost: 0.0
-    set_aside_reason: 'Cutover gates closed in pigeon v0.30.0 (T48/T50/T52/T53/T57). T92.2 WebSocket path remains the live stream. Reopen T93 when ready to rebuild on pigeon ≥0.30; residual pigeon polish (T43/T44.4/T55/T58) is non-blocking.'
     acceptance:
     - '[class 1] The player↔server transport runs on pigeon 0.25 (Register/Connect + LAN bypass, E2E X25519/AES-GCM) instead of spyder''s plain-WebSocket streamrelay; H.264 frames flow over pigeon datagram channels, input over reliable streams. Neither spyder nor the relay sees plaintext.'
     - '[class 1] Pairing uses pigeon PairingArtifacts (spyder mints them via the pairing host; the dashboard/QR carries them), replacing name-based /stream/player and /ws/wire lookup.'
     - '[decision] spyder''s runtime role becomes pairing-artifact issuance + dashboard + game-instance factory; once player and server are paired, spyder is OFF the data path (pigeon relay/LAN carries it).'
-    context: 'Filed 2026-07-05 at the user''s explicit request, and DEFERRED deliberately: a big transport pivot the user does NOT want to stack on the current T92.2 pivot. Sequence: land T92.2 (native player + headless server) on the current plain-WebSocket streamrelay FIRST, then rebuild on pigeon. pigeon = the importable E2E-encrypted QUIC relay/pairing library (Go/Swift/Kotlin/C); ge''s T11 tracks the ge-side transport migration onto it (its context references pigeon v0.20.0 — this target targets 0.25). This would replace T92.2''s streamrelay + the /ws/wire + /stream/player endpoints with pigeon channels, and fold pairing into the QR/dashboard. Independent of current work (no blocker edges) so it does not gate T92.2; revisit after T92.2 lands to avoid two simultaneous big pivots.'
+    context: |-
+      Reopened 2026-07-11: user unparked pigeon work after pigeon ≥0.30 cutover gates. T92.2 WebSocket streamrelay remains the live path until T93 lands. Pair with ge 🎯T11.
+
+      Originally deferred so T92.2 (native player + headless server on plain WebSocket) could land first. That sequence is complete enough to rebuild the spyder↔player stream integration on pigeon ≥0.30 (E2E relay + pairing + datagram video). Residual pigeon polish (T43/T44.4/T55/T58) non-blocking.
     origin: manual
     discovered: 2026-07-05
   T94:
@@ -4254,3 +4256,21 @@ targets:
     context: 'Filed 2026-07-05 at the user''s request ("just file a target, investigate later"). Today the relay + server (ServerSession) + native/browser players use WebSocket over TCP (host:port). Same-machine streaming is common (dev + the factory-spawns-local-instance model), where a UDS avoids the TCP/IP stack and exposes no network port. Distinct from T93 (pigeon E2E relay — has LAN peer-to-peer bypass but not same-host UDS) and T94 (CPU-swap perf). Deferred; investigate after the T92.2.2 server-mode build-variant lands. Note: browser players cannot use a UDS (no raw socket in-browser), so any UDS path is for native server↔relay and native player↔relay; the browser stays on ws/TCP.'
     origin: manual
     discovered: 2026-07-05
+  T96:
+    name: 'Stream path is fully observable end-to-end: every hop logs path class, peer address, session id, and live counters so lag can be attributed without packet capture'
+    status: identified
+    value: 13.0
+    cost: 5.0
+    acceptance:
+    - 'GET /stream/sessions returns active sessions with: session_id, server_name, player_remote, server_remote (wire), player_path_class and server_path_class ∈ {loopback, lan, public, unknown}'
+    - streamrelay attach/detach log lines include session_id, remotes, and path_class (not just name)
+    - 'Each live session exposes rolling counters: frames_s2p, bytes_s2p, frames_p2s, bytes_p2s, max_frame_bytes_s2p, and age_ms'
+    - A unit test covers PathClass classification for 127.0.0.1, ::1, 192.168.x, 10.x, and a public IP
+    - docs/stream-observability.md describes the shared hop contract (spyder + ge server + player) and the /stream/sessions schema
+    context: Surfaced 2026-07-11 while debugging Pixel Tablet stream jitter (smooth ~1s then stall). PlayerLog showed 500ms+ pump stalls and seq gaps, but spyder only logged 'player attached session=sN' with no peer IP, no path class (local vs LAN vs internet), and no per-hop byte/frame counters. REST logs remote= for /api/v1 but streamrelay is silent. Without hub observability we cannot attribute stalls to encode vs Wi-Fi vs relay vs decode without ad-hoc lsof/logcat. This is the spyder hub slice; ge server encode stats and player structured stats ride the same session_id contract (documented here, implemented under ge targets).
+    tags:
+    - streaming
+    - observability
+    - streamrelay
+    origin: manual
+    discovered: 2026-07-11
