@@ -84,23 +84,26 @@ Attach/detach log lines include the same remotes and path classes.
 
 Catalogue `GET /stream/servers` is unchanged (name + session count).
 
-## Ge server (🎯T149)
+## Ge app-channel (🎯T149) — preferred for encode/player metrics
 
-While a player is attached, log ~every 2s:
+**Wire is already MessagePack** (length-prefixed), not JSON text. In-process
+APIs use `nlohmann::json` then `to_msgpack`.
 
-- `session_id` (from `player_attached`)
-- encode `WxH`, nominal fps
-- avg/max keyframe bytes, avg/max P-frame bytes
-- frames encoded in the window
+**Identity** is the app-channel connection (spyder session). Payloads do
+**not** re-stamp device/app id.
 
-## Ge player (🎯T149)
+| Path | When | Contents |
+|------|------|----------|
+| `perfEmit` / existing `perf` push | ~1 Hz with game perf | Scalars: `stream_fps`, `stream_bps`, `stream_mk`, `stream_w`/`h`; player: `player_max_gap_ms`, `player_max_pump_ms`, … |
+| `push("stream_stats", …)` | ~1–2 Hz window | Compact keys: server `role,name,w,h,dt,fps,bps,n,nk,np,ak,mk,ap,mp` optional `sid` (relay pipe id only); player `role,n,dec,gaps,mg,mp,…` |
+| `app_state` slice `stream` | pull | Last server snapshot |
 
-PlayerLog (or successor) includes:
+Optional `sid` = streamrelay pipe id (`sN`) for joining `/stream/sessions` —
+not app-channel identity.
 
-- `session_id` once known (optional: relay can inject via a small text
-  control message later; until then player logs dialed `host:port`)
-- existing pump / decode / gap metrics
-- dialed address (path is inferable; spyder remains source of truth)
+## Ge logs (secondary)
+
+`StreamStats` / `PlayerLog` spdlog lines remain for grepping when no channel.
 
 ## Attribution playbook
 
