@@ -7,6 +7,7 @@ require (
 	github.com/danielpaulus/go-ios v1.0.213
 	github.com/google/uuid v1.6.0
 	github.com/itchyny/gojq v0.12.19
+	github.com/marcelocantos/pigeon v0.0.0-00010101000000-000000000000
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
@@ -25,14 +26,15 @@ require (
 	github.com/grandcat/zeroconf v1.0.0 // indirect
 	github.com/itchyny/timefmt-go v0.1.8 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
-	github.com/miekg/dns v1.1.57 // indirect
+	github.com/miekg/dns v1.1.72 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/onsi/ginkgo/v2 v2.9.5 // indirect
 	github.com/pierrec/lz4 v2.6.1+incompatible // indirect
 	github.com/quic-go/qtls-go1-20 v0.4.1 // indirect
-	github.com/quic-go/quic-go v0.40.1-0.20231203135336-87ef8ec48d55 // indirect
+	github.com/quic-go/quic-go v0.59.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	github.com/songgao/water v0.0.0-20200317203138-2b4b6d7c09d8 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
 	github.com/tadglines/go-pkgs v0.0.0-20210623144937-b983b20f54f9 // indirect
@@ -42,13 +44,13 @@ require (
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.mozilla.org/pkcs7 v0.0.0-20210826202110-33d05740a352 // indirect
 	go.uber.org/mock v0.3.0 // indirect
-	golang.org/x/crypto v0.48.0 // indirect
-	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090 // indirect
+	golang.org/x/crypto v0.49.0 // indirect
+	golang.org/x/exp v0.0.0-20230817173708-d852ddb80c63 // indirect
 	golang.org/x/mod v0.33.0 // indirect
-	golang.org/x/net v0.50.0 // indirect
+	golang.org/x/net v0.51.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.34.0 // indirect
+	golang.org/x/text v0.35.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
 	golang.org/x/tools v0.42.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
@@ -91,3 +93,7 @@ require (
 //   3. `go get github.com/danielpaulus/go-ios@<new-spyder-patches-sha>`
 //      then bump this line.
 replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20260524022121-d78573d186a3
+
+replace github.com/marcelocantos/pigeon => ../pigeon
+
+replace github.com/quic-go/quic-go => github.com/quic-go/quic-go v0.40.1-0.20231203135336-87ef8ec48d55

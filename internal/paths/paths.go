@@ -44,3 +44,22 @@ func BaselinesBase() string {
 func PoolConfigPath() string {
 	return filepath.Join(Base(), "pool.yaml")
 }
+
+// PairingDir returns the directory for pigeon stream pairing state
+// (~/.spyder/pairing) — identity key material and server-side
+// PairingRecords for the spyder pairing host (🎯T93.1).
+func PairingDir() string {
+	return filepath.Join(Base(), "pairing")
+}
+
+// PairingIdentityPath is the long-term X25519/Ed25519 identity used
+// as the pairing-ceremony acceptor for stream sessions.
+func PairingIdentityPath() string {
+	return filepath.Join(PairingDir(), "identity.json")
+}
+
+// PairingRecordsPath is the JSON map of peer instance ID →
+// crypto.PairingRecord retained after successful ceremonies.
+func PairingRecordsPath() string {
+	return filepath.Join(PairingDir(), "pairings.json")
+}

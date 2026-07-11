@@ -29,6 +29,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/iostunnel"
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
+	"github.com/marcelocantos/spyder/internal/pairinghost"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/pool"
 	"github.com/marcelocantos/spyder/internal/poolstore"
@@ -282,6 +283,23 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	mux.HandleFunc("/ws/wire", relay.HandlePlayerWire) // ge's native player (PlayerWireBridge)
 	mux.HandleFunc("/stream/servers", relay.HandleServerList)
 	mux.HandleFunc("/stream/sessions", relay.HandleSessionList) // 🎯T96 hop telemetry
+
+	// 🎯T93.1 pairing host — spyder owns QR / rendezvous-token delivery
+	// to the player. WS streamrelay remains the live data path until T93
+	// lands; these routes only issue credentials and hold PairingRecords.
+	pairHandler := &pairinghost.Handler{}
+	if ph, err := pairinghost.New(context.Background(), pairinghost.Config{
+		Relay:        os.Getenv("SPYDER_PIGEON_RELAY"),
+		IdentityPath: paths.PairingIdentityPath(),
+		RecordsPath:  paths.PairingRecordsPath(),
+	}); err != nil {
+		slog.Warn("pairing host unavailable — /stream/pair* returns 503",
+			"error", err)
+	} else {
+		pairHandler.Host = ph
+	}
+	pairHandler.Mount(mux)
+
 	return mux, resvStore, handler, logCapMgr, appChanMgr
 }
 
