@@ -281,6 +281,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	mux.HandleFunc("/stream/player/", relay.HandlePlayerConnect)
 	mux.HandleFunc("/ws/wire", relay.HandlePlayerWire) // ge's native player (PlayerWireBridge)
 	mux.HandleFunc("/stream/servers", relay.HandleServerList)
+	mux.HandleFunc("/stream/sessions", relay.HandleSessionList) // 🎯T96 hop telemetry
 	return mux, resvStore, handler, logCapMgr, appChanMgr
 }
 

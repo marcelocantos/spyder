@@ -15,6 +15,10 @@
 // dials back the matching wire, and the relay pipes frames wire→player and
 // input player→wire verbatim (it never decodes — ge owns the codec). On player
 // disconnect it sends {"type":"player_detached"}. LAN/trusted dev only.
+//
+// 🎯T96: attach/detach logs and GET /stream/sessions expose peer remotes,
+// path class (loopback|lan|public|unknown), and rolling byte/frame counters
+// so lag can be attributed without packet capture.
 package streamrelay
 
 import (
@@ -25,6 +29,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -48,7 +54,8 @@ func New() *Relay {
 type serverConn struct {
 	name     string
 	sideband *websocket.Conn
-	writeMu  sync.Mutex // serialises control writes
+	remote   string // sideband peer (http.Request.RemoteAddr)
+	writeMu  sync.Mutex
 }
 
 func (s *serverConn) send(ctx context.Context, v any) error {
@@ -59,16 +66,61 @@ func (s *serverConn) send(ctx context.Context, v any) error {
 }
 
 type session struct {
-	id     string
-	server *serverConn
-	player *websocket.Conn
-	wireCh chan *websocket.Conn // the server's wire, once it dials in
+	id           string
+	server       *serverConn
+	player       *websocket.Conn
+	playerRemote string
+	wireRemote   string // set when the server opens the per-session wire
+	wireCh       chan *websocket.Conn
+	started      time.Time
+
+	framesS2P        atomic.Uint64
+	bytesS2P         atomic.Uint64
+	framesP2S        atomic.Uint64
+	bytesP2S         atomic.Uint64
+	maxFrameBytesS2P atomic.Uint64
+}
+
+func (s *session) noteS2P(n int) {
+	s.framesS2P.Add(1)
+	s.bytesS2P.Add(uint64(n))
+	for {
+		old := s.maxFrameBytesS2P.Load()
+		if uint64(n) <= old || s.maxFrameBytesS2P.CompareAndSwap(old, uint64(n)) {
+			return
+		}
+	}
+}
+
+func (s *session) noteP2S(n int) {
+	s.framesP2S.Add(1)
+	s.bytesP2S.Add(uint64(n))
 }
 
 // ServerInfo is a connected streaming server (for the dashboard catalogue).
 type ServerInfo struct {
-	Name     string `json:"name"`
-	Sessions int    `json:"sessions"`
+	Name      string    `json:"name"`
+	Sessions  int       `json:"sessions"`
+	Remote    string    `json:"remote,omitempty"`
+	PathClass PathClass `json:"path_class,omitempty"`
+}
+
+// SessionInfo is a live player↔server pairing with hop telemetry (🎯T96).
+type SessionInfo struct {
+	ID               string    `json:"session_id"`
+	ServerName       string    `json:"server_name"`
+	PlayerRemote     string    `json:"player_remote"`
+	PlayerPathClass  PathClass `json:"player_path_class"`
+	ServerRemote     string    `json:"server_remote"`
+	ServerPathClass  PathClass `json:"server_path_class"`
+	WireRemote       string    `json:"wire_remote,omitempty"`
+	WirePathClass    PathClass `json:"wire_path_class,omitempty"`
+	FramesS2P        uint64    `json:"frames_s2p"`
+	BytesS2P         uint64    `json:"bytes_s2p"`
+	FramesP2S        uint64    `json:"frames_p2s"`
+	BytesP2S         uint64    `json:"bytes_p2s"`
+	MaxFrameBytesS2P uint64    `json:"max_frame_bytes_s2p"`
+	AgeMs            int64     `json:"age_ms"`
 }
 
 // Servers lists connected streaming servers.
@@ -80,8 +132,43 @@ func (r *Relay) Servers() []ServerInfo {
 		counts[s.server.name]++
 	}
 	out := make([]ServerInfo, 0, len(r.servers))
-	for name := range r.servers {
-		out = append(out, ServerInfo{Name: name, Sessions: counts[name]})
+	for name, sc := range r.servers {
+		out = append(out, ServerInfo{
+			Name:      name,
+			Sessions:  counts[name],
+			Remote:    sc.remote,
+			PathClass: ClassifyRemote(sc.remote),
+		})
+	}
+	return out
+}
+
+// Sessions returns live pairings with hop telemetry.
+func (r *Relay) Sessions() []SessionInfo {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	out := make([]SessionInfo, 0, len(r.sessions))
+	for _, s := range r.sessions {
+		info := SessionInfo{
+			ID:               s.id,
+			ServerName:       s.server.name,
+			PlayerRemote:     s.playerRemote,
+			PlayerPathClass:  ClassifyRemote(s.playerRemote),
+			ServerRemote:     s.server.remote,
+			ServerPathClass:  ClassifyRemote(s.server.remote),
+			WireRemote:       s.wireRemote,
+			FramesS2P:        s.framesS2P.Load(),
+			BytesS2P:         s.bytesS2P.Load(),
+			FramesP2S:        s.framesP2S.Load(),
+			BytesP2S:         s.bytesP2S.Load(),
+			MaxFrameBytesS2P: s.maxFrameBytesS2P.Load(),
+			AgeMs:            now.Sub(s.started).Milliseconds(),
+		}
+		if s.wireRemote != "" {
+			info.WirePathClass = ClassifyRemote(s.wireRemote)
+		}
+		out = append(out, info)
 	}
 	return out
 }
@@ -91,6 +178,12 @@ func (r *Relay) Servers() []ServerInfo {
 func (r *Relay) HandleServerList(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"servers": r.Servers()})
+}
+
+// HandleSessionList handles GET /stream/sessions: live hop telemetry (🎯T96).
+func (r *Relay) HandleSessionList(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"sessions": r.Sessions()})
 }
 
 // HandleServerSideband handles GET /ws/server?name=<name>: the server's control
@@ -106,11 +199,16 @@ func (r *Relay) HandleServerSideband(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		return
 	}
-	sc := &serverConn{name: name, sideband: c}
+	remote := req.RemoteAddr
+	sc := &serverConn{name: name, sideband: c, remote: remote}
 	r.mu.Lock()
 	r.servers[name] = sc
 	r.mu.Unlock()
-	slog.Info("streamrelay: server connected", "name", name)
+	slog.Info("streamrelay: server connected",
+		"name", name,
+		"remote", remote,
+		"path_class", ClassifyRemote(remote),
+	)
 
 	ctx := req.Context()
 	// Drain the control socket until it closes (the server sends a hello and
@@ -125,7 +223,11 @@ func (r *Relay) HandleServerSideband(w http.ResponseWriter, req *http.Request) {
 		delete(r.servers, name)
 	}
 	r.mu.Unlock()
-	slog.Info("streamrelay: server disconnected", "name", name)
+	slog.Info("streamrelay: server disconnected",
+		"name", name,
+		"remote", remote,
+		"path_class", ClassifyRemote(remote),
+	)
 	_ = c.Close(websocket.StatusNormalClosure, "")
 }
 
@@ -150,6 +252,16 @@ func (r *Relay) HandleServerWire(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	c.SetReadLimit(maxFrameBytes)
+	r.mu.Lock()
+	if s := r.sessions[id]; s != nil {
+		s.wireRemote = req.RemoteAddr
+	}
+	r.mu.Unlock()
+	slog.Info("streamrelay: wire open",
+		"session", id,
+		"remote", req.RemoteAddr,
+		"path_class", ClassifyRemote(req.RemoteAddr),
+	)
 	// Hand the wire to the player goroutine and block until the session ends
 	// (closing here would tear the wire down).
 	select {
@@ -206,22 +318,60 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 	}
 	c.SetReadLimit(maxFrameBytes)
 
+	playerRemote := req.RemoteAddr
 	r.mu.Lock()
 	r.seq++
 	id := fmt.Sprintf("s%d", r.seq)
-	sess := &session{id: id, server: sc, player: c, wireCh: make(chan *websocket.Conn, 1)}
+	sess := &session{
+		id:           id,
+		server:       sc,
+		player:       c,
+		playerRemote: playerRemote,
+		wireCh:       make(chan *websocket.Conn, 1),
+		started:      time.Now(),
+	}
 	r.sessions[id] = sess
 	r.mu.Unlock()
-	slog.Info("streamrelay: player attached", "server", name, "session", id)
+	slog.Info("streamrelay: player attached",
+		"server", name,
+		"session", id,
+		"player_remote", playerRemote,
+		"player_path_class", ClassifyRemote(playerRemote),
+		"server_remote", sc.remote,
+		"server_path_class", ClassifyRemote(sc.remote),
+	)
 
 	ctx := req.Context()
 	defer func() {
+		info := SessionInfo{}
 		r.mu.Lock()
+		if s := r.sessions[id]; s != nil {
+			info = SessionInfo{
+				FramesS2P:        s.framesS2P.Load(),
+				BytesS2P:         s.bytesS2P.Load(),
+				FramesP2S:        s.framesP2S.Load(),
+				BytesP2S:         s.bytesP2S.Load(),
+				MaxFrameBytesS2P: s.maxFrameBytesS2P.Load(),
+				AgeMs:            time.Since(s.started).Milliseconds(),
+				WireRemote:       s.wireRemote,
+			}
+		}
 		delete(r.sessions, id)
 		r.mu.Unlock()
 		_ = sc.send(context.Background(), map[string]any{"type": "player_detached", "session_id": id})
 		_ = c.Close(websocket.StatusNormalClosure, "")
-		slog.Info("streamrelay: player detached", "server", name, "session", id)
+		slog.Info("streamrelay: player detached",
+			"server", name,
+			"session", id,
+			"player_remote", playerRemote,
+			"player_path_class", ClassifyRemote(playerRemote),
+			"frames_s2p", info.FramesS2P,
+			"bytes_s2p", info.BytesS2P,
+			"frames_p2s", info.FramesP2S,
+			"bytes_p2s", info.BytesP2S,
+			"max_frame_bytes_s2p", info.MaxFrameBytesS2P,
+			"age_ms", info.AgeMs,
+		)
 	}()
 
 	// Ask the server to open the wire for this session.
@@ -242,14 +392,21 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 	// unblocks the other's Read/Write immediately (no close-handshake wait).
 	pctx, pcancel := context.WithCancel(ctx)
 	defer pcancel()
-	go func() { pipe(pctx, wire, c); pcancel() }() // frames server→player
-	go func() { pipe(pctx, c, wire); pcancel() }() // input player→server
+	go func() {
+		pipe(pctx, wire, c, sess.noteS2P)
+		pcancel()
+	}()
+	go func() {
+		pipe(pctx, c, wire, sess.noteP2S)
+		pcancel()
+	}()
 	<-pctx.Done()
 }
 
 // pipe copies whole WebSocket messages from src to dst verbatim (same message
-// type) until either side errors or ctx is cancelled.
-func pipe(ctx context.Context, src, dst *websocket.Conn) {
+// type) until either side errors or ctx is cancelled. onMsg is invoked with
+// each payload size after a successful write (for 🎯T96 counters).
+func pipe(ctx context.Context, src, dst *websocket.Conn, onMsg func(int)) {
 	for {
 		typ, data, err := src.Read(ctx)
 		if err != nil {
@@ -257,6 +414,9 @@ func pipe(ctx context.Context, src, dst *websocket.Conn) {
 		}
 		if err := dst.Write(ctx, typ, data); err != nil {
 			return
+		}
+		if onMsg != nil {
+			onMsg(len(data))
 		}
 	}
 }
