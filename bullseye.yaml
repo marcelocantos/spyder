@@ -4222,15 +4222,33 @@ targets:
     value: 0.0
     cost: 0.0
     acceptance:
-    - '[class 1] The player↔server transport runs on pigeon 0.25 (Register/Connect + LAN bypass, E2E X25519/AES-GCM) instead of spyder''s plain-WebSocket streamrelay; H.264 frames flow over pigeon datagram channels, input over reliable streams. Neither spyder nor the relay sees plaintext.'
-    - '[class 1] Pairing uses pigeon PairingArtifacts (spyder mints them via the pairing host; the dashboard/QR carries them), replacing name-based /stream/player and /ws/wire lookup.'
-    - '[decision] spyder''s runtime role becomes pairing-artifact issuance + dashboard + game-instance factory; once player and server are paired, spyder is OFF the data path (pigeon relay/LAN carries it).'
+    - '[class 1] The player↔server transport runs on pigeon ≥0.30 (Register/Connect + LAN bypass, E2E X25519/AES-GCM) instead of spyder''s plain-WebSocket streamrelay; H.264 frames flow over pigeon datagram channels, input over reliable streams. Neither spyder nor the relay sees plaintext.'
+    - '[class 1] Pairing uses pigeon pairing ceremony / PairingRecords: spyder is the pairing host — it mints or drives issuance of the rendezvous credential, surfaces it to the player via dashboard QR (and optional device inject), and retains the server-side PairingRecord for the game instance. Replaces name-based /stream/player and /ws/wire lookup.'
+    - '[class 1] The authentication / pairing nonce (rendezvous token and any material the protocol requires the player to hold) is delivered only through spyder''s QR/inject path — ge does not own QR UX; the player does not invent rendezvous credentials.'
+    - '[decision] spyder''s runtime role becomes pairing-host + QR/credential delivery + dashboard + game-instance factory; once player and server are paired, spyder is OFF the data path (pigeon relay/LAN carries it).'
     context: |-
       Reopened 2026-07-11: user unparked pigeon work after pigeon ≥0.30 cutover gates. T92.2 WebSocket streamrelay remains the live path until T93 lands. Pair with ge 🎯T11.
 
+      Decision 2026-07-11 (user): for this streaming modality, spyder owns QR / out-of-band credential delivery to the player. Pigeon's pairing ceremony and session auth need a rendezvous token (and any activation material) delivered to the player; the pigeon repo's QR-exchange discussion is the delivery channel — but the host of that channel is spyder (dashboard QR + optional adb/xcrun inject), not ge and not a free-standing pigeon CLI as product UX. Ge does not render QR; the player only consumes credentials spyder issued/surfaced. After pairing completes, spyder is OFF the data path (pigeon relay/LAN carries H.264 + input; neither spyder nor the relay sees plaintext).
+
       Originally deferred so T92.2 (native player + headless server on plain WebSocket) could land first. That sequence is complete enough to rebuild the spyder↔player stream integration on pigeon ≥0.30 (E2E relay + pairing + datagram video). Residual pigeon polish (T43/T44.4/T55/T58) non-blocking.
+    depends_on:
+    - T93.1
     origin: manual
     discovered: 2026-07-05
+  T93.1:
+    name: Spyder pairing host mints/surfaces the player rendezvous credential (QR + optional inject) and holds server-side PairingRecords for stream sessions
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - '[class 1] A spyder-owned pairing host (using pigeon pairing.Register / ceremony or equivalent mint path) produces a rendezvous credential suitable for QR payload (token text) for each stream session / peer.'
+    - '[class 1] Dashboard (or CLI) can render that credential as a QR code via pigeon/qr or equivalent; HTTP API exposes the current pairing token for a session without putting spyder on the post-pair data path.'
+    - '[class 1] Server-side PairingRecord is retained under ~/.spyder (or session state) and is injectable into the ge server instance at factory launch for activation-mode Register; player receives only the out-of-band credential from spyder.'
+    - '[class 2] Optional device inject path (adb reverse / xcrun env) can push the same credential without requiring a camera scan in dev.'
+    context: 'Child of T93. User decision 2026-07-11: QR Code Exchange / nonce delivery to the player is spyder''s responsibility in this modality. Pigeon provides the crypto/ceremony primitives and qr/ helper; spyder is the host that issues and shows them. Echo-backend''s `pair` CLI + qr.Print is the reference shape — fold that role into spyder serve/dashboard rather than leaving it on ge or a separate pigeon binary.'
+    origin: manual
+    discovered: 2026-07-11
   T94:
     name: The dev-stream color path does zero redundant CPU channel swaps — deliver native BGRA capture→encoder (or GPU swizzle), not the current double CPU swap
     status: set_aside
