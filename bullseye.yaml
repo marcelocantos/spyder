@@ -4221,7 +4221,6 @@ targets:
     status: identified
     value: 0.0
     cost: 0.0
-    set_aside_reason: Cutover gates closed in pigeon v0.30.0 (T48/T50/T52/T53/T57). T92.2 WebSocket path remains the live stream. Reopen T93 when ready to rebuild on pigeon ≥0.30; residual pigeon polish (T43/T44.4/T55/T58) is non-blocking.
     acceptance:
     - '[class 1] The player↔server transport runs on pigeon 0.25 (Register/Connect + LAN bypass, E2E X25519/AES-GCM) instead of spyder''s plain-WebSocket streamrelay; H.264 frames flow over pigeon datagram channels, input over reliable streams. Neither spyder nor the relay sees plaintext.'
     - '[class 1] Pairing uses pigeon PairingArtifacts (spyder mints them via the pairing host; the dashboard/QR carries them), replacing name-based /stream/player and /ws/wire lookup.'
