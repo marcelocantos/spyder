@@ -82,12 +82,29 @@ type cachedState struct {
 	at    time.Time
 }
 
+// Resolver exposes the adapter's goios.Resolver for tunnel recovery
+// (🎯T89) and daemon-level usbmux watching.
+func (a *IOSAdapter) Resolver() *goios.Resolver {
+	return a.goios
+}
+
+// InvalidateDevice drops the session cache, service pools, and state
+// snapshot for udid. Implements goios.ServicePoolInvalidator for the
+// usbmux watcher (🎯T89.2). Routes through Resolver.Invalidate so the
+// onInvalidate hook (pools) fires once.
+func (a *IOSAdapter) InvalidateDevice(udid string) {
+	if a == nil || udid == "" {
+		return
+	}
+	a.goios.Invalidate(udid)
+}
+
 // NewIOSAdapter returns a new iOS adapter wired to a default-tunnel
 // goios.Resolver (127.0.0.1:60105 — the `ios tunnel start --userspace`
 // registry endpoint).
 func NewIOSAdapter() *IOSAdapter {
 	resolver := goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort)
-	return &IOSAdapter{
+	a := &IOSAdapter{
 		goios: resolver,
 		ipPool: goios.NewServicePool(
 			resolver,
@@ -123,6 +140,23 @@ func NewIOSAdapter() *IOSAdapter {
 		),
 		cache: map[string]cachedState{},
 	}
+	// When the resolver invalidates a UDID (T89 re-establish / detach),
+	// drop pooled DTX connections so the next call re-handshakes.
+	resolver.SetOnInvalidate(func(udid string) {
+		if a.ipPool != nil {
+			a.ipPool.Invalidate(udid)
+		}
+		if a.asPool != nil {
+			a.asPool.Invalidate(udid)
+		}
+		if a.ssPool != nil {
+			a.ssPool.Invalidate(udid)
+		}
+		a.mu.Lock()
+		delete(a.cache, udid)
+		a.mu.Unlock()
+	})
+	return a
 }
 
 // List returns iOS devices that are currently reachable. The set is the

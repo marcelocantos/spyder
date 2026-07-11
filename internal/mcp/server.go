@@ -8,6 +8,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/device"
+	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -878,4 +880,25 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithDescription("Delete orphaned spyder-pool-* simulators and AVDs that the daemon no longer tracks (typically left over from prior daemon runs that crashed or restarted before this version). Booted orphans are skipped on the assumption they may be in active use; shut them down and re-run if you want them gone too. Returns the list of deleted and skipped names."),
 		),
 	}
+}
+
+// StartUsbmuxWatch begins proactive tunnel recovery on device attach/detach
+// (🎯T89.2). Safe to call when ios is a stub adapter (no-op). The watch
+// runs until ctx is cancelled.
+func (h *Handler) StartUsbmuxWatch(ctx context.Context) {
+	if h == nil {
+		return
+	}
+	iosAd, ok := h.ios.(*device.IOSAdapter)
+	if !ok || iosAd == nil {
+		return
+	}
+	src, err := goios.NewRealUsbmuxSource()
+	if err != nil {
+		slog.Warn("usbmux watch unavailable; stale-tunnel recovery is lazy-only (T89.1)",
+			"error", err.Error())
+		return
+	}
+	slog.Info("usbmux watch: started (T89.2 tunnel recovery)")
+	go goios.WatchUsbmux(ctx, src, iosAd.Resolver(), iosAd)
 }

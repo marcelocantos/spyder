@@ -68,6 +68,9 @@ type Resolver struct {
 	cache map[string]*entry
 	// inflight gates concurrent first-time resolution of the same UDID.
 	inflight map[string]chan struct{}
+	// onInvalidate is fired after a UDID is dropped from the cache so
+	// service pools can drop dead connections (🎯T89).
+	onInvalidate func(udid string)
 }
 
 type entry struct {
@@ -174,6 +177,19 @@ func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error)
 func (r *Resolver) Invalidate(udid string) {
 	r.mu.Lock()
 	delete(r.cache, udid)
+	hook := r.onInvalidate
+	r.mu.Unlock()
+	if hook != nil {
+		hook(udid)
+	}
+}
+
+// SetOnInvalidate registers a callback invoked whenever a UDID is
+// invalidated (explicit Invalidate, DropTunnel, or ReestablishTunnel).
+// Used by IOSAdapter to drop service-pool connections. One hook only.
+func (r *Resolver) SetOnInvalidate(fn func(udid string)) {
+	r.mu.Lock()
+	r.onInvalidate = fn
 	r.mu.Unlock()
 }
 
@@ -299,9 +315,23 @@ func (r *Resolver) resolve(udid string) (ios.DeviceEntry, int, error) {
 
 	info, err := r.tunnelInfoWithRetry(udid)
 	if err != nil {
-		return ios.DeviceEntry{}, major, fail("TunnelInfo", fmt.Errorf(
-			"goios: tunnel info for %s from %s:%d: %w (is `ios tunnel start` running?)",
-			udid, r.tunnelHost, r.tunnelPort, err))
+		// 🎯T89.1: device is attached (GetDevice succeeded) but tunnel-info is
+		// empty/malformed — classic stale-after-re-enumeration. Force the
+		// daemon to rebuild once, then retry tunnel-info exactly once more.
+		slog.Info("goios: tunnel-info failed; attempting re-establish",
+			"udid", udid, "error", err.Error())
+		if reErr := r.ReestablishTunnel(udid); reErr != nil {
+			return ios.DeviceEntry{}, major, fail("TunnelInfo", fmt.Errorf(
+				"goios: tunnel info for %s from %s:%d: %w; re-establish also failed: %v (is `ios tunnel start` running?)",
+				udid, r.tunnelHost, r.tunnelPort, err, reErr))
+		}
+		info, err = r.tunnelInfoWithRetry(udid)
+		if err != nil {
+			return ios.DeviceEntry{}, major, fail("TunnelInfo", fmt.Errorf(
+				"goios: tunnel info for %s from %s:%d after re-establish: %w (is `ios tunnel start` running?)",
+				udid, r.tunnelHost, r.tunnelPort, err))
+		}
+		slog.Info("goios: tunnel-info recovered after re-establish", "udid", udid)
 	}
 	dev.UserspaceTUN = info.UserspaceTUN
 	dev.UserspaceTUNHost = r.tunnelHost
