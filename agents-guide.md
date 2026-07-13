@@ -317,6 +317,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_log_get(session_id?, select?)` | Drain structured logs the app has pushed since the last call. | |
 | `app_perf_get(session_id?, select?)` | Drain perf-counter samples the app has pushed since the last call. | |
 | `is_running(device, bundle_id)` | Check whether an app is currently running. | |
+| `health()` | Live daemon / subprocess / device health snapshot as a dict. | Same source of truth as `spyder status` and `GET /api/v1/health`. Read-only; takes no args. |
 | `record_start(device, owner?)` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | iOS simulators only — physical devices return an immediate error. Observational; not gated by device reservation. Only one recording per device at a time. The `owner` you pass here is the one that must stop the recording. |
 | `record_stop(device, owner?)` | Stop the active recording and return the local mp4 path. | Owner must match the one that started the recording (not the device reservation). Waits for the recorder to flush. On Android, pulls the file from the device. |
 | `network(device, owner, profile?, clear?)` | Apply or clear network condition shaping. | Android emulators only — see gotchas below. |
@@ -995,6 +996,32 @@ spyder log iPad --regex "crash|panic"                      # regex on message
   Combining tag + regex is the most targeted approach.
 - **Android process filter** — there is no direct process-name filter in logcat;
   spyder does a case-insensitive substring match on the tag column as a proxy.
+
+
+## Daemon health (🎯T90)
+
+Spyder maintains a live **health model** of the daemon, its supervised
+subprocesses (notably the bundled `ios` tunnel), and connected devices.
+Faults are classified resiliently: recoverable stale tunnels self-heal
+quietly; only un-self-healable conditions surface as a macOS notification.
+
+Three pull surfaces share one in-process model:
+
+| Surface | How |
+|---|---|
+| CLI | `spyder status` (table) or `spyder status --json` |
+| REST | `GET /api/v1/health` |
+| Starlark | `health()` inside `app_exec` |
+
+`spyder status` is an HTTP **client** of a running `spyder serve` — it does
+not start the daemon. On connection failure it tells you to check that
+serve is running.
+
+Entity kinds: `daemon`, `subprocess`, `device`. States include `healthy`,
+`degraded`, `recovering`, `needs_attention`, `absent_expected`,
+`absent_unexpected`. Everything below `needs_attention` stays pull-only;
+the notifier fires **once** per entity that reaches `needs_attention`,
+deduped and auto-cleared when it recovers.
 
 ## Reservations
 
