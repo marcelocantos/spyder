@@ -3851,7 +3851,6 @@ targets:
   T90:
     name: spyder self-monitors the health of the daemon, its subprocesses, and connected devices — classifies faults resiliently and surfaces to the developer only when it can't self-heal
     status: achieved
-    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3876,10 +3875,10 @@ targets:
     - umbrella
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-14
   T90.1:
     name: A daemon health supervisor maintains a live per-entity health model (daemon-self, each subprocess, each device × stack layer)
     status: achieved
-    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3901,10 +3900,10 @@ targets:
     - ios
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-14
   T90.2:
     name: spyder classifies a device/subprocess state change as problem-vs-benign resiliently — never on a single signal or a single instant
     status: achieved
-    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3924,10 +3923,10 @@ targets:
     - resilience
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-14
   T90.3:
     name: spyder exposes its live health via `spyder status`, `/api/v1/health`, and a `health()` app_exec builtin so an agent can query and relay it
     status: achieved
-    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3949,10 +3948,10 @@ targets:
     - agent-relay
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-14
   T90.4:
     name: spyder pushes an actionable macOS notification (generalized alerter) only when a fault is un-self-healable or needs physical action — deduped and auto-cleared
     status: achieved
-    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
     acceptance:
@@ -3976,10 +3975,10 @@ targets:
     - surfacing
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-14
   T90.5:
     name: Every spyder subprocess is health-supervised through one abstraction, and the daemon self-detects wedged-but-alive states
     status: achieved
-    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
     acceptance:
@@ -4001,6 +4000,7 @@ targets:
     - deadlock
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-14
   T90.5.1:
     name: The iostunnel supervisor's restart loop + wedge-kill and internal/wedge.AttemptRecovery are driven by health.Supervisor.Supervise, not their own bespoke loops
     status: identified
@@ -4241,9 +4241,10 @@ targets:
     discovered: 2026-07-05
   T93:
     name: The spyder↔player streaming integration is rebuilt on pigeon ≥0.30 (E2E-encrypted relay + pairing + datagram video), replacing the plain-WebSocket streamrelay
-    status: identified
+    status: set_aside
     value: 0.0
     cost: 0.0
+    set_aside_reason: Parked 2026-07-14 with ge player work. Stream cutover to pigeon (T93 / ge T11) stays on WebSocket streamrelay until the player is unparked — pairing, datagram video, and spyder-off-data-path only matter once the player path is active again. Reopen together with player resume.
     acceptance:
     - '[class 1] The player↔server transport runs on pigeon 0.25 (Register/Connect + LAN bypass, E2E X25519/AES-GCM) instead of spyder''s plain-WebSocket streamrelay; H.264 frames flow over pigeon datagram channels, input over reliable streams. Neither spyder nor the relay sees plaintext.'
     - '[class 1] Pairing uses pigeon PairingArtifacts (spyder mints them via the pairing host; the dashboard/QR carries them), replacing name-based /stream/player and /ws/wire lookup.'
@@ -4281,9 +4282,10 @@ targets:
     discovered: 2026-07-05
   T96:
     name: 'Stream path is fully observable end-to-end: every hop logs path class, peer address, session id, and live counters so lag can be attributed without packet capture'
-    status: identified
+    status: achieved
     value: 13.0
     cost: 5.0
+    actual_cost: 5.0
     acceptance:
     - 'GET /stream/sessions returns active sessions with: session_id, server_name, player_remote, server_remote (wire), player_path_class and server_path_class ∈ {loopback, lan, public, unknown}'
     - streamrelay attach/detach log lines include session_id, remotes, and path_class (not just name)
@@ -4297,3 +4299,4 @@ targets:
     - streamrelay
     origin: manual
     discovered: 2026-07-11
+    achieved: 2026-07-14
