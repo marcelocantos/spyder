@@ -74,10 +74,10 @@ type hopRates struct {
 	maxSz  atomic.Uint64
 	lastSz atomic.Uint64
 
-	mu            sync.Mutex
-	winStart      time.Time
-	winFrames     uint64
-	winBytes      uint64
+	mu        sync.Mutex
+	winStart  time.Time
+	winFrames uint64
+	winBytes  uint64
 	// Last completed ≥1s window (0 until the first window closes).
 	fps1s         float64
 	bytesPerSec1s float64
@@ -194,16 +194,16 @@ type SessionInfo struct {
 	AvgFrameBytesS2P  uint64 `json:"avg_frame_bytes_s2p,omitempty"`
 
 	// Lifetime average rates since session start.
-	FPSAvgS2P       float64 `json:"fps_avg_s2p"`
+	FPSAvgS2P         float64 `json:"fps_avg_s2p"`
 	BytesPerSecAvgS2P float64 `json:"bytes_per_sec_avg_s2p"`
-	FPSAvgP2S       float64 `json:"fps_avg_p2s"`
+	FPSAvgP2S         float64 `json:"fps_avg_p2s"`
 	BytesPerSecAvgP2S float64 `json:"bytes_per_sec_avg_p2s"`
 
 	// ~1s rolling window rates (best for spotting hitch windows).
-	FPS1sS2P          float64 `json:"fps_1s_s2p"`
-	BytesPerSec1sS2P  float64 `json:"bytes_per_sec_1s_s2p"`
-	FPS1sP2S          float64 `json:"fps_1s_p2s"`
-	BytesPerSec1sP2S  float64 `json:"bytes_per_sec_1s_p2s"`
+	FPS1sS2P         float64 `json:"fps_1s_s2p"`
+	BytesPerSec1sS2P float64 `json:"bytes_per_sec_1s_s2p"`
+	FPS1sP2S         float64 `json:"fps_1s_p2s"`
+	BytesPerSec1sP2S float64 `json:"bytes_per_sec_1s_p2s"`
 }
 
 // Servers lists connected streaming servers.

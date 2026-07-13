@@ -18,10 +18,10 @@ import (
 // fakeTunnelDaemon implements the go-ios tunnel registry HTTP surface
 // used by T89.1: GET /tunnel/{udid} and DELETE /tunnel/{udid}.
 type fakeTunnelDaemon struct {
-	mu       sync.Mutex
-	live     bool // after DELETE, flips true on next rebuild
-	deletes  atomic.Int32
-	gets     atomic.Int32
+	mu      sync.Mutex
+	live    bool // after DELETE, flips true on next rebuild
+	deletes atomic.Int32
+	gets    atomic.Int32
 	// rebuildAfterDeletes: tunnel becomes live after this many DELETEs.
 	rebuildAfterDeletes int32
 }
@@ -56,10 +56,10 @@ func (f *fakeTunnelDaemon) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"address":         "::1",
-			"rsdPort":         1234,
-			"udid":            udid,
-			"userspaceTun":    false,
+			"address":          "::1",
+			"rsdPort":          1234,
+			"udid":             udid,
+			"userspaceTun":     false,
 			"userspaceTunPort": 0,
 		})
 		return

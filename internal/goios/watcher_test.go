@@ -32,11 +32,11 @@ func (f *fakeSource) Close() error {
 }
 
 type recRecovery struct {
-	mu          sync.Mutex
-	drops       []string
+	mu            sync.Mutex
+	drops         []string
 	reestablishes []string
-	invalidates []string
-	reErr       error
+	invalidates   []string
+	reErr         error
 }
 
 func (r *recRecovery) DropTunnel(udid string) {
@@ -58,8 +58,8 @@ func (r *recRecovery) Invalidate(udid string) {
 }
 
 type recPools struct {
-	mu   sync.Mutex
-	ids  []string
+	mu  sync.Mutex
+	ids []string
 }
 
 func (p *recPools) InvalidateDevice(udid string) {
