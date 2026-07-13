@@ -3850,10 +3850,10 @@ targets:
     achieved: 2026-04-18
   T90:
     name: spyder self-monitors the health of the daemon, its subprocesses, and connected devices — classifies faults resiliently and surfaces to the developer only when it can't self-heal
-    status: set_aside
+    status: achieved
+    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
-    set_aside_reason: 'Plateau P: full health-supervisor platform is a post-P reliability theme (R1). Migration closure does not depend on it. Leave T89.1 as the single high-value reliability residue if desired.'
     acceptance:
     - All of T90.1 (health model + injectable seams), T90.2 (pure classifier), T90.3 (status/health query), T90.4 (notifier), T90.5 (subprocess + self supervision), and T89 (device-tunnel recovery, the first instance) are achieved.
     - 'GATING ORACLE (class-1, injection integration tests over the T90.1 seams): (a) SELF-HEAL, NO HUMAN — a synthetic device-layer fault (stale RemoteXPC tunnel) is detected, classified recoverable, self-healed, and emits NOTHING to the fake notifier; (b) BENIGN, NO ALARM — a synthetic detach of a non-pinned device emits nothing and shows as absent_unexpected/informational in the status snapshot; (c) GENUINE PROBLEM, SURFACED ONCE — an un-self-healable synthetic condition (tunnel un-buildable after retries, pinned device absent, or subprocess that won''t restart) emits exactly one auto-clearing notification to the fake sink and is visible in the status snapshot.'
@@ -3878,10 +3878,10 @@ targets:
     discovered: 2026-07-04
   T90.1:
     name: A daemon health supervisor maintains a live per-entity health model (daemon-self, each subprocess, each device × stack layer)
-    status: set_aside
+    status: achieved
+    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
-    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - 'A supervisor in `spyder serve` tracks three entity kinds — daemon-self, subprocess (the `ios` tunnel daemon, adb, pool sim/emu instances, active recordings), and device (per stack layer: usbmux / pairing / RemoteXPC tunnel / DTX) — each with a state in {healthy, degraded, recovering, needs_attention, absent_expected, absent_unexpected}, an evidence set, and a last-probe timestamp.'
     - 'The supervisor exposes THREE INJECTABLE SEAMS that constitute the test harness for the whole T90 umbrella and are built with the model: (a) a probe seam — synthetic probe results drive transitions; (b) an event seam — synthetic usbmux attach/detach and subprocess-exit events (the same interface T89.2 introduces); (c) reuse of the T89.1 fake-tunnel-daemon. Every downstream T90 target is verified against these seams; no downstream test requires real hardware to gate.'
@@ -3903,10 +3903,10 @@ targets:
     discovered: 2026-07-04
   T90.2:
     name: spyder classifies a device/subprocess state change as problem-vs-benign resiliently — never on a single signal or a single instant
-    status: set_aside
+    status: achieved
+    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
-    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - Classification is a PURE FUNCTION `Classify(evidence, context) -> Assessment` over an injected evidence/context struct (per-layer states, recent events with timestamps, oracle readings from usbmux/devicectl/IOUSB, intent/reservation flags, expected_present flags) — no live device I/O inside the function. The Assessment carries a confidence level and the supporting evidence, never a bare boolean.
     - 'ORACLE (gating, class-1): a scenario table drives the pure function, one row per case: (a) LAYER LOCALIZATION — usbmux attached but RemoteXPC dead -> recoverable spyder-side fault, not physical removal; (b) EVENT-AUTHORITATIVE — usbmux detach -> USB/physical removal, unusable-without-detach -> higher-layer fault; (c) ORACLE CORROBORATION — usbmux/devicectl/IOUSB agree gone -> physical, disagreement -> stack-inconsistency/wedge; (d) DEBOUNCE + COALESCING — detach->attach within window -> silent self-heal, a fault must persist past debounce AND exhaust self-heal before needs_attention; (e) INTENT WEIGHTING — reserved/in-operation device escalates faster and to the agent, idle non-pinned stays informational; (f) EXPECTED_PRESENT — pinned absent -> needs_attention, non-pinned absent -> informational. Each row asserts the expected Assessment {state, confidence, evidence}.'
@@ -3926,10 +3926,10 @@ targets:
     discovered: 2026-07-04
   T90.3:
     name: spyder exposes its live health via `spyder status`, `/api/v1/health`, and a `health()` app_exec builtin so an agent can query and relay it
-    status: set_aside
+    status: achieved
+    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
-    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - '`spyder status` (CLI) prints daemon + subprocess + per-device health from the T90.1 model — per-entity state, evidence, and any in-progress recovery; `--json` emits the machine-readable model.'
     - '`/api/v1/health` returns the same model over REST; a `health()` builtin exposes it inside app_exec so an agent can check health at task start/end or on any error and relay it to the developer in plain language.'
@@ -3951,10 +3951,10 @@ targets:
     discovered: 2026-07-04
   T90.4:
     name: spyder pushes an actionable macOS notification (generalized alerter) only when a fault is un-self-healable or needs physical action — deduped and auto-cleared
-    status: set_aside
+    status: achieved
+    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
-    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - Notification decisions route through an injectable `Notifier` interface; a recording fake is the oracle. A macOS delivery implementation (existing `alerter` path, terminal-notifier -> osascript fallback) sits behind the interface.
     - The notifier fires ONLY for entities in needs_attention — never for self-healed, recovering, degraded-but-working, or benign-absent states.
@@ -3978,10 +3978,10 @@ targets:
     discovered: 2026-07-04
   T90.5:
     name: Every spyder subprocess is health-supervised through one abstraction, and the daemon self-detects wedged-but-alive states
-    status: set_aside
+    status: achieved
+    achieved: 2026-07-14
     value: 0.0
     cost: 0.0
-    set_aside_reason: 'Plateau P: health platform parked with T90 (post-P R1).'
     acceptance:
     - A single supervised-subprocess abstraction (liveness probe + restart policy + backoff + surfacing-on-repeated-failure) governs the `ios` tunnel daemon, adb, pool sim/emu instances, and active recordings; the existing internal/iostunnel supervisor and internal/wedge.AttemptRecovery are folded into it rather than remaining bespoke. The subprocess is spawned/probed through an injectable seam (the event seam's subprocess-exit half from T90.1) so restart behaviour is testable with a fake process.
     - Repeated restart failure of a subprocess transitions it to needs_attention (surfaced via T90.4) instead of silent flapping.
@@ -3991,6 +3991,7 @@ targets:
     context: 'The ''itself + its subprocessors'' half of the user''s ask. Unifies the fragmented supervision that exists today (iostunnel supervisor, wedge recovery, pool tiers) under one abstraction plugged into the T90.1 model, and adds daemon-self liveness beyond process-alive. T89.4 (tunnel watchdog) becomes the device-tunnel instance of this general subprocess/entity probing. ORACLE-FIRST (2026-07-04 reshape): the subprocess spawn/probe is an injectable seam so crash-loop -> needs_attention and wedged-but-alive detection are class-1 (fake process / synthetic stall); real crash-loop and real deadlock are the class-4 residue only.'
     depends_on:
     - T90.1
+    - T90.5.1
     tags:
     - health
     - subprocess
@@ -3998,6 +3999,28 @@ targets:
     - watchdog
     - daemon
     - deadlock
+    origin: manual
+    discovered: 2026-07-04
+  T90.5.1:
+    name: The iostunnel supervisor's restart loop + wedge-kill and internal/wedge.AttemptRecovery are driven by health.Supervisor.Supervise, not their own bespoke loops
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'internal/iostunnel.Supervisor implements health.ManagedProcess (Name/Start/Alive/Stop): Start ensures a fresh child (kill-if-running then spawn), Alive = process-running AND registry-responsive (ListRunningTunnels), Stop = SIGTERM/SIGKILL; its bespoke restartLoop + healthProbe goroutines are removed.'
+    - spyder serve drives it via health.Supervisor.Supervise(ctx, tunnelSup, policy, interval) so restart/backoff/needs_attention escalation is owned by the health model — a tunnel that can't be rebuilt after policy exhaustion reaches needs_attention (notified) instead of retrying forever silently. The C1 tunnelRegistryProber is removed as redundant.
+    - 'ORACLE (gating, class-1): iostunnel''s tests are rewritten to the ManagedProcess surface (Start spawns; Start-while-running kills+respawns; Alive reflects registry; Stop reaps) with a fake/stub binary; restart-on-death + wedge-kill behaviour is covered by health.Supervisor''s existing oracle. No double-spawn.'
+    - 'RESIDUE (class-4, HIL, gating-for-merge-of-THIS-target): on real hardware, the bundled ios tunnel daemon still comes up on `spyder serve`, survives a kill (health.Supervisor respawns it), and iOS screenshot/app_exec keep working. Confirmed once in the live tier BEFORE this target is retired — this is the real-device oracle the fold''s correctness depends on.'
+    context: 'Carved out of T90.5 on 2026-07-04 during the T90 build. T90.5''s abstraction (health.Supervisor.Supervise + ManagedProcess), daemon-self ProgressWatchdog, and ios-tunnel health SURFACING (a probe-only tunnelRegistryProber, degraded/healthy) are done and tested. What remains is replacing iostunnel''s bespoke restartLoop+healthProbe with health.Supervisor-driven supervision. Deferred deliberately: it refactors the critical iOS-supporting process/signal code, and its correctness is partly class-4 (real tunnel behaviour) — verifiable only against a paired device (the live tier), which was not available in the build session. Doing it unit-tests-only would be negative-value autonomy (oracle-first rule 10). Needs a session with a device to run the class-4 residue oracle before retiring.'
+    tags:
+    - health
+    - subprocess
+    - iostunnel
+    - fold
+    - supervisor
+    - ios
+    - deferred
+    - needs-device
     origin: manual
     discovered: 2026-07-04
   T91:

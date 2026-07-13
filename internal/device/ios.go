@@ -27,6 +27,7 @@ import (
 	"github.com/danielpaulus/go-ios/ios/ostrace"
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
 	"github.com/marcelocantos/spyder/internal/goios"
+	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/network"
 	"github.com/marcelocantos/spyder/internal/oslog"
 )
@@ -75,6 +76,15 @@ type IOSAdapter struct {
 
 	mu    sync.Mutex
 	cache map[string]cachedState
+
+	// healthModel, when set (by the daemon via SetHealthModel), receives
+	// per-device health transitions driven by usbmux attach/detach and
+	// tunnel re-establish outcomes (🎯T90). nil in unit tests and until
+	// the daemon wires it in. pinned reports whether a device is marked
+	// must-be-connected (expected_present); nil means "none pinned".
+	healthModel *health.Model
+	pinned      func(udid string) bool
+	now         func() time.Time
 }
 
 type cachedState struct {
@@ -139,6 +149,7 @@ func NewIOSAdapter() *IOSAdapter {
 			60*time.Second,
 		),
 		cache: map[string]cachedState{},
+		now:   time.Now,
 	}
 	// When the resolver invalidates a UDID (T89 re-establish / detach),
 	// drop pooled DTX connections so the next call re-handshakes.
@@ -157,6 +168,203 @@ func NewIOSAdapter() *IOSAdapter {
 		a.mu.Unlock()
 	})
 	return a
+}
+
+// SetHealthModel wires the live health model (and an optional pinned-device
+// predicate) into the adapter so usbmux attach/detach and tunnel-recovery
+// outcomes drive per-device health (🎯T90). Called once by the daemon after
+// both the adapter and the health supervisor exist. A nil model disables
+// device-health reporting (the default in tests).
+func (a *IOSAdapter) SetHealthModel(m *health.Model, pinned func(udid string) bool) {
+	a.mu.Lock()
+	a.healthModel = m
+	a.pinned = pinned
+	a.mu.Unlock()
+}
+
+// deviceRecoveryPolicy governs how many consecutive tunnel re-establish
+// failures a device tolerates before its health escalates to
+// needs_attention (surfaced by the T90.4 notifier).
+var deviceRecoveryPolicy = health.Policy{MaxAttempts: 2, BaseBackoff: 2 * time.Second}
+
+// deviceHealthID is the health-model entity for a device's overall health.
+func deviceHealthID(udid string) health.ID {
+	return health.ID{Kind: health.KindDevice, Name: udid}
+}
+
+func (a *IOSAdapter) healthEnabled() (*health.Model, bool) {
+	a.mu.Lock()
+	m := a.healthModel
+	a.mu.Unlock()
+	return m, m != nil
+}
+
+func (a *IOSAdapter) isPinned(udid string) bool {
+	a.mu.Lock()
+	p := a.pinned
+	a.mu.Unlock()
+	return p != nil && p(udid)
+}
+
+// ensureDeviceRegistered registers the device entity with the recovery
+// policy the first time it is seen, so RecoveryFailed can escalate. It does
+// NOT re-register (which would reset the attempt counter) on later calls.
+func (a *IOSAdapter) ensureDeviceRegistered(m *health.Model, udid string) health.ID {
+	id := deviceHealthID(udid)
+	if _, ok := m.Get(id); !ok {
+		m.Register(id, health.KindDevice, deviceRecoveryPolicy)
+	}
+	return id
+}
+
+// reportAttach marks a device present/healthy in the model on a usbmux
+// attach — clearing a prior absent/degraded state when it comes back.
+func (a *IOSAdapter) reportAttach(udid string) {
+	m, ok := a.healthEnabled()
+	if !ok {
+		return
+	}
+	id := a.ensureDeviceRegistered(m, udid)
+	m.Observe(id, true, "usbmux attach")
+}
+
+// reportDetach classifies a usbmux detach (physical removal, pinned or not)
+// and applies the verdict to the model: a non-pinned unplug stays
+// informational (absent_unexpected), a pinned device's absence surfaces for
+// attention.
+func (a *IOSAdapter) reportDetach(udid string) {
+	m, ok := a.healthEnabled()
+	if !ok {
+		return
+	}
+	id := a.ensureDeviceRegistered(m, udid)
+	now := a.now()
+	ev := health.Evidence{
+		UDID:            udid,
+		Now:             now,
+		LastDetach:      now,
+		ExpectedPresent: a.isPinned(udid),
+		Oracles:         []health.OracleReading{{Source: "usbmux", Present: false, Observed: true}},
+	}
+	health.ApplyAssessment(m, id, health.Classify(ev))
+}
+
+// reportReestablish drives the device's health through a tunnel re-establish
+// attempt: healthy on success, and — after deviceRecoveryPolicy consecutive
+// failures — needs_attention (an attached device whose tunnel can't be built).
+func (a *IOSAdapter) reportReestablish(udid string, reErr error) {
+	m, ok := a.healthEnabled()
+	if !ok {
+		return
+	}
+	id := a.ensureDeviceRegistered(m, udid)
+	if reErr == nil {
+		m.RecoverySucceeded(id)
+		return
+	}
+	m.Observe(id, false, "tunnel re-establish failed")
+	m.RecoveryStarted(id)
+	m.RecoveryFailed(id, reErr.Error())
+}
+
+// iosTunnelRecovery adapts the adapter's Resolver + service pools to
+// goios.TunnelRecovery: every tunnel-registry action also flushes the
+// per-device pooled service connections and state cache, which a device
+// re-enumeration silently invalidates. Without this, a re-attached
+// device could keep serving from a dead pooled installation_proxy /
+// appservice / screenshot connection until the first per-call error
+// lazily evicted it.
+type iosTunnelRecovery struct{ a *IOSAdapter }
+
+func (r iosTunnelRecovery) Invalidate(udid string) {
+	r.a.goios.Invalidate(udid)
+	r.a.invalidatePools(udid)
+	// A plain attach (startup snapshot or fresh hot-plug): the device is
+	// present, so reflect it as healthy — clearing any prior absent state.
+	r.a.reportAttach(udid)
+}
+
+func (r iosTunnelRecovery) DropTunnel(udid string) error {
+	r.a.invalidatePools(udid)
+	err := r.a.goios.DropTunnel(udid)
+	r.a.reportDetach(udid)
+	return err
+}
+
+func (r iosTunnelRecovery) ReestablishTunnel(udid string) error {
+	r.a.invalidatePools(udid)
+	err := r.a.goios.ReestablishTunnel(udid)
+	r.a.reportReestablish(udid, err)
+	return err
+}
+
+// invalidatePools evicts every per-device cached resource for udid: the
+// three service-connection pools and the state snapshot cache. The
+// Resolver's own DeviceEntry cache is handled by its Invalidate.
+func (a *IOSAdapter) invalidatePools(udid string) {
+	a.ipPool.Invalidate(udid)
+	a.asPool.Invalidate(udid)
+	a.ssPool.Invalidate(udid)
+	a.mu.Lock()
+	delete(a.cache, udid)
+	a.mu.Unlock()
+}
+
+// listenerReconnectDelay is the pause before re-opening the usbmux
+// listen connection after it drops. usbmuxd itself restarts in this
+// repo's problem space (the wedge-killer, OS updates), which tears down
+// the listen socket — a one-shot listener would silently stop grooming
+// the registry after the first such blip.
+const listenerReconnectDelay = 2 * time.Second
+
+// StartTunnelListener subscribes to usbmux attach/detach notifications
+// and keeps the tunnel registry (and this adapter's pooled connections)
+// fresh across device re-enumeration (🎯T89.2). It blocks until ctx is
+// cancelled, so callers run it in a goroutine.
+//
+// The listen connection is reconnected with a fixed backoff when it
+// drops (usbmuxd restart, transient error) so a single blip doesn't
+// permanently disable event-based recovery; the lazy consumer-side
+// recovery (🎯T89.1) remains the backstop in any gap. One Listener
+// instance spans reconnects so its re-enumeration bookkeeping persists.
+// (🎯T90.5 folds this ad-hoc loop into the general supervised-stream
+// abstraction.)
+func (a *IOSAdapter) StartTunnelListener(ctx context.Context) {
+	l := goios.NewListener(iosTunnelRecovery{a})
+	for ctx.Err() == nil {
+		src, err := goios.NewUsbmuxEventSource()
+		if err != nil {
+			slog.Warn("ios: usbmux listener unavailable; will retry",
+				"error", err, "retry_in", listenerReconnectDelay.String())
+			if !sleepCtx(ctx, listenerReconnectDelay) {
+				return
+			}
+			continue
+		}
+		slog.Info("ios: usbmux tunnel listener started")
+		l.Run(ctx, src) // blocks until the stream errors or ctx is cancelled
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Info("ios: usbmux listener stream ended; reconnecting",
+			"retry_in", listenerReconnectDelay.String())
+		if !sleepCtx(ctx, listenerReconnectDelay) {
+			return
+		}
+	}
+}
+
+// sleepCtx sleeps for d or until ctx is cancelled. Returns true if the
+// full duration elapsed, false if ctx was cancelled first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // List returns iOS devices that are currently reachable. The set is the

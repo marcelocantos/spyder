@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/marcelocantos/spyder/internal/health"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 )
 
@@ -57,7 +58,7 @@ func runScript(t *testing.T, script string, verbs map[string]toolFunc, lim execL
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), lim.MaxDuration)
 	defer cancel()
-	res, err := runExec(ctx, script, verbs, lim)
+	res, err := runExec(ctx, script, verbs, health.New(), lim)
 	if err != nil {
 		t.Fatalf("runExec returned a transport error (should be IsError instead): %v", err)
 	}

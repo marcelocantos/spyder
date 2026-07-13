@@ -36,6 +36,11 @@ const Prefix = "/api/v1/"
 // StreamPath is the URL path for the SSE live log stream endpoint.
 const StreamPath = Prefix + "log_stream"
 
+// HealthPath is the URL path for the live health-model snapshot (🎯T90.3).
+// Unlike the tool endpoints it is GET-only: health is a pull-only query of
+// the daemon's in-process model, never a mutation.
+const HealthPath = Prefix + "health"
+
 // NewHandler returns an http.Handler that routes Prefix/<tool>
 // POST requests to h.Dispatch. Unknown tools return 404; non-POST
 // methods return 405; malformed JSON bodies return 400. The special
@@ -96,6 +101,13 @@ func (rh *restHandler) serve(w http.ResponseWriter, r *http.Request) {
 		rh.stream.ServeHTTP(w, r)
 		return
 	}
+	// Health is a GET-only pull of the daemon's in-process model (🎯T90.3),
+	// the single source of truth shared by the health() app_exec builtin and
+	// `spyder status`. Handled before the POST-dispatch path below.
+	if r.URL.Path == HealthPath {
+		rh.serveHealth(w, r)
+		return
+	}
 	tool := strings.TrimPrefix(r.URL.Path, Prefix)
 	if tool == "" || strings.Contains(tool, "/") {
 		http.NotFound(w, r)
@@ -133,4 +145,19 @@ func (rh *restHandler) serve(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
+}
+
+// serveHealth writes the daemon's live health-model snapshot as JSON. The
+// snapshot type is already json-tagged, so this is a straight marshal — the
+// same bytes `spyder status` decodes and the same model the health() builtin
+// reads in-process.
+func (rh *restHandler) serveHealth(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	snap := rh.h.Health().Model().Snapshot()
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(snap)
 }

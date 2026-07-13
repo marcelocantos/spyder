@@ -19,7 +19,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/device"
-	"github.com/marcelocantos/spyder/internal/goios"
+	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -67,6 +67,7 @@ type Handler struct {
 	runsBaseDir  string                   // base dir for active-run temp files; empty = os.TempDir()
 	pool         selector.PoolResolver    // optional hook for 🎯T23 fuzzy selector
 	poolMgr      PoolManager              // optional hook for 🎯T24 pool management
+	health       *health.Supervisor       // live health model + subprocess supervisor (🎯T90)
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -158,6 +159,24 @@ func WithAppChannel(m *appchannel.Manager) HandlerOption {
 	return func(h *Handler) { h.appChannel = m }
 }
 
+// WithHealth injects the live health supervisor (🎯T90). When omitted,
+// NewHandler creates a default one so the health() builtin and REST
+// surface always have a model to read, even before the daemon wires in
+// probes and subprocess supervision.
+func WithHealth(s *health.Supervisor) HandlerOption {
+	return func(h *Handler) {
+		if s != nil {
+			h.health = s
+		}
+	}
+}
+
+// Health returns the handler's health supervisor. Always non-nil.
+// The daemon uses it to run supervise loops, feed device probes, and
+// attach the notifier; the health() builtin and /api/v1/health read its
+// model.
+func (h *Handler) Health() *health.Supervisor { return h.health }
+
 // NewHandler creates a new spyder tool handler.
 func NewHandler(opts ...HandlerOption) *Handler {
 	h := &Handler{
@@ -167,6 +186,7 @@ func NewHandler(opts ...HandlerOption) *Handler {
 		recordings:      recording.NewRegistry(),
 		networkByDevice: map[string]appliedNetwork{},
 		launchTimes:     map[launchKey]time.Time{},
+		health:          health.NewSupervisor(health.New()),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -192,6 +212,7 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 		ios:         device.NewIOSAdapter(),
 		android:     device.NewAndroidAdapter(),
 		launchTimes: map[launchKey]time.Time{},
+		health:      health.NewSupervisor(health.New()),
 	}
 	if ios != nil {
 		h.ios = ios
@@ -201,6 +222,38 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 	}
 	h.desktop = device.NewDesktopAdapter(h.inventory)
 	return h
+}
+
+// tunnelListenerStarter is implemented by device adapters that maintain
+// a background usbmux attach/detach listener (currently only the iOS
+// adapter, 🎯T89.2). Optional: stub adapters injected in tests don't
+// implement it.
+type tunnelListenerStarter interface {
+	StartTunnelListener(ctx context.Context)
+}
+
+// healthModelSetter is implemented by device adapters that report
+// per-device health (the iOS adapter, 🎯T90). Optional.
+type healthModelSetter interface {
+	SetHealthModel(m *health.Model, pinned func(udid string) bool)
+}
+
+// StartDeviceListeners starts any device-adapter background listeners —
+// currently the iOS usbmux tunnel listener that keeps the RemoteXPC
+// tunnel registry fresh across device re-enumeration (🎯T89.2) and feeds
+// per-device health into the model (🎯T90). It blocks until ctx is
+// cancelled, so callers run it in a goroutine. A no-op for adapters that
+// don't maintain a listener.
+func (h *Handler) StartDeviceListeners(ctx context.Context) {
+	if s, ok := h.ios.(healthModelSetter); ok {
+		// pinned predicate is nil until the inventory grows an
+		// expected_present flag (🎯T90.2 follow-up); every device is then
+		// non-pinned, so unplugs stay informational.
+		s.SetHealthModel(h.health.Model(), nil)
+	}
+	if s, ok := h.ios.(tunnelListenerStarter); ok {
+		s.StartTunnelListener(ctx)
+	}
 }
 
 // ResolveAdapterForStream exposes adapter resolution for the REST SSE
@@ -880,25 +933,4 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithDescription("Delete orphaned spyder-pool-* simulators and AVDs that the daemon no longer tracks (typically left over from prior daemon runs that crashed or restarted before this version). Booted orphans are skipped on the assumption they may be in active use; shut them down and re-run if you want them gone too. Returns the list of deleted and skipped names."),
 		),
 	}
-}
-
-// StartUsbmuxWatch begins proactive tunnel recovery on device attach/detach
-// (🎯T89.2). Safe to call when ios is a stub adapter (no-op). The watch
-// runs until ctx is cancelled.
-func (h *Handler) StartUsbmuxWatch(ctx context.Context) {
-	if h == nil {
-		return
-	}
-	iosAd, ok := h.ios.(*device.IOSAdapter)
-	if !ok || iosAd == nil {
-		return
-	}
-	src, err := goios.NewRealUsbmuxSource()
-	if err != nil {
-		slog.Warn("usbmux watch unavailable; stale-tunnel recovery is lazy-only (T89.1)",
-			"error", err.Error())
-		return
-	}
-	slog.Info("usbmux watch: started (T89.2 tunnel recovery)")
-	go goios.WatchUsbmux(ctx, src, iosAd.Resolver(), iosAd)
 }
