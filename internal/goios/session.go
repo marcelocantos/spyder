@@ -78,6 +78,10 @@ type Resolver struct {
 	// in New; only same-package tests override them.
 	resolveFn     func(udid string) (ios.DeviceEntry, int, error)
 	reestablishFn func(udid string) error
+
+	// onInvalidate is fired after a UDID is dropped from the cache so
+	// service pools can drop dead connections (🎯T89).
+	onInvalidate func(udid string)
 }
 
 type entry struct {
@@ -187,6 +191,19 @@ func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error)
 func (r *Resolver) Invalidate(udid string) {
 	r.mu.Lock()
 	delete(r.cache, udid)
+	hook := r.onInvalidate
+	r.mu.Unlock()
+	if hook != nil {
+		hook(udid)
+	}
+}
+
+// SetOnInvalidate registers a callback invoked whenever a UDID is
+// invalidated (explicit Invalidate, DropTunnel, or ReestablishTunnel).
+// Used by IOSAdapter to drop service-pool connections. One hook only.
+func (r *Resolver) SetOnInvalidate(fn func(udid string)) {
+	r.mu.Lock()
+	r.onInvalidate = fn
 	r.mu.Unlock()
 }
 

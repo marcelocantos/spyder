@@ -56,16 +56,18 @@ type Handler struct {
 	inventory    *inventory.Store
 	ios          device.Adapter
 	android      device.Adapter
+	desktop      device.Adapter
 	reservations *reservations.Store
 	runs         *runs.Store
 	bls          *baselines.Store
 	recordings   *recording.Registry
 	logCapture   *logcapture.Manager
 	appChannel   *appchannel.Manager
-	runsBaseDir  string                // base dir for active-run temp files; empty = os.TempDir()
-	pool         selector.PoolResolver // optional hook for 🎯T23 fuzzy selector
-	poolMgr      PoolManager           // optional hook for 🎯T24 pool management
-	health       *health.Supervisor    // live health model + subprocess supervisor (🎯T90)
+	instances    *appchannel.InstancePool // 🎯T92.1 factory-spawned instance lifecycle
+	runsBaseDir  string                   // base dir for active-run temp files; empty = os.TempDir()
+	pool         selector.PoolResolver    // optional hook for 🎯T23 fuzzy selector
+	poolMgr      PoolManager              // optional hook for 🎯T24 pool management
+	health       *health.Supervisor       // live health model + subprocess supervisor (🎯T90)
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -189,6 +191,15 @@ func NewHandler(opts ...HandlerOption) *Handler {
 	for _, opt := range opts {
 		opt(h)
 	}
+	// Constructed after options so the desktop adapter sees the final
+	// inventory (WithInventory may have replaced the default).
+	if h.desktop == nil {
+		h.desktop = device.NewDesktopAdapter(h.inventory)
+	}
+	// The factory instance pool needs the app-channel manager (🎯T92.1).
+	if h.appChannel != nil && h.instances == nil {
+		h.instances = appchannel.NewInstancePool(h.appChannel)
+	}
 	return h
 }
 
@@ -209,6 +220,7 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 	if android != nil {
 		h.android = android
 	}
+	h.desktop = device.NewDesktopAdapter(h.inventory)
 	return h
 }
 
@@ -410,6 +422,14 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_speed":               h.handleAppSpeed,
 		"app_input":               h.handleAppInput,
 		"app_state":               h.handleAppState,
+		"app_tweak_list":          h.handleAppTweakList,
+		"app_tweak_get":           h.handleAppTweakGet,
+		"app_tweak_set":           h.handleAppTweakSet,
+		"app_tweak_reset":         h.handleAppTweakReset,
+		"app_spawn":               h.handleAppSpawn,
+		"app_acquire":             h.handleAppAcquire,
+		"app_release":             h.handleAppRelease,
+		"games":                   h.handleGames,
 		"app_save_state":          h.handleAppSaveState,
 		"app_restore_state":       h.handleAppRestoreState,
 		"app_screenshot":          h.handleAppScreenshot,

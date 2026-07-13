@@ -220,6 +220,16 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 		}
 		devices = append(devices, ds...)
 	}
+	if (platform == "desktop" || platform == "all") && h.desktop != nil {
+		ds, err := h.desktop.List()
+		if err != nil {
+			if platform == "desktop" {
+				return toolErr("desktop: %v", err)
+			}
+			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("desktop: %v", err))
+		}
+		devices = append(devices, ds...)
+	}
 
 	for i := range devices {
 		if alias := h.inventory.AliasFor(devices[i].UUID); alias != "" {
@@ -985,6 +995,9 @@ func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, er
 		return h.ios, "ios", id, nil
 	case "android":
 		return h.android, "android", entry.AndroidSerial, nil
+	case "desktop":
+		// The executable path is the desktop "device id" (🎯T85).
+		return h.desktop, "desktop", entry.ExecutablePath, nil
 	default:
 		return nil, "", "", fmt.Errorf("inventory entry %q has unknown platform %q", ref, entry.Platform)
 	}

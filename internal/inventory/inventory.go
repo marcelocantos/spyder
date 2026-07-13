@@ -25,14 +25,20 @@ var standardUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f
 
 // Entry records a known device with its platform-specific identifiers.
 type Entry struct {
-	Alias         string            `json:"alias"`
-	Platform      string            `json:"platform"`                 // "ios" or "android"
-	IOSUUID       string            `json:"ios_uuid,omitempty"`       // go-ios / xctrace
-	IOSCoreDevice string            `json:"ios_coredevice,omitempty"` // devicectl
-	AndroidSerial string            `json:"android_serial,omitempty"` // adb
-	Notes         string            `json:"notes,omitempty"`
-	Tags          []string          `json:"tags,omitempty"`  // free-form labels for selector matching
-	Attrs         map[string]string `json:"attrs,omitempty"` // key/value pairs for exact-match selector predicates
+	Alias         string `json:"alias"`
+	Platform      string `json:"platform"`                 // "ios" or "android"
+	IOSUUID       string `json:"ios_uuid,omitempty"`       // go-ios / xctrace
+	IOSCoreDevice string `json:"ios_coredevice,omitempty"` // devicectl
+	AndroidSerial string `json:"android_serial,omitempty"` // adb
+	// ExecutablePath is the binary spyder launches for a platform="desktop"
+	// entry; it doubles as the desktop "device id" (analogous to ios_uuid /
+	// android_serial). WorkingDir optionally overrides the launched process's
+	// cwd (default: the binary's own directory).
+	ExecutablePath string            `json:"executable_path,omitempty"`
+	WorkingDir     string            `json:"working_dir,omitempty"`
+	Notes          string            `json:"notes,omitempty"`
+	Tags           []string          `json:"tags,omitempty"`  // free-form labels for selector matching
+	Attrs          map[string]string `json:"attrs,omitempty"` // key/value pairs for exact-match selector predicates
 }
 
 // Store holds the inventory, loaded lazily from disk.

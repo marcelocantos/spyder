@@ -136,3 +136,8 @@ Merged to master via squash PR. Squash-only merges configured on the repo.
 ## Gates
 
 Default (base) gates apply.
+
+## Plateau
+
+Current product plateau is **Plateau P** — see [docs/plateau-p.md](docs/plateau-p.md).
+ge is the engine; spyder is the sole control plane. `ged` is gone.
