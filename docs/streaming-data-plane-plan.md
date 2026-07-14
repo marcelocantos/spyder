@@ -9,6 +9,12 @@ payload-agnostic byte pipe.** LAN/trusted dev only, no authn (same trust model
 as the app-channel). A future production stream is a separate clean-slate
 design — do NOT accommodate it here.
 
+**Multi-rung (🎯T97 / ge 🎯T128):** the relay does **not** inspect
+`MessageHeader.magic`. H.264 (`GE2V`) and command-stream (`GE2S`) are end-to-end
+rungs negotiated by ge player + server; spyder only pipes binary messages and
+counts opaque frames/bytes. Class-1 oracle:
+`TestRelay_PipesCommandStreamMagic`.
+
 ## Architecture (what plugs where)
 
 ```

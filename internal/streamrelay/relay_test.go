@@ -15,6 +15,22 @@ import (
 	"github.com/coder/websocket"
 )
 
+// geMagic builds a ge-style MessageHeader{magic, length} + payload (little-endian).
+func geMagic(magic uint32, payload []byte) []byte {
+	out := make([]byte, 8+len(payload))
+	out[0] = byte(magic)
+	out[1] = byte(magic >> 8)
+	out[2] = byte(magic >> 16)
+	out[3] = byte(magic >> 24)
+	n := uint32(len(payload))
+	out[4] = byte(n)
+	out[5] = byte(n >> 8)
+	out[6] = byte(n >> 16)
+	out[7] = byte(n >> 24)
+	copy(out[8:], payload)
+	return out
+}
+
 // TestRelay_PipesFramesAndInput is the 🎯T91.4 oracle: a test-double server and
 // player, no ge. A player attaching triggers player_attached on the server's
 // control socket; the server opens the matching wire; a frame sent down the
@@ -225,6 +241,100 @@ func TestRelay_SessionListHTTP(t *testing.T) {
 	if body.Sessions[0].PlayerPathClass != PathLoopback && body.Sessions[0].PlayerPathClass != PathLAN {
 		t.Fatalf("unexpected player_path_class %q remote %q",
 			body.Sessions[0].PlayerPathClass, body.Sessions[0].PlayerRemote)
+	}
+}
+
+// TestRelay_PipesCommandStreamMagic is the 🎯T97 oracle: the relay pipes a
+// non-H.264 ge magic (GE2S command-stream) server→player and GE2I-like input
+// player→server verbatim, with session counters treating them as opaque frames.
+// Proves the data plane is magic-agnostic so ge's T128 ladder needs no broker work.
+func TestRelay_PipesCommandStreamMagic(t *testing.T) {
+	const (
+		kCommandStreamMagic = uint32(0x47453253) // "GE2S"
+		kSdlEventMagic      = uint32(0x47453249) // "GE2I"
+	)
+
+	relay := New()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws/server", relay.HandleServerSideband)
+	mux.HandleFunc("/ws/server/wire/", relay.HandleServerWire)
+	mux.HandleFunc("/stream/player/", relay.HandlePlayerConnect)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	base := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sideband, _, err := websocket.Dial(ctx, base+"/ws/server?name=cmdgame", nil)
+	if err != nil {
+		t.Fatalf("server dial: %v", err)
+	}
+	t.Cleanup(func() { _ = sideband.Close(websocket.StatusNormalClosure, "") })
+	if !waitFor(2*time.Second, func() bool { return len(relay.Servers()) == 1 }) {
+		t.Fatal("server not registered")
+	}
+
+	player, _, err := websocket.Dial(ctx, base+"/stream/player/cmdgame", nil)
+	if err != nil {
+		t.Fatalf("player dial: %v", err)
+	}
+	t.Cleanup(func() { _ = player.Close(websocket.StatusNormalClosure, "") })
+
+	_, msg, err := sideband.Read(ctx)
+	if err != nil {
+		t.Fatalf("read player_attached: %v", err)
+	}
+	var attach struct {
+		Type      string `json:"type"`
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(msg, &attach); err != nil || attach.Type != "player_attached" || attach.SessionID == "" {
+		t.Fatalf("bad player_attached: %s (%v)", msg, err)
+	}
+
+	wire, _, err := websocket.Dial(ctx, base+"/ws/server/wire/"+attach.SessionID, nil)
+	if err != nil {
+		t.Fatalf("wire dial: %v", err)
+	}
+	t.Cleanup(func() { _ = wire.Close(websocket.StatusNormalClosure, "") })
+
+	// Synthetic GE2S frame — payload is not H.264; relay must not care.
+	frame := geMagic(kCommandStreamMagic, []byte{0x01, 0x02, 0xFE, 0xED, 0xFA, 0xCE})
+	if err := wire.Write(ctx, websocket.MessageBinary, frame); err != nil {
+		t.Fatalf("send GE2S: %v", err)
+	}
+	typ, got, err := player.Read(ctx)
+	if err != nil {
+		t.Fatalf("player read GE2S: %v", err)
+	}
+	if typ != websocket.MessageBinary || string(got) != string(frame) {
+		t.Fatalf("GE2S mismatch: type=%v got=% x want=% x", typ, got, frame)
+	}
+
+	// Synthetic GE2I-like input.
+	input := geMagic(kSdlEventMagic, []byte("not-an-sdl-event-but-opaque"))
+	if err := player.Write(ctx, websocket.MessageBinary, input); err != nil {
+		t.Fatalf("send GE2I: %v", err)
+	}
+	_, gotIn, err := wire.Read(ctx)
+	if err != nil {
+		t.Fatalf("wire read input: %v", err)
+	}
+	if string(gotIn) != string(input) {
+		t.Fatalf("input mismatch: got % x want % x", gotIn, input)
+	}
+
+	sessions := relay.Sessions()
+	if len(sessions) != 1 {
+		t.Fatalf("sessions: got %d want 1", len(sessions))
+	}
+	si := sessions[0]
+	if si.FramesS2P < 1 || si.BytesS2P < uint64(len(frame)) {
+		t.Fatalf("s2p counters for GE2S: frames=%d bytes=%d", si.FramesS2P, si.BytesS2P)
+	}
+	if si.FramesP2S < 1 || si.BytesP2S < uint64(len(input)) {
+		t.Fatalf("p2s counters for GE2I: frames=%d bytes=%d", si.FramesP2S, si.BytesP2S)
 	}
 }
 
