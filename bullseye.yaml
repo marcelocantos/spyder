@@ -4300,3 +4300,22 @@ targets:
     origin: manual
     discovered: 2026-07-11
     achieved: 2026-07-14
+  T97:
+    name: Streamrelay is proven byte-agnostic for non-H.264 GE magics (command-stream ready)
+    status: achieved
+    value: 5.0
+    cost: 2.0
+    acceptance:
+    - 'Class-1: relay_test pipes a synthetic GE2S (command-stream) binary frame server→player and GE2I-like input player→server verbatim — no H.264/magic filtering.'
+    - GET /stream/sessions counters increment for non-GE2V frames the same way as video (opaque frame/byte counts).
+    - docs/streaming-data-plane-plan.md and agents-guide stream section state that the relay is protocol-agnostic and that rung negotiation (H.264 vs command-stream) is end-to-end ge-only.
+    - No spyder code path inspects MessageHeader.magic to branch codec behaviour on the data plane.
+    context: Enables ge 🎯T128 command-stream rung without broker changes. Design note (ge docs/command-stream-transport.md) already claims spyder is a pure byte pipe; this target is the class-1 oracle + docs so that claim is load-bearing. Pairs with ge T128.2/T128.9. Independent of T93 pigeon.
+    tags:
+    - stream
+    - relay
+    - cmdstream
+    - ge-t128
+    origin: manual
+    discovered: 2026-07-14
+    achieved: 2026-07-14
