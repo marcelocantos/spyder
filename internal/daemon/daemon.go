@@ -211,7 +211,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 		} else {
 			poolStore = s
 		}
-		opts := []pool.Option{}
+		opts := []pool.Option{pool.WithConfigPath(poolCfgPath)}
 		if poolStore != nil {
 			opts = append(opts, pool.WithStore(poolStore))
 		}
