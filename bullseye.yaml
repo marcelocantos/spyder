@@ -4319,3 +4319,24 @@ targets:
     origin: manual
     discovered: 2026-07-14
     achieved: 2026-07-14
+  T98:
+    name: spyder install/deploy is the reliable path for every attached physical device; agents never need devicectl/adb for app install
+    status: identified
+    value: 13.0
+    cost: 5.0
+    acceptance:
+    - spyder install succeeds on every attached iOS physical device (iOS 16 lockdown and iOS 17+ RSD/zipconduit) without invoking xcrun devicectl
+    - spyder install succeeds on every attached Android physical device via adb through the adapter
+    - When a device is inventoried but not attached, install returns a clear device-not-attached error (not a vague CoreDevice capability error)
+    - agents-guide and MCP tool descriptions state that install_app/deploy_app use go-ios zipconduit (iOS) and adb (Android), and that agents must use those tools rather than shelling out to devicectl/adb for install
+    - A multi-device install/deploy CLI surface (or documented one-liner) reports per-device success/failure so 'deploy to all physical' is a first-class product operation
+    context: '2026-07-15: agent deploy of TiltBuggy used xcrun devicectl and saw CoreDevice ''Install Application is not supported'' on Minicades while go-ios/spyder zipconduit path already works. Product gap is (1) agent guidance defaulting to OS tools, (2) missing multi-device deploy UX, (3) ensuring Spyder remains the correct sole path and never regresses to CoreDevice-only install.'
+    tags:
+    - ios
+    - android
+    - install
+    - deploy
+    - agent-ux
+    - go-ios
+    origin: manual
+    discovered: 2026-07-15
