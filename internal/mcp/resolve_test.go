@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,7 +116,7 @@ func TestResolveAdapter_RawAndroidSerial(t *testing.T) {
 
 func TestDispatch_UnknownTool(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("nonexistent_tool", map[string]any{})
+	_, err := h.Dispatch(context.Background(), "nonexistent_tool", map[string]any{})
 	if err == nil {
 		t.Error("Dispatch(unknown) returned nil err; want error")
 	}
@@ -123,7 +124,7 @@ func TestDispatch_UnknownTool(t *testing.T) {
 
 func TestDispatch_ResolveMissingName(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("resolve", map[string]any{})
+	_, err := h.Dispatch(context.Background(), "resolve", map[string]any{})
 	if err == nil {
 		t.Error("Dispatch(resolve, {}) returned nil err; want error for missing name")
 	}

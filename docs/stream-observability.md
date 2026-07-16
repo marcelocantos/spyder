@@ -7,8 +7,8 @@ the endpoints. Target: spyder 🎯T96, ge 🎯T149.
 ## Topology
 
 ```
-game server (GE_SERVER_BUILD)          player (native / browser)
-  │ GE_SERVER=host:port                  │ stream_addr / --host
+game server (server build)          player (native / browser)
+  │ STREAM_ADDR=host:port                  │ stream_addr / --host
   │ /ws/server?name=…                    │ /ws/wire or /stream/player/<name>
   ▼                                      ▼
               spyder streamrelay :3030

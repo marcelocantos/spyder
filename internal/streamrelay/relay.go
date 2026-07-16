@@ -56,6 +56,11 @@ type serverConn struct {
 	sideband *websocket.Conn
 	remote   string // sideband peer (http.Request.RemoteAddr)
 	writeMu  sync.Mutex
+	// cancel aborts the sideband drain loop (used on same-name replace).
+	cancel context.CancelFunc
+	// orientation is optional sideband hello advertisement (🎯T100.4):
+	// "portrait" | "landscape" | "any" | "".
+	orientation string
 }
 
 func (s *serverConn) send(ctx context.Context, v any) error {
@@ -206,6 +211,39 @@ type SessionInfo struct {
 	BytesPerSec1sP2S float64 `json:"bytes_per_sec_1s_p2s"`
 }
 
+// ServerOrientation returns the optional orientation advertised on the
+// server's sideband hello (🎯T100.4), or "" if unknown / not registered.
+func (r *Relay) ServerOrientation(name string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if sc := r.servers[name]; sc != nil {
+		return sc.orientation
+	}
+	return ""
+}
+
+// parseHelloOrientation extracts orientation from a sideband JSON hello, e.g.
+// {"type":"hello","name":"tiltbuggy","orientation":"landscape"}.
+func parseHelloOrientation(data []byte) string {
+	var msg struct {
+		Type        string `json:"type"`
+		Orientation string `json:"orientation"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil {
+		return ""
+	}
+	if msg.Type != "hello" && msg.Orientation == "" {
+		// Accept orientation on any sideband JSON object.
+	}
+	o := strings.ToLower(strings.TrimSpace(msg.Orientation))
+	switch o {
+	case "portrait", "landscape", "any":
+		return o
+	default:
+		return ""
+	}
+}
+
 // Servers lists connected streaming servers.
 func (r *Relay) Servers() []ServerInfo {
 	r.mu.Lock()
@@ -287,6 +325,11 @@ func (r *Relay) HandleSessionList(w http.ResponseWriter, _ *http.Request) {
 // HandleServerSideband handles GET /ws/server?name=<name>: the server's control
 // channel. The relay tracks the server and keeps the socket open (draining any
 // messages) until it closes.
+//
+// Same-name re-registration is intentional REPLACE (rebuild-and-run, 🎯T100.1):
+// the new process becomes the catalogue entry; the previous sideband is closed
+// with reason "replaced" and any live player sessions for that name are
+// closed so they cannot linger on the superseded process.
 func (r *Relay) HandleServerSideband(w http.ResponseWriter, req *http.Request) {
 	name := req.URL.Query().Get("name")
 	if name == "" {
@@ -298,22 +341,71 @@ func (r *Relay) HandleServerSideband(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	remote := req.RemoteAddr
-	sc := &serverConn{name: name, sideband: c, remote: remote}
+	ctx, cancel := context.WithCancel(req.Context())
+	sc := &serverConn{name: name, sideband: c, remote: remote, cancel: cancel}
+
 	r.mu.Lock()
+	old := r.servers[name]
+	var playersToClose []*websocket.Conn
+	if old != nil {
+		for id, s := range r.sessions {
+			if s.server == old {
+				if s.player != nil {
+					playersToClose = append(playersToClose, s.player)
+				}
+				// Drop from catalogue immediately so GET /stream/sessions
+				// reflects replace before player teardown finishes.
+				delete(r.sessions, id)
+			}
+		}
+	}
 	r.servers[name] = sc
 	r.mu.Unlock()
-	slog.Info("streamrelay: server connected",
-		"name", name,
-		"remote", remote,
-		"path_class", ClassifyRemote(remote),
-	)
 
-	ctx := req.Context()
+	if old != nil {
+		// Close players + old sideband asynchronously: player Close can
+		// wait for servePlayer teardown which itself writes player_detached
+		// on the old sideband — doing this synchronously deadlocks replace.
+		go func(old *serverConn, players []*websocket.Conn) {
+			for _, p := range players {
+				_ = p.Close(websocket.StatusGoingAway, "server replaced")
+			}
+			if old.cancel != nil {
+				old.cancel()
+			}
+			_ = old.sideband.Close(websocket.StatusGoingAway, "replaced")
+		}(old, playersToClose)
+		slog.Info("streamrelay: server replaced",
+			"name", name,
+			"old_remote", old.remote,
+			"new_remote", remote,
+			"sessions_evicted", len(playersToClose),
+			"path_class", ClassifyRemote(remote),
+		)
+	} else {
+		slog.Info("streamrelay: server connected",
+			"name", name,
+			"remote", remote,
+			"path_class", ClassifyRemote(remote),
+		)
+	}
+
 	// Drain the control socket until it closes (the server sends a hello and
-	// otherwise mostly listens). We only need to detect disconnect.
+	// otherwise mostly listens). Parse optional orientation from hello JSON
+	// (🎯T100.4). ctx is cancelled on same-name replace so the superseded drain exits.
 	for {
-		if _, _, err := c.Read(ctx); err != nil {
+		typ, data, err := c.Read(ctx)
+		if err != nil {
 			break
+		}
+		if typ == websocket.MessageText || typ == websocket.MessageBinary {
+			if o := parseHelloOrientation(data); o != "" {
+				r.mu.Lock()
+				if cur := r.servers[name]; cur == sc {
+					cur.orientation = o
+				}
+				r.mu.Unlock()
+			}
 		}
 	}
 	r.mu.Lock()

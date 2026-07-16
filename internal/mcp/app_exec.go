@@ -74,16 +74,17 @@ func (h *Handler) handleAppExec(args map[string]any) (*mcpgo.CallToolResult, err
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 	defer cancel()
 	// h.Health() is always non-nil (NewHandler seeds a default supervisor),
-	// so the health() builtin can read the live model in-process.
-	return runExec(ctx, script, verbs, h.Health().Model(), execLimits{MaxSteps: defaultExecSteps, MaxDuration: dur})
+	// so the health() builtin can read the live unified report in-process.
+	return runExec(ctx, script, verbs, h.Health().Model(), h.HealthReport, execLimits{MaxSteps: defaultExecSteps, MaxDuration: dur})
 }
 
 // runExec compiles and runs a Starlark script with verbs exposed as
 // builtins, returning the ordered emitted artifacts as MCP content. A
 // runtime error (including a cap breach) is reported as IsError with
 // whatever was emitted before the failure preserved — never a hang.
-func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *health.Model, lim execLimits) (*mcpgo.CallToolResult, error) {
-	st := &execState{ctx: ctx, health: hm}
+// reportFn supplies the full health report for health() (entities + doctor + in-flight).
+func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *health.Model, reportFn func() HealthReport, lim execLimits) (*mcpgo.CallToolResult, error) {
+	st := &execState{ctx: ctx, health: hm, reportFn: reportFn}
 
 	predeclared := st.builtins(verbs)
 	prog, err := compileExec(script, predeclared)
@@ -123,7 +124,8 @@ func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *
 type execState struct {
 	ctx    context.Context
 	out    []starlark.Value
-	health *health.Model // live health model, read by the health() builtin
+	health   *health.Model          // live health model (entities)
+	reportFn func() HealthReport    // full report for health() (T99.5/T99.6)
 }
 
 // builtins constructs the predeclared environment: one bridge builtin per
@@ -140,14 +142,14 @@ func (st *execState) builtins(verbs map[string]toolFunc) starlark.StringDict {
 	return g
 }
 
-// healthBuiltin returns the live health model snapshot as a Starlark dict —
-// the SAME in-process model.Snapshot() that /api/v1/health serialises, so an
-// agent can inspect device/subprocess/daemon health mid-script and relay it.
-// It returns the value (does not auto-emit); a bare `health()` line or an
-// explicit emit(health()) adds it to the result.
+// healthBuiltin returns the live HealthReport as a Starlark dict —
+// the SAME body /api/v1/health serialises (entities + doctor_finding + in_flight).
 func (st *execState) healthBuiltin(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	if len(args) > 0 || len(kwargs) > 0 {
 		return nil, fmt.Errorf("health: takes no arguments")
+	}
+	if st.reportFn != nil {
+		return healthReportToStarlark(st.reportFn()), nil
 	}
 	return snapshotToStarlark(st.health.Snapshot()), nil
 }
@@ -212,6 +214,29 @@ func snapshotToStarlark(snap health.Snapshot) starlark.Value {
 	top := starlark.NewDict(2)
 	_ = top.SetKey(starlark.String("at"), starlark.String(snap.At.Format(time.RFC3339)))
 	_ = top.SetKey(starlark.String("entities"), starlark.NewList(entities))
+	return top
+}
+
+// healthReportToStarlark extends snapshotToStarlark with doctor_finding + in_flight.
+func healthReportToStarlark(rep HealthReport) starlark.Value {
+	top := snapshotToStarlark(rep.Snapshot()).(*starlark.Dict)
+	df := starlark.NewDict(3)
+	_ = df.SetKey(starlark.String("wedged"), starlark.Bool(rep.DoctorFinding.Wedged))
+	_ = df.SetKey(starlark.String("detail"), starlark.String(rep.DoctorFinding.Detail))
+	if !rep.DoctorFinding.UpdatedAt.IsZero() {
+		_ = df.SetKey(starlark.String("updated_at"), starlark.String(rep.DoctorFinding.UpdatedAt.Format(time.RFC3339)))
+	}
+	_ = top.SetKey(starlark.String("doctor_finding"), df)
+	ops := make([]starlark.Value, 0, len(rep.InFlight))
+	for _, op := range rep.InFlight {
+		d := starlark.NewDict(4)
+		_ = d.SetKey(starlark.String("tool"), starlark.String(op.Tool))
+		_ = d.SetKey(starlark.String("device"), starlark.String(op.Device))
+		_ = d.SetKey(starlark.String("started"), starlark.String(op.Started.Format(time.RFC3339)))
+		_ = d.SetKey(starlark.String("elapsed_ms"), starlark.MakeInt64(op.ElapsedMs))
+		ops = append(ops, d)
+	}
+	_ = top.SetKey(starlark.String("in_flight"), starlark.NewList(ops))
 	return top
 }
 

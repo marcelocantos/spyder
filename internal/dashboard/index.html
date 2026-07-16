@@ -397,8 +397,8 @@ function esc(s) { return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&l
 function fmt(v) { return typeof v === "object" ? JSON.stringify(v) : String(v); }
 
 // ---- stream (WebCodecs H.264 player, 🎯T92.2) -----------------------------
-const K_VIDEO = 0x47453256;  // "GE2V" server→player H.264
-const K_SDLEVT = 0x47453249; // "GE2I" player→server SDL_Event
+const K_VIDEO = 0x53503256;  // "SP2V" server→player H.264
+const K_SDLEVT = 0x53503249; // "SP2I" player→server SDL_Event
 let streamWS = null, streamDec = null, streamCfg = false, streamFrames = 0;
 
 async function loadStreamServers() {
@@ -415,7 +415,7 @@ async function loadStreamServers() {
     }
     if (prev) box.value = prev;
     $("stream-stat").textContent = servers.length
-      ? `${servers.length} streaming server(s)` : "no streaming servers (launch a game with GE_STREAM=<host:port>)";
+      ? `${servers.length} streaming server(s)` : "no streaming servers (launch a game with a stream server via spyder)";
   } catch (e) { $("stream-stat").textContent = "offline"; }
 }
 

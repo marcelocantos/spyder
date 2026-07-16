@@ -138,6 +138,31 @@ func (w *ProgressWatchdog) Check(now time.Time) bool {
 	return true
 }
 
+// ForceStall marks the outstanding operation stalled immediately (no timeout
+// wait) and drives NeedsAttention. Used when a dispatch deadline already
+// fired and the handler is still stuck after grace (🎯T99.3) so daemon-self
+// reflects the wedge before self-restart dumps + exit.
+func (w *ProgressWatchdog) ForceStall(detail string) bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	if !w.outstanding || w.stalled {
+		w.mu.Unlock()
+		return false
+	}
+	w.stalled = true
+	id := w.id
+	w.mu.Unlock()
+	if detail == "" {
+		detail = "wedged-but-alive: forced after dispatch deadline"
+	}
+	w.model.Observe(id, false, detail)
+	w.model.RecoveryStarted(id)
+	w.model.RecoveryFailed(id, detail)
+	return true
+}
+
 // Run drives Check on an interval until ctx is cancelled. This is the
 // production driver; tests call Check directly for deterministic control.
 func (w *ProgressWatchdog) Run(ctx context.Context, interval time.Duration) {

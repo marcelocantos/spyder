@@ -41,27 +41,23 @@ import (
 	"github.com/marcelocantos/spyder/internal/paths"
 )
 
-// Tunables for the health probe. Declared as vars so tests can
-// shorten them; production defaults are conservative.
+// Legacy probe tunables retained for test code that still sets them;
+// production liveness is health.Supervisor.Alive via ListRunningTunnels.
 var (
-	// HealthProbeInterval is the cadence at which the supervisor pings
-	// the tunnel registry to confirm it's responsive.
-	HealthProbeInterval = 10 * time.Second
-	// HealthProbeFailureThreshold is the number of consecutive failing
-	// probes that triggers a forced restart. 3 × 10 s = ~30 s tolerance
-	// before we declare the daemon wedged.
+	HealthProbeInterval         = 10 * time.Second
 	HealthProbeFailureThreshold = 3
 )
 
 // Supervisor manages an `ios tunnel start --userspace` subprocess.
+// Restart/liveness is owned by health.Supervisor.Supervise (🎯T90.5.1) —
+// this type does not run its own restartLoop or healthProbe.
 type Supervisor struct {
 	binPath   string
 	probeHost string
 	probePort int
 
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	probeStop chan struct{} // closed to stop the current probe goroutine
+	mu  sync.Mutex
+	cmd *exec.Cmd
 }
 
 // New returns a Supervisor for the ios binary at binPath. The
@@ -82,27 +78,45 @@ func New(binPath, probeHost string, probePort int) *Supervisor {
 	}
 }
 
+// Name implements health.ManagedProcess (🎯T90.5.1).
+func (s *Supervisor) Name() string { return "ios-tunnel" }
+
+// Alive implements health.ManagedProcess: process running AND registry responsive.
+func (s *Supervisor) Alive() bool {
+	s.mu.Lock()
+	running := s.cmd != nil && s.cmd.Process != nil
+	s.mu.Unlock()
+	if !running {
+		return false
+	}
+	_, err := tunnel.ListRunningTunnels(s.probeHost, s.probePort)
+	return err == nil
+}
+
 // Start launches `ios tunnel start --userspace` and returns once the
 // subprocess is running. The subprocess inherits the parent's stderr
 // (which is what go-ios uses for its structured JSON log lines), so
 // tunnel logs interleave with spyder's slog output.
 //
-// If startup itself fails (binary missing, exec error), Start returns
-// the error and the Supervisor remains in the un-started state.
-// Once Start succeeds, callers should defer Stop to ensure the
-// child is reaped on shutdown.
+// If already running, Start kills and respawns (health.Supervisor
+// restart path, 🎯T90.5.1). If startup itself fails (binary missing,
+// exec error), Start returns the error.
 func (s *Supervisor) Start(ctx context.Context) error {
+	s.mu.Lock()
+	if s.cmd != nil {
+		s.mu.Unlock()
+		_ = s.Stop(ctx)
+	} else {
+		s.mu.Unlock()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cmd != nil {
-		return errors.New("iostunnel: already started")
+		// Another Start won the race.
+		return nil
 	}
-
-	if err := s.startLocked(ctx); err != nil {
-		return err
-	}
-
-	return nil
+	return s.startLocked(ctx)
 }
 
 func (s *Supervisor) startLocked(ctx context.Context) error {
@@ -136,124 +150,27 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 		return fmt.Errorf("iostunnel: start %s: %w", s.binPath, err)
 	}
 	s.cmd = cmd
-	probeStop := make(chan struct{})
-	s.probeStop = probeStop
 	slog.Info("iostunnel: started", "binary", s.binPath, "pid", cmd.Process.Pid)
 
 	// Reap the process when it exits so we don't leak zombies.
-	// Surface unexpected exits at warn level — a healthy tunnel
-	// should run for the lifetime of spyder.
+	// Restart is owned by health.Supervisor.Supervise (🎯T90.5.1): when
+	// Alive() goes false, Supervise calls Start again. Do not restart here.
 	go func() {
 		err := cmd.Wait()
 		s.mu.Lock()
-		started := s.cmd != nil
-		s.cmd = nil
-		// Stop the health probe attached to this incarnation.
-		if s.probeStop == probeStop {
-			close(s.probeStop)
-			s.probeStop = nil
+		// Only clear if this Wait matches the current cmd (not a newer Start).
+		if s.cmd == cmd {
+			s.cmd = nil
 		}
 		s.mu.Unlock()
-		// If Stop nilled cmd already, this is the orderly-shutdown path.
-		if !started {
-			return
-		}
 		if err != nil {
 			slog.Error("iostunnel: subprocess exited", "error", err)
 		} else {
-			slog.Error("iostunnel: subprocess exited unexpectedly (no error)")
+			slog.Info("iostunnel: subprocess exited")
 		}
-		go s.restartLoop(ctx)
 	}()
 
-	// Health probe: HTTP-pings the registry; if it stops responding,
-	// SIGTERM the daemon so the exit-driven restart loop above takes
-	// over. This is the only path that catches the
-	// "process up, registry wedged" failure mode (🎯T84).
-	go s.healthProbe(ctx, cmd.Process.Pid, probeStop)
-
 	return nil
-}
-
-// healthProbe pings the tunnel registry every HealthProbeInterval.
-// After HealthProbeFailureThreshold consecutive failures, SIGTERM the
-// subprocess so the Wait-driven goroutine in startLocked fires its
-// restartLoop. Returns when stopCh is closed (subprocess exited or
-// Stop was called) or ctx is cancelled.
-func (s *Supervisor) healthProbe(ctx context.Context, pid int, stopCh <-chan struct{}) {
-	t := time.NewTicker(HealthProbeInterval)
-	defer t.Stop()
-	consecFails := 0
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-stopCh:
-			return
-		case <-t.C:
-		}
-		_, err := tunnel.ListRunningTunnels(s.probeHost, s.probePort)
-		if err == nil {
-			if consecFails > 0 {
-				slog.Info("iostunnel: health probe recovered",
-					"pid", pid, "after_failures", consecFails)
-			}
-			consecFails = 0
-			continue
-		}
-		consecFails++
-		slog.Warn("iostunnel: health probe failed",
-			"pid", pid, "consec_fails", consecFails,
-			"threshold", HealthProbeFailureThreshold, "error", err.Error())
-		if consecFails < HealthProbeFailureThreshold {
-			continue
-		}
-		// Wedged. SIGKILL the daemon — a wedged process by definition
-		// isn't responding to graceful signals (its trap, if any,
-		// would already have let the registry recover). The Wait
-		// goroutine will see the exit and the restartLoop will
-		// respawn. Take the lock to avoid racing Stop.
-		s.mu.Lock()
-		cmd := s.cmd
-		s.mu.Unlock()
-		if cmd == nil || cmd.Process == nil {
-			return
-		}
-		slog.Error("iostunnel: registry wedged; killing for restart",
-			"pid", pid, "consec_fails", consecFails)
-		_ = cmd.Process.Kill()
-		return
-	}
-}
-
-func (s *Supervisor) restartLoop(ctx context.Context) {
-	backoff := time.Second
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(backoff):
-		}
-
-		s.mu.Lock()
-		if s.cmd != nil {
-			s.mu.Unlock()
-			return
-		}
-		err := s.startLocked(ctx)
-		s.mu.Unlock()
-		if err == nil {
-			return
-		}
-
-		slog.Error("iostunnel: restart failed", "error", err, "retry_in", backoff.String())
-		if backoff < 30*time.Second {
-			backoff *= 2
-			if backoff > 30*time.Second {
-				backoff = 30 * time.Second
-			}
-		}
-	}
 }
 
 // Stop signals the tunnel subprocess to exit (SIGTERM, then SIGKILL

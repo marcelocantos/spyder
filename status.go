@@ -69,11 +69,36 @@ Prints the daemon's live health model — one line per monitored entity
 		return
 	}
 
-	var snap health.Snapshot
-	if err := json.Unmarshal(body, &snap); err != nil {
+	// Accept enriched HealthReport (entities + doctor_finding + in_flight)
+	// while remaining backward-compatible with model-only snapshots.
+	var rep struct {
+		At       time.Time               `json:"at"`
+		Entities []health.EntitySnapshot `json:"entities"`
+		Doctor   *struct {
+			Wedged    bool      `json:"wedged"`
+			Detail    string    `json:"detail"`
+			UpdatedAt time.Time `json:"updated_at"`
+		} `json:"doctor_finding"`
+		InFlight []struct {
+			Tool      string    `json:"tool"`
+			Device    string    `json:"device"`
+			Started   time.Time `json:"started"`
+			ElapsedMs int64     `json:"elapsed_ms"`
+		} `json:"in_flight"`
+	}
+	if err := json.Unmarshal(body, &rep); err != nil {
 		cliexit.Errorf(cliexit.ExitGeneric, "spyder status: parse health body: %v", err)
 	}
-	fmt.Print(formatStatus(snap))
+	fmt.Print(formatStatus(health.Snapshot{At: rep.At, Entities: rep.Entities}))
+	if rep.Doctor != nil && (rep.Doctor.Wedged || rep.Doctor.Detail != "") {
+		fmt.Printf("doctor: wedged=%v detail=%q\n", rep.Doctor.Wedged, rep.Doctor.Detail)
+	}
+	if len(rep.InFlight) > 0 {
+		fmt.Println("in_flight:")
+		for _, op := range rep.InFlight {
+			fmt.Printf("  %s device=%s elapsed_ms=%d\n", op.Tool, op.Device, op.ElapsedMs)
+		}
+	}
 }
 
 // getHealth GETs the daemon's health snapshot as raw JSON bytes. Returns a

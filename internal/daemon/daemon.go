@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/dashboard"
 	"github.com/marcelocantos/spyder/internal/goios"
+	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
 	"github.com/marcelocantos/spyder/internal/logcapture"
@@ -96,7 +98,20 @@ func Run(ctx context.Context, cfg Config) error {
 	// model and start the background probes that populate it (🎯T90).
 	if mcpHandler != nil {
 		startHealthWiring(ctx, mcpHandler.Health(), tunnelSup != nil)
+		// 🎯T99.3: ProgressWatchdog on entity "spyder" (timeout = device-op
+		// deadline) + rate-limited self-restart after grace; dumps before exit.
+		mcpHandler.EnableSelfHeal(0, 5*time.Second) // 0 → DeadlineDeviceOp
+		// 🎯T90.5.1: ios-tunnel restart/liveness owned solely by health.Supervise
+		// (iostunnel has no restartLoop/healthProbe of its own).
+		if tunnelSup != nil {
+			go mcpHandler.Health().Supervise(ctx, tunnelSup, health.Policy{
+				MaxAttempts: 5,
+				BaseBackoff: 2 * time.Second,
+			}, 10*time.Second)
+		}
 	}
+	// 🎯T99.5: SIGQUIT dumps goroutines under ~/.spyder/ without dying.
+	startDiagnostics()
 
 	// Wedge monitor. Detects the usbmuxd third-party-table desync
 	// (🎯T68) via a 30s polling timer + an opportunistic log-stream
@@ -262,8 +277,10 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 
 	for _, tool := range spydermcp.Definitions() {
 		toolName := tool.Name
-		srv.AddTool(tool, func(_ context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			return handler.Dispatch(toolName, req.GetArguments())
+		srv.AddTool(tool, func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			// 🎯T99.1: pass the transport context so client disconnect and
+			// tool-class deadlines can cancel in-flight work.
+			return handler.Dispatch(ctx, toolName, req.GetArguments())
 		})
 	}
 
@@ -290,7 +307,28 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	mux.HandleFunc("/ws/wire", relay.HandlePlayerWire) // ge's native player (PlayerWireBridge)
 	mux.HandleFunc("/stream/servers", relay.HandleServerList)
 	mux.HandleFunc("/stream/sessions", relay.HandleSessionList) // 🎯T96 hop telemetry
+	// 🎯T100.3: launch_player needs the catalogue + listen port for STREAM_ADDR.
+	if handler != nil {
+		handler.SetStreamRelay(relay, spydermcpParseListenPort(cfg.Addr))
+	}
 	return mux, resvStore, handler, logCapMgr, appChanMgr
+}
+
+// spydermcpParseListenPort is a tiny local helper so daemon does not import
+// mcp's unexported parseListenPort; mirrors ":3030" / "host:port" parsing.
+func spydermcpParseListenPort(addr string) int {
+	if addr == "" {
+		return 3030
+	}
+	i := strings.LastIndex(addr, ":")
+	if i < 0 {
+		return 3030
+	}
+	p, err := strconv.Atoi(addr[i+1:])
+	if err != nil || p <= 0 {
+		return 3030
+	}
+	return p
 }
 
 // resolveIOSTunnelBinary returns the path to the bundled `ios` binary

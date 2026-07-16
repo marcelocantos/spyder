@@ -62,6 +62,7 @@ func init() {
 		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
 		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
+		{"launch-player", "spyder launch-player <device> [--server NAME] [--path PATH] [--as OWNER]", runLaunchPlayer},
 		{"reserve", "spyder reserve (<device>|--on PREDICATE|--selector JSON|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
 		{"renew", "spyder renew <device> [--as OWNER] [--ttl SECONDS]", runRenew},
@@ -779,6 +780,27 @@ func runDeploy(args []string) {
 		a["bundle_id"] = bid
 	}
 	dispatchAndExit(ctx, "deploy_app", a, false, !verbose(pf))
+}
+
+func runLaunchPlayer(args []string) {
+	pf, ctx, cancel := setupCommand("launch-player", args, []string{"--as", "--server", "--path"}, nil, clitimeout.DefaultDeploy)
+	defer cancel()
+	requirePositional("launch-player", pf, 1)
+	a := map[string]any{
+		"device": pf.positional[0],
+	}
+	if o := pf.flags["--as"]; o != "" {
+		a["owner"] = o
+	} else {
+		a["owner"] = deriveOwner("")
+	}
+	if s := pf.flags["--server"]; s != "" {
+		a["server"] = s
+	}
+	if p := pf.flags["--path"]; p != "" {
+		a["path"] = p
+	}
+	dispatchAndExit(ctx, "launch_player", a, true, false)
 }
 
 func runReserve(args []string) {

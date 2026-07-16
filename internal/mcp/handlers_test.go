@@ -193,7 +193,7 @@ type callToolResultForTest struct {
 // Reliable and avoids coupling to mcp-go's internal types.
 func dispatchJSON(t *testing.T, h *Handler, name string, args map[string]any) callToolResultForTest {
 	t.Helper()
-	res, err := h.Dispatch(name, args)
+	res, err := h.Dispatch(context.Background(), name, args)
 	if err != nil {
 		t.Fatalf("Dispatch(%s) err = %v", name, err)
 	}
@@ -643,7 +643,7 @@ func TestHandleInstallApp_NonexistentPathRejected(t *testing.T) {
 
 func TestHandleInstallApp_MissingPath(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("install_app", map[string]any{"device": "iPad"})
+	_, err := h.Dispatch(context.Background(), "install_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(install_app without path) returned nil; want error")
 	}
@@ -678,7 +678,7 @@ func TestHandleUninstallApp_Success(t *testing.T) {
 
 func TestHandleUninstallApp_MissingBundleID(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("uninstall_app", map[string]any{"device": "iPad"})
+	_, err := h.Dispatch(context.Background(), "uninstall_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(uninstall_app without bundle_id) returned nil; want error")
 	}
@@ -868,7 +868,7 @@ targetSdkVersion:'34'
 
 func TestHandleLaunchApp_MissingBundleID(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("launch_app", map[string]any{"device": "iPad"})
+	_, err := h.Dispatch(context.Background(), "launch_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(launch_app without bundle_id) returned nil; want error")
 	}

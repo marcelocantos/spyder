@@ -18,6 +18,8 @@ often fails; Android is supported via `adb`.
 - A bundled `ios` tunnel daemon (the go-ios CLI, spawned as a child
   process in `--userspace` mode) — provides the iOS-17+ RSD endpoint
   registry that the in-process iOS adapter queries
+- Stream relay, pairing, dashboard, and the **spyder player**
+  (`player/` → `bin/player`) — stream glass for headless game servers
 
 ## What it does NOT own
 
@@ -27,14 +29,19 @@ often fails; Android is supported via `adb`.
   module dependency); spyder is just its consumer
 - Simulator control on macOS — that's `xcrun simctl` (Apple)
 - Android protocol — that's `adb` (Google)
+- Game engine / direct-mode rendering — that's ge (squz/ge). **ge and
+  spyder couple only through protocols** (app channel + stream wire),
+  not by linking each other's libraries.
 
 ## Build & Run
 
 ```bash
 make build
+make player                           # stream glass → bin/player (self-contained)
 bin/spyder serve                      # HTTP MCP server on :3030, endpoint /mcp
 bin/spyder serve --addr :3131         # custom addr
 bin/spyder run -- xcodebuild test ... # wrapper: runs cmd under device reservation
+bin/player --host localhost --port 3030 --name tiltbuggy
 
 # Register with Claude Code:
 claude mcp add --scope user --transport http spyder http://localhost:3030/mcp

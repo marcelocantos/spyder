@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
@@ -125,10 +126,10 @@ func TestIsRunning_ListAppsError(t *testing.T) {
 // TestIsRunning_MissingArgs validates input requirements.
 func TestIsRunning_MissingArgs(t *testing.T) {
 	h := newHandlerWithStubs(t, &stubAdapter{}, nil)
-	if _, err := h.Dispatch("is_running", map[string]any{}); err == nil {
+	if _, err := h.Dispatch(context.Background(), "is_running", map[string]any{}); err == nil {
 		t.Error("missing device should error")
 	}
-	if _, err := h.Dispatch("is_running", map[string]any{"device": "iPad"}); err == nil {
+	if _, err := h.Dispatch(context.Background(), "is_running", map[string]any{"device": "iPad"}); err == nil {
 		t.Error("missing bundle_id should error")
 	}
 }

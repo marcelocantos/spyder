@@ -133,7 +133,7 @@ func (rh *restHandler) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := rh.h.Dispatch(tool, args)
+	result, err := rh.h.Dispatch(r.Context(), tool, args)
 	if err != nil {
 		code := http.StatusBadRequest
 		if strings.HasPrefix(err.Error(), "unknown tool") {
@@ -147,17 +147,16 @@ func (rh *restHandler) serve(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(result)
 }
 
-// serveHealth writes the daemon's live health-model snapshot as JSON. The
-// snapshot type is already json-tagged, so this is a straight marshal — the
-// same bytes `spyder status` decodes and the same model the health() builtin
-// reads in-process.
+// serveHealth writes the unified health report as JSON (🎯T99.5 / T99.6):
+// model entities + doctor/wedge shared finding + in-flight tool calls.
+// Same bytes `spyder status` and health() consume.
 func (rh *restHandler) serveHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", "GET")
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	snap := rh.h.Health().Model().Snapshot()
+	rep := rh.h.HealthReport()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(snap)
+	_ = json.NewEncoder(w).Encode(rep)
 }

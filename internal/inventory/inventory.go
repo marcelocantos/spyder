@@ -40,7 +40,9 @@ type Entry struct {
 	// cwd (default: the binary's own directory).
 	ExecutablePath string            `json:"executable_path,omitempty"`
 	WorkingDir     string            `json:"working_dir,omitempty"`
-	Notes          string            `json:"notes,omitempty"`
+	Notes            string            `json:"notes,omitempty"`
+	// ExpectedPresent marks a fleet device that should trigger needs_attention when absent (🎯T99.6).
+	ExpectedPresent bool              `json:"expected_present,omitempty"`
 	Tags           []string          `json:"tags,omitempty"`  // free-form labels for selector matching
 	Attrs          map[string]string `json:"attrs,omitempty"` // key/value pairs for exact-match selector predicates
 }

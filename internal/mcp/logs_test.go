@@ -59,7 +59,7 @@ func TestHandleLogs_EmptyResult(t *testing.T) {
 
 func TestHandleLogs_MissingDevice(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("logs", map[string]any{})
+	_, err := h.Dispatch(context.Background(), "logs", map[string]any{})
 	if err == nil {
 		t.Error("Dispatch(logs, {}) returned nil err; want error for missing device")
 	}

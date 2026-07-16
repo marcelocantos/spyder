@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -50,7 +51,7 @@ func TestHandleRotate_IOSSimulator(t *testing.T) {
 // when device is not provided.
 func TestHandleRotate_MissingDevice(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("rotate", map[string]any{"orientation": "portrait"})
+	_, err := h.Dispatch(context.Background(), "rotate", map[string]any{"orientation": "portrait"})
 	if err == nil {
 		t.Error("Dispatch(rotate without device) returned nil; want error")
 	}
@@ -60,7 +61,7 @@ func TestHandleRotate_MissingDevice(t *testing.T) {
 // when orientation is not provided.
 func TestHandleRotate_MissingOrientation(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("rotate", map[string]any{"device": "iPad"})
+	_, err := h.Dispatch(context.Background(), "rotate", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(rotate without orientation) returned nil; want error")
 	}

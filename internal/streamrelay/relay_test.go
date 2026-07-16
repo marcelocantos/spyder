@@ -245,13 +245,13 @@ func TestRelay_SessionListHTTP(t *testing.T) {
 }
 
 // TestRelay_PipesCommandStreamMagic is the 🎯T97 oracle: the relay pipes a
-// non-H.264 ge magic (GE2S command-stream) server→player and GE2I-like input
+// non-H.264 ge magic (SP2S command-stream) server→player and SP2I-like input
 // player→server verbatim, with session counters treating them as opaque frames.
 // Proves the data plane is magic-agnostic so ge's T128 ladder needs no broker work.
 func TestRelay_PipesCommandStreamMagic(t *testing.T) {
 	const (
-		kCommandStreamMagic = uint32(0x47453253) // "GE2S"
-		kSdlEventMagic      = uint32(0x47453249) // "GE2I"
+		kCommandStreamMagic = uint32(0x53503253) // "SP2S"
+		kSdlEventMagic      = uint32(0x53503249) // "SP2I"
 	)
 
 	relay := New()
@@ -299,23 +299,23 @@ func TestRelay_PipesCommandStreamMagic(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = wire.Close(websocket.StatusNormalClosure, "") })
 
-	// Synthetic GE2S frame — payload is not H.264; relay must not care.
+	// Synthetic SP2S frame — payload is not H.264; relay must not care.
 	frame := geMagic(kCommandStreamMagic, []byte{0x01, 0x02, 0xFE, 0xED, 0xFA, 0xCE})
 	if err := wire.Write(ctx, websocket.MessageBinary, frame); err != nil {
-		t.Fatalf("send GE2S: %v", err)
+		t.Fatalf("send SP2S: %v", err)
 	}
 	typ, got, err := player.Read(ctx)
 	if err != nil {
-		t.Fatalf("player read GE2S: %v", err)
+		t.Fatalf("player read SP2S: %v", err)
 	}
 	if typ != websocket.MessageBinary || string(got) != string(frame) {
-		t.Fatalf("GE2S mismatch: type=%v got=% x want=% x", typ, got, frame)
+		t.Fatalf("SP2S mismatch: type=%v got=% x want=% x", typ, got, frame)
 	}
 
-	// Synthetic GE2I-like input.
+	// Synthetic SP2I-like input.
 	input := geMagic(kSdlEventMagic, []byte("not-an-sdl-event-but-opaque"))
 	if err := player.Write(ctx, websocket.MessageBinary, input); err != nil {
-		t.Fatalf("send GE2I: %v", err)
+		t.Fatalf("send SP2I: %v", err)
 	}
 	_, gotIn, err := wire.Read(ctx)
 	if err != nil {
@@ -331,10 +331,10 @@ func TestRelay_PipesCommandStreamMagic(t *testing.T) {
 	}
 	si := sessions[0]
 	if si.FramesS2P < 1 || si.BytesS2P < uint64(len(frame)) {
-		t.Fatalf("s2p counters for GE2S: frames=%d bytes=%d", si.FramesS2P, si.BytesS2P)
+		t.Fatalf("s2p counters for SP2S: frames=%d bytes=%d", si.FramesS2P, si.BytesS2P)
 	}
 	if si.FramesP2S < 1 || si.BytesP2S < uint64(len(input)) {
-		t.Fatalf("p2s counters for GE2I: frames=%d bytes=%d", si.FramesP2S, si.BytesP2S)
+		t.Fatalf("p2s counters for SP2I: frames=%d bytes=%d", si.FramesP2S, si.BytesP2S)
 	}
 }
 
