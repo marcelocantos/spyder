@@ -377,6 +377,137 @@ targets:
     origin: subdivide(🎯T100)
     discovered: 2026-07-16
     achieved: 2026-07-16
+  T101:
+    name: The spyder player runs in the browser — one C++ implementation compiled to wasm, served by the spyder daemon, playing headless ge servers with zero install
+    status: converging
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A browser pointed at the spyder daemon plays a headless ge server end-to-end (render + input round-trip) with no native app install
+    - The browser player is built from the same player/ C++ tree as desktop/iOS/Android — no parallel protocol implementation
+    - Works in current Chrome and Safari (desktop + iOS) on the LAN dev setup
+    context: 'Assessment 2026-07-17: the port is closer than expected — transport is already WebSocket to /stream/player/<name>, WsConnection is a clean virtual seam, the player is single-threaded/poll-driven, SDL3 has first-class Emscripten support, and the SP2S cmdstream rung plus all its deps (lz4, sqlite, lunasvg, freetype, deepparser) are pure C/C++ that compile under wasm. Phase 1 is cmdstream-only (no codec needed); WebCodecs H.264 and platform glue follow. Chosen over a TypeScript rewrite to keep a single implementation of a still-moving protocol (v8).'
+    depends_on:
+    - T101.1
+    - T101.2
+    - T101.3
+    - T101.4
+    - T101.5
+    - T101.6
+    - T101.7
+    - T101.8
+    tags:
+    - player
+    - browser
+    - wasm
+    - emscripten
+    - cmdstream
+    origin: Browser-port assessment session 2026-07-17
+    discovered: 2026-07-18
+  T101.1:
+    name: 'The player tree compiles under Emscripten: wasm build leg with SDL3 (+image/ttf) built from source, Signal/desktop-isms stubbed, and check-wire passing under wasm'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - make (or cmake) target produces player.wasm/js from player/ with SDL3, SDL3_image, SDL3_ttf, freetype/harfbuzz built by emcc
+    - check-wire layout oracle compiled to wasm reports identical magics and struct sizes to the native build
+    - lz4, sqlite, lunasvg/plutovg, deepparser, spdlog all compile in the wasm leg; Signal.cpp signal/backtrace machinery stubbed
+    context: wasm32 is little-endian with the same fixed-width layouts, so Protocol.h should hold — but the oracle must prove it, not assumption.
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.2:
+    name: 'WsConnection has a browser backend: the wire runs over the browser WebSocket API to /stream/player/<name>, message queue feeding available()/recvBinary()'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A WsConnection implementation over emscripten/websocket.h (or minimal JS glue) passes binary frames both ways against a live spyder streamrelay
+    - available() reflects queued messages; recvBinary() never spins; close/isOpen semantics match TcpWsConnection
+    - connectWebSocket() selects the browser backend under __EMSCRIPTEN__ with no call-site changes
+    depends_on:
+    - T101.1
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.3:
+    name: 'The player main loop is browser-compatible: no blocking waits on the browser main thread (emscripten tick or ASYNCIFY/JSPI), including the connect/SessionConfig handshake and orientation-settle waits'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - playerCore's while-loop runs as an emscripten main loop (or under ASYNCIFY/JSPI) without freezing the tab
+    - wire.connect()'s blocking wait for SessionConfig works in-browser (async state or ASYNCIFY)
+    - SDL_Delay-based settle loops don't stall the browser main thread
+    depends_on:
+    - T101.1
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.4:
+    name: 'Cmdstream-only browser player v1: the daemon serves the player page, and a browser plays a headless ge server over the SP2S rung end-to-end'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - spyder daemon serves the wasm player page (alongside /dashboard); browser connects same-origin to /stream/player/<name>
+    - DeviceInfo advertises kCapCommandStream only; server selects the cmdstream rung; SP2S replay renders correctly (sprites, text, svg, blob cache)
+    - Input (pointer/touch/keys) round-trips to the server; a human plays a real game (e.g. tiltbuggy or multimaze2) in Chrome and Safari
+    depends_on:
+    - T101.2
+    - T101.3
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.5:
+    name: 'The H.264 rung works in the browser: a third VideoDecoder backend over WebCodecs feeds decoded frames into the SDL present path'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - VideoDecoder_web decodes the SP2V NAL stream via WebCodecs (hardware where available) in Chrome and Safari
+    - Decoded frames reach the SDL texture path at ≥55 fps at stream resolution on the dev laptop
+    - 'Rung negotiation: player advertises H.264 capability and the server-selected transport wins, matching native behaviour'
+    depends_on:
+    - T101.4
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.6:
+    name: 'Browser platform glue is at parity where the web platform allows: audio, accelerometer, fullscreen/immersive, orientation lock, wake lock, and safe-area insets'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Audio plays after the standard user-gesture unlock; audio focus/background pause behaviour maps sensibly to tab visibility
+    - DeviceMotion feeds SDL sensor events (with the iOS Safari permission prompt + HTTPS path documented or handled); tilt gameplay works on a phone browser
+    - kSessionFlagImmersive → Fullscreen API; orientation lock via screen.orientation.lock where supported; kSessionFlagNoScreenSaver → Wake Lock API; safe-area insets reported in DeviceInfo
+    depends_on:
+    - T101.4
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.7:
+    name: 'SP2T durable state survives browser reloads: the per-game sqlite db persists via OPFS/IDBFS and seeds the server on reconnect, matching native semantics'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Per-game durable db written under a persistent browser FS mount; survives tab close/reopen
+    - On reconnect, existing user tables seed the server via SP2T snapshot exactly as the native player does
+    - No cross-game state bleed (one db per server catalogue name)
+    depends_on:
+    - T101.4
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.8:
+    name: 'Zero-install pairing: a QR/URL with host+server params opens the browser player straight into a session — scan-to-play with no app install'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Player page accepts ?host=&port=&name= (or path params) and auto-connects with no further input
+    - A QR encoding that URL, scanned on a phone, lands in a playable session
+    - Native-app QR/Keychain flow remains untouched; the web path is additive
+    depends_on:
+    - T101.4
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
   T11:
     name: Reservation system for parallel dev sessions across devices
     status: achieved
