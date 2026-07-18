@@ -261,7 +261,11 @@ func playerPathCandidates(platform, variant string) []string {
 				filepath.Join(cwd, "player/ios/build/xcode/Debug/PlayerLand.app"),
 			)
 		}
+		// Xcode CONFIGURATION_BUILD_DIR is Debug-iphoneos / Release-iphoneos
+		// for device SDKs; plain Debug/ is only used by some older layouts.
 		paths = append(paths,
+			filepath.Join(cwd, "player/ios/build/xcode/Debug-iphoneos/Player.app"),
+			filepath.Join(cwd, "player/ios/build/xcode/Release-iphoneos/Player.app"),
 			filepath.Join(cwd, "player/ios/build/xcode/Debug/Player.app"),
 			filepath.Join(cwd, "player/ios/build/xcode/Release/Player.app"),
 		)

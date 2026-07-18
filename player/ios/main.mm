@@ -1,43 +1,66 @@
 // iOS spyder player entry point.
 // Discovers the stream relay, then runs the shared player core.
 //
-// Address resolution order:
+// Address resolution order (no QR / camera discovery):
 //   1. argv: -stream_addr host:port / -server_name name
 //   2. Documents/stream_addr (+ Documents/server_name) — written by spyder
 //      via house_arrest before launch (reliable on physical devices)
 //   3. NSUserDefaults (simctl mirrors -stream_addr there)
 //   4. STREAM_ADDR / SERVER_NAME env
-//   5. Simulator: localhost; device: QR scan
+//   5. Simulator only: localhost:3030
+// Physical device with no address exits non-zero (use spyder launch_player
+// or deploy/launch with STREAM_ADDR injected).
 //
 // Example (simulator):  xcrun simctl launch <udid> com.spyder.player -stream_addr 192.168.1.217:3030
-// Example (device):     spyder launch-app Jevons com.spyder.player with STREAM_ADDR set
+// Example (device):     spyder launch-player Jevons [--server tiltbuggy]
 
 #include <TargetConditionals.h>
 #include "player_core.h"
-#include "QRScanner.h"
 #include <SDL3/SDL_main.h>
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/base_sink.h>
 
 #import <Foundation/Foundation.h>
 
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <string>
 #include <thread>
 
-// HTTP PUT sink — sends each log line to a logging server on the host.
-// Uses the stream-relay host (or localhost for simulator).
+// Logging sinks for physical-device diagnosis:
+//   1. NSLog → device syslog (spyder log / ios syslog)
+//   2. Documents/player.log — durable, pullable via house_arrest/AFC
+//   3. HTTP PUT to host:9999 — optional host-side capture (needs ATS)
 static std::string g_logHost = "192.168.1.217";
+static std::mutex g_fileLogMu;
+static std::string g_fileLogPath;
+
+static void appendFileLog(const std::string& line) {
+    if (g_fileLogPath.empty()) return;
+    std::lock_guard<std::mutex> lk(g_fileLogMu);
+    FILE* f = std::fopen(g_fileLogPath.c_str(), "a");
+    if (!f) return;
+    std::fwrite(line.data(), 1, line.size(), f);
+    if (line.empty() || line.back() != '\n') std::fputc('\n', f);
+    std::fflush(f);
+    std::fclose(f);
+}
 
 template<typename Mutex>
-class http_sink : public spdlog::sinks::base_sink<Mutex> {
+class multi_sink : public spdlog::sinks::base_sink<Mutex> {
 protected:
     void sink_it_(const spdlog::details::log_msg& msg) override {
         spdlog::memory_buf_t formatted;
         spdlog::sinks::base_sink<Mutex>::formatter_->format(msg, formatted);
         std::string body = fmt::to_string(formatted);
 
+        // Always mirror to Apple unified logging (survives process death).
+        NSLog(@"%s", body.c_str());
+        appendFileLog(body);
+
+        // Best-effort host HTTP (non-blocking; do not wait on the network).
         std::string urlCpp = "http://" + g_logHost + ":9999/log";
         std::thread([body = std::move(body), urlCpp = std::move(urlCpp)] {
             @autoreleasepool {
@@ -46,14 +69,10 @@ protected:
                 NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
                 req.HTTPMethod = @"PUT";
                 req.HTTPBody = [NSData dataWithBytes:body.c_str() length:body.size()];
-                req.timeoutInterval = 1.0;
-
-                dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+                req.timeoutInterval = 0.5;
                 [[NSURLSession.sharedSession dataTaskWithRequest:req
                     completionHandler:^(NSData*, NSURLResponse*, NSError*) {
-                        dispatch_semaphore_signal(sem);
                     }] resume];
-                dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC));
             }
         }).detach();
     }
@@ -64,9 +83,23 @@ protected:
 static constexpr uint16_t kDefaultPort = 3030;
 
 int main(int argc, char* argv[]) {
-    auto sink = std::make_shared<http_sink<std::mutex>>();
+    // Prefer Documents/player.log as soon as the sandbox is up.
+    @autoreleasepool {
+        NSArray* paths = NSSearchPathForDirectoriesInDomains(
+            NSDocumentDirectory, NSUserDomainMask, YES);
+        NSString* docs = paths.firstObject;
+        if (docs) {
+            g_fileLogPath = std::string(docs.UTF8String) + "/player.log";
+            // Truncate each launch so the file reflects this run.
+            FILE* f = std::fopen(g_fileLogPath.c_str(), "w");
+            if (f) std::fclose(f);
+        }
+    }
+
+    auto sink = std::make_shared<multi_sink<std::mutex>>();
     auto logger = std::make_shared<spdlog::logger>("player", sink);
     logger->set_level(spdlog::level::info);
+    logger->flush_on(spdlog::level::info);
     spdlog::set_default_logger(logger);
 
     SPDLOG_INFO("spyder player (iOS) starting...");
@@ -171,21 +204,22 @@ int main(int argc, char* argv[]) {
         if (n[0]) serverName = n;
     }
 
-    // Priority 5: platform fallback.
+    // Priority 5: simulator loopback only. Physical device requires inject.
     if (host.empty()) {
 #if TARGET_OS_SIMULATOR
         SPDLOG_INFO("Simulator: using localhost:{}", kDefaultPort);
         host = "localhost";
         port = kDefaultPort;
 #else
-        // Physical device with no address → QR scan.
-        SPDLOG_INFO("No stream_addr (argv/Documents/env); opening QR scanner");
-        spyder::ScanResult result = spyder::scanQRCode();
-        host = result.host;
-        port = result.port;
+        SPDLOG_ERROR(
+            "No stream_addr (argv / Documents / UserDefaults / STREAM_ADDR). "
+            "Launch via spyder launch_player or deploy with STREAM_ADDR injected. "
+            "QR discovery has been removed.");
+        return 2;
 #endif
     }
 
+    g_logHost = host;
     SPDLOG_INFO("server name: {}", serverName);
 
     return playerCore(host, port, serverName);
