@@ -65,6 +65,8 @@ public:
     // raw to the server-side synthesizer.
     void enableAccelerometer();
     bool hasAccelerometer() const;
+    // 🎯T158: apply the server's SP2A arm state to relative-mouse delivery.
+    void setRelativeMouseArmed(bool armed);
 
     // Current window/display dimensions and pixel ratio for DeviceInfo.
     // Accounts for requested orientation (portrait/landscape swap).

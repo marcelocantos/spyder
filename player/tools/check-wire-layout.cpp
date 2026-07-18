@@ -36,6 +36,11 @@ int main() {
     CHECK(std::is_trivially_copyable_v<MessageHeader>);
     CHECK(std::is_trivially_copyable_v<SessionConfig>);
     CHECK(std::is_trivially_copyable_v<DeviceInfo>);
+    // v9 (🎯T158/T159): fixed layouts — these are byte-copied on the wire.
+    CHECK(sizeof(ArmState) == 8);
+    CHECK(sizeof(FrameMeta) == 16);
+    CHECK(std::is_trivially_copyable_v<ArmState>);
+    CHECK(std::is_trivially_copyable_v<FrameMeta>);
 
     std::printf("check-wire-layout OK "
                 "(MessageHeader=%zu SessionConfig=%zu DeviceInfo=%zu)\n",

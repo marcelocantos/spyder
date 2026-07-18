@@ -128,6 +128,9 @@ public:
     struct CmdDisplayFrame {
         uint32_t seq = 0;
         size_t wireBytes = 0;
+        // 🎯T159: server emit time (unix epoch µs) from the SP2F metadata
+        // that preceded this frame; 0 when the server predates v9.
+        uint64_t serverUs = 0;
         // Server swapchain size (pixels) — player letterboxes to this aspect.
         uint16_t contentW = 0;
         uint16_t contentH = 0;
@@ -136,6 +139,11 @@ public:
         bool hasPresent = false; // legacy Present path still fills pollFrame
     };
     bool pollCmdFrame(CmdDisplayFrame& out);
+
+    // 🎯T158: server-owned arm state (SP2A). Returns -1 when no new state
+    // arrived since the last poll; else 0/1. The glass applies this to
+    // relative-mouse delivery only — no tilt semantics.
+    int pollArmState();
 
     // Stats for the frame log in the main loop.
     struct PumpStats {

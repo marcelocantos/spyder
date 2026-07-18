@@ -110,6 +110,10 @@ struct PlayerWireBridge::Impl {
     // before resuming presents — otherwise the queue random-walks near
     // empty and every late Wi-Fi burst still reaches the glass as judder.
     bool cmdPrimed = false;
+    // 🎯T158/T159 sideband state from the wire.
+    std::atomic<int> armPending{-1};   // -1 none; else 0/1
+    uint32_t metaSeq = 0;
+    uint64_t metaServerUs = 0;
     static constexpr size_t kCmdQueueTarget = 2;
     static constexpr size_t kCmdQueueMax = 6;
     std::function<void(const wire::SessionConfig&)> onSessionConfigUpdate;
@@ -621,6 +625,8 @@ bool PlayerWireBridge::pump() {
                 std::lock_guard<std::mutex> lock(i_->frameMutex);
                 ctx.building.wireBytes = length;
                 ctx.building.seq = ctx.frameSeq;
+                if (i_->metaSeq == ctx.frameSeq)
+                    ctx.building.serverUs = i_->metaServerUs;
                 // Divert image uploads to the append-only channel FIRST —
                 // frames may be dropped from the pacing queue under
                 // pressure, and uploads must never be dropped with them.
@@ -662,6 +668,18 @@ bool PlayerWireBridge::pump() {
                                 reader.stats().refBlobCount);
                 }
             }
+        } else if (magic == wire::kArmStateMagic &&
+                   data.size() >= sizeof(wire::MessageHeader) + sizeof(wire::ArmState)) {
+            wire::ArmState as{};
+            std::memcpy(&as, data.data() + sizeof(wire::MessageHeader), sizeof(as));
+            i_->armPending.store(as.armed ? 1 : 0);
+            SPDLOG_INFO("PlayerWireBridge: SP2A arm={}", int(as.armed));
+        } else if (magic == wire::kFrameMetaMagic &&
+                   data.size() >= sizeof(wire::MessageHeader) + sizeof(wire::FrameMeta)) {
+            wire::FrameMeta fm{};
+            std::memcpy(&fm, data.data() + sizeof(wire::MessageHeader), sizeof(fm));
+            i_->metaSeq = fm.seq;
+            i_->metaServerUs = fm.serverUs;
         } else if (magic == wire::kSessionConfigMagic &&
                    data.size() >= sizeof(wire::MessageHeader) + sizeof(wire::SessionConfig)) {
             wire::SessionConfig sc{};
@@ -696,6 +714,10 @@ bool PlayerWireBridge::pollFrame(DecodedFrame& out) {
     std::swap(out, i_->pending);
     i_->pendingReady = false;
     return true;
+}
+
+int PlayerWireBridge::pollArmState() {
+    return i_->armPending.exchange(-1);
 }
 
 bool PlayerWireBridge::pollCmdFrame(CmdDisplayFrame& out) {

@@ -34,10 +34,34 @@ constexpr uint32_t kSafeAreaMagic       = 0x53503245;  // "SP2E" — player → 
 constexpr uint32_t kLifecycleMagic      = 0x5350324C;  // "SP2L" — player → server: viewer lifecycle
 constexpr uint32_t kAspectLockMagic     = 0x53503260;  // "SP2`" — server → player: lock aspect ratio
 constexpr uint32_t kSessionConfigMagic  = 0x53503243;  // "SP2C" — server → player: session requirements
+constexpr uint32_t kArmStateMagic       = 0x53503241;  // "SP2A" — server → primary glass: AccelSynth arm state (🎯T158)
+constexpr uint32_t kFrameMetaMagic      = 0x53503246;  // "SP2F" — server → player: per-frame emit metadata (🎯T159)
+
+// 🎯T158: server → primary glass. The server owns AccelSynth and its arm
+// policy; the glass follows this signal for relative-mouse delivery only
+// (no tilt semantics on the glass). Sent on transitions, primary seat only.
+struct ArmState {
+    uint32_t magic = kArmStateMagic;
+    uint8_t  armed = 0;   // 1 = synth armed for this seat's gesture
+    uint8_t  _pad[3] = {};
+};
+
+// 🎯T159: server → player, immediately before each cmdstream frame on the
+// same ordered stream. serverUs is unix-epoch microseconds at emit; the
+// glass logs (seq, serverUs, presentUs) for absolute end-to-end latency.
+// Same-host runs (loopback oracle) share a clock and check a documented
+// tolerance; cross-device runs are informative (NTP skew applies).
+struct FrameMeta {
+    uint32_t magic = kFrameMetaMagic;
+    uint32_t seq = 0;       // cmdstream frame sequence this precedes
+    uint64_t serverUs = 0;  // emit time, unix epoch microseconds
+};
 
 // v7: DeviceInfo.capabilities + SessionConfig.transport (command-stream ladder).
 // v8: dual safe rects on DeviceInfo / SafeAreaUpdate (draw vs ui).
-constexpr uint16_t kProtocolVersion = 8;
+// v9: SP2A arm-state (delivery plumbing) + SP2F frame metadata (latency
+//     telemetry). Both optional: pre-v9 peers simply never see/send them.
+constexpr uint16_t kProtocolVersion = 9;
 constexpr size_t   kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (matches ged/bridge.go)
 
 // DeviceInfo.capabilities bits (player → server).

@@ -335,6 +335,8 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
     uint64_t ptLastUs = 0;
     int ptN = 0, ptSmooth = 0, ptSkips = 0, ptHolds = 0;
     double ptMaxDtMs = 0;
+    double ptLatSumMs = 0, ptLatMaxMs = 0;
+    int ptLatN = 0;
 
     // 🎯T156: SP2T durable writes happen OFF the render thread. The inline
     // Documents/ write (fopen/trunc/write at 2 Hz) blocked the loop 30-60 ms
@@ -387,6 +389,15 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             wire.sendLifecycle(life);
         }
         for (auto& e : pump.upstreamEvents) wire.sendEvent(e);
+        // 🎯T158: server-owned arm state → relative-mouse delivery.
+        if (const int arm = wire.pollArmState(); arm >= 0) {
+            if (!opts.headless) render.setRelativeMouseArmed(arm == 1);
+            if (trace.good()) {
+                trace << "{\"k\":\"armstate\",\"t_ms\":" << SDL_GetTicks()
+                      << ",\"armed\":" << arm << "}\n";
+                trace.flush();
+            }
+        }
         if (script && !script->done()) {
             script->poll(static_cast<uint32_t>(SDL_GetTicks()),
                          [&](const SDL_Event& e) {
@@ -433,6 +444,20 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
                 frameCount++;
                 fpsWindowFrames++;
                 got = true;
+                // 🎯T159: sampled emit→receipt latency for the oracle's
+                // live tier (same host as the server ⇒ same clock).
+                if (trace.good() && cmdFrame.serverUs != 0 &&
+                    (frameCount % 60) == 0) {
+                    using namespace std::chrono;
+                    const uint64_t epochUs =
+                        static_cast<uint64_t>(duration_cast<microseconds>(
+                            system_clock::now().time_since_epoch()).count());
+                    trace << "{\"k\":\"frame_meta\",\"seq\":"
+                          << cmdFrame.seq << ",\"server_us\":"
+                          << cmdFrame.serverUs << ",\"recv_us\":" << epochUs
+                          << "}\n";
+                    trace.flush();
+                }
             }
         } else if (wire.pollCmdFrame(cmdFrame)) {
             render.beginCmdFrame(cmdFrame.contentW, cmdFrame.contentH);
@@ -480,12 +505,28 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
                 if (dseq >= 2) ptSkips++;
                 if (dtMs > 25.0) ptHolds++;
                 if (dtMs > ptMaxDtMs) ptMaxDtMs = dtMs;
+                if (cmdFrame.serverUs != 0) {
+                    using namespace std::chrono;
+                    const uint64_t epochUs =
+                        static_cast<uint64_t>(duration_cast<microseconds>(
+                            system_clock::now().time_since_epoch()).count());
+                    const double latMs =
+                        (double(epochUs) - double(cmdFrame.serverUs)) / 1000.0;
+                    ptLatSumMs += latMs;
+                    ptLatN++;
+                    if (latMs > ptLatMaxMs) ptLatMaxMs = latMs;
+                }
                 if (ptN >= 120) {
                     SPDLOG_INFO("PresentTrace: n={} smooth={} skips={} "
-                                "holds>25ms={} maxDt={:.1f}ms",
-                                ptN, ptSmooth, ptSkips, ptHolds, ptMaxDtMs);
+                                "holds>25ms={} maxDt={:.1f}ms "
+                                "emitLat avg={:.1f}/max={:.1f}ms (n={})",
+                                ptN, ptSmooth, ptSkips, ptHolds, ptMaxDtMs,
+                                ptLatN ? ptLatSumMs / ptLatN : 0.0,
+                                ptLatMaxMs, ptLatN);
                     ptN = ptSmooth = ptSkips = ptHolds = 0;
                     ptMaxDtMs = 0;
+                    ptLatSumMs = ptLatMaxMs = 0;
+                    ptLatN = 0;
                 }
             }
             ptLastSeq = cmdFrame.seq;

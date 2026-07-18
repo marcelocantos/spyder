@@ -67,33 +67,6 @@ struct PlayerRender::Impl {
     int accelOverride = -1;
     int deviceClassOverride = -1;
 
-    // Desktop host plumbing only: arm relative-mouse so relayed motion has
-    // usable xrel/yrel. AccelSynth itself runs in the engine (stream server
-    // or direct host) — the player does not synthesize tilt.
-    bool shiftKey = false;
-    bool primaryDown = false;
-
-    void syncRelativeMouseForTilt() {
-        if (accelSensor) return;
-        // 🎯T156.5: arm relative-mouse from THIS glass's declared device
-        // class — the same facts the server derives its arm policy from —
-        // instead of a hand-rolled approximation of server policy (the old
-        // "Shift or primary" heuristic drifted the moment the server's
-        // policy became capability-derived). Desktop-class: Shift only.
-        // Touch-first class: primary drag arms. Without relative mode,
-        // macOS often delivers absolute motion with xrel=0 and the server
-        // sees a one-shot blip.
-        const bool touchFirstClass =
-#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
-            deviceClassOverride != 3;
-#else
-            deviceClassOverride == 1 || deviceClassOverride == 2;
-#endif
-        bool armed = shiftKey ||
-                     ((SDL_GetModState() & SDL_KMOD_SHIFT) != 0) ||
-                     (touchFirstClass && primaryDown);
-        setRelativeMouseForShiftDrag(window, armed);
-    }
 
     // Aspect-fit content (contentW×contentH) into window (ww×wh).
     static void fitContentRect(int ww, int wh, float contentAspect,
@@ -199,6 +172,14 @@ PlayerRender::~PlayerRender() {
 }
 
 SDL_Window* PlayerRender::window() const { return i_->window; }
+
+// 🎯T158: relative-mouse delivery follows the SERVER's arm state (SP2A) —
+// the authority that owns AccelSynth — never a glass-side approximation of
+// its policy. Delivery plumbing only; no tilt semantics on the glass.
+void PlayerRender::setRelativeMouseArmed(bool armed) {
+    if (i_->accelSensor) return; // real-accel glass: no synth, no rel-mouse
+    setRelativeMouseForShiftDrag(i_->window, armed);
+}
 
 bool PlayerRender::hasAccelerometer() const {
     // Capability declaration for DeviceInfo (kCapHasAccelerometer): does this
@@ -514,8 +495,6 @@ PlayerRender::PumpResult PlayerRender::pumpEvents() {
         case SDL_EVENT_MOUSE_BUTTON_UP:
             if (isTouchSyntheticMouse(e)) break;
             if (e.button.button == SDL_BUTTON_LEFT) {
-                i_->primaryDown = (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
-                i_->syncRelativeMouseForTilt();
             }
             r.upstreamEvents.push_back(e);
             break;
@@ -533,8 +512,6 @@ PlayerRender::PumpResult PlayerRender::pumpEvents() {
             if (e.key.scancode == SDL_SCANCODE_LSHIFT ||
                 e.key.scancode == SDL_SCANCODE_RSHIFT ||
                 e.key.key == SDLK_LSHIFT || e.key.key == SDLK_RSHIFT) {
-                i_->shiftKey = (e.type == SDL_EVENT_KEY_DOWN);
-                i_->syncRelativeMouseForTilt();
             }
             r.upstreamEvents.push_back(e);
             break;
