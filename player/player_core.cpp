@@ -26,6 +26,9 @@
 #include <spdlog/spdlog.h>
 
 #include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -325,6 +328,45 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
         }
     }
 
+    // 🎯T156 PresentTrace: per-present (time, server seq) — the ground
+    // truth for display cadence on the glass. Summarized every ~2 s into
+    // one log line (per-line logging at 60 Hz is itself a stutter source).
+    uint32_t ptLastSeq = 0;
+    uint64_t ptLastUs = 0;
+    int ptN = 0, ptSmooth = 0, ptSkips = 0, ptHolds = 0;
+    double ptMaxDtMs = 0;
+
+    // 🎯T156: SP2T durable writes happen OFF the render thread. The inline
+    // Documents/ write (fopen/trunc/write at 2 Hz) blocked the loop 30-60 ms
+    // per push on iOS flash — measured as 2 Hz hold-then-skip judder in
+    // PresentTrace. Latest-wins: an unwritten older snapshot is superseded.
+    std::mutex sp2tMu;
+    std::condition_variable sp2tCv;
+    std::vector<uint8_t> sp2tPendingBlob;
+    bool sp2tExit = false;
+    std::thread sp2tWriter([&] {
+        for (;;) {
+            std::vector<uint8_t> blob;
+            {
+                std::unique_lock<std::mutex> lk(sp2tMu);
+                sp2tCv.wait(lk, [&] {
+                    return sp2tExit || !sp2tPendingBlob.empty();
+                });
+                if (sp2tExit && sp2tPendingBlob.empty()) return;
+                blob = std::move(sp2tPendingBlob);
+                sp2tPendingBlob.clear();
+            }
+            std::ofstream out(playerDbPath,
+                              std::ios::binary | std::ios::trunc);
+            if (out) {
+                out.write(reinterpret_cast<const char*>(blob.data()),
+                          static_cast<std::streamsize>(blob.size()));
+                SPDLOG_INFO("SP2T: wrote durable snapshot {} ({} bytes, game={})",
+                            playerDbPath, blob.size(), serverName);
+            }
+        }
+    });
+
     uint64_t frameCount = 0;
     spyder::PlayerWireBridge::DecodedFrame decodedFrame;
     spyder::PlayerWireBridge::CmdDisplayFrame cmdFrame;
@@ -373,17 +415,16 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             std::vector<uint8_t> push;
             if (wire.pollSp2tSnapshot(push) && !push.empty() &&
                 playerDbPath != ":memory:") {
-                std::ofstream out(playerDbPath, std::ios::binary | std::ios::trunc);
-                if (out) {
-                    out.write(reinterpret_cast<const char*>(push.data()),
-                              static_cast<std::streamsize>(push.size()));
-                    SPDLOG_INFO("SP2T: wrote durable snapshot {} ({} bytes, game={})",
-                                playerDbPath, push.size(), serverName);
+                {
+                    std::lock_guard<std::mutex> lk(sp2tMu);
+                    sp2tPendingBlob = std::move(push); // latest wins
                 }
+                sp2tCv.notify_one();
             }
         }
         const uint64_t tPump1 = SDL_GetPerformanceCounter();
 
+        bool presentedCmd = false;
         bool got = false;
         if (opts.headless) {
             // Drain and count frames; no GPU. Trace a heartbeat each frame
@@ -415,6 +456,7 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             render.endCmdFrame();
             frameCount++;
             got = true;
+            presentedCmd = true;
             fpsWindowFrames++;
         } else if (wire.pollFrame(decodedFrame)) {
             render.updateVideoTexture(decodedFrame.view());
@@ -427,6 +469,28 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
 
         spyder::PlayerRender::RenderStats rs{};
         if (!opts.headless) rs = render.render();
+        if (presentedCmd) {
+            const uint64_t nowUs =
+                SDL_GetPerformanceCounter() * 1000000ull / freq;
+            if (ptLastUs != 0) {
+                const double dtMs = double(nowUs - ptLastUs) / 1000.0;
+                const uint32_t dseq = cmdFrame.seq - ptLastSeq;
+                ptN++;
+                if (dseq == 1) ptSmooth++;
+                if (dseq >= 2) ptSkips++;
+                if (dtMs > 25.0) ptHolds++;
+                if (dtMs > ptMaxDtMs) ptMaxDtMs = dtMs;
+                if (ptN >= 120) {
+                    SPDLOG_INFO("PresentTrace: n={} smooth={} skips={} "
+                                "holds>25ms={} maxDt={:.1f}ms",
+                                ptN, ptSmooth, ptSkips, ptHolds, ptMaxDtMs);
+                    ptN = ptSmooth = ptSkips = ptHolds = 0;
+                    ptMaxDtMs = 0;
+                }
+            }
+            ptLastSeq = cmdFrame.seq;
+            ptLastUs = nowUs;
+        }
         auto stats = wire.lastPumpStats();
         const float tickHz = float(freq);
         playerLog.record({SDL_GetPerformanceCounter(),
@@ -450,6 +514,13 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             fpsWindowFrames = 0;
         }
     }
+
+    {
+        std::lock_guard<std::mutex> lk(sp2tMu);
+        sp2tExit = true;
+    }
+    sp2tCv.notify_one();
+    sp2tWriter.join();
 
     wire.close();
     if (trace.good()) {

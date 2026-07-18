@@ -17,6 +17,7 @@
 #include <spdlog/spdlog.h>
 
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -97,6 +98,20 @@ struct PlayerWireBridge::Impl {
     // the one carrying cold image blobs — so images accumulate here
     // (append-only, frameMutex) and ride out with the next poll.
     std::vector<CmdImage> pendingImages;
+    // 🎯T156 paced presentation: Wi-Fi delivers a metronomic 60 fps stream in
+    // slightly uneven bursts. Present-on-arrival with skip-to-newest turned
+    // that jitter into ~10 Hz hold-then-jump judder on the glass (measured:
+    // 15-20 seq gaps per 2 s on Jevons with maxGap 17 ms — no stalls, pure
+    // temporal aliasing). A two-frame FIFO presented one-per-vsync absorbs
+    // arrival jitter; the depth cap keeps worst-case added latency ~33 ms
+    // and prevents the standing-backlog failure the drain fix removed.
+    std::deque<CmdDisplayFrame> cmdQueue;
+    // Jitter-buffer priming: after an underrun, rebuffer to target depth
+    // before resuming presents — otherwise the queue random-walks near
+    // empty and every late Wi-Fi burst still reaches the glass as judder.
+    bool cmdPrimed = false;
+    static constexpr size_t kCmdQueueTarget = 2;
+    static constexpr size_t kCmdQueueMax = 6;
     std::function<void(const wire::SessionConfig&)> onSessionConfigUpdate;
 
     // 🎯T154 SP2T: last server→player durable dump (pollSp2tSnapshot).
@@ -607,12 +622,14 @@ bool PlayerWireBridge::pump() {
                 ctx.building.wireBytes = length;
                 ctx.building.seq = ctx.frameSeq;
                 // Divert image uploads to the append-only channel FIRST —
-                // newer frames may overwrite this display frame before the
-                // render loop polls, and uploads must never be dropped.
+                // frames may be dropped from the pacing queue under
+                // pressure, and uploads must never be dropped with them.
                 for (auto& img : ctx.building.images)
                     i_->pendingImages.push_back(std::move(img));
                 ctx.building.images.clear();
-                i_->pendingCmd = std::move(ctx.building);
+                i_->cmdQueue.push_back(std::move(ctx.building));
+                while (i_->cmdQueue.size() > Impl::kCmdQueueMax)
+                    i_->cmdQueue.pop_front(); // overflow: shed oldest
                 i_->pendingCmdReady = true;
                 i_->stats.framesThisTick++;
                 i_->stats.lastSeq = ctx.frameSeq;
@@ -622,10 +639,11 @@ bool PlayerWireBridge::pump() {
                 static uint32_t sprLog = 0;
                 if (sprLog++ < 3 || (ctx.frameSeq % 60) == 0) {
                     SPDLOG_INFO("PlayerWireBridge: SP2S SpriteRun seq={} wire={}B "
-                                "runs={} images={} cache={} full={} refs={}",
+                                "runs={} qdepth={} cache={} full={} refs={}",
                                 ctx.frameSeq, length,
-                                i_->pendingCmd.runs.size(),
-                                i_->pendingCmd.images.size(),
+                                i_->cmdQueue.empty()
+                                    ? 0 : i_->cmdQueue.back().runs.size(),
+                                i_->cmdQueue.size(),
                                 i_->cmdCache.size(),
                                 reader.stats().fullBlobCount,
                                 reader.stats().refBlobCount);
@@ -682,13 +700,31 @@ bool PlayerWireBridge::pollFrame(DecodedFrame& out) {
 
 bool PlayerWireBridge::pollCmdFrame(CmdDisplayFrame& out) {
     std::lock_guard<std::mutex> lock(i_->frameMutex);
-    if (!i_->pendingCmdReady) return false;
-    std::swap(out, i_->pendingCmd);
-    // All images accumulated since the last poll (possibly from skipped
-    // frames) ride out with this one, in arrival order.
+    if (i_->cmdQueue.empty()) {
+        i_->pendingCmdReady = false;
+        return false;
+    }
+    // Prime ONLY at session start. Mid-session rebuffering after an
+    // underrun amplifies every small Wi-Fi aggregation gap into a longer
+    // hold (measured: ~33 ms arrival gaps became 50-67 ms holds at 2 Hz);
+    // resuming on the first available frame keeps holds at the size of the
+    // actual gap, and the deeper cap absorbs the catch-up burst unshed.
+    if (!i_->cmdPrimed) {
+        if (i_->cmdQueue.size() < Impl::kCmdQueueTarget) return false;
+        i_->cmdPrimed = true;
+    }
+    // No eager trimming here: normal Wi-Fi coalescing delivers 2-3 frame
+    // bursts, and skipping them re-creates the hold-then-jump judder this
+    // queue exists to absorb. Overflow shedding lives at the push side
+    // (kCmdQueueMax caps worst-case added latency at ~66 ms); polls just
+    // play frames out in arrival order, one per vsync.
+    out = std::move(i_->cmdQueue.front());
+    i_->cmdQueue.pop_front();
+    // All images accumulated since the last poll (including from any
+    // skipped frames) ride out with this one, in arrival order.
     out.images = std::move(i_->pendingImages);
     i_->pendingImages.clear();
-    i_->pendingCmdReady = false;
+    i_->pendingCmdReady = !i_->cmdQueue.empty();
     return true;
 }
 
