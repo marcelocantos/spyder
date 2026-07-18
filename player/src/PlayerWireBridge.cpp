@@ -92,6 +92,11 @@ struct PlayerWireBridge::Impl {
     // 🎯T128 — content-addressed resource cache for SP2S frames.
     cmdstream::Cache cmdCache;
     uint8_t transport = wire::kTransportH264;
+    // 🎯T156 display fix: image uploads must survive display-frame skipping.
+    // The pending display frame is latest-only, but a skipped frame may be
+    // the one carrying cold image blobs — so images accumulate here
+    // (append-only, frameMutex) and ride out with the next poll.
+    std::vector<CmdImage> pendingImages;
     std::function<void(const wire::SessionConfig&)> onSessionConfigUpdate;
 
     // 🎯T154 SP2T: last server→player durable dump (pollSp2tSnapshot).
@@ -225,18 +230,21 @@ void PlayerWireBridge::sendEvent(const SDL_Event& e) {
 bool PlayerWireBridge::pump() {
     if (!i_->conn) return false;
     i_->stats = {};
-    // Cap messages per pump and stop as soon as we have a presentable frame.
-    // Processing eight ~11 MB SP2S Presents before render made Android ~0.25 fps
-    // (PlayerLog: pump avg≈4s, 1 tick / 4s). One Present (or video AU) then
-    // return → pollFrame/render can run between network frames.
-    constexpr int kMaxMsgsPerPump = 4;
-    int msgs = 0;
+    // Drain the socket each pump, keeping only the NEWEST presentable frame
+    // (the pending slot is latest-only, so older Presents are overwritten).
+    // Stopping at the first frame (old rule: 4 msgs, one Present) let any
+    // startup backlog become permanent standing display latency — ~0.5 s on
+    // Jevons, felt as accelerometer lag (🎯T156). A byte budget still bounds
+    // the worst case that motivated the old rule (eight ~11 MB Presents made
+    // Android ~0.25 fps); small SP2S sprite-run frames drain in full.
+    constexpr size_t kMaxBytesPerPump = 32u * 1024u * 1024u;
+    size_t pumpBytes = 0;
     bool haveDisplayFrame = false;
     while (i_->conn->isOpen() && i_->conn->available() > 0 &&
-           msgs < kMaxMsgsPerPump && !haveDisplayFrame) {
-        ++msgs;
+           pumpBytes < kMaxBytesPerPump) {
         std::vector<char> data;
         if (!i_->conn->recvBinary(data) || data.size() < 8) break;
+        pumpBytes += data.size();
 
         uint32_t magic = 0;
         std::memcpy(&magic, data.data(), 4);
@@ -598,6 +606,12 @@ bool PlayerWireBridge::pump() {
                 std::lock_guard<std::mutex> lock(i_->frameMutex);
                 ctx.building.wireBytes = length;
                 ctx.building.seq = ctx.frameSeq;
+                // Divert image uploads to the append-only channel FIRST —
+                // newer frames may overwrite this display frame before the
+                // render loop polls, and uploads must never be dropped.
+                for (auto& img : ctx.building.images)
+                    i_->pendingImages.push_back(std::move(img));
+                ctx.building.images.clear();
                 i_->pendingCmd = std::move(ctx.building);
                 i_->pendingCmdReady = true;
                 i_->stats.framesThisTick++;
@@ -670,6 +684,10 @@ bool PlayerWireBridge::pollCmdFrame(CmdDisplayFrame& out) {
     std::lock_guard<std::mutex> lock(i_->frameMutex);
     if (!i_->pendingCmdReady) return false;
     std::swap(out, i_->pendingCmd);
+    // All images accumulated since the last poll (possibly from skipped
+    // frames) ride out with this one, in arrival order.
+    out.images = std::move(i_->pendingImages);
+    i_->pendingImages.clear();
     i_->pendingCmdReady = false;
     return true;
 }

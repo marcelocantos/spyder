@@ -27,6 +27,8 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <condition_variable>
+#include <deque>
 #include <thread>
 
 // Logging sinks for physical-device diagnosis:
@@ -36,16 +38,61 @@
 static std::string g_logHost = "192.168.1.217";
 static std::mutex g_fileLogMu;
 static std::string g_fileLogPath;
+static FILE* g_fileLog = nullptr;  // opened once; per-line fopen caused hitches
 
 static void appendFileLog(const std::string& line) {
-    if (g_fileLogPath.empty()) return;
     std::lock_guard<std::mutex> lk(g_fileLogMu);
-    FILE* f = std::fopen(g_fileLogPath.c_str(), "a");
-    if (!f) return;
-    std::fwrite(line.data(), 1, line.size(), f);
-    if (line.empty() || line.back() != '\n') std::fputc('\n', f);
-    std::fflush(f);
-    std::fclose(f);
+    if (!g_fileLog) {
+        if (g_fileLogPath.empty()) return;
+        g_fileLog = std::fopen(g_fileLogPath.c_str(), "a");
+        if (!g_fileLog) return;
+    }
+    std::fwrite(line.data(), 1, line.size(), g_fileLog);
+    if (line.empty() || line.back() != '\n') std::fputc('\n', g_fileLog);
+    std::fflush(g_fileLog);
+}
+
+// One background worker drains queued lines to the host HTTP capture.
+// The old sink spawned a THREAD PER LOG LINE and did per-line fopen/fclose
+// on the render thread — a visible ~1 Hz frame hitch (PlayerFPS + SP2S
+// lines log once per second).
+static std::mutex g_httpMu;
+static std::condition_variable g_httpCv;
+static std::deque<std::string> g_httpQueue;
+static std::once_flag g_httpOnce;
+
+static void enqueueHttpLog(std::string body) {
+    std::call_once(g_httpOnce, [] {
+        std::thread([] {
+            for (;;) {
+                std::string line;
+                {
+                    std::unique_lock<std::mutex> lk(g_httpMu);
+                    g_httpCv.wait(lk, [] { return !g_httpQueue.empty(); });
+                    line = std::move(g_httpQueue.front());
+                    g_httpQueue.pop_front();
+                }
+                @autoreleasepool {
+                    std::string urlCpp = "http://" + g_logHost + ":9999/log";
+                    NSString* urlStr = [NSString stringWithUTF8String:urlCpp.c_str()];
+                    NSURL* url = [NSURL URLWithString:urlStr];
+                    NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
+                    req.HTTPMethod = @"PUT";
+                    req.HTTPBody = [NSData dataWithBytes:line.c_str() length:line.size()];
+                    req.timeoutInterval = 0.5;
+                    [[NSURLSession.sharedSession dataTaskWithRequest:req
+                        completionHandler:^(NSData*, NSURLResponse*, NSError*) {
+                        }] resume];
+                }
+            }
+        }).detach();
+    });
+    {
+        std::lock_guard<std::mutex> lk(g_httpMu);
+        if (g_httpQueue.size() > 256) g_httpQueue.pop_front(); // bounded
+        g_httpQueue.push_back(std::move(body));
+    }
+    g_httpCv.notify_one();
 }
 
 template<typename Mutex>
@@ -59,22 +106,9 @@ protected:
         // Always mirror to Apple unified logging (survives process death).
         NSLog(@"%s", body.c_str());
         appendFileLog(body);
-
-        // Best-effort host HTTP (non-blocking; do not wait on the network).
-        std::string urlCpp = "http://" + g_logHost + ":9999/log";
-        std::thread([body = std::move(body), urlCpp = std::move(urlCpp)] {
-            @autoreleasepool {
-                NSString* urlStr = [NSString stringWithUTF8String:urlCpp.c_str()];
-                NSURL* url = [NSURL URLWithString:urlStr];
-                NSMutableURLRequest* req = [NSMutableURLRequest requestWithURL:url];
-                req.HTTPMethod = @"PUT";
-                req.HTTPBody = [NSData dataWithBytes:body.c_str() length:body.size()];
-                req.timeoutInterval = 0.5;
-                [[NSURLSession.sharedSession dataTaskWithRequest:req
-                    completionHandler:^(NSData*, NSURLResponse*, NSError*) {
-                    }] resume];
-            }
-        }).detach();
+        // Best-effort host HTTP via the single queued worker (never blocks
+        // or allocates a thread on the logging thread).
+        enqueueHttpLog(std::move(body));
     }
     void flush_() override {}
 };
