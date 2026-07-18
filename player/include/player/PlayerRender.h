@@ -43,6 +43,11 @@ public:
         int initialH = 1180;
         bool borderless = false;   // true on iOS / Android
         uint8_t orientation = 0;   // wire::kOrientation* — 0 = no lock
+        // 🎯T156.7 headless oracle: no renderer/decoder; window exists only
+        // for size queries (SDL dummy video driver).
+        bool headless = false;
+        int accelOverride = -1;        // DeviceInfo capability: -1 auto, 0 none, 1 present
+        int deviceClassOverride = -1;  // DeviceInfo deviceClass override
         // SessionConfig.immersive already applied on the glass before
         // fillDeviceInfo. Used only so ui-safe does not keep phantom
         // system-bar insets SDL still reports after bars are hidden.

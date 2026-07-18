@@ -7,6 +7,8 @@
 // H.264, sockets, or SDL windowing.
 
 #include "player_core.h"
+#include "src/InputScript.h"
+#include <optional>
 #include "player_orientation.h"
 
 #include <player/FrameLog.h>
@@ -23,13 +25,18 @@
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <vector>
 
-int playerCore(const std::string& host, int port, const std::string& serverName) {
+int playerCore(const std::string& host, int port, const std::string& serverName,
+               const PlayerOptions& opts) {
+    // 🎯T156.7 headless oracle: SDL dummy video driver — full wire bridge,
+    // window object for size queries, no display.
+    if (opts.headless) SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "dummy");
     spyder::installSignalHandlers();
     spyder::installCrashHandlers();
     SPDLOG_INFO("spyder player starting (H.264 + SP2S cmdstream)");
@@ -84,6 +91,13 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
 #endif
     rc.orientation = cfg.orientation;
     rc.immersive = immersive;  // discovery: ui-safe after bars are applied
+    rc.headless = opts.headless;
+    rc.accelOverride = opts.accelOverride;
+    rc.deviceClassOverride = opts.deviceClassOverride;
+    if (opts.initialW > 0 && opts.initialH > 0) {
+        rc.initialW = opts.initialW;
+        rc.initialH = opts.initialH;
+    }
     spyder::PlayerRender render(rc);
     // PlayerRender ctor already called playerForceOrientation (shared with
     // DirectRenderHost::send). Re-apply after glass policy so scenes/VCs that
@@ -283,6 +297,34 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
                         frames.empty() ? 0.f : sumUp / frames.size(), maxUp);
         });
 
+    // 🎯T156.7 scripted input + trace. Scripted events are injected at the
+    // same upstream boundary as pumped device input (wire.sendEvent — the
+    // real SP2I marshalling path); the trace records what this glass sent
+    // and received, wall-clocked for latency measurement.
+    std::optional<ge::InputScriptPlayer> script;
+    if (!opts.scriptPath.empty()) {
+        std::vector<ge::ScriptedEvent> evs;
+        if (ge::loadInputScript(opts.scriptPath, evs)) {
+            script.emplace(std::move(evs));
+            SPDLOG_INFO("player: input script loaded ({})", opts.scriptPath);
+        } else {
+            SPDLOG_ERROR("player: input script open failed ({})", opts.scriptPath);
+            return 3;
+        }
+    }
+    std::ofstream trace;
+    if (!opts.tracePath.empty()) {
+        trace.open(opts.tracePath, std::ios::trunc);
+        if (trace.good()) {
+            wire::DeviceInfo tdi{};
+            render.fillDeviceInfo(tdi);
+            trace << "{\"k\":\"device\",\"t_ms\":" << SDL_GetTicks()
+                  << ",\"class\":" << int(tdi.deviceClass)
+                  << ",\"caps\":" << int(tdi.capabilities) << "}\n";
+            trace.flush();
+        }
+    }
+
     uint64_t frameCount = 0;
     spyder::PlayerWireBridge::DecodedFrame decodedFrame;
     spyder::PlayerWireBridge::CmdDisplayFrame cmdFrame;
@@ -303,6 +345,25 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
             wire.sendLifecycle(life);
         }
         for (auto& e : pump.upstreamEvents) wire.sendEvent(e);
+        if (script && !script->done()) {
+            script->poll(static_cast<uint32_t>(SDL_GetTicks()),
+                         [&](const SDL_Event& e) {
+                             wire.sendEvent(e);
+                             if (trace.good()) {
+                                 using namespace std::chrono;
+                                 const auto eus = duration_cast<microseconds>(
+                                     system_clock::now().time_since_epoch())
+                                         .count();
+                                 trace << "{\"k\":\"inject\",\"t_ms\":"
+                                       << SDL_GetTicks() << ",\"e_us\":" << eus
+                                       << ",\"type\":" << e.type << "}\n";
+                                 trace.flush();
+                             }
+                         });
+        } else if (script && opts.exitAfterScript) {
+            SPDLOG_INFO("player: script complete — exiting");
+            break;
+        }
 
         const uint64_t tPump0 = SDL_GetPerformanceCounter();
         if (!wire.pump()) break;
@@ -324,7 +385,15 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
         const uint64_t tPump1 = SDL_GetPerformanceCounter();
 
         bool got = false;
-        if (wire.pollCmdFrame(cmdFrame)) {
+        if (opts.headless) {
+            // Drain and count frames; no GPU. Trace a heartbeat each frame
+            // so the oracle can assert sustained delivery.
+            if (wire.pollCmdFrame(cmdFrame) || wire.pollFrame(decodedFrame)) {
+                frameCount++;
+                fpsWindowFrames++;
+                got = true;
+            }
+        } else if (wire.pollCmdFrame(cmdFrame)) {
             render.beginCmdFrame(cmdFrame.contentW, cmdFrame.contentH);
             for (const auto& img : cmdFrame.images) {
                 spyder::PlayerRender::CmdImageUpload u;
@@ -356,7 +425,8 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
         (void)got;
         const uint64_t tUp1 = SDL_GetPerformanceCounter();
 
-        auto rs = render.render();
+        spyder::PlayerRender::RenderStats rs{};
+        if (!opts.headless) rs = render.render();
         auto stats = wire.lastPumpStats();
         const float tickHz = float(freq);
         playerLog.record({SDL_GetPerformanceCounter(),
@@ -382,6 +452,10 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
     }
 
     wire.close();
+    if (trace.good()) {
+        trace << "{\"k\":\"exit\",\"t_ms\":" << SDL_GetTicks()
+              << ",\"frames\":" << frameCount << "}\n";
+    }
     SDL_Quit();
     SPDLOG_INFO("Player exited ({} frames decoded)", frameCount);
     return 0;

@@ -5,7 +5,7 @@
 #include <player/PlayerRender.h>
 #include <wire/Protocol.h>
 
-#include "AccelSynth.h"  // setRelativeMouseForShiftDrag (stream Shift+drag)
+#include "InputPlumbing.h"  // relative-mouse + accel enumeration (delivery only)
 
 #include "player_orientation.h"
 // Engine-internal cutout query (draw-safe = cutouts only). Stub zeros on
@@ -62,6 +62,10 @@ struct PlayerRender::Impl {
     // projection. Games only ever see SDL_EVENT_SENSOR_UPDATE, real or
     // synthetic; that contract is the engine's, not the player's.
     SDL_Sensor* accelSensor = nullptr;
+    // 🎯T156.7 headless oracle mode + declared-device overrides.
+    bool headless = false;
+    int accelOverride = -1;
+    int deviceClassOverride = -1;
 
     // Desktop host plumbing only: arm relative-mouse so relayed motion has
     // usable xrel/yrel. AccelSynth itself runs in the engine (stream server
@@ -71,12 +75,23 @@ struct PlayerRender::Impl {
 
     void syncRelativeMouseForTilt() {
         if (accelSensor) return;
-        // Match engine AccelSynth arm policy on stream server / sim: Shift
-        // or primary button. Without relative mode, macOS often delivers
-        // absolute motion with xrel=0 and the server sees a one-shot blip.
+        // 🎯T156.5: arm relative-mouse from THIS glass's declared device
+        // class — the same facts the server derives its arm policy from —
+        // instead of a hand-rolled approximation of server policy (the old
+        // "Shift or primary" heuristic drifted the moment the server's
+        // policy became capability-derived). Desktop-class: Shift only.
+        // Touch-first class: primary drag arms. Without relative mode,
+        // macOS often delivers absolute motion with xrel=0 and the server
+        // sees a one-shot blip.
+        const bool touchFirstClass =
+#if defined(__ANDROID__) || (defined(__APPLE__) && TARGET_OS_IOS)
+            deviceClassOverride != 3;
+#else
+            deviceClassOverride == 1 || deviceClassOverride == 2;
+#endif
         bool armed = shiftKey ||
                      ((SDL_GetModState() & SDL_KMOD_SHIFT) != 0) ||
-                     primaryDown;
+                     (touchFirstClass && primaryDown);
         setRelativeMouseForShiftDrag(window, armed);
     }
 
@@ -160,6 +175,13 @@ PlayerRender::PlayerRender(const Config& cfg)
     }
     playerForceOrientation(i_->requestedOrientation);
 
+    i_->headless = cfg.headless;
+    i_->accelOverride = cfg.accelOverride;
+    i_->deviceClassOverride = cfg.deviceClassOverride;
+    if (cfg.headless) {
+        SPDLOG_INFO("PlayerRender: headless — no renderer/decoder");
+        return; // window (dummy driver) exists for size queries only
+    }
     i_->renderer = SDL_CreateRenderer(i_->window, nullptr);
     if (!i_->renderer) {
         SPDLOG_ERROR("PlayerRender: SDL_CreateRenderer failed: {}", SDL_GetError());
@@ -183,7 +205,7 @@ bool PlayerRender::hasAccelerometer() const {
     // glass have a real accelerometer at all? Enumeration only — independent
     // of whether SessionConfig asked us to open it yet. Simulator reports
     // none (realSensorAvailable() is forced false there).
-    if (!AccelSynth::realSensorAvailable()) return false;
+    if (!realSensorAvailable()) return false;
     bool found = false;
     int count = 0;
     SDL_SensorID* sensors = SDL_GetSensors(&count);
@@ -205,7 +227,7 @@ void PlayerRender::enableAccelerometer() {
     // whose engine-side AccelSynth synthesizes (see Impl::accelSensor note).
     // iOS Simulator: Core Motion lies about availability; AccelSynth policy
     // forces Shift+drag (realSensorAvailable() is false).
-    if (AccelSynth::realSensorAvailable()) {
+    if (realSensorAvailable()) {
         int count = 0;
         SDL_SensorID* sensors = SDL_GetSensors(&count);
         if (sensors) {
@@ -274,9 +296,14 @@ void PlayerRender::fillDeviceInfo(wire::DeviceInfo& out) const {
     out.safeX = out.safeY = out.safeW = out.safeH = 0;
     out.drawSafeX = out.drawSafeY = out.drawSafeW = out.drawSafeH = 0;
     out.capabilities = static_cast<uint8_t>(out.capabilities | wire::kCapDualSafe);
-    if (hasAccelerometer())
+    const bool declareAccel = (i_->accelOverride >= 0)
+                                  ? (i_->accelOverride == 1)
+                                  : hasAccelerometer();
+    if (declareAccel)
         out.capabilities =
             static_cast<uint8_t>(out.capabilities | wire::kCapHasAccelerometer);
+    if (i_->deviceClassOverride >= 0)
+        out.deviceClass = static_cast<uint8_t>(i_->deviceClassOverride);
 
     auto toPx = [&](const SDL_Rect& r, uint16_t& ox, uint16_t& oy,
                     uint16_t& ow, uint16_t& oh) {
