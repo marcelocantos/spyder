@@ -178,6 +178,27 @@ PlayerRender::~PlayerRender() {
 
 SDL_Window* PlayerRender::window() const { return i_->window; }
 
+bool PlayerRender::hasAccelerometer() const {
+    // Capability declaration for DeviceInfo (kCapHasAccelerometer): does this
+    // glass have a real accelerometer at all? Enumeration only — independent
+    // of whether SessionConfig asked us to open it yet. Simulator reports
+    // none (realSensorAvailable() is forced false there).
+    if (!AccelSynth::realSensorAvailable()) return false;
+    bool found = false;
+    int count = 0;
+    SDL_SensorID* sensors = SDL_GetSensors(&count);
+    if (sensors) {
+        for (int k = 0; k < count; k++) {
+            if (SDL_GetSensorTypeForID(sensors[k]) == SDL_SENSOR_ACCEL) {
+                found = true;
+                break;
+            }
+        }
+        SDL_free(sensors);
+    }
+    return found;
+}
+
 void PlayerRender::enableAccelerometer() {
     // Open a real sensor if the player device has one; its events forward
     // upstream. No sensor is fine — Shift+drag forwards raw to the server,
@@ -253,6 +274,9 @@ void PlayerRender::fillDeviceInfo(wire::DeviceInfo& out) const {
     out.safeX = out.safeY = out.safeW = out.safeH = 0;
     out.drawSafeX = out.drawSafeY = out.drawSafeW = out.drawSafeH = 0;
     out.capabilities = static_cast<uint8_t>(out.capabilities | wire::kCapDualSafe);
+    if (hasAccelerometer())
+        out.capabilities =
+            static_cast<uint8_t>(out.capabilities | wire::kCapHasAccelerometer);
 
     auto toPx = [&](const SDL_Rect& r, uint16_t& ox, uint16_t& oy,
                     uint16_t& ow, uint16_t& oh) {

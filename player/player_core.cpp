@@ -233,6 +233,14 @@ int playerCore(const std::string& host, int port, const std::string& serverName)
         render.fillDeviceInfo(di);
         wire.sendDeviceInfo(di);
     };
+    // 🎯T156.3 seat promotion: the server re-sends SessionConfig when this
+    // player becomes the primary seat; answer with DeviceInfo, same as the
+    // connect handshake, so the seat's authority (incl. accelerometer
+    // capability) is re-established.
+    wire.setOnSessionConfigUpdate([&](const wire::SessionConfig&) {
+        SPDLOG_INFO("player: SessionConfig mid-session — re-sending DeviceInfo");
+        sendViewerDiscovery();
+    });
     struct PlayerFrame { uint64_t timestamp; int decoded; uint32_t lastSeq; float drainMs; float renderMs; float pumpMs; float evMs; float upMs; };
     static FrameLog<PlayerFrame> playerLog(
         [](const std::vector<PlayerFrame>& frames, uint64_t freq) {

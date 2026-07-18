@@ -59,6 +59,7 @@ public:
     // with kSensorAccelerometer). No sensor is fine: tilt gestures forward
     // raw to the server-side synthesizer.
     void enableAccelerometer();
+    bool hasAccelerometer() const;
 
     // Current window/display dimensions and pixel ratio for DeviceInfo.
     // Accounts for requested orientation (portrait/landscape swap).

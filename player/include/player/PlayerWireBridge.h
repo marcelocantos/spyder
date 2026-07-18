@@ -83,6 +83,12 @@ public:
     // render subsystem has decided window dimensions.
     bool sendDeviceInfo(const wire::DeviceInfo&);
 
+    // Mid-session SessionConfig from the server (transport change, or a
+    // seat-promotion re-handshake — 🎯T156.3). The player answers a
+    // SessionConfig with DeviceInfo, mid-session exactly as at connect;
+    // the callback runs on the pump thread.
+    void setOnSessionConfigUpdate(std::function<void(const wire::SessionConfig&)>);
+
     // Player → server: safe-area change (orientation / chrome).
     bool sendSafeAreaUpdate(const wire::SafeAreaUpdate&);
 

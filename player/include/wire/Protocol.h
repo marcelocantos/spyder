@@ -43,6 +43,7 @@ constexpr size_t   kMaxMessageSize = 512 * 1024 * 1024;  // 512MB (matches ged/b
 // DeviceInfo.capabilities bits (player → server).
 constexpr uint8_t kCapCommandStream = 1u << 0;  // player can replay SP2S
 constexpr uint8_t kCapDualSafe      = 1u << 1;  // drawSafe* fields present and meaningful
+constexpr uint8_t kCapHasAccelerometer = 1u << 2;  // glass has a real accelerometer (sensor authority)
 
 // SessionConfig.transport (server → player): selected rung after intersection.
 constexpr uint8_t kTransportH264          = 0;

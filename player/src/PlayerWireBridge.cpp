@@ -92,6 +92,7 @@ struct PlayerWireBridge::Impl {
     // 🎯T128 — content-addressed resource cache for SP2S frames.
     cmdstream::Cache cmdCache;
     uint8_t transport = wire::kTransportH264;
+    std::function<void(const wire::SessionConfig&)> onSessionConfigUpdate;
 
     // 🎯T154 SP2T: last server→player durable dump (pollSp2tSnapshot).
     std::mutex sp2tMutex;
@@ -132,6 +133,11 @@ bool PlayerWireBridge::connect(wire::SessionConfig& outConfig) {
         }
     }
     return false;
+}
+
+void PlayerWireBridge::setOnSessionConfigUpdate(
+        std::function<void(const wire::SessionConfig&)> fn) {
+    i_->onSessionConfigUpdate = std::move(fn);
 }
 
 bool PlayerWireBridge::sendDeviceInfo(const wire::DeviceInfo& devInfo) {
@@ -631,6 +637,7 @@ bool PlayerWireBridge::pump() {
             i_->transport = sc.transport;
             SPDLOG_INFO("PlayerWireBridge: SessionConfig update transport={}",
                         sc.transport == wire::kTransportCommandStream ? "cmdstream" : "h264");
+            if (i_->onSessionConfigUpdate) i_->onSessionConfigUpdate(sc);
         } else if (magic == wire::kServerAssignedMagic) {
             SPDLOG_INFO("PlayerWireBridge: server assigned");
         } else if (magic == wire::kSessionEndMagic) {
