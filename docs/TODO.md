@@ -27,3 +27,11 @@ notes that haven't yet earned a target.
   deadline (stuck goroutine was deployApp mid-install, tools.go:1564).
   Give install-bearing dispatches an emulator-scaled deadline, or split
   install progress from the stuck heuristic.
+
+- **Daemon restart footguns compound** (2026-07-19): after the watchdog
+  exit, a bare `bin/spyder serve` relaunch bound loopback-only (the
+  default) — every LAN glass then failed to attach and exited fail-closed,
+  which looked like a device/app problem (an hour of misdiagnosis:
+  extras, Samsung Freecess, macOS firewall). Any supervised/self relaunch
+  must preserve the original listen addr; consider logging a prominent
+  warning when serving loopback-only while LAN devices are in inventory.
