@@ -97,10 +97,6 @@ JSON array at `~/.spyder/inventory.json`:
 - Tool names are unprefixed (`devices`, not `spyder_devices`); MCP clients
   add the server-name prefix at their end.
 
-## TODO
-
-See [docs/TODO.md](docs/TODO.md).
-
 ## Testing
 
 ```bash
