@@ -49,6 +49,12 @@ public:
             // Send close frame
             uint8_t closeFrame[2] = {0x88, 0x00};
             asio::write(socket_, asio::buffer(closeFrame, 2), ec);
+            // shutdown() before close(): closing an fd from another thread
+            // does NOT reliably wake a thread blocked in read() on macOS —
+            // observed as closeWire wedged in join() behind a wire thread
+            // stuck in readExact, which also made superseded servers
+            // unkillable-by-replace. shutdown(both) wakes the reader.
+            socket_.shutdown(asio::ip::tcp::socket::shutdown_both, ec);
             socket_.close(ec);
         }
     }
