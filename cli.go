@@ -61,7 +61,7 @@ func init() {
 		{"is-running", "spyder is-running <device> <bundle-id> [--json]", runIsRunning},
 		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
-		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]", runDeploy},
+		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]  (refuses stream player — use launch-player)", runDeploy},
 		{"launch-player", "spyder launch-player <device> [--server NAME] [--path PATH] [--as OWNER]", runLaunchPlayer},
 		{"reserve", "spyder reserve (<device>|--on PREDICATE|--selector JSON|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},

@@ -837,7 +837,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 		),
 		mcpgo.NewTool("deploy_app",
-			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid} on success. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
+			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid} on success. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nRefuses the spyder stream player (com.spyder.player / Player*.app / player Android APK) — use launch_player so STREAM_ADDR and server name are injected.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),

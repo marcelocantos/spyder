@@ -102,14 +102,15 @@ func (h *Handler) handleLaunchPlayer(args map[string]any) (*mcpgo.CallToolResult
 		for k, v := range env {
 			envAny[k] = v
 		}
-		// Reuse deploy_app path: terminate → install → launch → pid.
-		deployRes, derr := h.handleDeployApp(map[string]any{
+		// Install + launch via internal deploy (allowPlayer): public deploy_app
+		// rejects the player package so STREAM_ADDR cannot be skipped.
+		deployRes, derr := h.deployApp(map[string]any{
 			"device":    dev,
 			"path":      path,
 			"bundle_id": bundleID,
 			"owner":     owner,
 			"env":       envAny,
-		})
+		}, true /*allowPlayer*/)
 		if derr != nil {
 			return nil, derr
 		}

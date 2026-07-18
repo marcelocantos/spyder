@@ -1504,7 +1504,16 @@ type deployResult struct {
 	PID      int    `json:"pid"`
 }
 
+// handleDeployApp is the public deploy_app tool. It refuses the spyder stream
+// player package — that must go through launch_player so STREAM_ADDR / server
+// name are injected (plain deploy leaves the glass with no relay address).
 func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.deployApp(args, false /*allowPlayer*/)
+}
+
+// deployApp runs terminate → install → launch → verify-pid.
+// allowPlayer is true only for launch_player's internal call.
+func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -1542,6 +1551,14 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 		}
 	}
 
+	if !allowPlayer && isSpyderPlayerTarget(bundleID, path) {
+		return toolErr(
+			"deploy_app: refusing the spyder stream player (%s) — use launch_player "+
+				"or `spyder launch-player <device> [--server NAME]` so STREAM_ADDR and "+
+				"server name are injected; plain deploy leaves the glass with no relay address",
+			bundleID)
+	}
+
 	// Step 1: terminate (ignore "not running" errors — it's fine if the
 	// app isn't already up; the important thing is we tried).
 	if termErr := adapter.TerminateApp(id, bundleID); termErr != nil {
@@ -1574,6 +1591,28 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 	}
 
 	return toolJSON(deployResult{BundleID: bundleID, PID: pid})
+}
+
+// isSpyderPlayerTarget reports whether a deploy targets the stream glass
+// (com.spyder.player and orientation variants, or known player artifact paths).
+func isSpyderPlayerTarget(bundleID, path string) bool {
+	if bundleID == playerBundleID || strings.HasPrefix(bundleID, playerBundleID+".") {
+		return true
+	}
+	base := filepath.Base(path)
+	switch base {
+	case "Player.app", "PlayerLand.app", "PlayerPort.app":
+		return true
+	}
+	// Android debug/release APKs under the player tree.
+	if strings.HasSuffix(base, ".apk") {
+		norm := filepath.ToSlash(path)
+		if strings.Contains(norm, "/player/android/") ||
+			strings.Contains(norm, "/player/android") {
+			return true
+		}
+	}
+	return false
 }
 
 // waitForAppPID polls adapter.AppPID until a positive pid appears or
