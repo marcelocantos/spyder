@@ -15,3 +15,15 @@ notes that haven't yet earned a target.
   hung at the SessionConfig handshake even though the catalogue pointed at a
   live new-code server; never root-caused — suspect relay bookkeeping under
   many replaced-but-alive registrations.
+
+- **Self-restart without a supervisor kills the daemon** (2026-07-18): the
+  T99.3 stuck-dispatch watchdog exits "for supervised relaunch", but a bare
+  `spyder serve` in a terminal has no supervisor — the daemon just dies
+  (observed live: emulator launch_player exceeded the dispatch deadline →
+  watchdog exit → stack down). Either self-exec relaunch when unsupervised,
+  or gate the exit on detecting a supervisor.
+- **launch_player dispatch deadline too tight for emulator installs**
+  (2026-07-18): a cold-emulator `adb install` legitimately exceeds the
+  deadline (stuck goroutine was deployApp mid-install, tools.go:1564).
+  Give install-bearing dispatches an emulator-scaled deadline, or split
+  install progress from the stuck heuristic.
