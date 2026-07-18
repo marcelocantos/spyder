@@ -508,6 +508,29 @@ targets:
     - T101.4
     origin: subdivide(🎯T101)
     discovered: 2026-07-18
+  T102:
+    name: Homebrew package ships stream player artifacts so launch_player works without a local player/ build tree
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Release tarball and Homebrew formula install player artifacts under libexec/spyder/player/ (or equivalent Cellar-relative layout), not embedded inside the spyder binary
+    - Desktop bin/player is included and launch_player on platform=desktop resolves it from the install layout (symlink/EvalSymlinks-safe, same pattern as bundled ios)
+    - Android debug APK is included and launch_player on platform=android resolves it from the install layout when path= is omitted
+    - iOS Player.app is either omitted from the public formula with documented rationale (codesign/provisioning is per-developer and not multi-tenant), or shipped only as an unsigned/build-product path with an explicit re-sign workflow — never a single pre-signed .app claimed to work for all brew users
+    - 'launch_player path resolution order remains: path= override → SPYDER_PLAYER_* env → install layout (libexec) → repo-relative dev build outputs'
+    - agents-guide / caveats document where artifacts live and that iOS requires local codesign or SPYDER_PLAYER_IOS
+    - CI release.yml packages the chosen artifacts; homebrew-releaser install line installs them into libexec
+    context: 'Surfaced 2026-07-18: launch_player only finds players under cwd/repo build paths (player/ios/build/..., player/android/.../app-debug.apk, bin/player). make build and the brew release ship spyder + ios tunnel + killusbmuxd only — not the glass. Brew-bundling is correct; embedding in the Go binary is optional and rejected for v1 (bloat). iOS is the hard constraint: a Development/Ad Hoc signed Player.app from one team fails ApplicationVerificationFailed on other developers'' devices. V1 should ship desktop + Android debug freely; treat iOS as non-portable pre-signed binary and either document local build/sign or a re-sign path. Related: T100.3 launch_player inject surface; deploy_app refuses player package.'
+    tags:
+    - player
+    - homebrew
+    - release
+    - packaging
+    - launch_player
+    - ios-codesign
+    origin: 2026-07-18 brew player packaging discussion after deploy-vs-launch_player
+    discovered: 2026-07-18
   T11:
     name: Reservation system for parallel dev sessions across devices
     status: achieved
