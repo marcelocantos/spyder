@@ -531,6 +531,56 @@ targets:
     - ios-codesign
     origin: 2026-07-18 brew player packaging discussion after deploy-vs-launch_player
     discovered: 2026-07-18
+  T103:
+    name: 'Daemon self-restart is safe and complete: relaunch actually happens, preserves the listen address, and dispatch deadlines tolerate slow targets'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - The T99.3 stuck-dispatch watchdog's exit results in an actual relaunch when no external supervisor is present (self-exec or supervisor detection) — a bare `spyder serve` never just dies
+    - A relaunch (supervised or self) preserves the original listen address; a daemon serving loopback-only while LAN devices exist in inventory logs a prominent warning
+    - 'Dispatch deadlines accommodate legitimately slow operations: a cold-emulator `adb install` inside launch_player/deploy_app does not trip the stuck heuristic (emulator-scaled deadline, or install progress excluded from stuckness)'
+    - 'Regression evidence: the 2026-07-18 incident chain (watchdog exit → dead daemon → loopback-only relaunch → every LAN glass failing fail-closed) is reproduced against the fix and does not recur'
+    context: '2026-07-18/19 live incident: an emulator launch_player exceeded the dispatch deadline (deployApp mid-install, tools.go:1564), the watchdog exited "for supervised relaunch" with no supervisor present, and the manual relaunch bound 127.0.0.1 only (the serve default) — every on-device player then failed to attach and exited fail-closed, which masqueraded as device/app bugs (intent extras, Samsung Freecess, macOS firewall were all misdiagnosed first). Promoted from docs/TODO.md per targets-are-canonical convention.'
+    tags:
+    - daemon
+    - watchdog
+    - resilience
+    - ops
+    origin: 2026-07-18 deployment-sweep incident chain
+    discovered: 2026-07-19
+  T104:
+    name: streamrelay culls dead sessions and a fresh attach never hangs against a stale catalogue
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'GET /stream/sessions never lists sessions whose server or player peer is gone: entries are culled on sideband/wire death or aged out (observed: zombie entries hours old with 0 fps after kill -9)'
+    - A fresh player attach succeeds or fails fast against any catalogue state — the 2026-07-18 22:28 anomaly (attach hung at the SessionConfig handshake while ~10 replaced-but-alive server registrations existed, despite the catalogue pointing at a live new-code server) is root-caused and covered by a test
+    - Relay-side test simulates kill -9'd peers and replaced registrations; session list converges and attaches route correctly
+    context: 'From the 2026-07-18 T156 live sessions: kill -9''d servers and players left zombie session entries in /stream/sessions indefinitely, and one fresh attach hung at handshake under a pile of replaced-but-alive registrations — never root-caused (suspect: relay session bookkeeping under many same-name replaces). ge-side mitigation already landed (superseded servers now exit on sideband close), but the relay must be robust regardless of peer behavior. Promoted from docs/TODO.md per targets-are-canonical convention.'
+    tags:
+    - streamrelay
+    - sessions
+    - gc
+    - robustness
+    origin: 2026-07-18 T156 live-session zombie observations
+    discovered: 2026-07-19
+  T105:
+    name: devicectl foreground-launch evaluated as a replacement for `process launch` on iOS 17+
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A spike answers whether `devicectl` exposes a cleaner foreground-launch API than the current DVT `process launch` path (session-cost, reliability, pid-verify support)
+    - 'Decision recorded in the target: adopt (with follow-on target) or reject (with reasons); no code change required to achieve this spike'
+    context: 'Long-standing unscoped note promoted from docs/TODO.md (file retired; targets are the sole record of followable work). Related: the T72 devicectl migration was parked when the wedge root cause moved to the go-ios tunnel daemon.'
+    tags:
+    - ios
+    - devicectl
+    - spike
+    origin: promoted from docs/TODO.md, 2026-07-19
+    discovered: 2026-07-19
   T11:
     name: Reservation system for parallel dev sessions across devices
     status: achieved
