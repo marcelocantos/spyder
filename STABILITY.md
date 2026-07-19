@@ -173,6 +173,8 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder pool list [--json]` | REST proxy to `pool_list`. | Needs review |
 | `spyder pool warm <template> [--count N]` | REST proxy to `pool_warm`. `--count` defaults to 1. | Needs review |
 | `spyder pool drain <template>` | REST proxy to `pool_drain`. | Needs review |
+| `spyder list-scripts [--json]` | REST proxy to `list_scripts` — durable host Starlark library (bundled + `~/.spyder/scripts`). 🎯T108. | Stable (🎯T108) |
+| `spyder run-script <name\|path> [k=v]... [--param k=v] [--max-duration-ms N] [--json]` | REST proxy to `run_script` / `app_exec(script_path=…)`. 🎯T108. | Stable (🎯T108) |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
