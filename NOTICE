@@ -79,3 +79,15 @@ Starlark in Go is distributed under the 3-Clause BSD License:
     THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
     OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+------------------------------------------------------------------------
+
+spyder player third-party components
+
+The spyder player (player/ → bin/player) bundles vendored C/C++
+libraries — SDL3, SDL_image, SDL_ttf (with FreeType, HarfBuzz,
+plutosvg, plutovg), FFmpeg (LGPL-2.1, prebuilt Android subset), asio,
+spdlog, lunasvg, deepparser, and assorted single-header libraries
+(sqlite3, sqlpipe, lz4, nlohmann/json, stb, and others). Full
+per-component attribution, licence references, and licensing warnings
+are in player/NOTICES.md.
