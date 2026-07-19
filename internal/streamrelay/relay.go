@@ -588,11 +588,11 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 	pctx, pcancel := context.WithCancel(ctx)
 	defer pcancel()
 	go func() {
-		pipe(pctx, wire, c, sess.noteS2P)
+		pipe(pctx, wire, c, sess.noteS2P, id+" s2p")
 		pcancel()
 	}()
 	go func() {
-		pipe(pctx, c, wire, sess.noteP2S)
+		pipe(pctx, c, wire, sess.noteP2S, id+" p2s")
 		pcancel()
 	}()
 	<-pctx.Done()
@@ -601,13 +601,16 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 // pipe copies whole WebSocket messages from src to dst verbatim (same message
 // type) until either side errors or ctx is cancelled. onMsg is invoked with
 // each payload size after a successful write (for 🎯T96 counters).
-func pipe(ctx context.Context, src, dst *websocket.Conn, onMsg func(int)) {
+func pipe(ctx context.Context, src, dst *websocket.Conn, onMsg func(int), tag string) {
 	for {
 		typ, data, err := src.Read(ctx)
 		if err != nil {
+			slog.Info("streamrelay: pipe read end", "tag", tag, "error", err)
 			return
 		}
 		if err := dst.Write(ctx, typ, data); err != nil {
+			slog.Info("streamrelay: pipe write end",
+				"tag", tag, "bytes", len(data), "error", err)
 			return
 		}
 		if onMsg != nil {

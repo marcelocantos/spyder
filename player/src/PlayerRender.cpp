@@ -516,6 +516,14 @@ PlayerRender::PumpResult PlayerRender::pumpEvents() {
             r.upstreamEvents.push_back(e);
             break;
         case SDL_EVENT_SENSOR_UPDATE: {
+            // A backend with no real data source can deliver non-finite
+            // samples (observed: Emscripten devicemotion with no feed →
+            // NaN, which detonates server-side physics). Never forward.
+            if (!std::isfinite(e.sensor.data[0]) ||
+                !std::isfinite(e.sensor.data[1]) ||
+                !std::isfinite(e.sensor.data[2])) {
+                break;
+            }
             // Match DirectRenderHost: hardware frame → screen frame before
             // the game sees the sample. Server must not re-rotate (its host
             // orientation is the Mac streaming box, not this device).

@@ -4,6 +4,7 @@
 #include <player/CmdStream.h>
 
 #include <lz4.h>
+#include <spdlog/spdlog.h>
 
 #include <cstring>
 #include <vector>
@@ -383,9 +384,15 @@ bool Reader::decode(std::span<const uint8_t> payload,
                     bool (*visit)(Op op, Cursor& c, void* user),
                     void* user) {
     Cursor c{payload.data(), payload.data() + payload.size(), true};
+    const uint8_t* base = payload.data();
+    auto fail = [&](const char* where, uint32_t raw) {
+        SPDLOG_WARN("CmdStream decode: {} op=0x{:x} at offset {}/{}",
+                    where, raw, size_t(c.p - base), payload.size());
+        return false;
+    };
     while (c.remain()) {
         uint16_t raw = c.u16();
-        if (!c.ok) return false;
+        if (!c.ok) return fail("op header truncated", 0);
         auto op = static_cast<Op>(raw);
         ++stats_.opCount;
 
@@ -393,7 +400,7 @@ bool Reader::decode(std::span<const uint8_t> payload,
             Hash h = c.hash();
             uint32_t n = c.u32();
             auto body = c.bytes(n);
-            if (!c.ok) return false;
+            if (!c.ok) return fail("blob truncated", raw);
             if (cache_) cache_->put(h, body.data(), body.size());
             stats_.fullBlobBytes += n;
             ++stats_.fullBlobCount;
@@ -401,19 +408,19 @@ bool Reader::decode(std::span<const uint8_t> payload,
             // side-effect is the cache). Pass a cursor positioned after the op
             // header fields already consumed — visitor for Blob sees nothing.
             Cursor empty{c.p, c.p, true};
-            if (visit && !visit(op, empty, user)) return false;
+            if (visit && !visit(op, empty, user)) return fail("blob visitor", raw);
             continue;
         }
         if (op == Op::BlobRef) {
             Hash h = c.hash();
-            if (!c.ok) return false;
+            if (!c.ok) return fail("blobref truncated", raw);
             if (!cache_ || !cache_->contains(h)) {
                 ++stats_.cacheMisses;
-                return false;
+                return fail("blobref miss", raw);
             }
             ++stats_.refBlobCount;
             Cursor empty{c.p, c.p, true};
-            if (visit && !visit(op, empty, user)) return false;
+            if (visit && !visit(op, empty, user)) return fail("blobref visitor", raw);
             continue;
         }
         if (op == Op::End) break;
@@ -422,8 +429,8 @@ bool Reader::decode(std::span<const uint8_t> payload,
         // the op's fields. We don't know lengths for every op here, so the
         // visitor reads via Cursor until the op is done. For sequential
         // well-formed streams the visitor's reads advance c.
-        if (visit && !visit(op, c, user)) return false;
-        if (!c.ok) return false;
+        if (visit && !visit(op, c, user)) return fail("op visitor", raw);
+        if (!c.ok) return fail("op fields truncated", raw);
     }
     return c.ok || c.p == c.end;
 }

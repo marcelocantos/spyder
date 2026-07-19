@@ -32,6 +32,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
+	"github.com/marcelocantos/spyder/internal/playerweb"
 	"github.com/marcelocantos/spyder/internal/pool"
 	"github.com/marcelocantos/spyder/internal/poolstore"
 	"github.com/marcelocantos/spyder/internal/reservations"
@@ -298,6 +299,13 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	dash := dashboard.NewHandler()
 	mux.Handle(dashboard.Path, dash)
 	mux.Handle(dashboard.Path+"/", dash)
+	// 🎯T101/🎯T106 browser player: the wasm-compiled spyder player, served
+	// at /player/?name=<server>. Attaches to the relay via /ws/wire like
+	// the native player.
+	pw := playerweb.NewHandler()
+	mux.Handle(playerweb.Path, http.RedirectHandler(playerweb.Path+"/",
+		http.StatusMovedPermanently))
+	mux.Handle(playerweb.Path+"/", pw)
 	// 🎯T91.4/T92.2 dev H.264 stream relay — between a ge server
 	// and the dashboard browser player. Speaks ge's brokered wire.
 	relay := streamrelay.New()

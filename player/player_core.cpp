@@ -25,10 +25,29 @@
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#include <emscripten/em_js.h>
+
+// Yield one display frame: requestAnimationFrame when the page is visible
+// (vsync pacing), with a timeout fallback so hidden pages — where RAF never
+// fires — still drain the wire a few times a second. setTimeout alone is
+// NOT usable as the pacer: WebKit throttles it to 1 s for inactive pages,
+// which ran the whole main loop at 0.3 Hz.
+EM_ASYNC_JS(void, spyderWebYield, (), {
+    await new Promise((resolve) => {
+        const t = setTimeout(resolve, 250);
+        requestAnimationFrame(() => { clearTimeout(t); resolve(); });
+    });
+});
+#endif
+
 #include <chrono>
+#ifndef __EMSCRIPTEN__
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#endif
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -190,6 +209,8 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
     // process immediately after DeviceInfo (iOS: attach→detach in ~40ms with
     // zero SP2S frames). Keep the glass alive on :memory: instead.
     std::string playerDbPath = ":memory:";
+#ifndef __EMSCRIPTEN__
+    // 🎯T101.7 defers browser durable state (OPFS/IDBFS); web runs :memory:.
     if (char* pref = SDL_GetPrefPath("squz", "spyder-player")) {
         playerDbPath = spyder::durableDbPathForPlayer(serverName.c_str(), pref);
         if (playerDbPath != ":memory:") {
@@ -205,6 +226,7 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
         }
         SDL_free(pref);
     }
+#endif
     std::unique_ptr<sqlpipe::Database> playerDb;
     try {
         playerDb = std::make_unique<sqlpipe::Database>(playerDbPath);
@@ -342,6 +364,9 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
     // Documents/ write (fopen/trunc/write at 2 Hz) blocked the loop 30-60 ms
     // per push on iOS flash — measured as 2 Hz hold-then-skip judder in
     // PresentTrace. Latest-wins: an unwritten older snapshot is superseded.
+    // Web: no writer thread (no pthreads in the wasm leg) and no durable
+    // path to write — playerDbPath is pinned to :memory: above.
+#ifndef __EMSCRIPTEN__
     std::mutex sp2tMu;
     std::condition_variable sp2tCv;
     std::vector<uint8_t> sp2tPendingBlob;
@@ -368,6 +393,7 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             }
         }
     });
+#endif
 
     uint64_t frameCount = 0;
     spyder::PlayerWireBridge::DecodedFrame decodedFrame;
@@ -380,7 +406,10 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
     while (!spyder::shouldQuit()) {
         const uint64_t tEv0 = SDL_GetPerformanceCounter();
         auto pump = render.pumpEvents();
-        if (pump.quit) break;
+        if (pump.quit) {
+            SPDLOG_INFO("player: exit — SDL quit event");
+            break;
+        }
         if (pump.surfaceChanged) sendViewerDiscovery();
         if (pump.lifecycleKind != 0) {
             wire::ViewerLifecycle life{};
@@ -419,18 +448,23 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
         }
 
         const uint64_t tPump0 = SDL_GetPerformanceCounter();
-        if (!wire.pump()) break;
+        if (!wire.pump()) {
+            SPDLOG_INFO("player: exit — wire closed");
+            break;
+        }
         // 🎯T154 SP2T: server→player durable push (stream / detach). Write
         // immediately to the per-game PrefPath file (fire-and-forget FS).
         {
             std::vector<uint8_t> push;
             if (wire.pollSp2tSnapshot(push) && !push.empty() &&
                 playerDbPath != ":memory:") {
+#ifndef __EMSCRIPTEN__
                 {
                     std::lock_guard<std::mutex> lk(sp2tMu);
                     sp2tPendingBlob = std::move(push); // latest wins
                 }
                 sp2tCv.notify_one();
+#endif
             }
         }
         const uint64_t tPump1 = SDL_GetPerformanceCounter();
@@ -554,14 +588,22 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             fpsWindowStart = now;
             fpsWindowFrames = 0;
         }
+
+#ifdef __EMSCRIPTEN__
+        // Yield to the browser event loop each iteration (ASYNCIFY):
+        // delivers WebSocket messages, input events, and display refresh.
+        spyderWebYield();
+#endif
     }
 
+#ifndef __EMSCRIPTEN__
     {
         std::lock_guard<std::mutex> lk(sp2tMu);
         sp2tExit = true;
     }
     sp2tCv.notify_one();
     sp2tWriter.join();
+#endif
 
     wire.close();
     if (trace.good()) {

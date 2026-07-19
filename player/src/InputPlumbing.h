@@ -28,9 +28,12 @@ inline void setRelativeMouseForShiftDrag(SDL_Window* window, bool armed) {
 }
 
 // Usable real accelerometer on this glass? iOS Simulator always false
-// (Core Motion misreports availability there).
+// (Core Motion misreports availability there). Emscripten likewise: SDL's
+// web backend enumerates a devicemotion-backed accelerometer that desktop
+// browsers never feed (samples read NaN) and mobile browsers gate behind a
+// permission prompt — browser motion glue is 🎯T101.6.
 inline bool realSensorAvailable() {
-#if defined(__APPLE__) && TARGET_OS_SIMULATOR
+#if (defined(__APPLE__) && TARGET_OS_SIMULATOR) || defined(__EMSCRIPTEN__)
     return false;
 #else
     int count = 0;

@@ -406,7 +406,7 @@ targets:
     discovered: 2026-07-18
   T101.1:
     name: 'The player tree compiles under Emscripten: wasm build leg with SDL3 (+image/ttf) built from source, Signal/desktop-isms stubbed, and check-wire passing under wasm'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -416,9 +416,10 @@ targets:
     context: wasm32 is little-endian with the same fixed-width layouts, so Protocol.h should hold — but the oracle must prove it, not assumption.
     origin: subdivide(🎯T101)
     discovered: 2026-07-18
+    achieved: 2026-07-19
   T101.2:
     name: 'WsConnection has a browser backend: the wire runs over the browser WebSocket API to /stream/player/<name>, message queue feeding available()/recvBinary()'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -429,9 +430,10 @@ targets:
     - T101.1
     origin: subdivide(🎯T101)
     discovered: 2026-07-18
+    achieved: 2026-07-19
   T101.3:
     name: 'The player main loop is browser-compatible: no blocking waits on the browser main thread (emscripten tick or ASYNCIFY/JSPI), including the connect/SessionConfig handshake and orientation-settle waits'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -442,9 +444,10 @@ targets:
     - T101.1
     origin: subdivide(🎯T101)
     discovered: 2026-07-18
+    achieved: 2026-07-19
   T101.4:
     name: 'Cmdstream-only browser player v1: the daemon serves the player page, and a browser plays a headless ge server over the SP2S rung end-to-end'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
@@ -456,6 +459,7 @@ targets:
     - T101.3
     origin: subdivide(🎯T101)
     discovered: 2026-07-18
+    achieved: 2026-07-19
   T101.5:
     name: 'The H.264 rung works in the browser: a third VideoDecoder backend over WebCodecs feeds decoded frames into the SDL present path'
     status: identified
@@ -581,6 +585,40 @@ targets:
     - spike
     origin: promoted from docs/TODO.md, 2026-07-19
     discovered: 2026-07-19
+  T106:
+    name: A browser can attach as a stream glass — a spyder-served page replays the ge SP2S command stream on WebGL2 and forwards input
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A browser page served by the spyder daemon attaches to the stream relay and presents a live ge server-mode session by replaying the SP2S command stream
+    - The browser glass is the spyder player itself — the same player/ C++ tree compiled to wasm (🎯T101.1–🎯T101.4); no ge sources linked, no ge-shipped module, no parallel protocol implementation
+    - 'Handshake implemented against the mirrored wire Protocol.h framing: DeviceInfo reports the browser surface (size, pixelRatio); SessionConfig applies'
+    - 'Input: pointer/keyboard events reach the game as wire input records'
+    - Reconnect behaves like the native player (exponential backoff)
+    - Works in current Chrome, Safari, and Firefox
+    context: 'Reframed 2026-07-19 (decision): hard ge↔spyder decoupling takes priority — the browser glass is a third build target of spyder''s own player, per the device-player precedent (spyder owns the glass; coupling is protocol-only via the hand-mirrored wire header). The earlier framing (ge ships a wasm SP2S replay module; ge 🎯T128.2.3) is rejected for now — accepted cost is some duplicated replay logic between ge''s renderer and the player''s interpreter; if that ever becomes onerous, the remedy is carving common elements into a third repo both consume, not linking ge into spyder. Delivered by the 🎯T101 decomposition (wasm build leg, browser WsConnection backend, browser-safe main loop, daemon-served page).'
+    depends_on:
+    - T101.1
+    - T101.2
+    - T101.3
+    - T101.4
+    tags:
+    - player
+    - browser
+    - web
+    - cmdstream
+    - sp2s
+    - sokol
+    - webgl2
+    - stream
+    - relay
+    - protocol-only
+    - ge-T157-followon
+    - ge-T128-followon
+    origin: manual
+    discovered: 2026-07-19
+    achieved: 2026-07-19
   T11:
     name: Reservation system for parallel dev sessions across devices
     status: achieved

@@ -11,9 +11,43 @@
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
+#include <vector>
+
+#ifdef __EMSCRIPTEN__
+
+// Web: no pthreads in the wasm leg — analyse inline from record() on a
+// ~2 s cadence. Same API and summary output as the threaded variant; the
+// analysis itself is a few hundred µs every 2 s, invisible at frame rate.
+template <typename Entry>
+struct FrameLog {
+    using AnalyseFn = void (*)(const std::vector<Entry>&, uint64_t freq);
+
+    std::vector<Entry> buffer;
+    AnalyseFn analyze;
+    uint64_t freq;
+    uint64_t lastDumpTicks;
+
+    FrameLog(AnalyseFn analyze, int reserveSize = 4096)
+        : analyze(analyze), freq(SDL_GetPerformanceFrequency()),
+          lastDumpTicks(SDL_GetPerformanceCounter()) {
+        buffer.reserve(reserveSize);
+    }
+
+    void record(const Entry& e) {
+        buffer.push_back(e);
+        const uint64_t now = SDL_GetPerformanceCounter();
+        if (now - lastDumpTicks >= freq * 2) {
+            analyze(buffer, freq);
+            buffer.clear();
+            lastDumpTicks = now;
+        }
+    }
+};
+
+#else // !__EMSCRIPTEN__
+
 #include <mutex>
 #include <thread>
-#include <vector>
 
 template <typename Entry>
 struct FrameLog {
@@ -57,3 +91,5 @@ struct FrameLog {
         buffers[writeIdx].push_back(e);
     }
 };
+
+#endif // __EMSCRIPTEN__

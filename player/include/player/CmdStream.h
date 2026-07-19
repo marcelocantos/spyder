@@ -150,13 +150,18 @@ private:
     };
     struct HashKeyHash {
         size_t operator()(const HashKey& k) const {
-            size_t x = 0;
-            for (size_t i = 0; i < 8; ++i)
-                x ^= (size_t)k.h[i] << (i * 8);
-            // fold high 8 bytes
-            for (size_t i = 0; i < 8; ++i)
-                x ^= (size_t)k.h[8 + i] << (i * 8);
-            return x;
+            // Accumulate in uint64_t, not size_t: on 32-bit targets
+            // (wasm32) `(size_t)b << 56` is shift-width UB, which -O2
+            // compiles inconsistently across inline sites — put() and
+            // get() computed different bucket hashes and every lookup
+            // missed. Fold to size_t only at the end.
+            uint64_t lo = 0, hi = 0;
+            for (int i = 0; i < 8; ++i)
+                lo |= (uint64_t)k.h[i] << (i * 8);
+            for (int i = 0; i < 8; ++i)
+                hi |= (uint64_t)k.h[8 + i] << (i * 8);
+            const uint64_t m = lo ^ (hi * 0x9e3779b97f4a7c15ull);
+            return (size_t)(m ^ (m >> 32));
         }
     };
     std::unordered_map<HashKey, std::vector<uint8_t>, HashKeyHash> map_;
