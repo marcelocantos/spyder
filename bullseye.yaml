@@ -638,9 +638,10 @@ targets:
     discovered: 2026-07-19
   T108:
     name: Host Starlark drives explore, collect, and dynamic-behaviour regression against live ge apps — without per-action agent round-trips
-    status: converging
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 8.0
     acceptance:
     - An agent can author, store, and re-run multi-step host Starlark scripts (not only ephemeral app_exec strings) against a live app-channel session, with versionable source under a documented library path.
     - 'Explore mode: scripts can poke dynamic game behaviour — synthetic accel, finger drag paths, taps/keys — and return structured observations without requiring goldens.'
@@ -670,11 +671,13 @@ targets:
     - testing
     origin: 'user request 2026-07-19 + scenario modeling: explore/regress/collect; host Starlark only'
     discovered: 2026-07-19
+    achieved: 2026-07-19
   T108.1:
     name: 'Durable host Starlark scripts are first-class artifacts: store, list, and re-run without re-authoring ephemeral app_exec strings'
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 3.0
     acceptance:
     - A documented script location exists (repo-relative and/or under ~/.spyder/scripts) with a minimal skeleton template.
     - An agent or CLI can run a stored script by path/id against a live session (wrapping app_exec), with parameters for device/session/bundle when needed.
@@ -687,11 +690,13 @@ targets:
     - library
     origin: subdivide(🎯T108)
     discovered: 2026-07-19
+    achieved: 2026-07-19
   T108.2:
     name: Explore recipes let an agent poke dynamic game behaviour (accel, drag, taps) and get structured observations without goldens
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 2.0
     acceptance:
     - 'Documented recipes exist for: (E1) tilt/accel probe sampling physics; (E2) finger drag path; (E3) simple tap/menu poke; optionally (E4) hybrid accel+conditional tap.'
     - Each recipe is host Starlark using app_input + app_state and/or app_state_capture_*; runnable via T108.1 or raw app_exec.
@@ -706,11 +711,13 @@ targets:
     - starlark
     origin: subdivide(🎯T108)
     discovered: 2026-07-19
+    achieved: 2026-07-19
   T108.3:
     name: Collect mode produces stimulus+timeseries artifacts from capture-while-drive scripts
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 2.0
     acceptance:
     - 'A script can app_state_capture_start → stimulus (input schedule) → capture_stop/get and write or emit a structured artifact (stimulus log + samples + metadata: device, session, app, timestamps).'
     - Artifact schema is documented; dropped_samples/errors from capture are preserved so lossy collects are visible.
@@ -725,11 +732,13 @@ targets:
     - artifacts
     origin: subdivide(🎯T108)
     discovered: 2026-07-19
+    achieved: 2026-07-19
   T108.4:
     name: Regress mode asserts dynamic contracts (trajectory, drag-follow, settle) and fails closed on divergence
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 2.0
     acceptance:
     - 'Regression scripts can assert at least two of: (R1) trajectory corridor under fixed accel from restored fixture; (R2) drag-follow error bound from collected series; (R3) settle/sleep within a time bound when slice exposes awake/rest state.'
     - Optional screenshot/visual baseline is secondary; primary oracles are state timeseries or scalar stats.
@@ -746,11 +755,13 @@ targets:
     - testing
     origin: subdivide(🎯T108)
     discovered: 2026-07-19
+    achieved: 2026-07-19
   T108.5:
     name: Frame-deterministic drive templates use pause/step/restore fixtures as the standard for accurate games scripts
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 1.0
     acceptance:
     - 'Documented template: app_restore_state (or equivalent fixture) → app_pause → inject → app_step(frames=1) loop → observe → app_resume.'
     - Template is the recommended path for R1 trajectory and any regress that needs frame accuracy; wall-clock sleep remains allowed for explore.
@@ -765,11 +776,13 @@ targets:
     - deterministic
     origin: subdivide(🎯T108)
     discovered: 2026-07-19
+    achieved: 2026-07-19
   T108.6:
     name: L1 semantic helpers resolve ge slice handles to inject coordinates (body/label → tap/drag) without a new wire protocol
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 2.0
     acceptance:
     - Host helpers (stdlib Starlark or documented pure-Starlark patterns) can locate a labelled body/UI node from app_state and derive finger inject coordinates when the slice provides screen-space or mappable bounds.
     - Coordinate L0 inject remains fully supported; L1 is additive.
@@ -785,6 +798,7 @@ targets:
     - ge-slices
     origin: subdivide(🎯T108)
     discovered: 2026-07-19
+    achieved: 2026-07-19
   T109:
     name: L2+ semantic UI addressing (label/role → action) without coordinate scripts — ge hit-target contract, not host OCR
     status: identified
