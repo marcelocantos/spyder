@@ -154,7 +154,9 @@ spyder verb available as a builtin.
 
 | Argument | Type | Description |
 |---|---|---|
-| `script` | string (required) | Starlark source to execute. |
+| `script` | string | Inline Starlark source. Provide this **or** `script_path`. |
+| `script_path` | string | Durable library name (e.g. `skeleton`), `bundled:name`, or filesystem path to a `.star` file (🎯T108). |
+| `params` | object | Optional string map injected as the Starlark global `params`. |
 | `max_duration_ms` | number (optional) | Wall-clock cap in ms. Default 30 000; max 120 000. |
 
 **Result model:** an ordered list of emitted values returned as MCP content
@@ -174,6 +176,11 @@ produces no output; its acknowledgement is dropped.
   sequence; does not burn the Starlark step budget.
 - `help()` — returns the verb list.
 - `emit(x)` — emit a value explicitly. Required for all but the final value.
+- `params` — dict of parameters for durable scripts (always present; may be empty).
+- 🎯T108 asserts/L1: `assert_trajectory`, `assert_drag_follow`, `assert_settle`,
+  `resolve_target`, `find_by_label` (fail closed with clear diagnostics).
+- `list_scripts()` / `run_script(path=...)` — durable library (also CLI
+  `spyder list-scripts` / `spyder run-script`).
 
 **Control flow:** bounded `for i in range(N):` and `if` are allowed at top
 level; variables, dict/list indexing, comparisons, and arithmetic work. No
@@ -195,6 +202,86 @@ round-trips. For frame-perfect capture: `app_pause(session_id=s)`,
 **Durable handles:** a returned id is a plain string backed by a server-side
 registry. Capture it in a variable and reuse it in the same script, OR pass it
 back in a later `app_exec` call.
+
+## Durable host Starlark library (🎯T108)
+
+Host-only scripting: no in-app VM. Recipes live as plain `.star` files.
+
+**Locations**
+
+| Source | Path |
+|--------|------|
+| Bundled recipes | embedded in the spyder binary (`list_scripts` source=`bundled`) |
+| Repo mirror (versionable) | `scripts/lib/*.star` in this repo |
+| User overrides / new scripts | `~/.spyder/scripts/<name>.star` (wins over bundled same name) |
+
+**CLI**
+
+```bash
+spyder list-scripts --json
+spyder run-script skeleton
+spyder run-script explore_tilt_probe session_id=s1
+# or via app_exec:
+# app_exec(script_path="skeleton", params={"session_id":"s1"})
+```
+
+### Explore → collect → regress promotion
+
+1. **Explore** — poke dynamic behaviour; emit observations; no golden required.
+   Recipes: `explore_tilt_probe` (E1 accel), `explore_drag` (E2 finger path),
+   `explore_tap` (E3).
+2. **Collect** — wrap the same stimulus with `app_state_capture_*` so you keep
+   a stimulus+timeseries artifact (`dropped_samples` / `errors` preserved).
+   Recipe: `collect_capture_while_drive` (C1).
+3. **Regress** — add fail-closed asserts on series/scalars (primary oracles),
+   not only click→screen. Recipes: `regress_trajectory` (R1 corridor),
+   `regress_drag_follow` (R2 p95 tracking error). Optional visual baseline
+   remains secondary (`diff` / baselines).
+
+**Frame-accurate template** (games-quality timing):
+`frame_deterministic_template` — `restore` → `pause` → inject → `step` →
+observe → `resume`. Wall-clock `sleep` is fine for explore.
+
+**L1 semantic (thin):** `l1_tap_body` uses `find_by_label` + `resolve_target`
+when a physics/UI slice publishes `screen`/`bbox`. Missing geometry errors
+clearly (slice contract gap) — no pixel guessing. L0 coordinates still work
+everywhere.
+
+### Worked examples (one per mode)
+
+**Explore — tilt probe (needs live app-channel + physics slice):**
+
+```starlark
+# spyder run-script explore_tilt_probe session_id=<id>
+# or:
+run_script(path="explore_tilt_probe", params={"session_id": sid})
+```
+
+**Collect — capture while driving:**
+
+```starlark
+run_script(path="collect_capture_while_drive", params={"session_id": sid})
+# → emit {stimulus, samples, dropped_samples, errors, ...}
+```
+
+**Regress — trajectory corridor (frame-stepped):**
+
+```starlark
+# tighten corridor via params once you have goldens
+run_script(path="regress_trajectory", params={
+    "session_id": sid,
+    "min_x": "-2", "max_x": "2", "min_y": "-2", "max_y": "2",
+})
+```
+
+**Offline / no device — skeleton + asserts:**
+
+```starlark
+run_script(path="skeleton")
+# pure helpers (no device):
+pts = [{"x":0.0,"y":0.0},{"x":1.0,"y":0.5}]
+assert_trajectory(points=pts, min_x=-1.0, max_x=2.0, min_y=-1.0, max_y=2.0)
+```
 
 ### Worked examples
 

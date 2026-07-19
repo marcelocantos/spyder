@@ -78,6 +78,8 @@ func init() {
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
 		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow | --capture [--ttl-sec N] [--max-bytes N] [--max-lines N] [--as OWNER] | --capture-get SID | --capture-stop SID | --capture-list]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
+		{"list-scripts", "spyder list-scripts [--json]", runListScripts},
+		{"run-script", "spyder run-script <name|path> [--param k=v]... [--max-duration-ms N] [--json]", runRunScript},
 	}
 }
 
@@ -1492,6 +1494,56 @@ func runPoolList(args []string) {
 	pf, ctx, cancel := setupCommand("pool", args, nil, []string{"--json"}, clitimeout.DefaultRead)
 	defer cancel()
 	dispatchAndExit(ctx, "pool_list", map[string]any{}, pf.bools["--json"], false)
+}
+
+// runListScripts lists durable host Starlark library scripts (🎯T108).
+func runListScripts(args []string) {
+	pf, ctx, cancel := setupCommand("list-scripts", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	dispatchAndExit(ctx, "list_scripts", map[string]any{}, pf.bools["--json"], false)
+}
+
+// runRunScript executes a durable library script via the daemon (🎯T108).
+func runRunScript(args []string) {
+	pf, ctx, cancel := setupCommand("run-script", args, []string{"--param", "--max-duration-ms"}, []string{"--json"}, clitimeout.DefaultDeploy)
+	defer cancel()
+	if len(pf.positional) < 1 {
+		fatalUsage("run-script", fmt.Errorf("missing script name or path"))
+	}
+	a := map[string]any{"path": pf.positional[0]}
+	params := map[string]string{}
+	// --param may appear multiple times; parseFlags keeps last only — accept
+	// free-form k=v positionals after the script name as well.
+	if p := pf.flags["--param"]; p != "" {
+		k, v, ok := strings.Cut(p, "=")
+		if !ok {
+			fatalUsage("run-script", fmt.Errorf("--param wants k=v, got %q", p))
+		}
+		params[k] = v
+	}
+	for _, extra := range pf.positional[1:] {
+		k, v, ok := strings.Cut(extra, "=")
+		if !ok {
+			fatalUsage("run-script", fmt.Errorf("extra arg %q wants k=v", extra))
+		}
+		params[k] = v
+	}
+	if len(params) > 0 {
+		// REST JSON wants map[string]any for flexible decode.
+		pm := make(map[string]any, len(params))
+		for k, v := range params {
+			pm[k] = v
+		}
+		a["params"] = pm
+	}
+	if ms := pf.flags["--max-duration-ms"]; ms != "" {
+		n, err := strconv.Atoi(ms)
+		if err != nil || n <= 0 {
+			fatalUsage("run-script", fmt.Errorf("--max-duration-ms: positive int"))
+		}
+		a["max_duration_ms"] = n
+	}
+	dispatchAndExit(ctx, "run_script", a, pf.bools["--json"], false)
 }
 
 func runPoolWarm(args []string) {

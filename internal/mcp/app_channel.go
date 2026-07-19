@@ -1045,5 +1045,16 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to the samples array. Example: `[.[].samples.frame_ms] | max`.")),
 		),
+		// 🎯T108 durable host Starlark library
+		mcpgo.NewTool("list_scripts",
+			mcpgo.WithDescription("List durable host Starlark library scripts (bundled recipes + ~/.spyder/scripts). 🎯T108."),
+		),
+		mcpgo.NewTool("run_script",
+			mcpgo.WithDescription("Load and run a durable host Starlark script by library name, bundled:name, or filesystem path (🎯T108). Same engine as app_exec."),
+			mcpgo.WithString("path", mcpgo.Description("Script name or path (alias: name).")),
+			mcpgo.WithString("name", mcpgo.Description("Alias for path.")),
+			mcpgo.WithObject("params", mcpgo.Description("Optional string map injected as Starlark global params.")),
+			mcpgo.WithNumber("max_duration_ms", mcpgo.Description("Wall-clock budget ms (default 30000, max 120000).")),
+		),
 	}
 }
