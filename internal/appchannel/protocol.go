@@ -224,6 +224,9 @@ const (
 	MethodStep             = "step"
 	MethodSpeed            = "speed"
 	MethodInputInject      = "input_inject"
+	// MethodSensorControl: fine-grained per-sensor stream authority
+	// (passthrough|override|mute). Not a blanket session mask.
+	MethodSensorControl = "sensor_control"
 	MethodStateQuery       = "state_query"
 	MethodSaveState        = "save_state"
 	MethodRestoreState     = "restore_state"
@@ -263,6 +266,7 @@ var KnownMethods = []string{
 	MethodStep,
 	MethodSpeed,
 	MethodInputInject,
+	MethodSensorControl,
 	MethodStateQuery,
 	MethodSaveState,
 	MethodRestoreState,

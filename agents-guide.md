@@ -390,7 +390,8 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_resume(session_id?)` | Resume the app's main loop. | |
 | `app_step(session_id?, frames?)` | Advance N frames while paused. | |
 | `app_speed(session_id?, multiplier?)` | Set a dt multiplier for the app's main loop. | |
-| `app_input(session_id?, type, ...)` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | Event-type-specific fields vary. |
+| `app_input(session_id?, type, ...)` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | Event-type-specific fields vary. One-shot `accel` is overwritten by real CoreMotion unless `app_sensor_control(mode="override")` is active. |
+| `app_sensor_control(session_id?, sensor?, mode?, x?, y?, z?)` | Fine-grained sensor stream authority (default **passthrough**). `sensor` defaults to `accel`. `mode`: `passthrough` (real samples flow), `override` (drop real; latch/inject own stream, re-asserted each frame), `mute` (drop real; emit neutral 0,0,0). Omit `mode` to query. Optional `x,y,z` when setting override latches a sample. Always restore `passthrough` when finished. | Not a blanket session mask — other inputs unchanged. |
 | `app_state(session_id?, slice, select?)` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `select` is an optional jq expression evaluated server-side. |
 | `app_save_state(session_id?)` | Serialize app state. Returns a base64-encoded blob; the app picks the schema. | |
 | `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
@@ -702,11 +703,20 @@ agent round-trips, no parallel tool calls needed (this supersedes the
 old "parallel tool calls" framing):
 
 ```starlark
-# Fire an accelerometer input, then sample physics state at ~60 Hz for ~1 s.
-app_input(type="accel", x=0.3, y=0.0, z=0.0)
+# Sustained tilt against a real accelerometer: take the stream, hold, restore.
+app_sensor_control(sensor="accel", mode="override", x=0.3, y=0.0, z=0.0)
 for i in range(60):
-    emit(app_state(slice="physics", select=".marble.position"))
+    emit(app_state(slice="geometry"))  # tiltbuggy uses "geometry"; others vary
     sleep(16)
+app_sensor_control(sensor="accel", mode="passthrough")
+```
+
+One-shot inject without override is still valid for emulators / no-sensor
+hosts, but on a physical device CoreMotion will overwrite it almost immediately:
+
+```starlark
+# Best-effort one-shot (passthrough) — do not rely on this for sustained tilt.
+app_input(type="accel", x=0.3, y=0.0, z=0.0)
 ```
 
 For a lossless capture with server-side buffering, use the

@@ -643,6 +643,7 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_step":                h.handleAppStep,
 		"app_speed":               h.handleAppSpeed,
 		"app_input":               h.handleAppInput,
+		"app_sensor_control":      h.handleAppSensorControl,
 		"app_state":               h.handleAppState,
 		"app_tweak_list":          h.handleAppTweakList,
 		"app_tweak_get":           h.handleAppTweakGet,

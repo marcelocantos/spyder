@@ -119,6 +119,14 @@ func (c *smokeClient) serve() {
 			_ = appchannel.UnpackParams(env.Params, &p)
 			c.lastInput = p
 			result = map[string]bool{"injected": true}
+		case appchannel.MethodSensorControl:
+			var p map[string]any
+			_ = appchannel.UnpackParams(env.Params, &p)
+			mode, _ := p["mode"].(string)
+			if mode == "" {
+				mode = "passthrough"
+			}
+			result = map[string]any{"sensor": "accel", "mode": mode}
 		case appchannel.MethodStateQuery:
 			var p struct {
 				Slice string `msgpack:"slice"`
@@ -264,7 +272,8 @@ func TestAppChannel_FullMethodSweep(t *testing.T) {
 		appchannel.MethodLowMemoryWarning,
 		appchannel.MethodPause, appchannel.MethodResume,
 		appchannel.MethodStep, appchannel.MethodSpeed,
-		appchannel.MethodInputInject, appchannel.MethodStateQuery,
+		appchannel.MethodInputInject, appchannel.MethodSensorControl,
+		appchannel.MethodStateQuery,
 		appchannel.MethodSaveState, appchannel.MethodRestoreState,
 		appchannel.MethodScreenshotApp,
 	})
@@ -333,6 +342,11 @@ func TestAppChannel_FullMethodSweep(t *testing.T) {
 		{"app_input", map[string]any{"session_id": sessionID, "type": "finger_down", "x": 0.5, "y": 0.5}, func(t *testing.T, body string) {
 			if client.lastInput["type"] != "finger_down" {
 				t.Errorf("input = %v", client.lastInput)
+			}
+		}},
+		{"app_sensor_control", map[string]any{"session_id": sessionID, "sensor": "accel", "mode": "override", "x": 1.0, "y": 0.0, "z": 0.0}, func(t *testing.T, body string) {
+			if !strings.Contains(body, "override") {
+				t.Errorf("sensor_control body: %s", body)
 			}
 		}},
 		{"app_state", map[string]any{"session_id": sessionID, "slice": "scene"}, func(t *testing.T, body string) {
