@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player
+.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -6,6 +6,11 @@ build: bin/spyder bin/ios bin/spyder-killusbmuxd
 # speaks the GE wire over spyder's relay — no link against the ge engine.
 player:
 	$(MAKE) -C player
+
+# Browser player (🎯T101/🎯T106): same tree compiled to wasm; the daemon
+# serves player/web/dist at /player/.
+player-web:
+	$(MAKE) -C player web
 
 bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum
 	go build -ldflags "-X main.version=dev" -o bin/spyder .

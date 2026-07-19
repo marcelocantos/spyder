@@ -19,7 +19,14 @@ often fails; Android is supported via `adb`.
   process in `--userspace` mode) — provides the iOS-17+ RSD endpoint
   registry that the in-process iOS adapter queries
 - Stream relay, pairing, dashboard, and the **spyder player**
-  (`player/` → `bin/player`) — stream glass for headless game servers
+  (`player/` → `bin/player`) — stream glass for headless game servers.
+  **Transport note (2026-07-19): H.264 is deprecated in place.** The
+  command-stream transport (ge SP2S, ge 🎯T128) is the default on both
+  sides — the player replays sokol ops on its local GPU. The H.264
+  decode path stays working but frozen (players are dev tools only,
+  never store-packaged, so removal buys little): do not extend it; new
+  stream/glass work targets SP2S replay (see 🎯T106 for the browser
+  glass). The relay is transport-opaque either way.
 
 ## What it does NOT own
 
