@@ -217,6 +217,23 @@ iOS device support is in-process via the bundled
 and is spawned by spyder as a userspace tunnel daemon at runtime.
 No Python, no system LaunchDaemon.
 
+## Stream player
+
+`player/` builds `bin/player`, the **spyder player** — stream glass for
+headless game servers. It attaches to spyder's stream relay, presents
+the server's command stream (with H.264 fallback), and forwards touch,
+key, and accelerometer input back over the wire. iOS and Android app
+variants live under `player/ios/` and `player/android/`.
+
+```bash
+make player                     # bin/player (self-contained)
+bin/player --host localhost --port 3030 --name tiltbuggy
+bin/player --headless --script gestures.txt --trace out.trace  # oracle mode
+```
+
+The player vendors C/C++ third-party libraries; see
+[player/NOTICES.md](player/NOTICES.md) for attribution.
+
 ## Licence
 
 Apache 2.0 — see [LICENSE](LICENSE).
