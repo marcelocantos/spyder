@@ -40,6 +40,40 @@ var (
 	recoverFn  = AttemptRecovery
 )
 
+// recentLogLines holds recent usbmuxd/tunnel log lines for 🎯T99.4 classification.
+// Protected by logMu; bounded ring.
+var (
+	logMu         sync.Mutex
+	recentLogLines []string
+	maxRecentLogs  = 64
+)
+
+// NoteLogLine records a line for ClassifyTunnelStartWedge (tests + log tail).
+func NoteLogLine(line string) {
+	logMu.Lock()
+	defer logMu.Unlock()
+	recentLogLines = append(recentLogLines, line)
+	if len(recentLogLines) > maxRecentLogs {
+		recentLogLines = recentLogLines[len(recentLogLines)-maxRecentLogs:]
+	}
+}
+
+// RecentLogLines returns a copy of the ring (tests).
+func RecentLogLines() []string {
+	logMu.Lock()
+	defer logMu.Unlock()
+	out := make([]string, len(recentLogLines))
+	copy(out, recentLogLines)
+	return out
+}
+
+// clearRecentLogs resets the ring (tests).
+func clearRecentLogs() {
+	logMu.Lock()
+	defer logMu.Unlock()
+	recentLogLines = nil
+}
+
 // wedgeState tracks the monitor's view of the current wedge episode so
 // auto-recovery fires at most once per episode (🎯T72.5).
 type wedgeState struct {
@@ -99,7 +133,38 @@ func RunMonitor(ctx context.Context) {
 // snapshot; it fires auto-recovery only on the rising edge of a wedge
 // episode (st tracks that). Failures of the parity check itself (ioreg /
 // ListDevices error) are logged but do not stop the monitor.
+//
+// Also classifies the tunnel-start / broken-pipe class from recent log
+// lines (🎯T99.4): detect → once-per-episode AttemptRecovery → needs_attention
+// (log) if still wedged next cycle.
 func reconcile(ctx context.Context, source string, st *wedgeState) {
+	// 🎯T99.4: pure log classifier (broken-pipe / tunnel-start-loop).
+	if tunnelWedge, detail := ClassifyTunnelStartWedge(RecentLogLines()); tunnelWedge {
+		newEp := !st.inEpisode
+		st.inEpisode = true
+		slog.Warn("wedge: tunnel-start class detected",
+			"source", source, "detail", detail, "new_episode", newEp)
+		captureFn("", "wedge.monitor.tunnel-start."+source)
+		RecordDoctorFinding(true, "tunnel_start:"+detail)
+		if newEp && !st.attempted {
+			st.attempted = true
+			// Ladder step 1: killusbmuxd once (rebuild daemon-side usbmux).
+			if err := recoverFn(ctx); err != nil {
+				slog.Error("wedge: tunnel-start recovery failed",
+					"error", err.Error(), "detail", detail)
+			} else {
+				slog.Info("wedge: tunnel-start recovery attempted (killusbmuxd)",
+					"detail", detail)
+			}
+			return
+		}
+		// Already attempted this episode → needs_attention (operator action).
+		slog.Error("wedge: tunnel-start class needs_attention — recovery already tried; "+
+			"run `spyder doctor --fix` or unplug/replug; daemon self-restart if connections stay stale",
+			"source", source, "detail", detail)
+		return
+	}
+
 	wedged, iousb, usbmux, err := isWedgedFn()
 	if err != nil {
 		slog.Error("wedge: parity check failed",
@@ -109,6 +174,7 @@ func reconcile(ctx context.Context, source string, st *wedgeState) {
 	if !wedged {
 		if st.inEpisode {
 			slog.Info("wedge: cleared", "source", source, "iousb", iousb, "usbmux", usbmux)
+			RecordDoctorFinding(false, "cleared")
 		} else {
 			slog.Debug("wedge: parity check ok",
 				"source", source, "iousb", iousb, "usbmux", usbmux)
@@ -122,6 +188,7 @@ func reconcile(ctx context.Context, source string, st *wedgeState) {
 	st.inEpisode = true
 	slog.Warn("wedge: detected by monitor",
 		"source", source, "iousb", iousb, "usbmux", usbmux, "new_episode", newEpisode)
+	RecordDoctorFinding(true, "parity_wedge")
 
 	// Detection + snapshot always run.
 	captureFn("", "wedge.monitor."+source)
@@ -158,9 +225,9 @@ func pollTrigger(ctx context.Context, triggers chan<- string) {
 }
 
 // logTailTrigger runs `log stream --process usbmuxd` filtered for
-// MuxReceivedUSBData device disconnected events. Each line schedules
-// a debounced "log-tail" trigger; concurrent disconnects within
-// debounceDelay collapse to one trigger.
+// disconnect + broken-pipe / tunnel-start failure lines (🎯T99.4).
+// Each line is noted for ClassifyTunnelStartWedge and schedules a
+// debounced reconcile trigger.
 //
 // Best-effort: if the subprocess fails to start or exits unexpectedly,
 // the function returns silently. The polling timer is the safety net.
@@ -168,7 +235,7 @@ func logTailTrigger(ctx context.Context, triggers chan<- string) {
 	cmd := exec.CommandContext(ctx, "log", "stream",
 		"--process", "usbmuxd",
 		"--info",
-		"--predicate", `eventMessage CONTAINS "MuxReceivedUSBData device disconnected"`,
+		"--predicate", `eventMessage CONTAINS "MuxReceivedUSBData device disconnected" OR eventMessage CONTAINS "broken pipe" OR eventMessage CONTAINS "failed to start tunnel"`,
 		"--style", "compact",
 	)
 	stdout, err := cmd.StdoutPipe()
@@ -199,6 +266,8 @@ func logTailTrigger(ctx context.Context, triggers chan<- string) {
 
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
+		line := scanner.Text()
+		NoteLogLine(line)
 		debounceMu.Lock()
 		if debounceTimer != nil {
 			debounceTimer.Stop()

@@ -1,6 +1,11 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean
+.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
+
+# Spyder player (stream glass). Self-contained C++ tree under player/;
+# speaks the GE wire over spyder's relay — no link against the ge engine.
+player:
+	$(MAKE) -C player
 
 bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum
 	go build -ldflags "-X main.version=dev" -o bin/spyder .
@@ -66,3 +71,4 @@ pre-release: bullseye
 
 clean:
 	rm -rf bin/
+	$(MAKE) -C player clean

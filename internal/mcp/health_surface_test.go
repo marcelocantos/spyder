@@ -12,6 +12,7 @@
 package mcp_test
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -93,14 +94,20 @@ func TestHealthSurfaces_AgreeWithModel(t *testing.T) {
 	}
 	body, _ := io.ReadAll(resp.Body)
 
-	// (3) The REST body must unmarshal cleanly back into health.Snapshot.
-	var restSnap health.Snapshot
-	if err := json.Unmarshal(body, &restSnap); err != nil {
-		t.Fatalf("REST body is not a valid health.Snapshot: %v (body: %s)", err, body)
+	// (3) REST body is HealthReport: Snapshot fields + doctor_finding + in_flight.
+	var restRep spydermcp.HealthReport
+	if err := json.Unmarshal(body, &restRep); err != nil {
+		t.Fatalf("REST body is not a valid HealthReport: %v (body: %s)", err, body)
 	}
-	restKeys := keysFromSnapshot(restSnap)
+	restKeys := keysFromSnapshot(restRep.Snapshot())
 	if !keysEqual(want, restKeys) {
 		t.Errorf("REST keys = %v; want %v", restKeys, want)
+	}
+	// doctor_finding is a struct value (always present); in_flight may be empty.
+	_ = restRep.DoctorFinding
+	if restRep.InFlight == nil {
+		// encode as empty slice, not null
+		t.Log("in_flight is nil (acceptable if empty); prefer []")
 	}
 
 	// REST is GET-only: a POST must be rejected (health is pull-only).
@@ -114,7 +121,7 @@ func TestHealthSurfaces_AgreeWithModel(t *testing.T) {
 	}
 
 	// --- Surface 2: health() app_exec builtin ---
-	res, err := h.Dispatch("app_exec", map[string]any{"script": "emit(health())"})
+	res, err := h.Dispatch(context.Background(), "app_exec", map[string]any{"script": "emit(health())"})
 	if err != nil {
 		t.Fatalf("app_exec dispatch: %v", err)
 	}

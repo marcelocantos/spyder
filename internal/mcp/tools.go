@@ -865,23 +865,28 @@ func (h *Handler) handleNetwork(args map[string]any) (*mcpgo.CallToolResult, err
 		return toolErr("network: profile and clear are mutually exclusive")
 	}
 
+	// Resolve + authorize under h.mu, but do not hold it across device I/O
+	// (ApplyNetwork / ClearNetwork) — a wedged network op must not stall
+	// unrelated tools (🎯T99.2).
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	if res := h.authorize(dev, owner); res != nil {
+		h.mu.Unlock()
 		return res, nil
 	}
-
 	adapter, _, id, err := h.resolveAdapter(dev)
 	if err != nil {
+		h.mu.Unlock()
 		return toolErr("%v", err)
 	}
+	h.mu.Unlock()
 
 	if clearFlag {
 		if err := adapter.ClearNetwork(id); err != nil {
 			return toolErr("clear network on %s: %v", dev, err)
 		}
+		h.mu.Lock()
 		delete(h.networkByDevice, dev)
+		h.mu.Unlock()
 		return toolText(fmt.Sprintf("network conditions cleared on %s", dev))
 	}
 
@@ -895,7 +900,9 @@ func (h *Handler) handleNetwork(args map[string]any) (*mcpgo.CallToolResult, err
 		return toolErr("apply network %q on %s: %v", profileName, dev, applyErr)
 	}
 
+	h.mu.Lock()
 	h.networkByDevice[dev] = appliedNetwork{profile: p, owner: owner}
+	h.mu.Unlock()
 	return toolText(fmt.Sprintf("network profile %q applied on %s", profileName, dev))
 }
 
@@ -1497,7 +1504,16 @@ type deployResult struct {
 	PID      int    `json:"pid"`
 }
 
+// handleDeployApp is the public deploy_app tool. It refuses the spyder stream
+// player package — that must go through launch_player so STREAM_ADDR / server
+// name are injected (plain deploy leaves the glass with no relay address).
 func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.deployApp(args, false /*allowPlayer*/)
+}
+
+// deployApp runs terminate → install → launch → verify-pid.
+// allowPlayer is true only for launch_player's internal call.
+func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -1535,6 +1551,14 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 		}
 	}
 
+	if !allowPlayer && isSpyderPlayerTarget(bundleID, path) {
+		return toolErr(
+			"deploy_app: refusing the spyder stream player (%s) — use launch_player "+
+				"or `spyder launch-player <device> [--server NAME]` so STREAM_ADDR and "+
+				"server name are injected; plain deploy leaves the glass with no relay address",
+			bundleID)
+	}
+
 	// Step 1: terminate (ignore "not running" errors — it's fine if the
 	// app isn't already up; the important thing is we tried).
 	if termErr := adapter.TerminateApp(id, bundleID); termErr != nil {
@@ -1558,13 +1582,58 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
 	}
 
-	// Step 4: verify new PID.
-	pid, err := adapter.AppPID(id, bundleID)
+	// Step 4: verify new PID. Android (and cold iOS launches) can take a
+	// beat after am start / appservice launch before pidof / ListProcesses
+	// sees the process — poll briefly so deploy does not false-fail.
+	pid, err := waitForAppPID(adapter, id, bundleID, 3*time.Second)
 	if err != nil {
 		return toolErr("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
 	}
 
 	return toolJSON(deployResult{BundleID: bundleID, PID: pid})
+}
+
+// isSpyderPlayerTarget reports whether a deploy targets the stream glass
+// (com.spyder.player and orientation variants, or known player artifact paths).
+func isSpyderPlayerTarget(bundleID, path string) bool {
+	if bundleID == playerBundleID || strings.HasPrefix(bundleID, playerBundleID+".") {
+		return true
+	}
+	base := filepath.Base(path)
+	switch base {
+	case "Player.app", "PlayerLand.app", "PlayerPort.app":
+		return true
+	}
+	// Android debug/release APKs under the player tree.
+	if strings.HasSuffix(base, ".apk") {
+		norm := filepath.ToSlash(path)
+		if strings.Contains(norm, "/player/android/") ||
+			strings.Contains(norm, "/player/android") {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForAppPID polls adapter.AppPID until a positive pid appears or
+// deadline elapses. Returns the last error if still not running.
+func waitForAppPID(adapter device.Adapter, id, bundleID string, timeout time.Duration) (int, error) {
+	deadline := time.Now().Add(timeout)
+	var last error
+	for {
+		pid, err := adapter.AppPID(id, bundleID)
+		if err == nil && pid > 0 {
+			return pid, nil
+		}
+		last = err
+		if time.Now().After(deadline) {
+			if last == nil {
+				last = fmt.Errorf("app not running: %s", bundleID)
+			}
+			return 0, last
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // isNotRunningError returns true for "app not running" / "not installed"

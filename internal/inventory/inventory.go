@@ -3,6 +3,9 @@
 
 // Package inventory resolves symbolic device names (e.g. "iPad") to
 // platform-specific UUIDs. Backed by a JSON file at ~/.spyder/inventory.json.
+//
+// The store re-reads the file when its size or mtime changes, so edits to
+// inventory.json take effect without restarting the daemon.
 package inventory
 
 import (
@@ -11,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/marcelocantos/spyder/internal/paths"
 )
@@ -36,20 +40,25 @@ type Entry struct {
 	// cwd (default: the binary's own directory).
 	ExecutablePath string            `json:"executable_path,omitempty"`
 	WorkingDir     string            `json:"working_dir,omitempty"`
-	Notes          string            `json:"notes,omitempty"`
+	Notes            string            `json:"notes,omitempty"`
+	// ExpectedPresent marks a fleet device that should trigger needs_attention when absent (🎯T99.6).
+	ExpectedPresent bool              `json:"expected_present,omitempty"`
 	Tags           []string          `json:"tags,omitempty"`  // free-form labels for selector matching
 	Attrs          map[string]string `json:"attrs,omitempty"` // key/value pairs for exact-match selector predicates
 }
 
-// Store holds the inventory, loaded lazily from disk.
+// Store holds the inventory, reloaded from disk when inventory.json changes.
 type Store struct {
 	mu      sync.Mutex
 	entries []Entry
-	loaded  bool
+	// Last successfully applied inventory.json identity (size + mtime).
+	// fileSize == -1 means the file was missing at last check.
+	fileMod  time.Time
+	fileSize int64
 }
 
 // New creates an empty inventory store.
-func New() *Store { return &Store{} }
+func New() *Store { return &Store{fileSize: -1} }
 
 // Path returns the on-disk location of the inventory file.
 func (s *Store) Path() string { return paths.InventoryPath() }
@@ -111,19 +120,35 @@ func (s *Store) Entries() []Entry {
 	return out
 }
 
+// loadLocked reloads ~/.spyder/inventory.json when its size or mtime
+// differs from the last successful load. Callers must hold s.mu.
+//
+// Missing file → empty inventory. Unreadable or invalid JSON keeps the
+// previous snapshot (so a half-written editor save does not blank aliases).
 func (s *Store) loadLocked() {
-	if s.loaded {
+	path := paths.InventoryPath()
+	fi, err := os.Stat(path)
+	if err != nil {
+		// Gone or never present.
+		s.entries = nil
+		s.fileMod = time.Time{}
+		s.fileSize = -1
 		return
 	}
-	s.loaded = true
+	mod, size := fi.ModTime(), fi.Size()
+	if s.fileSize == size && s.fileMod.Equal(mod) {
+		return
+	}
 
-	data, err := os.ReadFile(paths.InventoryPath())
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return // missing file is fine — empty inventory
+		return // keep previous snapshot
 	}
 	var entries []Entry
 	if err := json.Unmarshal(data, &entries); err != nil {
-		return
+		return // keep previous snapshot (mid-write / syntax error)
 	}
 	s.entries = entries
+	s.fileMod = mod
+	s.fileSize = size
 }

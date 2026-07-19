@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -55,14 +56,14 @@ func TestDesktopLaunch_Tiltbuggy_Live(t *testing.T) {
 
 	const bundle = "com.squz.tiltbuggy"
 	launchArgs := map[string]any{"device": "tiltbuggy-desktop", "bundle_id": bundle}
-	res, err := h.Dispatch("launch_app", launchArgs)
+	res, err := h.Dispatch(context.Background(), "launch_app", launchArgs)
 	if err != nil {
 		t.Fatalf("launch_app dispatch: %v", err)
 	}
 	if res.IsError {
 		t.Fatalf("launch_app failed: %s", callText(res))
 	}
-	t.Cleanup(func() { _, _ = h.Dispatch("terminate_app", launchArgs) })
+	t.Cleanup(func() { _, _ = h.Dispatch(context.Background(), "terminate_app", launchArgs) })
 
 	// The app must dial back in over the app-channel.
 	var sessionID string
@@ -83,7 +84,7 @@ func TestDesktopLaunch_Tiltbuggy_Live(t *testing.T) {
 	}
 
 	// And the monitor surface works against it (sanity: tweaks resolve).
-	tw, err := h.Dispatch("app_tweak_list", map[string]any{"session_id": sessionID})
+	tw, err := h.Dispatch(context.Background(), "app_tweak_list", map[string]any{"session_id": sessionID})
 	if err != nil {
 		t.Fatalf("app_tweak_list dispatch: %v", err)
 	}
@@ -113,7 +114,7 @@ func TestDesktopDevicesList(t *testing.T) {
 	}
 
 	h := NewHandler()
-	res, err := h.Dispatch("devices", map[string]any{"platform": "desktop"})
+	res, err := h.Dispatch(context.Background(), "devices", map[string]any{"platform": "desktop"})
 	if err != nil || res.IsError {
 		t.Fatalf("devices(platform=desktop): err=%v %s", err, callText(res))
 	}

@@ -12,3 +12,4 @@ ios/**/*.xcodeproj/project.xcworkspace/xcuserdata/
 # pair-record next to the cwd. Neither is repo content.
 devimages/
 selfIdentity.plist
+player/build/

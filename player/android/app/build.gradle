@@ -1,0 +1,99 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace "com.spyder.player"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "com.spyder.player"
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName "1.0"
+
+        ndk {
+            abiFilters 'arm64-v8a'
+            // Prefer NDK r28+ so any packaged STL would be 16 KB-aligned
+            // (r27 ships 4 KB-aligned libc++_shared). We avoid packaging
+            // the STL via c++_static below; linker flag is in CMakeLists.
+        }
+
+        externalNativeBuild {
+            cmake {
+                // c++_static avoids packaging NDK libc++_shared.so — that
+                // prebuilt is 4 KB-aligned under NDK r27 and is the third
+                // lib the Android 16 "ELF alignment check failed" dialog
+                // names. Our .so's still get -Wl,-z,max-page-size=16384
+                // from CMakeLists (🎯T75 player path).
+                arguments "-DANDROID_STL=c++_static"
+            }
+        }
+    }
+
+    // Prefer a 16 KB-capable NDK when several are installed (AGP may pick r27).
+    // Override in gradle.properties if this exact version is not installed.
+    ndkVersion "27.0.12077973"
+
+    signingConfigs {
+        release {
+            def props = new Properties()
+            def propsFile = rootProject.file("local.properties")
+            if (propsFile.exists()) props.load(propsFile.newDataInputStream())
+            storeFile rootProject.file(props.getProperty("RELEASE_STORE_FILE", "/dev/null"))
+            storePassword props.getProperty("RELEASE_STORE_PASSWORD", "")
+            keyAlias props.getProperty("RELEASE_KEY_ALIAS", "")
+            keyPassword props.getProperty("RELEASE_KEY_PASSWORD", "")
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'src/main/cpp/CMakeLists.txt'
+        }
+    }
+
+    // Include SDL3 Java sources from vendor
+    sourceSets {
+        main {
+            java.srcDirs = [
+                'src/main/java',
+                // player/android → player/vendor/...
+                "${rootDir}/../vendor/github.com/libsdl-org/SDL/android-project/app/src/main/java"
+            ]
+        }
+    }
+
+    lint {
+        abortOnError = false
+    }
+}
+
+dependencies {
+    // QR / camera discovery removed — stream_addr is injected by spyder.
+}
+
+// 🎯T75 — fail the player build if any packaged arm64 .so is not 16 KB-aligned
+// (or if libc++_shared sneaks back in). Oracle: tools/android/check-16kb.sh.
+// afterEvaluate: AGP registers assembleDebug late.
+afterEvaluate {
+    def apk = layout.buildDirectory.file('outputs/apk/debug/app-debug.apk')
+    tasks.register('check16kb', Exec) {
+        group = 'verification'
+        description = 'Verify arm64-v8a .so PT_LOAD Align is 0x4000 (16 KB)'
+        workingDir = rootProject.projectDir
+        commandLine 'bash', './check-16kb.sh', apk.get().asFile.absolutePath
+        dependsOn 'assembleDebug'
+        // Only run when APK exists (assemble just produced it).
+        onlyIf { apk.get().asFile.exists() }
+    }
+    tasks.named('assembleDebug').configure { finalizedBy 'check16kb' }
+}

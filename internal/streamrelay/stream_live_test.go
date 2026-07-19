@@ -18,11 +18,11 @@ import (
 	"github.com/coder/websocket"
 )
 
-// kVideoStreamMagic is ge's "GE2V" video-frame magic (Protocol.h).
-const kVideoStreamMagic = 0x47453256
+// kVideoStreamMagic is stream wire "SP2V" video-frame magic (Protocol.h).
+const kVideoStreamMagic = 0x53503256
 
 // TestStream_Tiltbuggy_Live is the 🎯T92.2 class-1 oracle: a REAL tiltbuggy in
-// GE_STREAM mode connects to the relay, a player attaches, and real H.264
+// server stream mode connects to the relay, a player attaches, and real H.264
 // frames captured+encoded from the running game flow server→spyder→player — no
 // Proves the whole ge streaming path (capture hook + VideoToolbox encode +
 // wire) end-to-end.
@@ -45,7 +45,7 @@ func TestStream_Tiltbuggy_Live(t *testing.T) {
 
 	// Launch tiltbuggy mirroring to the relay.
 	cmd := exec.Command(bin)
-	cmd.Env = append(os.Environ(), "GE_STREAM="+u.Host)
+	cmd.Env = append(os.Environ(), "GE_SERVER="+u.Host)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("launch tiltbuggy: %v", err)
 	}

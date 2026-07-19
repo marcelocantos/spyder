@@ -22,6 +22,7 @@ import (
 	goios_ios "github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/appservice"
 	"github.com/danielpaulus/go-ios/ios/crashreport"
+	"github.com/danielpaulus/go-ios/ios/house_arrest"
 	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/ostrace"
@@ -807,9 +808,19 @@ func (a *IOSAdapter) ResolveExecutable(id, bundleID string) (string, bool, error
 // devices go through go-ios's instruments.ProcessControl (DTX-over-
 // lockdown, no tunnel required). The pid the launch returns is
 // currently discarded — callers that need it call AppPID after.
+//
+// When STREAM_ADDR / SERVER_NAME are present in env, they are also
+// written into the app's Documents directory via house_arrest/AFC so
+// sandboxed UI apps that never see argv/env (common on physical
+// devices) can still skip the QR path.
 func (a *IOSAdapter) LaunchApp(id, bundleID string, env map[string]string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
+	}
+	if err := a.writeAppStreamConfig(id, bundleID, env); err != nil {
+		// Non-fatal: argv/env may still work (simulator, some OS versions).
+		slog.Warn("launch stream config write failed",
+			"device", id, "bundle", bundleID, "err", err)
 	}
 	_, major, sErr := a.goios.SessionWithVersion(id)
 	if sErr != nil {
@@ -819,6 +830,83 @@ func (a *IOSAdapter) LaunchApp(id, bundleID string, env map[string]string) error
 		return a.launchAppLockdown(id, bundleID, env)
 	}
 	return a.launchAppAppservice(id, bundleID, env)
+}
+
+// launchArgsFromEnv maps known address keys into process argv. Sandboxed
+// UI apps often do not see getenv() for host-injected env; argv alone is
+// also unreliable on some CoreDevice paths, so LaunchApp also writes
+// Documents/stream_addr via house_arrest (see writeAppStreamConfig).
+// STREAM_ADDR → -stream_addr <host:port>; SERVER_NAME → -server_name <name>.
+func launchArgsFromEnv(env map[string]string) []interface{} {
+	if len(env) == 0 {
+		return nil
+	}
+	var args []interface{}
+	if v := env["STREAM_ADDR"]; v != "" {
+		args = append(args, "-stream_addr", v)
+	} else if v := env["stream_addr"]; v != "" {
+		args = append(args, "-stream_addr", v)
+	}
+	if v := env["SERVER_NAME"]; v != "" {
+		args = append(args, "-server_name", v)
+	} else if v := env["server_name"]; v != "" {
+		args = append(args, "-server_name", v)
+	}
+	return args
+}
+
+// writeAppStreamConfig drops STREAM_ADDR / SERVER_NAME into the app
+// container's Documents directory so the player can read them on launch
+// without relying on CoreDevice argv/env injection.
+//
+// Files (plain text, trailing newline stripped by the reader):
+//
+//	Documents/stream_addr  → host:port
+//	Documents/server_name  → server name (optional)
+func (a *IOSAdapter) writeAppStreamConfig(id, bundleID string, env map[string]string) error {
+	if len(env) == 0 {
+		return nil
+	}
+	addr := env["STREAM_ADDR"]
+	if addr == "" {
+		addr = env["stream_addr"]
+	}
+	name := env["SERVER_NAME"]
+	if name == "" {
+		name = env["server_name"]
+	}
+	if addr == "" && name == "" {
+		return nil
+	}
+	dev, err := a.goios.Session(id)
+	if err != nil {
+		return fmt.Errorf("session: %w", err)
+	}
+	afcClient, err := house_arrest.New(dev, bundleID)
+	if err != nil {
+		return fmt.Errorf("house_arrest: %w", err)
+	}
+	defer afcClient.Close()
+
+	// Ensure Documents exists (first launch of a fresh install may not
+	// have created it yet; MkDir is idempotent enough for our purposes).
+	_ = afcClient.MkDir("Documents")
+
+	if addr != "" {
+		if err := afcClient.WriteToFile(strings.NewReader(addr+"\n"), "Documents/stream_addr"); err != nil {
+			return fmt.Errorf("write Documents/stream_addr: %w", err)
+		}
+		slog.Info("wrote app Documents/stream_addr",
+			"device", id, "bundle", bundleID, "addr", addr)
+	}
+	if name != "" {
+		if err := afcClient.WriteToFile(strings.NewReader(name+"\n"), "Documents/server_name"); err != nil {
+			return fmt.Errorf("write Documents/server_name: %w", err)
+		}
+		slog.Info("wrote app Documents/server_name",
+			"device", id, "bundle", bundleID, "name", name)
+	}
+	return nil
 }
 
 // launchAppAppservice is the iOS-17+ path (CoreDevice/RemoteXPC).
@@ -836,7 +924,8 @@ func (a *IOSAdapter) launchAppAppservice(id, bundleID string, env map[string]str
 			envArg[k] = v
 		}
 	}
-	if _, err := conn.LaunchApp(bundleID, nil, envArg, nil, false); err != nil {
+	args := launchArgsFromEnv(env)
+	if _, err := conn.LaunchApp(bundleID, args, envArg, nil, false); err != nil {
 		// Map "app not installed"-shaped errors to the spyder convention.
 		msg := err.Error()
 		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
@@ -871,7 +960,8 @@ func (a *IOSAdapter) launchAppLockdown(id, bundleID string, env map[string]strin
 			envArg[k] = v
 		}
 	}
-	if _, err := pc.LaunchAppWithArgs(bundleID, nil, envArg, nil); err != nil {
+	args := launchArgsFromEnv(env)
+	if _, err := pc.LaunchAppWithArgs(bundleID, args, envArg, nil); err != nil {
 		msg := err.Error()
 		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
 			return fmt.Errorf("app not installed: %s", bundleID)

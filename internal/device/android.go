@@ -259,11 +259,16 @@ func (a *AndroidAdapter) ResolveExecutable(id, bundleID string) (string, bool, e
 }
 
 // LaunchApp foregrounds an app. With no env, uses `adb shell monkey -p
-// <pkg> -c LAUNCHER 1`. With env, switches to `adb shell am start -a
-// MAIN -c LAUNCHER -p <pkg> --es KEY VALUE ...` so the values arrive as
-// Intent string-extras — the app's Java/Kotlin shim is expected to
-// extract them in onCreate() and setenv() before native code runs (see
-// agents-guide.md for the standard shim pattern).
+// <pkg> -c LAUNCHER 1`. With env (including the SPYDER_APP_CHANNEL
+// injected by deploy/launch), uses `am start -n <pkg>/<activity>
+// --es KEY VALUE ...` so extras arrive as Intent string extras — the
+// app's Java/Kotlin shim is expected to extract them in onCreate() and
+// setenv() before native code runs (see agents-guide.md).
+//
+// Component form (-n) is required: `am start -a MAIN -c LAUNCHER -p
+// <pkg>` fails to resolve on modern Android once extras are present
+// ("unable to resolve Intent … (has extras)"), which is the common
+// deploy_app path because ensureAppChannelEnv always sets env.
 func (a *AndroidAdapter) LaunchApp(id, bundleID string, env map[string]string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
@@ -272,11 +277,15 @@ func (a *AndroidAdapter) LaunchApp(id, bundleID string, env map[string]string) e
 	if len(env) == 0 {
 		args = []string{"-s", id, "shell", "monkey", "-p", bundleID, "-c", "android.intent.category.LAUNCHER", "1"}
 	} else {
+		comp, err := androidLauncherComponent(id, bundleID)
+		if err != nil {
+			return err
+		}
 		args = []string{
 			"-s", id, "shell", "am", "start",
 			"-a", "android.intent.action.MAIN",
 			"-c", "android.intent.category.LAUNCHER",
-			"-p", bundleID,
+			"-n", comp,
 		}
 		for k, v := range env {
 			args = append(args, "--es", k, v)
@@ -287,15 +296,55 @@ func (a *AndroidAdapter) LaunchApp(id, bundleID string, env map[string]string) e
 	if isAndroidDeviceNotConnected(combined) {
 		return fmt.Errorf("device not connected: %s", id)
 	}
-	if strings.Contains(strings.ToLower(combined), "no activities found") ||
-		strings.Contains(strings.ToLower(combined), "no packages found") ||
-		strings.Contains(strings.ToLower(combined), "does not exist") {
+	lower := strings.ToLower(combined)
+	if strings.Contains(lower, "no activities found") ||
+		strings.Contains(lower, "no packages found") ||
+		strings.Contains(lower, "does not exist") ||
+		strings.Contains(lower, "unable to resolve intent") {
 		return fmt.Errorf("app not installed or has no launcher activity: %s", bundleID)
 	}
 	if err != nil {
 		return fmt.Errorf("adb start: %v\n%s", err, truncate(string(stderr), 200))
 	}
 	return nil
+}
+
+// androidLauncherComponent returns "package/activity" for the package's
+// MAIN/LAUNCHER activity via `cmd package resolve-activity --brief`.
+func androidLauncherComponent(id, bundleID string) (string, error) {
+	out, stderr, err := runCapture(
+		"adb", "-s", id, "shell", "cmd", "package", "resolve-activity", "--brief",
+		"-a", "android.intent.action.MAIN",
+		"-c", "android.intent.category.LAUNCHER",
+		bundleID,
+	)
+	combined := string(stderr) + " " + string(out)
+	if isAndroidDeviceNotConnected(combined) {
+		return "", fmt.Errorf("device not connected: %s", id)
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve launcher for %s: %v\n%s", bundleID, err, truncate(combined, 200))
+	}
+	// Output is typically:
+	//   priority=0 preferredOrder=0 match=… isDefault=false
+	//   com.example.app/.MainActivity
+	// Prefer the last non-empty line that looks like a component.
+	var comp string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.Contains(line, "=") {
+			continue
+		}
+		if strings.Contains(line, "/") {
+			comp = line
+		}
+	}
+	if comp == "" {
+		return "", fmt.Errorf("no MAIN/LAUNCHER activity for %s", bundleID)
+	}
+	// resolve-activity may return ".MainActivity" with a package prefix
+	// already, or "pkg/.Act" — both work with am start -n.
+	return comp, nil
 }
 
 // TerminateApp stops an app via `adb shell am force-stop <pkg>`.
@@ -665,6 +714,11 @@ func (a *AndroidAdapter) StopRecording(id string, pid int) error {
 
 // InstallApp installs an APK via `adb -s <serial> install -r <path>`.
 // The -r flag replaces an existing installation if present.
+//
+// Before install, best-effort settings suppress Google Play Protect
+// prompts that otherwise fire on every sideload of an unsigned/debug
+// APK ("Send app for a security check?"). Those dialogs block first
+// launch and show up on every device when agents fan-out deploy.
 func (a *AndroidAdapter) InstallApp(id, path string) error {
 	if id == "" || path == "" {
 		return errors.New("device id and path are required")
@@ -672,6 +726,7 @@ func (a *AndroidAdapter) InstallApp(id, path string) error {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return fmt.Errorf("adb not found in PATH: %w", err)
 	}
+	suppressPlayProtectPrompts(id)
 	out, stderr, err := runCapture("adb", "-s", id, "install", "-r", path)
 	combined := string(stderr) + " " + string(out)
 	if isAndroidDeviceNotConnected(combined) {
@@ -685,6 +740,23 @@ func (a *AndroidAdapter) InstallApp(id, path string) error {
 		return fmt.Errorf("adb install failed: %s", truncate(string(out), 300))
 	}
 	return nil
+}
+
+// suppressPlayProtectPrompts writes the global settings that keep
+// Play Protect from nagging on adb sideloads. Best-effort: failures
+// are ignored so a read-only profile still gets a plain adb install.
+//
+//   - verifier_verify_adb_installs=0  — skip package verifier on adb installs
+//   - package_verifier_user_consent=-1 — decline "send unknown apps" (Play Protect)
+//   - upload_apk_enable=0             — don't offer to upload APKs for scanning
+func suppressPlayProtectPrompts(id string) {
+	for _, kv := range [][2]string{
+		{"verifier_verify_adb_installs", "0"},
+		{"package_verifier_user_consent", "-1"},
+		{"upload_apk_enable", "0"},
+	} {
+		_, _, _ = runCapture("adb", "-s", id, "shell", "settings", "put", "global", kv[0], kv[1])
+	}
 }
 
 // UninstallApp removes a package via `adb -s <serial> uninstall <package>`.

@@ -83,6 +83,30 @@ type Handler struct {
 	// trade-offs since the dominant use case is "I just called
 	// launch_app and want the lines that scrolled by since then".
 	launchTimes map[launchKey]time.Time
+
+	// ops tracks in-flight tool calls for spyder status (🎯T99.5).
+	ops *opRegistry
+
+	// onDeviceTimeout is an optional hook tests can set; production
+	// uses invalidateDeviceSession when a dispatch times out (🎯T99.1).
+	onDeviceTimeout func(device string)
+
+	// testHandlers, when non-nil, overrides named tools for unit tests
+	// (synthetic stall / never-return handlers for 🎯T99.1).
+	testHandlers map[string]toolFunc
+
+	// streamRelay is the daemon's H.264 stream catalogue (optional; 🎯T100).
+	streamRelay StreamServers
+	// streamListenPort is the HTTP port spyder serve binds (for STREAM_ADDR).
+	streamListenPort int
+
+	// dispatchWatch monitors long tool calls for wedged-but-alive stalls (🎯T99.3).
+	dispatchWatch *health.ProgressWatchdog
+	// selfRestart rate-limits os.Exit for launchd KeepAlive recovery (🎯T99.3).
+	selfRestart *health.SelfRestartLimiter
+	// selfRestartGrace is how long after a tool deadline we wait for the
+	// handler goroutine to finish before requesting self-restart.
+	selfRestartGrace time.Duration
 }
 
 // launchKey indexes launchTimes. The device dimension is the
@@ -177,6 +201,59 @@ func WithHealth(s *health.Supervisor) HandlerOption {
 // model.
 func (h *Handler) Health() *health.Supervisor { return h.health }
 
+// SetStreamRelay wires the streamrelay catalogue for launch_player (🎯T100.3).
+func (h *Handler) SetStreamRelay(r StreamServers, listenPort int) {
+	if h == nil {
+		return
+	}
+	h.streamRelay = r
+	if listenPort > 0 {
+		h.streamListenPort = listenPort
+	}
+}
+
+// EnableSelfHeal wires ProgressWatchdog + SelfRestartLimiter for 🎯T99.3.
+// Call from daemon after health model is live.
+//
+// watchdogTimeout is the no-progress stall threshold for the "spyder"
+// daemon-self entity (must be ≤ typical tool deadlines so Check can fire
+// before self-restart). restartGrace is how long after a dispatch deadline
+// we wait for the handler goroutine before dumping + exiting for launchd.
+func (h *Handler) EnableSelfHeal(watchdogTimeout, restartGrace time.Duration) {
+	if h == nil || h.health == nil {
+		return
+	}
+	if watchdogTimeout <= 0 {
+		// Match device-op deadline class so stall is visible before restart.
+		watchdogTimeout = DeadlineDeviceOp
+	}
+	if restartGrace <= 0 {
+		restartGrace = 5 * time.Second
+	}
+	// Entity name "spyder" matches daemonSelfHealthID / status surface.
+	h.dispatchWatch = health.NewProgressWatchdog(h.health.Model(), "spyder", watchdogTimeout)
+	h.selfRestart = health.NewSelfRestartLimiter(3, time.Hour)
+	h.selfRestart.SetBeforeExit(h.persistSelfRestartEvidence)
+	h.selfRestartGrace = restartGrace
+	// Drive Check on a short interval so stalls surface without waiting for
+	// the next dispatch.
+	go h.dispatchWatch.Run(context.Background(), minDuration(watchdogTimeout/4, 5*time.Second))
+}
+
+// persistSelfRestartEvidence writes a goroutine dump + wedge snapshot under
+// ~/.spyder/ before process exit (🎯T99.3 acceptance).
+func (h *Handler) persistSelfRestartEvidence(reason string) {
+	// Local imports kept in this method's callees to avoid cycles.
+	persistSelfRestartEvidence(reason)
+}
+
+func minDuration(a, b time.Duration) time.Duration {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // NewHandler creates a new spyder tool handler.
 func NewHandler(opts ...HandlerOption) *Handler {
 	h := &Handler{
@@ -187,6 +264,7 @@ func NewHandler(opts ...HandlerOption) *Handler {
 		networkByDevice: map[string]appliedNetwork{},
 		launchTimes:     map[launchKey]time.Time{},
 		health:          health.NewSupervisor(health.New()),
+		ops:             newOpRegistry(),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -213,6 +291,7 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 		android:     device.NewAndroidAdapter(),
 		launchTimes: map[launchKey]time.Time{},
 		health:      health.NewSupervisor(health.New()),
+		ops:         newOpRegistry(),
 	}
 	if ios != nil {
 		h.ios = ios
@@ -246,10 +325,15 @@ type healthModelSetter interface {
 // don't maintain a listener.
 func (h *Handler) StartDeviceListeners(ctx context.Context) {
 	if s, ok := h.ios.(healthModelSetter); ok {
-		// pinned predicate is nil until the inventory grows an
-		// expected_present flag (🎯T90.2 follow-up); every device is then
-		// non-pinned, so unplugs stay informational.
-		s.SetHealthModel(h.health.Model(), nil)
+		// 🎯T99.6: pin devices marked expected_present in inventory.
+		inv := h.inventory
+		s.SetHealthModel(h.health.Model(), func(udid string) bool {
+			if inv == nil {
+				return false
+			}
+			e, ok := inv.Lookup(udid)
+			return ok && e.ExpectedPresent
+		})
 	}
 	if s, ok := h.ios.(tunnelListenerStarter); ok {
 		s.StartTunnelListener(ctx)
@@ -267,23 +351,79 @@ func (h *Handler) ResolveAdapterForStream(dev string) (device.Adapter, string, e
 	return adapter, id, err
 }
 
-// Dispatch routes a tool call by name to its handler. Every call is
-// logged at INFO on entry and exit (matches the REST handler's
-// request-log convention), and a watchdog goroutine fires
-// `mcp dispatch slow` warnings at 30 s + every 60 s after that for
-// any call still in flight — so a hung deploy / install / launch
-// surfaces in the log AS IT'S HANGING, not retroactively after the
-// MCP client times out.
-func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
+// Dispatch routes a tool call by name to its handler under ctx (🎯T99.1).
+// Every call is logged at INFO on entry and exit, tracked in the
+// in-flight op registry (🎯T99.5), and bounded by a tool-class deadline.
+// On deadline breach the call returns a structured timeout error and the
+// device session is invalidated so the next call can re-resolve.
+// A watchdog goroutine still logs `mcp dispatch slow` while in flight.
+func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any) (*mcpgo.CallToolResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	started := time.Now()
-	device := deviceArg(args)
-	slog.Info("mcp dispatch", "tool", name, "device", device)
+	dev := deviceArg(args)
+	slog.Info("mcp dispatch", "tool", name, "device", dev)
+
+	if h.ops == nil {
+		h.ops = newOpRegistry()
+	}
+	opID := h.ops.begin(name, dev)
+	defer h.ops.end(opID)
+
+	if h.dispatchWatch != nil {
+		h.dispatchWatch.Begin()
+		// Done only on the success path below. On timeout, ownership of
+		// outstanding transfers to maybeSelfRestartAfterStuck: Done() before
+		// ForceStall would clear outstanding and make ForceStall a no-op
+		// (🎯T99.3). Done after ForceStall would RecoverySucceeded and clear
+		// needs_attention before dump/exit.
+	}
+
+	ctx, cancel := withToolDeadline(ctx, name)
+	defer cancel()
 
 	done := make(chan struct{})
-	go watchSlowDispatch(name, device, started, done)
+	go watchSlowDispatch(name, dev, started, done, cancel)
 
-	result, err := h.dispatch(name, args)
+	type outcome struct {
+		result *mcpgo.CallToolResult
+		err    error
+	}
+	ch := make(chan outcome, 1)
+	// finished is closed when the handler goroutine returns (even after
+	// we've already timed out the caller).
+	finished := make(chan struct{})
+	go func() {
+		res, err := h.dispatch(name, args)
+		ch <- outcome{res, err}
+		close(finished)
+	}()
+
+	var result *mcpgo.CallToolResult
+	var err error
+	select {
+	case o := <-ch:
+		result, err = o.result, o.err
+	case <-ctx.Done():
+		// Best-effort: let the handler goroutine finish in the background;
+		// we still return a structured timeout so the agent can proceed.
+		elapsed := time.Since(started)
+		h.invalidateOnTimeout(dev)
+		close(done)
+		msg := formatTimeoutError(name, dev, elapsed)
+		slog.Error("mcp dispatch timeout",
+			"tool", name, "device", dev, "duration_ms", elapsed.Milliseconds())
+		// 🎯T99.3: if the handler is still stuck after a grace period,
+		// force-stall daemon-self and request supervised self-restart.
+		// Do not Done the watchdog here — see completeStuckDispatch.
+		go h.maybeSelfRestartAfterStuck(name, dev, finished)
+		return toolErr("%s", msg)
+	}
 	close(done)
+	if h.dispatchWatch != nil {
+		h.dispatchWatch.Done()
+	}
 	elapsedMs := time.Since(started).Milliseconds()
 	if err != nil {
 		slog.Error("mcp dispatch failed",
@@ -293,6 +433,75 @@ func (h *Handler) Dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 			"tool", name, "duration_ms", elapsedMs)
 	}
 	return result, err
+}
+
+// maybeSelfRestartAfterStuck waits selfRestartGrace for the stuck handler
+// goroutine. If it finishes late, Done the watchdog (no restart). If it is
+// still stuck, completeStuckDispatch force-stalls + dumps + exits (🎯T99.3).
+func (h *Handler) maybeSelfRestartAfterStuck(tool, device string, stillRunning <-chan struct{}) {
+	if h.dispatchWatch == nil && h.selfRestart == nil {
+		return
+	}
+	grace := h.selfRestartGrace
+	if grace <= 0 {
+		grace = 5 * time.Second
+	}
+	select {
+	case <-stillRunning:
+		// Handler finished after the deadline — clear outstanding; no restart.
+		if h.dispatchWatch != nil {
+			h.dispatchWatch.Done()
+		}
+		return
+	case <-time.After(grace):
+		h.completeStuckDispatch(fmt.Sprintf("dispatch stuck after deadline: %s device=%s", tool, device))
+	}
+}
+
+// completeStuckDispatch force-stalls daemon-self while the dispatch is still
+// outstanding, then requests supervised exit. Intentionally does not call
+// Done: Done after ForceStall would RecoverySucceeded and wipe needs_attention
+// before the dump/exit path runs.
+func (h *Handler) completeStuckDispatch(reason string) {
+	if h.dispatchWatch != nil {
+		h.dispatchWatch.ForceStall(reason)
+	}
+	if h.selfRestart != nil {
+		h.selfRestart.Request(reason)
+	}
+}
+
+// InFlightOps returns a snapshot of tool calls still running (🎯T99.5).
+func (h *Handler) InFlightOps() []InFlightOp {
+	if h == nil || h.ops == nil {
+		return nil
+	}
+	return h.ops.snapshot()
+}
+
+// invalidateOnTimeout drops cached device sessions after a dispatch timeout
+// so the next call re-resolves rather than reusing a wedged connection.
+func (h *Handler) invalidateOnTimeout(dev string) {
+	if dev == "" {
+		return
+	}
+	if h.onDeviceTimeout != nil {
+		h.onDeviceTimeout(dev)
+		return
+	}
+	// Best-effort: resolve alias → UDID under lock, then invalidate iOS cache.
+	h.mu.Lock()
+	adapter, _, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
+	if err != nil || id == "" {
+		return
+	}
+	type invalidator interface {
+		InvalidateDevice(udid string)
+	}
+	if inv, ok := adapter.(invalidator); ok {
+		inv.InvalidateDevice(id)
+	}
 }
 
 // slowDispatchThreshold is the in-flight age at which a dispatch
@@ -317,7 +526,11 @@ var (
 // until done is closed. Returns immediately if done fires before
 // the threshold — the common (fast) case adds one goroutine
 // allocation and one select wakeup, no log noise.
-func watchSlowDispatch(tool, device string, started time.Time, done <-chan struct{}) {
+// cancelAtDeadline, when non-nil, is invoked when the slow threshold fires
+// so watchSlowDispatch can escalate from logging to cancelling (🎯T99.1).
+// The primary cancel path is context.WithTimeout; this is an additional
+// log-visible escalation that re-invokes cancel (idempotent).
+func watchSlowDispatch(tool, device string, started time.Time, done <-chan struct{}, cancel context.CancelFunc) {
 	select {
 	case <-done:
 		return
@@ -336,6 +549,9 @@ func watchSlowDispatch(tool, device string, started time.Time, done <-chan struc
 			slog.Warn("mcp dispatch still in flight",
 				"tool", tool, "device", device,
 				"in_flight_ms", time.Since(started).Milliseconds())
+			if cancel != nil {
+				cancel()
+			}
 		}
 	}
 }
@@ -351,6 +567,11 @@ func deviceArg(args map[string]any) string {
 }
 
 func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.testHandlers != nil {
+		if fn, ok := h.testHandlers[name]; ok {
+			return fn(args)
+		}
+	}
 	fn, ok := h.toolHandlers()[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", name)
@@ -374,6 +595,7 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"install_app":   h.handleInstallApp,
 		"uninstall_app": h.handleUninstallApp,
 		"deploy_app":    h.handleDeployApp,
+		"launch_player": h.handleLaunchPlayer,
 		"reserve":       h.handleReserve,
 		"release":       h.handleRelease,
 		"renew":         h.handleRenew,
@@ -598,8 +820,24 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 		),
 
+		mcpgo.NewTool("launch_player",
+			mcpgo.WithDescription("Launch the spyder stream player on a device with only device + optional server name (🎯T100.3). Injects STREAM_ADDR/stream_addr and SERVER_NAME/server_name automatically (no agent-set env). Picks the sole registered stream server when server is omitted; errors if zero or multiple. Optional path overrides the platform player artifact."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID (or desktop inventory entry)"),
+			),
+			mcpgo.WithString("server",
+				mcpgo.Description("Stream catalogue server name (e.g. tiltbuggy). Optional when exactly one server is registered."),
+			),
+			mcpgo.WithString("path",
+				mcpgo.Description("Optional override path to Player.app / APK / bin/player"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Reservation owner for strict enforcement"),
+			),
+		),
 		mcpgo.NewTool("deploy_app",
-			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid} on success. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
+			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid} on success. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nRefuses the spyder stream player (com.spyder.player / Player*.app / player Android APK) — use launch_player so STREAM_ADDR and server name are injected.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),

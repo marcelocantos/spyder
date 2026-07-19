@@ -1,0 +1,12 @@
+[submodule "player/vendor/github.com/FFmpeg/FFmpeg"]
+	path = player/vendor/github.com/FFmpeg/FFmpeg
+	url = https://github.com/FFmpeg/FFmpeg.git
+[submodule "player/vendor/github.com/libsdl-org/SDL"]
+	path = player/vendor/github.com/libsdl-org/SDL
+	url = https://github.com/libsdl-org/SDL.git
+[submodule "player/vendor/github.com/libsdl-org/SDL_ttf"]
+	path = player/vendor/github.com/libsdl-org/SDL_ttf
+	url = https://github.com/libsdl-org/SDL_ttf.git
+[submodule "player/vendor/github.com/libsdl-org/SDL_image"]
+	path = player/vendor/github.com/libsdl-org/SDL_image
+	url = https://github.com/libsdl-org/SDL_image.git

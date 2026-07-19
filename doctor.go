@@ -32,10 +32,9 @@ import (
 //
 // (🎯T66.)
 //
-// TODO(🎯T90.3): fold doctor into the health model view. doctor is a
-// standalone iOS-stack probe that predates the health supervisor; its
-// findings should feed KindDevice entities in the model so `spyder status`
-// surfaces the same wedge diagnosis rather than living in a parallel path.
+// 🎯T99.6: doctor writes findings into wedge.RecordDoctorFinding so the
+// wedge monitor, doctor CLI, and health surfaces share one diagnosis
+// (LastDoctorFinding) rather than parallel paths.
 func runDoctor(args []string) {
 	fix := false
 	jsonOut := false
@@ -71,11 +70,22 @@ xcrun devicectl's view and go-ios's usbmux view.
 	}
 
 	report := probeDevices()
+	// Share diagnosis with wedge monitor / health surfaces (🎯T99.6).
+	detail := "healthy"
+	if report.UsbmuxWedge {
+		detail = "usbmux_parity_wedge"
+	}
+	wedge.RecordDoctorFinding(report.UsbmuxWedge, detail)
+	report.SharedFinding = wedge.LastDoctorFinding()
+
 	if jsonOut {
 		raw, _ := json.MarshalIndent(report, "", "  ")
 		fmt.Println(string(raw))
 	} else {
 		printDoctorReport(report)
+		fmt.Printf("shared_finding: wedged=%v detail=%q updated=%s\n",
+			report.SharedFinding.Wedged, report.SharedFinding.Detail,
+			report.SharedFinding.UpdatedAt.Format(time.RFC3339))
 	}
 
 	if !report.UsbmuxWedge {
@@ -116,8 +126,9 @@ xcrun devicectl's view and go-ios's usbmux view.
 
 // doctorReport is the result of one device-stack probe.
 type doctorReport struct {
-	DevicectlUDIDs []string `json:"devicectl_udids"`
-	UsbmuxUDIDs    []string `json:"usbmux_udids"`
+	DevicectlUDIDs []string           `json:"devicectl_udids"`
+	UsbmuxUDIDs    []string           `json:"usbmux_udids"`
+	SharedFinding  wedge.DoctorFinding `json:"shared_finding,omitempty"`
 	IOUSBIOSCount  int      `json:"iousb_ios_count"`
 	MissingFromMux []string `json:"missing_from_usbmux,omitempty"`
 	UsbmuxWedge    bool     `json:"usbmux_wedge"`

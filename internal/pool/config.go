@@ -80,7 +80,8 @@ func (t *TemplateConfig) LingerDuration() time.Duration {
 	return defaultLingerSeconds * time.Second
 }
 
-// LoadConfig reads and parses a pool.yaml file.
+// LoadConfig reads and parses a pool.yaml file. Production pools also
+// re-call this via Pool.WithConfigPath when the file's mtime/size changes.
 func LoadConfig(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

@@ -467,7 +467,7 @@ func TestAppChannel_SessionRequiredWhenMultiple(t *testing.T) {
 // dispatcher should now refuse it as an unknown tool.
 func TestAppChannel_StartRemoved(t *testing.T) {
 	h := startAppChannelHandler(t)
-	_, err := h.Dispatch("app_channel_start", map[string]any{})
+	_, err := h.Dispatch(context.Background(), "app_channel_start", map[string]any{})
 	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
 		t.Fatalf("Dispatch(app_channel_start) err = %v; want unknown tool", err)
 	}
@@ -625,7 +625,7 @@ func TestAppChannel_DispatchSurfaceCoverage(t *testing.T) {
 		"app_state_capture_list",
 	}
 	for _, name := range expected {
-		_, err := h.Dispatch(name, map[string]any{})
+		_, err := h.Dispatch(context.Background(), name, map[string]any{})
 		if err != nil && strings.Contains(err.Error(), "unknown tool") {
 			t.Errorf("dispatcher rejects %q as unknown: %v", name, err)
 		}
