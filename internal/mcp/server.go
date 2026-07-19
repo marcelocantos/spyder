@@ -670,7 +670,9 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"pool_drain": h.handlePoolDrain,
 		"pool_gc":    h.handlePoolGC,
 		// --- scripting entry point (🎯T88) ---
-		"app_exec": h.handleAppExec,
+		"app_exec":     h.handleAppExec,
+		"list_scripts": h.handleListScripts,
+		"run_script":   h.handleRunScript,
 	}
 }
 

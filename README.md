@@ -82,6 +82,13 @@ sleep(500)
 app_screenshot()          # final expression → returned as an image block
 ```
 
+**Durable scripts (🎯T108):** store versionable recipes under
+`scripts/lib/` (repo) or `~/.spyder/scripts/`, list with
+`spyder list-scripts`, run with `spyder run-script <name>` or
+`app_exec(script_path="…", params={…})`. Explore / collect / dynamic
+regress recipes and assert helpers are documented in
+[agents-guide.md](agents-guide.md#durable-host-starlark-library-t108).
+
 See [agents-guide.md](agents-guide.md#the-app_exec-entry-point) for the full
 model (emit/result semantics, frame-stepping, durable handles, caps). The
 verbs available as builtins:

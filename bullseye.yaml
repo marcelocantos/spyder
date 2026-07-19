@@ -619,6 +619,207 @@ targets:
     origin: manual
     discovered: 2026-07-19
     achieved: 2026-07-19
+  T107:
+    name: TestAppChannel_FullMethodSweep is deterministic under CI-runner timing — perf_get sweeps never race sample delivery
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - The test either injects/awaits at least one perf sample deterministically before asserting frame_ms, or asserts the empty-samples shape explicitly as a valid state
+    - go test -run TestAppChannel_FullMethodSweep -count=20 passes on a loaded machine
+    - No release.yml rerun needed for this test across the next three releases
+    context: 'Failed the v0.70.0 release build (build-darwin-arm64, 2026-07-19): perf_get body missing frame_ms with samples:[] — the sweep raced the perf-sample producer on the slow GitHub runner. Passed on this morning''s v0.69.0 run and in local suites the same day; classic timing flake. Cost: a release-workflow rerun mid-release.'
+    tags:
+    - appchannel
+    - test-flake
+    - ci
+    - release
+    origin: manual
+    discovered: 2026-07-19
+  T108:
+    name: Host Starlark drives explore, collect, and dynamic-behaviour regression against live ge apps — without per-action agent round-trips
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 8.0
+    acceptance:
+    - An agent can author, store, and re-run multi-step host Starlark scripts (not only ephemeral app_exec strings) against a live app-channel session, with versionable source under a documented library path.
+    - 'Explore mode: scripts can poke dynamic game behaviour — synthetic accel, finger drag paths, taps/keys — and return structured observations without requiring goldens.'
+    - 'Collect mode: a single script can start state capture, apply stimulus, stop/drain samples, and emit a stimulus+timeseries artifact suitable for later analysis or promotion to regression.'
+    - 'Regress mode: the same script family can assert dynamic contracts (e.g. drag-follow error bounds, trajectory corridor under fixed gravity from a restored fixture, settle/sleep within a time bound) — not only click-button-go-to-screen navigations — and fail closed on divergence beyond documented tolerance.'
+    - Frame-accurate paths use existing app_pause / app_input / app_step / app_screenshot / save_restore_state composition; no replacement of app_exec or app-channel verbs.
+    - L1 semantic helpers resolve targets from ge state slices (body/label → inject coordinates) when slices provide handles; pure coordinate inject remains supported.
+    - agents-guide documents the library layout, explore→collect→regress promotion path, and at least one worked example per mode (tilt probe, drag-follow, trajectory).
+    - 'Host-only: no in-app script VM; Starlark remains spyder-side (T88).'
+    context: '2026-07-19 modeling (host Starlark only). Modes: Explore / Collect / Regress. Scenarios E1 tilt probe, E2/R2 drag-follow, E3 menus, E4 hybrid play, R1 trajectory corridor, R3 settle, C1 capture-while-drive. Primitives largely exist (T88 app_exec, app_input, app_state+jq, app_state_capture_*, pause/step). Product gap: durable scripts, artifacts, asserts, thin L1 helpers, docs. L2+ label/role/OCR semantic automation is out of T108 — see stretch target. Complexity fuse: T0–T3 from design notes; park full a11y.'
+    depends_on:
+    - T88
+    - T108.1
+    - T108.2
+    - T108.3
+    - T108.4
+    - T108.5
+    - T108.6
+    tags:
+    - app_exec
+    - starlark
+    - regression
+    - explore
+    - collect
+    - deterministic
+    - agent-ux
+    - testing
+    origin: 'user request 2026-07-19 + scenario modeling: explore/regress/collect; host Starlark only'
+    discovered: 2026-07-19
+    achieved: 2026-07-19
+  T108.1:
+    name: 'Durable host Starlark scripts are first-class artifacts: store, list, and re-run without re-authoring ephemeral app_exec strings'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 3.0
+    acceptance:
+    - A documented script location exists (repo-relative and/or under ~/.spyder/scripts) with a minimal skeleton template.
+    - An agent or CLI can run a stored script by path/id against a live session (wrapping app_exec), with parameters for device/session/bundle when needed.
+    - Re-running the same script source yields the same control flow (deterministic given the same app state/fixture); versionable as plain Starlark text.
+    - No second language or in-app VM.
+    context: T1 packaging layer over T88. Unblocks Explore/Collect/Regress reuse.
+    tags:
+    - app_exec
+    - starlark
+    - library
+    origin: subdivide(🎯T108)
+    discovered: 2026-07-19
+    achieved: 2026-07-19
+  T108.2:
+    name: Explore recipes let an agent poke dynamic game behaviour (accel, drag, taps) and get structured observations without goldens
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 2.0
+    acceptance:
+    - 'Documented recipes exist for: (E1) tilt/accel probe sampling physics; (E2) finger drag path; (E3) simple tap/menu poke; optionally (E4) hybrid accel+conditional tap.'
+    - Each recipe is host Starlark using app_input + app_state and/or app_state_capture_*; runnable via T108.1 or raw app_exec.
+    - Explore runs may omit goldens; they emit observations (positions, HUD fields, sample counts) sufficient for an agent to reason about behaviour.
+    - agents-guide section 'Explore' links recipes to scenarios.
+    context: Agent poke loop — primary UX for fiddling with accelerometer, buttons, drag.
+    depends_on:
+    - T108.1
+    tags:
+    - explore
+    - app_input
+    - starlark
+    origin: subdivide(🎯T108)
+    discovered: 2026-07-19
+    achieved: 2026-07-19
+  T108.3:
+    name: Collect mode produces stimulus+timeseries artifacts from capture-while-drive scripts
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 2.0
+    acceptance:
+    - 'A script can app_state_capture_start → stimulus (input schedule) → capture_stop/get and write or emit a structured artifact (stimulus log + samples + metadata: device, session, app, timestamps).'
+    - Artifact schema is documented; dropped_samples/errors from capture are preserved so lossy collects are visible.
+    - At least one recipe demonstrates drag-follow or tilt trajectory collect (C1 / E1–E2).
+    - Collect does not require pass/fail asserts (those are T108.4).
+    context: Data collection while dragging/tilting — object-follows-finger evidence.
+    depends_on:
+    - T108.1
+    tags:
+    - collect
+    - state_capture
+    - artifacts
+    origin: subdivide(🎯T108)
+    discovered: 2026-07-19
+    achieved: 2026-07-19
+  T108.4:
+    name: Regress mode asserts dynamic contracts (trajectory, drag-follow, settle) and fails closed on divergence
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 2.0
+    acceptance:
+    - 'Regression scripts can assert at least two of: (R1) trajectory corridor under fixed accel from restored fixture; (R2) drag-follow error bound from collected series; (R3) settle/sleep within a time bound when slice exposes awake/rest state.'
+    - Optional screenshot/visual baseline is secondary; primary oracles are state timeseries or scalar stats.
+    - Regress mode fails closed with a clear diagnostic (metric, threshold, observed value); exploratory mode can omit asserts.
+    - At least one end-to-end regress recipe is documented and runnable on a debug ge app with state slices (e.g. tiltbuggy).
+    context: Dynamic behaviour — not click-button-go-to-screen only.
+    depends_on:
+    - T108.1
+    - T108.3
+    - T108.5
+    tags:
+    - regression
+    - deterministic
+    - testing
+    origin: subdivide(🎯T108)
+    discovered: 2026-07-19
+    achieved: 2026-07-19
+  T108.5:
+    name: Frame-deterministic drive templates use pause/step/restore fixtures as the standard for accurate games scripts
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 1.0
+    acceptance:
+    - 'Documented template: app_restore_state (or equivalent fixture) → app_pause → inject → app_step(frames=1) loop → observe → app_resume.'
+    - Template is the recommended path for R1 trajectory and any regress that needs frame accuracy; wall-clock sleep remains allowed for explore.
+    - Save/restore or fixture loading is documented for at least one sample game.
+    - Composes existing verbs only.
+    context: T2 from design notes — games need frame accuracy.
+    depends_on:
+    - T108.1
+    tags:
+    - frame-step
+    - fixtures
+    - deterministic
+    origin: subdivide(🎯T108)
+    discovered: 2026-07-19
+    achieved: 2026-07-19
+  T108.6:
+    name: L1 semantic helpers resolve ge slice handles to inject coordinates (body/label → tap/drag) without a new wire protocol
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 2.0
+    acceptance:
+    - Host helpers (stdlib Starlark or documented pure-Starlark patterns) can locate a labelled body/UI node from app_state and derive finger inject coordinates when the slice provides screen-space or mappable bounds.
+    - Coordinate L0 inject remains fully supported; L1 is additive.
+    - If a required field is missing from a slice, the helper errors clearly (slice contract gap) rather than guessing pixels.
+    - 'Documented example: tap or grab a named physics body from worldGeometry/physics slice.'
+    - No OCR, no accessibility-tree product, no in-app VM.
+    context: Thin resolve layer. Depends on ge slice quality; may need a small ge slice-contract follow-up outside spyder if screen centres are missing.
+    depends_on:
+    - T108.1
+    tags:
+    - semantic
+    - L1
+    - ge-slices
+    origin: subdivide(🎯T108)
+    discovered: 2026-07-19
+    achieved: 2026-07-19
+  T109:
+    name: L2+ semantic UI addressing (label/role → action) without coordinate scripts — ge hit-target contract, not host OCR
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - An agent can address primary interactive targets by stable label or role (e.g. tap the control labeled Play) when ge publishes a hit-target / UI descriptor slice with bbox and identity fields.
+    - Resolution is slice-driven (same host Starlark + inject path as T108.6); no in-app script VM and no OCR-as-product in spyder.
+    - Localization-safe identity prefers ids/roles over display strings when both exist; docs state the contract.
+    - 'Out of scope for this target: full XCUITest parity, cross-app automation, intent macros like open_settings() as a platform framework.'
+    context: Stretch from 2026-07-19 scenario modeling. Explicitly excluded from T108 so durable explore/collect/regress can ship without absorbing a full semantic UI stack. Depends on T108.6 patterns and on ge exposing rich enough descriptors (bbox work already partially exists). Park until T108 core is done unless a slice contract lands first on ge.
+    depends_on:
+    - T108.6
+    tags:
+    - semantic
+    - L2
+    - stretch
+    - ge-slices
+    - set-aside-candidate
+    origin: 'scenario modeling 2026-07-19: click button labeled X stretch goal'
+    discovered: 2026-07-19
   T11:
     name: Reservation system for parallel dev sessions across devices
     status: achieved
