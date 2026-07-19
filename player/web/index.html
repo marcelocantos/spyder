@@ -73,8 +73,12 @@
     onRuntimeInitialized() {
       sessionStorage.setItem('spyder-session-start', String(Date.now()));
     },
-    postRun() {
-      // main() returned: wire closed or server gone.
+    // NOT postRun: under ASYNCIFY, main() suspends at its first yield and
+    // callMain returns immediately, so postRun fires seconds after startup
+    // — using it as an exit signal reloaded healthy sessions on the backoff
+    // timer (observed as spontaneous restarts at 1/2/4/8s). onExit fires
+    // only when the runtime actually exits (wire closed, server gone).
+    onExit() {
       scheduleReconnect();
     },
     onAbort(what) {

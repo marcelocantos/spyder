@@ -169,7 +169,7 @@ WEB_OBJS    = $(WEB_CXX_OBJ) $(WEB_C_OBJ)
 
 web: $(WEB_DIST)/player.js
 
-$(WEB_DIST)/player.js: $(WEB_OBJS)
+$(WEB_DIST)/player.js: $(WEB_OBJS) $(WEB_DIR)/index.html
 	@mkdir -p $(WEB_DIST)
 	$(EMCC) $(WEB_CXXFLAGS) $(WEB_OBJS) $(WEB_SDL_LIBS) $(WEB_LINK_FLAGS) \
 	    -o $@
