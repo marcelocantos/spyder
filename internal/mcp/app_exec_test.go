@@ -58,7 +58,7 @@ func runScript(t *testing.T, script string, verbs map[string]toolFunc, lim execL
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), lim.MaxDuration)
 	defer cancel()
-	res, err := runExec(ctx, script, verbs, health.New(), nil, lim)
+	res, err := runExec(ctx, script, verbs, health.New(), nil, lim, nil)
 	if err != nil {
 		t.Fatalf("runExec returned a transport error (should be IsError instead): %v", err)
 	}

@@ -28,8 +28,8 @@ func toolDeadlineClass(name string) time.Duration {
 		return DeadlineInstall
 	case "devices", "resolve", "device_state", "list_apps", "is_running",
 		"reservations", "runs_list", "runs_show", "runs_artefacts",
-		"app_channel_list", "health", "app_exec":
-		// app_exec has its own max_duration; still bound outer dispatch.
+		"app_channel_list", "health", "app_exec", "list_scripts", "run_script":
+		// app_exec/run_script have their own max_duration; still bound outer dispatch.
 		return DeadlineFastRead
 	case "screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",

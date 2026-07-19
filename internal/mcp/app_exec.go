@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/health"
+	"github.com/marcelocantos/spyder/internal/scriptlib"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -56,10 +57,14 @@ type execLimits struct {
 // call verb handlers that take h.mu themselves, so holding it here would
 // deadlock. The script runs single-threaded, so the verb calls serialise
 // naturally in script order.
+//
+// 🎯T108: accepts either inline `script` or durable `script_path` (library
+// name, bundled:name, or filesystem path). Optional `params` map is injected
+// as the Starlark global `params`.
 func (h *Handler) handleAppExec(args map[string]any) (*mcpgo.CallToolResult, error) {
-	script, err := requireString(args, "script")
+	script, params, err := resolveExecSource(args)
 	if err != nil {
-		return nil, err
+		return toolErr("%v", err)
 	}
 
 	dur := defaultExecDuration
@@ -70,12 +75,45 @@ func (h *Handler) handleAppExec(args map[string]any) (*mcpgo.CallToolResult, err
 	verbs := h.toolHandlers()
 	// app_exec is not itself a builtin — no nested scripting.
 	delete(verbs, "app_exec")
+	// run_script/list_scripts re-enter via handleRunScript; keep them.
 
 	ctx, cancel := context.WithTimeout(context.Background(), dur)
 	defer cancel()
 	// h.Health() is always non-nil (NewHandler seeds a default supervisor),
 	// so the health() builtin can read the live unified report in-process.
-	return runExec(ctx, script, verbs, h.Health().Model(), h.HealthReport, execLimits{MaxSteps: defaultExecSteps, MaxDuration: dur})
+	return runExec(ctx, script, verbs, h.Health().Model(), h.HealthReport, execLimits{MaxSteps: defaultExecSteps, MaxDuration: dur}, params)
+}
+
+// resolveExecSource loads inline script or durable script_path + params.
+func resolveExecSource(args map[string]any) (script string, params map[string]string, err error) {
+	params = map[string]string{}
+	if raw, ok := args["params"]; ok && raw != nil {
+		switch t := raw.(type) {
+		case map[string]string:
+			for k, v := range t {
+				params[k] = v
+			}
+		case map[string]any:
+			for k, v := range t {
+				params[k] = fmt.Sprint(v)
+			}
+		default:
+			return "", nil, fmt.Errorf("app_exec: params must be a string map")
+		}
+	}
+
+	if path, ok := args["script_path"].(string); ok && strings.TrimSpace(path) != "" {
+		src, _, lerr := scriptlib.Load(path)
+		if lerr != nil {
+			return "", nil, lerr
+		}
+		return src, params, nil
+	}
+	script, err = requireString(args, "script")
+	if err != nil {
+		return "", nil, fmt.Errorf("app_exec: provide script or script_path: %w", err)
+	}
+	return script, params, nil
 }
 
 // runExec compiles and runs a Starlark script with verbs exposed as
@@ -83,10 +121,11 @@ func (h *Handler) handleAppExec(args map[string]any) (*mcpgo.CallToolResult, err
 // runtime error (including a cap breach) is reported as IsError with
 // whatever was emitted before the failure preserved — never a hang.
 // reportFn supplies the full health report for health() (entities + doctor + in-flight).
-func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *health.Model, reportFn func() HealthReport, lim execLimits) (*mcpgo.CallToolResult, error) {
+// params is always exposed as the Starlark global `params` (empty dict if nil).
+func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *health.Model, reportFn func() HealthReport, lim execLimits, params map[string]string) (*mcpgo.CallToolResult, error) {
 	st := &execState{ctx: ctx, health: hm, reportFn: reportFn}
 
-	predeclared := st.builtins(verbs)
+	predeclared := st.builtins(verbs, params)
 	prog, err := compileExec(script, predeclared)
 	if err != nil {
 		// Compile/parse errors carry their own position.
@@ -122,16 +161,16 @@ func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *
 
 // execState accumulates the ordered output buffer across one run.
 type execState struct {
-	ctx    context.Context
-	out    []starlark.Value
-	health   *health.Model          // live health model (entities)
-	reportFn func() HealthReport    // full report for health() (T99.5/T99.6)
+	ctx      context.Context
+	out      []starlark.Value
+	health   *health.Model       // live health model (entities)
+	reportFn func() HealthReport // full report for health() (T99.5/T99.6)
 }
 
 // builtins constructs the predeclared environment: one bridge builtin per
-// verb, plus emit/sleep/help/health.
-func (st *execState) builtins(verbs map[string]toolFunc) starlark.StringDict {
-	g := make(starlark.StringDict, len(verbs)+4)
+// verb, plus emit/sleep/help/health and 🎯T108 assert/L1 helpers + params.
+func (st *execState) builtins(verbs map[string]toolFunc, params map[string]string) starlark.StringDict {
+	g := make(starlark.StringDict, len(verbs)+12)
 	for name, fn := range verbs {
 		g[name] = st.verbBuiltin(name, fn)
 	}
@@ -139,6 +178,17 @@ func (st *execState) builtins(verbs map[string]toolFunc) starlark.StringDict {
 	g["sleep"] = starlark.NewBuiltin("sleep", st.sleep)
 	g["help"] = starlark.NewBuiltin("help", helpBuiltin(verbs))
 	g["health"] = starlark.NewBuiltin("health", st.healthBuiltin)
+	g["assert_trajectory"] = starlark.NewBuiltin("assert_trajectory", builtinAssertTrajectory)
+	g["assert_drag_follow"] = starlark.NewBuiltin("assert_drag_follow", builtinAssertDragFollow)
+	g["assert_settle"] = starlark.NewBuiltin("assert_settle", builtinAssertSettle)
+	g["resolve_target"] = starlark.NewBuiltin("resolve_target", builtinResolveTarget)
+	g["find_by_label"] = starlark.NewBuiltin("find_by_label", builtinFindByLabel)
+
+	pd := starlark.NewDict(len(params))
+	for k, v := range params {
+		_ = pd.SetKey(starlark.String(k), starlark.String(v))
+	}
+	g["params"] = pd
 	return g
 }
 
@@ -299,7 +349,9 @@ func helpBuiltin(verbs map[string]toolFunc) func(*starlark.Thread, *starlark.Bui
 	}
 	sort.Strings(names)
 	text := "verbs: " + strings.Join(names, ", ") +
-		"\ncontrol: emit(value), sleep(ms), health()\n" +
+		"\ncontrol: emit(value), sleep(ms), health(), params (dict)\n" +
+		"t108: assert_trajectory, assert_drag_follow, assert_settle, resolve_target, find_by_label; " +
+		"list_scripts(), run_script(path=...)\n" +
 		"call verbs by keyword, e.g. app_screenshot(session_id=\"...\"); " +
 		"a bare expression or emit() adds to the result."
 	return func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
@@ -536,10 +588,15 @@ func contentText(content []mcpgo.Content) string {
 // in agents-guide.md; call help() from a script for the verb list).
 func appExecDefinition() mcpgo.Tool {
 	return mcpgo.NewTool("app_exec",
-		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)` (wall-clock delay, ms-accurate), `emit(value)` (append a value to the result), `health()` (live daemon/subprocess/device health snapshot as a dict), and `help()` (list verbs).\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result — image values become image blocks, other values become JSON/text. So `app_screenshot(session_id=\"s1\")` on its own line returns the image; a verb with no useful return (e.g. app_input) adds nothing. All artifacts come back from the one call, in order.\n\nDeterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot` freezes the exact frame regardless of jitter. Use a bounded `for _ in range(N): ... ; sleep(ms)` to poll. Caps: wall-clock timeout (default 30s, max 120s) and a step budget; on breach, whatever was emitted is returned with an error note."),
+		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)`, `emit(value)`, `health()`, `help()`, durable scripts via `script_path` / `run_script` / `list_scripts` (🎯T108), and assert/L1 helpers (`assert_trajectory`, `assert_drag_follow`, `assert_settle`, `resolve_target`, `find_by_label`). Global `params` dict carries script_path parameters.\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result. Deterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot`. Caps: wall-clock timeout (default 30s, max 120s) and a step budget."),
 		mcpgo.WithString("script",
-			mcpgo.Required(),
-			mcpgo.Description("Starlark source. Call verbs by keyword; use emit()/bare expressions to produce output; sleep(ms) to pace; bounded for-loops to repeat (no while/recursion)."),
+			mcpgo.Description("Inline Starlark source. Provide this OR script_path."),
+		),
+		mcpgo.WithString("script_path",
+			mcpgo.Description("Durable library name (e.g. skeleton), bundled:name, or filesystem path to a .star file (🎯T108)."),
+		),
+		mcpgo.WithObject("params",
+			mcpgo.Description("Optional string map injected as the Starlark global `params` for durable scripts."),
 		),
 		mcpgo.WithNumber("max_duration_ms",
 			mcpgo.Description("Wall-clock budget for the whole script in milliseconds (default 30000, capped at 120000)."),
