@@ -193,7 +193,7 @@ type callToolResultForTest struct {
 // Reliable and avoids coupling to mcp-go's internal types.
 func dispatchJSON(t *testing.T, h *Handler, name string, args map[string]any) callToolResultForTest {
 	t.Helper()
-	res, err := h.Dispatch(name, args)
+	res, err := h.Dispatch(context.Background(), name, args)
 	if err != nil {
 		t.Fatalf("Dispatch(%s) err = %v", name, err)
 	}
@@ -643,7 +643,7 @@ func TestHandleInstallApp_NonexistentPathRejected(t *testing.T) {
 
 func TestHandleInstallApp_MissingPath(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("install_app", map[string]any{"device": "iPad"})
+	_, err := h.Dispatch(context.Background(), "install_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(install_app without path) returned nil; want error")
 	}
@@ -678,13 +678,69 @@ func TestHandleUninstallApp_Success(t *testing.T) {
 
 func TestHandleUninstallApp_MissingBundleID(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("uninstall_app", map[string]any{"device": "iPad"})
+	_, err := h.Dispatch(context.Background(), "uninstall_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(uninstall_app without bundle_id) returned nil; want error")
 	}
 }
 
 // --- handleDeployApp --------------------------------------------------
+
+func TestHandleDeployApp_RejectsSpyderPlayer(t *testing.T) {
+	tmp := t.TempDir()
+	appPath := filepath.Join(tmp, "Player.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	installCalled := false
+	ios := &stubAdapter{
+		terminateApp: func(id, bundle string) error { return nil },
+		installApp: func(id, path string) error {
+			installCalled = true
+			return nil
+		},
+		launchApp: func(id, bundle string, env map[string]string) error { return nil },
+		appPID:    func(id, bundle string) (int, error) { return 1, nil },
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device":    "iPad",
+		"path":      appPath,
+		"bundle_id": "com.spyder.player",
+	})
+	if !r.IsError {
+		t.Fatalf("deploy_app should refuse player package; body=%s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	if !strings.Contains(body, "launch_player") && !strings.Contains(body, "launch-player") {
+		t.Errorf("error should point at launch_player; body=%s", body)
+	}
+	if installCalled {
+		t.Error("install must not run when player deploy is refused")
+	}
+}
+
+func TestIsSpyderPlayerTarget(t *testing.T) {
+	cases := []struct {
+		bundle, path string
+		want         bool
+	}{
+		{"com.spyder.player", "/tmp/x.app", true},
+		{"com.spyder.player.land", "/tmp/x.app", true},
+		{"com.spyder.player.port", "/tmp/x.app", true},
+		{"com.example.app", "/tmp/Player.app", true},
+		{"com.example.app", "/tmp/PlayerLand.app", true},
+		{"com.example.app", "/repo/player/android/app/build/outputs/apk/debug/app-debug.apk", true},
+		{"com.example.app", "/tmp/MyApp.app", false},
+		{"com.example.app", "/tmp/app-debug.apk", false},
+	}
+	for _, tc := range cases {
+		got := isSpyderPlayerTarget(tc.bundle, tc.path)
+		if got != tc.want {
+			t.Errorf("isSpyderPlayerTarget(%q, %q)=%v want %v", tc.bundle, tc.path, got, tc.want)
+		}
+	}
+}
 
 func TestHandleDeployApp_Success(t *testing.T) {
 	tmp := t.TempDir()
@@ -868,7 +924,7 @@ targetSdkVersion:'34'
 
 func TestHandleLaunchApp_MissingBundleID(t *testing.T) {
 	h := newTestHandler(t)
-	_, err := h.Dispatch("launch_app", map[string]any{"device": "iPad"})
+	_, err := h.Dispatch(context.Background(), "launch_app", map[string]any{"device": "iPad"})
 	if err == nil {
 		t.Error("Dispatch(launch_app without bundle_id) returned nil; want error")
 	}

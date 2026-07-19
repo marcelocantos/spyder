@@ -25,7 +25,7 @@ func TestWatchSlowDispatch_ReturnsWhenDoneCloses(t *testing.T) {
 	done := make(chan struct{})
 	finished := make(chan struct{})
 	go func() {
-		watchSlowDispatch("test", "", time.Now(), done)
+		watchSlowDispatch("test", "", time.Now(), done, nil)
 		close(finished)
 	}()
 
@@ -53,7 +53,7 @@ func TestWatchSlowDispatch_ExitsBeforeThresholdWhenAlreadyDone(t *testing.T) {
 
 	finished := make(chan struct{})
 	go func() {
-		watchSlowDispatch("test", "", time.Now(), done)
+		watchSlowDispatch("test", "", time.Now(), done, nil)
 		close(finished)
 	}()
 

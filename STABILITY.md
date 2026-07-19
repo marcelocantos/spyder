@@ -482,3 +482,17 @@ builds. **Stable.**
   inherits `adb devices`).
 - Auto-install of a companion app on Android — Android handles stay-awake
   natively via Developer Settings; no companion app is needed.
+
+## Health & diagnostics surfaces (🎯T90 / 🎯T99)
+
+| Surface | Contract | Stability |
+|---|---|---|
+| `spyder status` / `spyder status --json` | Live health model snapshot (daemon-self, subprocesses, devices). | **Stable** |
+| `GET /api/v1/health` | Same model over REST (JSON). | **Stable** |
+| `health()` app_exec builtin | Same model as a Starlark dict. | **Stable** |
+| `spyder doctor` / `spyder doctor --fix` | Cross-check diagnosis; findings should align with the health model for wedge state. | **Stable** |
+| `spyder doctor --install-sudoers` | Installs sudoers for `spyder-killusbmuxd` (usbmuxd wedge recovery). Documented agent path. | **Stable** |
+| SIGQUIT → `~/.spyder/goroutine-*.txt` | Full goroutine dump without process exit (🎯T99.5). | **Stable** |
+| Tool-class dispatch deadlines | Fast read ≤15s, device op ≤60s, install ≤5m (tunable); structured timeout + session invalidate (🎯T99.1). | **Stable** |
+
+In-flight tool calls are tracked for diagnosis (`Handler.InFlightOps`); wedge snapshots continue under `~/.spyder/wedge-snapshots/`.

@@ -176,6 +176,411 @@ targets:
     origin: manual
     discovered: 2026-04-18
     achieved: 2026-04-18
+  T100:
+    name: Agent-directed multi-server multi-player streaming works across iOS, Android, and desktop with orientation-aware player variants
+    status: achieved
+    value: 13.0
+    cost: 20.0
+    actual_cost: 13.0
+    acceptance:
+    - A first-class spyder surface (MCP/app_exec verb and CLI) launches the player on a named device/platform with only device + game-server name required; the agent never sets STREAM_ADDR / stream_addr / SERVER_NAME / Documents files by hand
+    - 'When the named server is registered, its orientation preference is visible to spyder before player launch (server sideband advertisement), and spyder deploys/launches the matching player variant: portrait → PlayerPort, landscape → PlayerLand, any/unspecified → Player (or desktop equivalent)'
+    - Two distinct server processes (tiltbuggy and multimaze2 server builds) can be registered on one spyder at the same time and appear as separate catalogue entries
+    - 'Same-name server re-registration replaces the prior holder cleanly (rebuild-and-run workflow): old sideband closed, prior sessions for that name evicted, new process owns the catalogue entry — not silent map overwrite leaving zombie sessions, and not refuse-on-conflict'
+    - Two players can attach concurrently to the same server (or to different servers) and each session has independent s2p frame traffic (fps_1s_s2p > 0 and non-trivial bytes) — not a single-winner / zero-frame second attach
+    - 'Cross-product verified live: at least one concurrent matrix covering iOS + Android + desktop players against tiltbuggy and multimaze2 (each platform proves attach + non-black/game content for both games where hardware is available; desktop covers both games)'
+    - No QR / camera discovery UI is required or shown when the agent-directed launch path is used
+    - GET /stream/servers and GET /stream/sessions (or verb equivalents) correctly reflect multi-server and multi-session state for the verification matrix
+    - 'Unit/integration coverage exists for: multi-server catalogue, same-name clean replace, multi-session pairing independence, orientation advertisement → variant selection, and the launch_player argument surface (no real devices required for pure relay/unit cases)'
+    - All children T100.1–T100.6 are achieved
+    context: |-
+      Product model (2026-07-16, revised same day):
+      1. No UI-based discovery for multi-server selection — the human tells the agent which game to attach to; agents launch via a first-class spyder surface (not hand-rolled STREAM_ADDR / env / Intent extras).
+      2. Game servers advertise portrait/landscape (or any) preference to spyder; spyder selects the matching player packaging variant (PlayerPort / PlayerLand / Player any) when deploying/launching.
+      3. Multiple game servers may be registered on the relay at once (distinct catalogue names).
+      4. Same-name server re-connect is intentional REPLACE (rebuild-and-run): new process takes the name; old sideband/sessions are cleanly evicted — not refuse, and not a bare map overwrite.
+      5. Multiple players may be attached at once to one or many servers (full multi-session).
+      6. Any player may attach to any game server independently of other players.
+
+      Oracle games: tiltbuggy and multimaze2 server builds.
+
+      Gaps this umbrella closes:
+      - Relay keys servers by name and opens many sessions, but ge ServerSession is single-player (`!hasPlayer` — second attach gets 0 frames) — ge fix, tracked under T100.2.
+      - Same-name register overwrites the map without closing the old sideband or evicting sessions — T100.1.
+      - No launch_player (or equivalent) verb/CLI — T100.3.
+      - Orientation is known in SessionConfig after attach, not on server sideband hello for pre-launch variant selection — T100.4.
+      - multimaze2 may need stream-stack uplift — T100.5.
+      - Live matrix not yet proven — T100.6.
+
+      Non-goals unless later expanded: browser player matrix, public internet relay, automatic game-server process spawn (servers may still be started out-of-band as long as they register).
+
+      2026-07-16 hygiene: scored + decomposed into T100.1–T100.6; parent rolls up when children are achieved.
+    depends_on:
+    - T100.1
+    - T100.2
+    - T100.3
+    - T100.4
+    - T100.5
+    - T100.6
+    tags:
+    - player
+    - stream
+    - relay
+    - ios
+    - android
+    - desktop
+    - tiltbuggy
+    - multimaze2
+    - orientation
+    - agent-ux
+    - umbrella
+    origin: manual
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T100.1:
+    name: Streamrelay multi-server catalogue includes clean same-name replace (rebuild-and-run)
+    status: achieved
+    value: 8.0
+    cost: 3.0
+    actual_cost: 3.0
+    acceptance:
+    - Two servers with distinct names register concurrently and both appear on GET /stream/servers with correct names and session counts
+    - When a second process connects /ws/server?name=X while X is held, the new connection becomes the sole catalogue entry for X
+    - 'On replace: the previous sideband is closed with a clear replaced reason (or equivalent), and all existing sessions for name X are evicted (player and wire sockets closed; removed from GET /stream/sessions)'
+    - 'On replace: subsequent player attach to X is notified on the new sideband only; no zombie attach traffic to the superseded process'
+    - 'Unit tests cover: dual-name catalogue, replace-evicts-sessions, replace-closes-old-sideband, disconnect of superseded sideband does not delete the new registration'
+    context: 'Operator workflow: rebuild game-server binary and re-run; it must take over the catalogue name without manual kill. Prior map-only overwrite left old sidebands and sessions half-alive. Distinct names remain independent.'
+    tags:
+    - stream
+    - relay
+    - multi-server
+    - replace
+    origin: subdivide(🎯T100)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T100.2:
+    name: 'ge ServerSession is multi-session: concurrent players each get independent s2p traffic'
+    status: achieved
+    value: 13.0
+    cost: 8.0
+    actual_cost: 5.0
+    acceptance:
+    - A second player_attached while one player is already attached opens a second wire (not ignored by hasPlayer)
+    - Two concurrent sessions on the same server each show fps_1s_s2p > 0 and non-trivial bytes_per_sec_1s_s2p on GET /stream/sessions
+    - Each session tracks that session's viewer metrics / DeviceInfo (T154 multi-session structural rule); no single global hasPlayer gate
+    - player_detached for one session tears down only that session's wire; the other session continues streaming
+    - 'Oracle: unit or controlled dual-player attach against a test double or tiltbuggy-server; live dual-device residue allowed as non-gating confirmation'
+    context: 'Cross-repo ge work (ServerSession.mm currently gates on !hasPlayer). Spyder relay already multi-sessions; ge must open N wires. Document ge target/PR linkage in context when work starts. Preferred encode model: independent per-session path consistent with T154 (each session''s Context tracks that player) unless explicitly interim-documented otherwise.'
+    depends_on:
+    - T100.1
+    tags:
+    - ge
+    - multi-session
+    - stream
+    - ServerSession
+    origin: subdivide(🎯T100)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T100.3:
+    name: launch_player (verb + CLI) launches the platform player with only device and optional server name
+    status: achieved
+    value: 8.0
+    cost: 5.0
+    actual_cost: 5.0
+    acceptance:
+    - app_exec exposes launch_player(device, server?, path?, owner?) and CLI has an equivalent (e.g. spyder launch-player)
+    - Caller never supplies STREAM_ADDR / stream_addr / SERVER_NAME / Documents paths; spyder injects stream host:port via existing LAN/sim/emu host pick and platform-correct delivery (iOS argv/Documents, Android Intent extras, desktop flags)
+    - server omitted + exactly one registered server → that name; server omitted + 0 or ≥2 → clear error listing catalogue; server set but missing → clear error
+    - 'Artifact resolution: known default player path per platform (iOS .app, Android .apk, desktop bin/player) with optional path override'
+    - Success payload includes at least device, platform, server, stream_addr, bundle_id/pid as applicable
+    - Unit tests cover argument surface and host/name selection without real devices
+    context: 'Closes agent UX gap: agents invent env keys and artifact paths today. Does not require multi-session or orientation variants to land first, but benefits from T100.1 catalogue stability.'
+    depends_on:
+    - T100.1
+    tags:
+    - launch_player
+    - agent-ux
+    - mcp
+    - cli
+    - player
+    origin: subdivide(🎯T100)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T100.4:
+    name: Server sideband advertises orientation preference; launch_player selects PlayerPort / PlayerLand / Player
+    status: achieved
+    value: 5.0
+    cost: 5.0
+    actual_cost: 3.0
+    acceptance:
+    - 'Server hello (or equivalent sideband advertisement before any player attach) exposes orientation preference: portrait | landscape | any (or unspecified)'
+    - spyder reads the advertisement for a named server before deploy/launch
+    - launch_player deploys/launches portrait → PlayerPort, landscape → PlayerLand, any/unspecified → Player (desktop equivalent documented)
+    - Missing advertisement defaults to any/Player without QR and without failing launch
+    - 'Unit/integration test: mock sideband hello orientation → variant path selection'
+    context: Today orientation arrives only in SessionConfig after attach — too late for packaging. Pre-launch variant selection needs sideband (or catalogue field) from the registered server. May require a small ge ServerSession hello uplift plus spyder catalogue field.
+    depends_on:
+    - T100.3
+    tags:
+    - orientation
+    - player-variant
+    - sideband
+    origin: subdivide(🎯T100)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T100.5:
+    name: multimaze2 server build registers on spyder streamrelay and accepts a player session
+    status: achieved
+    value: 5.0
+    cost: 5.0
+    actual_cost: 3.0
+    acceptance:
+    - A multimaze2 server-mode binary (or equivalent make server product) connects to spyder as a distinct catalogue name (e.g. multimaze2)
+    - GET /stream/servers lists that entry while the process is up
+    - At least one player attach (desktop or device) yields fps_1s_s2p > 0 and a non-black / game-content screenshot or desktop frame
+    - Same-name rebuild-and-run replace works for this binary (inherits T100.1)
+    - Document any ge/multimaze2 packaging uplift required for current SP2*/SessionConfig stack
+    context: 'Oracle game #2 for multi-server. May need ge/multimaze2 uplift to current stream stack; work may span multimaze2 and ge repos — record PRs in context when done.'
+    depends_on:
+    - T100.1
+    tags:
+    - multimaze2
+    - server
+    - stream
+    origin: subdivide(🎯T100)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T100.6:
+    name: 'Live matrix: iOS + Android + desktop players × tiltbuggy + multimaze2 with multi-session proof'
+    status: achieved
+    value: 8.0
+    cost: 5.0
+    actual_cost: 3.0
+    acceptance:
+    - Concurrent sessions exist under at least one server with two players and both show independent s2p traffic
+    - tiltbuggy and multimaze2 are both registered at once during the matrix (or sequential phases clearly logged if hardware-bound)
+    - iOS, Android, and desktop each prove attach + non-black/game content for both games where hardware is available; desktop covers both games
+    - Agent-directed launch_player path used (no manual STREAM_* / QR) for device legs
+    - Evidence under a durable report (stream JSON + screenshots/metrics) is recorded; overall pass or partial with named skips only for absent hardware
+    context: Gating live proof for the umbrella. Depends on multi-session (T100.2), launch_player (T100.3), and multimaze2 (T100.5). Orientation variants (T100.4) should be used when available; if packaging variants lag, document which variant was used.
+    depends_on:
+    - T100.2
+    - T100.3
+    - T100.5
+    tags:
+    - hil
+    - matrix
+    - ios
+    - android
+    - desktop
+    - verification
+    origin: subdivide(🎯T100)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T101:
+    name: The spyder player runs in the browser — one C++ implementation compiled to wasm, served by the spyder daemon, playing headless ge servers with zero install
+    status: converging
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A browser pointed at the spyder daemon plays a headless ge server end-to-end (render + input round-trip) with no native app install
+    - The browser player is built from the same player/ C++ tree as desktop/iOS/Android — no parallel protocol implementation
+    - Works in current Chrome and Safari (desktop + iOS) on the LAN dev setup
+    context: 'Assessment 2026-07-17: the port is closer than expected — transport is already WebSocket to /stream/player/<name>, WsConnection is a clean virtual seam, the player is single-threaded/poll-driven, SDL3 has first-class Emscripten support, and the SP2S cmdstream rung plus all its deps (lz4, sqlite, lunasvg, freetype, deepparser) are pure C/C++ that compile under wasm. Phase 1 is cmdstream-only (no codec needed); WebCodecs H.264 and platform glue follow. Chosen over a TypeScript rewrite to keep a single implementation of a still-moving protocol (v8).'
+    depends_on:
+    - T101.1
+    - T101.2
+    - T101.3
+    - T101.4
+    - T101.5
+    - T101.6
+    - T101.7
+    - T101.8
+    tags:
+    - player
+    - browser
+    - wasm
+    - emscripten
+    - cmdstream
+    origin: Browser-port assessment session 2026-07-17
+    discovered: 2026-07-18
+  T101.1:
+    name: 'The player tree compiles under Emscripten: wasm build leg with SDL3 (+image/ttf) built from source, Signal/desktop-isms stubbed, and check-wire passing under wasm'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - make (or cmake) target produces player.wasm/js from player/ with SDL3, SDL3_image, SDL3_ttf, freetype/harfbuzz built by emcc
+    - check-wire layout oracle compiled to wasm reports identical magics and struct sizes to the native build
+    - lz4, sqlite, lunasvg/plutovg, deepparser, spdlog all compile in the wasm leg; Signal.cpp signal/backtrace machinery stubbed
+    context: wasm32 is little-endian with the same fixed-width layouts, so Protocol.h should hold — but the oracle must prove it, not assumption.
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.2:
+    name: 'WsConnection has a browser backend: the wire runs over the browser WebSocket API to /stream/player/<name>, message queue feeding available()/recvBinary()'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A WsConnection implementation over emscripten/websocket.h (or minimal JS glue) passes binary frames both ways against a live spyder streamrelay
+    - available() reflects queued messages; recvBinary() never spins; close/isOpen semantics match TcpWsConnection
+    - connectWebSocket() selects the browser backend under __EMSCRIPTEN__ with no call-site changes
+    depends_on:
+    - T101.1
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.3:
+    name: 'The player main loop is browser-compatible: no blocking waits on the browser main thread (emscripten tick or ASYNCIFY/JSPI), including the connect/SessionConfig handshake and orientation-settle waits'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - playerCore's while-loop runs as an emscripten main loop (or under ASYNCIFY/JSPI) without freezing the tab
+    - wire.connect()'s blocking wait for SessionConfig works in-browser (async state or ASYNCIFY)
+    - SDL_Delay-based settle loops don't stall the browser main thread
+    depends_on:
+    - T101.1
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.4:
+    name: 'Cmdstream-only browser player v1: the daemon serves the player page, and a browser plays a headless ge server over the SP2S rung end-to-end'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - spyder daemon serves the wasm player page (alongside /dashboard); browser connects same-origin to /stream/player/<name>
+    - DeviceInfo advertises kCapCommandStream only; server selects the cmdstream rung; SP2S replay renders correctly (sprites, text, svg, blob cache)
+    - Input (pointer/touch/keys) round-trips to the server; a human plays a real game (e.g. tiltbuggy or multimaze2) in Chrome and Safari
+    depends_on:
+    - T101.2
+    - T101.3
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.5:
+    name: 'The H.264 rung works in the browser: a third VideoDecoder backend over WebCodecs feeds decoded frames into the SDL present path'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - VideoDecoder_web decodes the SP2V NAL stream via WebCodecs (hardware where available) in Chrome and Safari
+    - Decoded frames reach the SDL texture path at ≥55 fps at stream resolution on the dev laptop
+    - 'Rung negotiation: player advertises H.264 capability and the server-selected transport wins, matching native behaviour'
+    depends_on:
+    - T101.4
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.6:
+    name: 'Browser platform glue is at parity where the web platform allows: audio, accelerometer, fullscreen/immersive, orientation lock, wake lock, and safe-area insets'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Audio plays after the standard user-gesture unlock; audio focus/background pause behaviour maps sensibly to tab visibility
+    - DeviceMotion feeds SDL sensor events (with the iOS Safari permission prompt + HTTPS path documented or handled); tilt gameplay works on a phone browser
+    - kSessionFlagImmersive → Fullscreen API; orientation lock via screen.orientation.lock where supported; kSessionFlagNoScreenSaver → Wake Lock API; safe-area insets reported in DeviceInfo
+    depends_on:
+    - T101.4
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.7:
+    name: 'SP2T durable state survives browser reloads: the per-game sqlite db persists via OPFS/IDBFS and seeds the server on reconnect, matching native semantics'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Per-game durable db written under a persistent browser FS mount; survives tab close/reopen
+    - On reconnect, existing user tables seed the server via SP2T snapshot exactly as the native player does
+    - No cross-game state bleed (one db per server catalogue name)
+    depends_on:
+    - T101.4
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T101.8:
+    name: 'Zero-install pairing: a QR/URL with host+server params opens the browser player straight into a session — scan-to-play with no app install'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Player page accepts ?host=&port=&name= (or path params) and auto-connects with no further input
+    - A QR encoding that URL, scanned on a phone, lands in a playable session
+    - Native-app QR/Keychain flow remains untouched; the web path is additive
+    depends_on:
+    - T101.4
+    origin: subdivide(🎯T101)
+    discovered: 2026-07-18
+  T102:
+    name: Homebrew package ships stream player artifacts so launch_player works without a local player/ build tree
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Release tarball and Homebrew formula install player artifacts under libexec/spyder/player/ (or equivalent Cellar-relative layout), not embedded inside the spyder binary
+    - Desktop bin/player is included and launch_player on platform=desktop resolves it from the install layout (symlink/EvalSymlinks-safe, same pattern as bundled ios)
+    - Android debug APK is included and launch_player on platform=android resolves it from the install layout when path= is omitted
+    - iOS Player.app is either omitted from the public formula with documented rationale (codesign/provisioning is per-developer and not multi-tenant), or shipped only as an unsigned/build-product path with an explicit re-sign workflow — never a single pre-signed .app claimed to work for all brew users
+    - 'launch_player path resolution order remains: path= override → SPYDER_PLAYER_* env → install layout (libexec) → repo-relative dev build outputs'
+    - agents-guide / caveats document where artifacts live and that iOS requires local codesign or SPYDER_PLAYER_IOS
+    - CI release.yml packages the chosen artifacts; homebrew-releaser install line installs them into libexec
+    context: 'Surfaced 2026-07-18: launch_player only finds players under cwd/repo build paths (player/ios/build/..., player/android/.../app-debug.apk, bin/player). make build and the brew release ship spyder + ios tunnel + killusbmuxd only — not the glass. Brew-bundling is correct; embedding in the Go binary is optional and rejected for v1 (bloat). iOS is the hard constraint: a Development/Ad Hoc signed Player.app from one team fails ApplicationVerificationFailed on other developers'' devices. V1 should ship desktop + Android debug freely; treat iOS as non-portable pre-signed binary and either document local build/sign or a re-sign path. Related: T100.3 launch_player inject surface; deploy_app refuses player package.'
+    tags:
+    - player
+    - homebrew
+    - release
+    - packaging
+    - launch_player
+    - ios-codesign
+    origin: 2026-07-18 brew player packaging discussion after deploy-vs-launch_player
+    discovered: 2026-07-18
+  T103:
+    name: 'Daemon self-restart is safe and complete: relaunch actually happens, preserves the listen address, and dispatch deadlines tolerate slow targets'
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - The T99.3 stuck-dispatch watchdog's exit results in an actual relaunch when no external supervisor is present (self-exec or supervisor detection) — a bare `spyder serve` never just dies
+    - A relaunch (supervised or self) preserves the original listen address; a daemon serving loopback-only while LAN devices exist in inventory logs a prominent warning
+    - 'Dispatch deadlines accommodate legitimately slow operations: a cold-emulator `adb install` inside launch_player/deploy_app does not trip the stuck heuristic (emulator-scaled deadline, or install progress excluded from stuckness)'
+    - 'Regression evidence: the 2026-07-18 incident chain (watchdog exit → dead daemon → loopback-only relaunch → every LAN glass failing fail-closed) is reproduced against the fix and does not recur'
+    context: '2026-07-18/19 live incident: an emulator launch_player exceeded the dispatch deadline (deployApp mid-install, tools.go:1564), the watchdog exited "for supervised relaunch" with no supervisor present, and the manual relaunch bound 127.0.0.1 only (the serve default) — every on-device player then failed to attach and exited fail-closed, which masqueraded as device/app bugs (intent extras, Samsung Freecess, macOS firewall were all misdiagnosed first). Promoted from docs/TODO.md per targets-are-canonical convention.'
+    tags:
+    - daemon
+    - watchdog
+    - resilience
+    - ops
+    origin: 2026-07-18 deployment-sweep incident chain
+    discovered: 2026-07-19
+  T104:
+    name: streamrelay culls dead sessions and a fresh attach never hangs against a stale catalogue
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'GET /stream/sessions never lists sessions whose server or player peer is gone: entries are culled on sideband/wire death or aged out (observed: zombie entries hours old with 0 fps after kill -9)'
+    - A fresh player attach succeeds or fails fast against any catalogue state — the 2026-07-18 22:28 anomaly (attach hung at the SessionConfig handshake while ~10 replaced-but-alive server registrations existed, despite the catalogue pointing at a live new-code server) is root-caused and covered by a test
+    - Relay-side test simulates kill -9'd peers and replaced registrations; session list converges and attaches route correctly
+    context: 'From the 2026-07-18 T156 live sessions: kill -9''d servers and players left zombie session entries in /stream/sessions indefinitely, and one fresh attach hung at handshake under a pile of replaced-but-alive registrations — never root-caused (suspect: relay session bookkeeping under many same-name replaces). ge-side mitigation already landed (superseded servers now exit on sideband close), but the relay must be robust regardless of peer behavior. Promoted from docs/TODO.md per targets-are-canonical convention.'
+    tags:
+    - streamrelay
+    - sessions
+    - gc
+    - robustness
+    origin: 2026-07-18 T156 live-session zombie observations
+    discovered: 2026-07-19
+  T105:
+    name: devicectl foreground-launch evaluated as a replacement for `process launch` on iOS 17+
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A spike answers whether `devicectl` exposes a cleaner foreground-launch API than the current DVT `process launch` path (session-cost, reliability, pid-verify support)
+    - 'Decision recorded in the target: adopt (with follow-on target) or reject (with reasons); no code change required to achieve this spike'
+    context: 'Long-standing unscoped note promoted from docs/TODO.md (file retired; targets are the sole record of followable work). Related: the T72 devicectl migration was parked when the wedge root cause moved to the go-ios tunnel daemon.'
+    tags:
+    - ios
+    - devicectl
+    - spike
+    origin: promoted from docs/TODO.md, 2026-07-19
+    discovered: 2026-07-19
   T11:
     name: Reservation system for parallel dev sessions across devices
     status: achieved
@@ -4003,9 +4408,10 @@ targets:
     achieved: 2026-07-14
   T90.5.1:
     name: The iostunnel supervisor's restart loop + wedge-kill and internal/wedge.AttemptRecovery are driven by health.Supervisor.Supervise, not their own bespoke loops
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 5.0
     acceptance:
     - 'internal/iostunnel.Supervisor implements health.ManagedProcess (Name/Start/Alive/Stop): Start ensures a fresh child (kill-if-running then spawn), Alive = process-running AND registry-responsive (ListRunningTunnels), Stop = SIGTERM/SIGKILL; its bespoke restartLoop + healthProbe goroutines are removed.'
     - spyder serve drives it via health.Supervisor.Supervise(ctx, tunnelSup, policy, interval) so restart/backoff/needs_attention escalation is owned by the health model — a tunnel that can't be rebuilt after policy exhaustion reaches needs_attention (notified) instead of retrying forever silently. The C1 tunnelRegistryProber is removed as redundant.
@@ -4023,6 +4429,7 @@ targets:
     - needs-device
     origin: manual
     discovered: 2026-07-04
+    achieved: 2026-07-16
   T91:
     name: Every ged capability is available from any ge app in any modality through spyder; the ged daemon is retired
     status: achieved
@@ -4164,7 +4571,7 @@ targets:
     discovered: 2026-07-05
     achieved: 2026-07-05
   T92.2:
-    name: The dashboard is a full in-browser player for HEADLESS server-mode ge games via spyder — render + accelerometer + touch — no local window, no GE_STREAM, no native player
+    name: The dashboard is a full in-browser player for HEADLESS server-mode ge games via spyder — render + accelerometer + touch — no local window, no STREAM, no native player
     status: set_aside
     value: 0.0
     cost: 0.0
@@ -4173,8 +4580,8 @@ targets:
     acceptance:
     - '[class 1] A ge game launched in SERVER mode (headless, no local window) renders each attached player''s session offscreen and streams valid H.264; the dashboard browser player decodes+renders it and drives it (accelerometer sim + touch/mouse) — all through spyder, no native player — verified by T92.2.1''s differential oracles plus a headless-browser round-trip (frames self-decodable + input moves the game).'
     - '[class 3] The human opens the dashboard, picks a game, and plays it in-browser with no separate window; accepts the feel in one review. Sole perceptual gate.'
-    - '[decision] GE_STREAM (the direct-mirror shortcut) is deleted. There are exactly three app modes: mobile, desktop, and server (a headless variant of desktop that spawns sessions on demand via spyder).'
-    context: 'REOPENED 2026-07-05 (reshaped): the earlier GE_STREAM-based version was retired against the WRONG spec (oracle-first rule 11 — the H.264 pipeline demonstrably worked end-to-end, but the architecture was a shortcut that mirrors a VISIBLE desktop window rather than a headless server). Correct model (user): the dashboard is a browser PLAYER — decode/render + accelerometer-sim + touch — logically identical to a native player connected to a game via spyder, but running in the browser. REUSES the proven parts (T91.4 relay; WebCodecs decode/render; VideoToolbox encode; the whole downstream pipeline was validated via the shortcut). REPLACES the frame source (mirror-a-window → real headless offscreen render) and the input model (raw mouse + server-side AccelSynth → in-browser AccelSynth → SENSOR_UPDATE).'
+    - '[decision] STREAM (the direct-mirror shortcut) is deleted. There are exactly three app modes: mobile, desktop, and server (a headless variant of desktop that spawns sessions on demand via spyder).'
+    context: 'REOPENED 2026-07-05 (reshaped): the earlier STREAM-based version was retired against the WRONG spec (oracle-first rule 11 — the H.264 pipeline demonstrably worked end-to-end, but the architecture was a shortcut that mirrors a VISIBLE desktop window rather than a headless server). Correct model (user): the dashboard is a browser PLAYER — decode/render + accelerometer-sim + touch — logically identical to a native player connected to a game via spyder, but running in the browser. REUSES the proven parts (T91.4 relay; WebCodecs decode/render; VideoToolbox encode; the whole downstream pipeline was validated via the shortcut). REPLACES the frame source (mirror-a-window → real headless offscreen render) and the input model (raw mouse + server-side AccelSynth → in-browser AccelSynth → SENSOR_UPDATE).'
     depends_on:
     - T92.2.4
     origin: manual
@@ -4202,7 +4609,7 @@ targets:
     - '[class 1] ''Server'' is a separate BUILD of an app, chosen at COMPILE time (a GE_SERVER_BUILD flag / a second build target, e.g. tiltbuggy-server), NOT a runtime env switch on one binary. ge::run stays the desktop/mobile (windowed DirectRenderHost) entry; ge::runServer (wire source group) is the headless-streaming entry that renders a hidden DirectRenderHost and streams ge''s canonical H.264 wire. The relay address is a RUNTIME parameter of the server build (GE_SERVER=host:port / --relay), an address not a mode.'
     - '[class 1] The DESKTOP/MOBILE build links NO wire/encode/server code: its main never references runServer/ServerSession, so the static linker drops the wire objects. The shipped direct build cannot be coerced into a screen-streaming server (security) and carries no VideoToolbox-encode/WebSocket weight (size). Mobile = a direct build that never defines GE_SERVER_BUILD.'
     - '[class 1] The server build renders each player session HEADLESS (hidden-window DirectRenderHost, proven) and streams real self-decodable H.264 with correct colours (gated by T92.2.1''s oracle). No StreamClient, no dormant brokered host (both deleted).'
-    context: 'RESHAPED 2026-07-05 per user decision: ''a desktop version of each app and a server version of each app, different builds'' — the mode is a BUILD boundary, not a runtime env switch. The mid-session refactor implemented a single binary with a GE_SERVER/GE_STREAM env switch (ServerSession + runServer dispatched from SessionHostConfig.serverHost); that is being corrected to a compile-time variant. Rationale (user endorsed): aligns with ge''s existing GE_SRC_DIRECT vs wire source split; keeps shipping/mobile builds lean + secure (no server code linked); makes the three modes (mobile/desktop/server) distinct artifacts. Work: ge::run → always windowed (drop the serverHost dispatch); add ge::runServer(factory,config) in the wire group reading the relay addr from env/arg; remove serverHost/serverPort/serverName from SessionHostConfig; tiltbuggy main #ifdef GE_SERVER_BUILD; add a tiltbuggy-server build target; spyder''s stream_live_test + the factory spawn tiltbuggy-server. User: ''get this one right up front'' even though it slows things.'
+    context: 'RESHAPED 2026-07-05 per user decision: ''a desktop version of each app and a server version of each app, different builds'' — the mode is a BUILD boundary, not a runtime env switch. The mid-session refactor implemented a single binary with a GE_SERVER/STREAM env switch (ServerSession + runServer dispatched from SessionHostConfig.serverHost); that is being corrected to a compile-time variant. Rationale (user endorsed): aligns with ge''s existing GE_SRC_DIRECT vs wire source split; keeps shipping/mobile builds lean + secure (no server code linked); makes the three modes (mobile/desktop/server) distinct artifacts. Work: ge::run → always windowed (drop the serverHost dispatch); add ge::runServer(factory,config) in the wire group reading the relay addr from env/arg; remove serverHost/serverPort/serverName from SessionHostConfig; tiltbuggy main #ifdef GE_SERVER_BUILD; add a tiltbuggy-server build target; spyder''s stream_live_test + the factory spawn tiltbuggy-server. User: ''get this one right up front'' even though it slows things.'
     depends_on:
     - T92.2.1
     origin: manual
@@ -4300,3 +4707,237 @@ targets:
     origin: manual
     discovered: 2026-07-11
     achieved: 2026-07-14
+  T97:
+    name: Streamrelay is proven byte-agnostic for non-H.264 GE magics (command-stream ready)
+    status: achieved
+    value: 5.0
+    cost: 2.0
+    acceptance:
+    - 'Class-1: relay_test pipes a synthetic SP2S (command-stream) binary frame server→player and SP2I-like input player→server verbatim — no H.264/magic filtering.'
+    - GET /stream/sessions counters increment for non-SP2V frames the same way as video (opaque frame/byte counts).
+    - docs/streaming-data-plane-plan.md and agents-guide stream section state that the relay is protocol-agnostic and that rung negotiation (H.264 vs command-stream) is end-to-end ge-only.
+    - No spyder code path inspects MessageHeader.magic to branch codec behaviour on the data plane.
+    context: Enables ge 🎯T128 command-stream rung without broker changes. Design note (ge docs/command-stream-transport.md) already claims spyder is a pure byte pipe; this target is the class-1 oracle + docs so that claim is load-bearing. Pairs with ge T128.2/T128.9. Independent of T93 pigeon.
+    tags:
+    - stream
+    - relay
+    - cmdstream
+    - ge-t128
+    origin: manual
+    discovered: 2026-07-14
+    achieved: 2026-07-14
+  T98:
+    name: spyder install/deploy is the reliable path for every attached physical device; agents never need devicectl/adb for app install
+    status: identified
+    value: 13.0
+    cost: 5.0
+    acceptance:
+    - spyder install succeeds on every attached iOS physical device (iOS 16 lockdown and iOS 17+ RSD/zipconduit) without invoking xcrun devicectl
+    - spyder install succeeds on every attached Android physical device via adb through the adapter
+    - When a device is inventoried but not attached, install returns a clear device-not-attached error (not a vague CoreDevice capability error)
+    - agents-guide and MCP tool descriptions state that install_app/deploy_app use go-ios zipconduit (iOS) and adb (Android), and that agents must use those tools rather than shelling out to devicectl/adb for install
+    - A multi-device install/deploy CLI surface (or documented one-liner) reports per-device success/failure so 'deploy to all physical' is a first-class product operation
+    context: '2026-07-15: agent deploy of TiltBuggy used xcrun devicectl and saw CoreDevice ''Install Application is not supported'' on Minicades while go-ios/spyder zipconduit path already works. Product gap is (1) agent guidance defaulting to OS tools, (2) missing multi-device deploy UX, (3) ensuring Spyder remains the correct sole path and never regresses to CoreDevice-only install.'
+    tags:
+    - ios
+    - android
+    - install
+    - deploy
+    - agent-ux
+    - go-ios
+    origin: manual
+    discovered: 2026-07-15
+  T99:
+    name: A wedged spyder never needs a manual daemon restart — every known wedge class is self-diagnosed and self-healed (or self-restarted as last resort), and the health surface reports the truth
+    status: achieved
+    value: 13.0
+    cost: 20.0
+    actual_cost: 13.0
+    acceptance:
+    - A deliberately induced wedge in each known class — hung device op mid-install (or synthetic never-returning handler), usbmuxd broken-pipe/tunnel-start loop (injected), wedged tunnel registry, deadlocked/stuck handler — recovers without any human or agent running a kill/restart of spyder serve
+    - After an induced wedge, the next tool call either succeeds or returns a structured timeout/recovery error within the tool-class deadline — the agent never needs to kill the daemon to regain control
+    - 'Every recovery episode is observable after the fact: health model records the episode, wedge snapshot and/or goroutine dump persisted under ~/.spyder/, macOS notification fires only when physical action (replug/re-pair) is genuinely required'
+    - All children T99.1–T99.6 and dependency T90.5.1 are achieved
+    - 'RESIDUE (non-gating): a soak across the live device fleet (or ~one month of normal operation) records zero manual spyder serve restarts — the 2026-04→07 baseline was ≥6 manual-restart incidents in ~12 weeks. Residue does not block retiring T99 once induced-class oracles pass.'
+    context: |-
+      Umbrella from the 2026-07-16 wedge deep-dive (code inventory + mnemo incident history). History: ≥6 distinct sessions since 2026-04-25 ended in a manual kill+restart of spyder serve; the daemon has never once restarted itself. T90 shipped the health *model* but left the enforcement unwired: ProgressWatchdog and health.Supervisor.Supervise have zero production callers, daemon-self "simply reads healthy" (internal/daemon/health.go:44-47), tool dispatch discards its context (daemon.go:265) so nothing can cancel a hung deploy_app (180s+ hang observed 2026-07-16), and the pinned-device attention path is dead (SetHealthModel(..., nil), server.go:252). The two live recurring failure modes: usbmuxd broken-pipe/tunnel-start-loop wedges (not covered by the v0.48.0 lifeline self-heal) and indefinite MCP-dispatch hangs (only a log-line watchdog).
+
+      2026-07-16 tighten: scored; parent converging; soak demoted to residue; agent-visible recovery (structured error within deadline) is the ship contract. Recovery ladder: T99.1 cancel → T99.4 device/tunnel heal → T99.3 self-restart last resort → T99.5/T99.6 diagnosis + truthful surface. T99.6 is T90 residue (unwired pinned predicate / doctor / STABILITY) kept under T99 because truthfulness is what makes wedge recovery verifiable.
+    depends_on:
+    - T99.1
+    - T99.2
+    - T99.3
+    - T99.4
+    - T99.5
+    - T99.6
+    - T90.5.1
+    tags:
+    - health
+    - self-repair
+    - reliability
+    - umbrella
+    - wedge
+    - dx
+    origin: '2026-07-16 deep dive: code inventory + mnemo incident history after the Jevons deploy_app wedge'
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T99.1:
+    name: Every tool call runs under a per-call context with a tool-class deadline; on breach the call returns structured error and invalidates the device session
+    status: achieved
+    value: 13.0
+    cost: 8.0
+    actual_cost: 5.0
+    acceptance:
+    - The MCP transport context reaches Handler.Dispatch and every handler — internal/daemon/daemon.go no longer discards it (the `_ context.Context` at daemon.go:265) and internal/mcp/server.go Dispatch takes a ctx
+    - Each tool has a deadline class (e.g. fast read ≤15s, device op ≤60s, install ≤5min — tunable vars); on breach the call returns a structured timeout error naming the tool, device, and elapsed time
+    - 'On deadline: the in-flight call is cancelled at the dispatch layer; any device session used by that call is invalidated (not left cached in a wedged state) so the next call can re-resolve'
+    - deploy_app install path is abortable within the install deadline for the 2026-07-16 hang class — if underlying zipconduit/SendFile is not yet cooperative-cancel, the call still returns a structured timeout and the session is invalidated rather than hanging forever
+    - watchSlowDispatch escalates from logging to cancelling at the deadline; the 2026-07-16 deploy_app 180s+ hang class is reproduced in a test (synthetic stall) and returns a structured error
+    - REST callers get the same bound (the REST path shares dispatch)
+    - 'OUT OF SCOPE for T99.1 (optional follow-on): cooperative cancel threaded through every go-ios/adb call site. v1 ships dispatch deadlines + session invalidate; named hot-path cooperative cancel may land in the same PR when cheap but does not block this target'
+    context: |-
+      Gap G1/G2/G8 from the 2026-07-16 deep dive. Nothing — client disconnect, shutdown, timer — can cancel an in-flight tool call today; device I/O (SendFile, LaunchApp, screenshot, terminate, uninstall, crashreport) takes no context, only session-resolve (15s) and devicectl (32s) are bounded. PR #106 added observability only. Foundation of the recovery ladder: cancel first, self-restart (T99.3) only when cancellation cannot clear it.
+
+      2026-07-16 tighten: v1 = dispatch ctx + tool-class deadlines + session invalidate + structured timeout; not a full cooperative-cancel migration of go-ios/adb.
+    tags:
+    - health
+    - dispatch
+    - timeout
+    - cancellation
+    - deploy
+    - ios
+    origin: 2026-07-16 wedge deep dive (G1, G2, G8)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T99.2:
+    name: No lock is held across device I/O — one wedged device cannot stall unrelated tools
+    status: achieved
+    value: 5.0
+    cost: 2.0
+    actual_cost: 2.0
+    acceptance:
+    - handleNetwork no longer holds h.mu across ApplyNetwork/ClearNetwork (internal/mcp/tools.go:868-899)
+    - goios.ServicePool.Acquire does not hold the pool mutex across the DTX handshake (internal/goios/pool.go:81-105); a wedged handshake for one UDID does not block Acquire for other UDIDs
+    - 'Audit complete: no handler or pool path holds a process-wide or multi-device mutex across unbounded device I/O except documented, time-bounded exceptions; any remaining sites are fixed or listed with justification'
+    - 'Regression test: with one fake device stalled inside a device op, read tools and mutating ops against a second device all complete within their deadlines'
+    context: |-
+      Gap G5/G6 from the 2026-07-16 deep dive. The dominant lock pattern is lock-resolve-unlock, but known exceptions hold a mutex across unbounded device I/O, so a single wedged device turns a per-device fault into a daemon-wide stall.
+
+      2026-07-16 tighten: acceptance requires an audit, not only the two named sites, so the target does not reopen on the next lock-across-I/O find.
+    tags:
+    - health
+    - concurrency
+    - locks
+    - goios
+    - isolation
+    origin: 2026-07-16 wedge deep dive (G5, G6)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T99.3:
+    name: The daemon detects its own wedged-but-alive state and self-restarts as last resort — supervised relaunch, never a human
+    status: achieved
+    value: 13.0
+    cost: 8.0
+    actual_cost: 5.0
+    acceptance:
+    - health.ProgressWatchdog instruments tool dispatch and drives the daemon-self entity — a handler stuck past its deadline-cancel grace flips daemon-self out of healthy (today it is registered but nothing observes it, internal/daemon/health.go:44-47)
+    - On a confirmed self-wedge (cancellation failed to clear it), the daemon persists a goroutine dump + wedge snapshot under ~/.spyder/ and exits nonzero
+    - 'Supervised relaunch is verified for the blessed long-running mode: brew services / launchd KeepAlive. Bare `spyder serve` in a terminal is not required to self-re-exec; docs state that wedged-but-alive recovery for production/dev daemons is launchd (or an equivalent external supervisor)'
+    - Self-restart is rate-limited (e.g. at most N restarts per window); thrashing on a permanent external fault escalates to needs_attention without infinite restart loops
+    - 'Synthetic wedge test: an injected never-returning handler leads to automatic restart under the supervised path and a subsequent successful tool call with zero human/agent action'
+    - 'In-flight state loss on restart is bounded and documented: reservations, log-capture sessions, app-channel listeners, streamrelay catalogue and live player sessions — what survives (if anything) and what does not. Stream sessions may drop; that is accepted for v1'
+    context: |-
+      Gap G3 plus the dominant unfixed failure mode from the mnemo history: ≥6 manual kill+restart incidents since 2026-04-25 and zero self-restarts ever. launchd KeepAlive covers crash/exit only — blind to wedged-but-alive, which is exactly what the unwired ProgressWatchdog was built to detect. Recovery ladder: T99.1 cancellation first; this target is escalation when cancellation cannot clear the wedge.
+
+      2026-07-16 tighten: blessed supervisor = launchd/brew; bare serve need not re-exec; rate-limit restarts; streamrelay session drop accepted and documented.
+    depends_on:
+    - T99.1
+    - T99.5
+    tags:
+    - health
+    - watchdog
+    - self-restart
+    - daemon
+    - launchd
+    - deadlock
+    origin: 2026-07-16 wedge deep dive (G3 + manual-restart tally)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T99.4:
+    name: The usbmuxd broken-pipe / tunnel-start-loop wedge class (2026-07-16) self-heals through the health model
+    status: achieved
+    value: 8.0
+    cost: 5.0
+    actual_cost: 3.0
+    acceptance:
+    - 'A sustained tunnel-start failure loop (write unix ->/var/run/usbmuxd: broken pipe / failed to start tunnel repeating across devices) is detected as a wedge episode in the health model, not just log noise'
+    - 'Bounded recovery ladder for the episode: rebuild daemon-side usbmux connections / restart the ios tunnel subprocess → at most one killusbmuxd per episode → escalate to needs_attention; if daemon-side connections remain stale after that ladder, escalate via the T99.3 self-wedge path when T99.3 is present'
+    - 'iostunnel restart escalation is bounded: a tunnel that cannot rebuild stops retrying silently forever (supervisor.go:229-257) and reaches needs_attention with an actionable message'
+    - 'ORACLE (gating, class-1): synthetic/injected tunnel-start or broken-pipe failure drives the episode through detect → bounded recover → healthy or needs_attention without a manual daemon kill'
+    - 'RESIDUE (class-4, HIL, non-gating): inducing the broken-pipe state on hardware (e.g. kill usbmuxd mid-traffic) recovers without a manual daemon restart, per-device tunnels rebuilt'
+    context: |-
+      Today's live wedge class. The v0.48.0 tunnel self-heal (PR #110) covers the dead-lifeline zombie-tunnel path, but 2026-07-16 showed a distinct mode: the tunnel cannot even START because the usbmuxd handshake write fails with broken pipe, and the go-ios agent loops failed tunnel-starts across all devices indefinitely. Depends on T90.5.1 so episode/ladder logic has one home.
+
+      2026-07-16 tighten: class-1 synthetic oracle gates; hardware is residue. Escalation to daemon self-restart uses T99.3 when available (soft product dependency; does not hard-block T99.4 if T99.3 lands later).
+    depends_on:
+    - T90.5.1
+    tags:
+    - health
+    - usbmuxd
+    - iostunnel
+    - wedge
+    - self-heal
+    - ios
+    - needs-device
+    origin: 2026-07-16 wedge deep dive (today's incident + G10)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T99.5:
+    name: 'A stuck spyder is always diagnosable in-process: goroutine dumps, an in-flight op registry, and wedge snapshots from device-op hangs'
+    status: achieved
+    value: 5.0
+    cost: 3.0
+    actual_cost: 3.0
+    acceptance:
+    - SIGQUIT (or a loopback-only debug/pprof endpoint) produces a full goroutine dump without killing the daemon
+    - The health snapshot lists in-flight tool calls (tool, device, elapsed) so spyder status shows WHAT is stuck, not just that something is slow
+    - wedge.Capture fires from device-op timeout paths (SendFile, LaunchApp, screenshot), not only from session-resolve error paths in goios/session.go
+    - Every wedge episode leaves persisted post-incident evidence under ~/.spyder/ (snapshot and/or goroutine dump), referenced from the health model's evidence ring
+    context: Gaps G7/G9 from the 2026-07-16 deep dive. Today the only in-flight observability is the watchSlowDispatch log pair. Diagnosis is a prerequisite for trusting self-restart (T99.3 dumps this evidence before exiting). Can land before T99.1; T99.3 depends on this for pre-exit dumps.
+    tags:
+    - health
+    - observability
+    - diagnostics
+    - pprof
+    - wedge
+    origin: 2026-07-16 wedge deep dive (G7, G9)
+    discovered: 2026-07-16
+    achieved: 2026-07-16
+  T99.6:
+    name: 'The health surface tells the truth and is documented: pinned-device attention live, doctor folded into the model, STABILITY.md covers the surfaces'
+    status: achieved
+    value: 5.0
+    cost: 3.0
+    actual_cost: 3.0
+    acceptance:
+    - Inventory supports an expected_present flag and SetHealthModel receives a real pinned predicate (internal/mcp/server.go:252 currently passes nil); a pinned device's disappearance escalates to needs_attention with a macOS notification
+    - spyder doctor's findings feed the health model's KindDevice/daemon entities (the TODO(T90.3) at doctor.go:35 is resolved); doctor and spyder status agree on wedge state instead of being two parallel diagnosis paths
+    - STABILITY.md documents spyder status, spyder doctor, /api/v1/health, and the health() builtin as stable surfaces; agents-guide.md documents doctor --install-sudoers
+    - spyder status on a daemon with a stuck handler shows the degradation (via T99.3 daemon-self + T99.5 in-flight registry) rather than reporting healthy
+    context: |-
+      Gaps G4/G12 from the 2026-07-16 deep dive — T90 residue left unwired (pinned predicate nil, doctor parallel to health model, health surfaces absent from STABILITY.md). Kept under T99 because truthfulness of the surface is what makes wedge recovery verifiable, not a separate product line.
+
+      2026-07-16 tighten: depends_on T99.3 and T99.5 so "status tells the truth under wedge" cannot retire before the wiring exists.
+    depends_on:
+    - T99.3
+    - T99.5
+    tags:
+    - health
+    - docs
+    - doctor
+    - inventory
+    - notifications
+    - stability
+    origin: 2026-07-16 wedge deep dive (G4, G12)
+    discovered: 2026-07-16
+    achieved: 2026-07-16

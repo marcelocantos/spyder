@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"strings"
@@ -194,7 +195,7 @@ func TestRunsList_RoundTripsManifest(t *testing.T) {
 
 func TestRunsShow_RequiresRunID(t *testing.T) {
 	h, _, _ := newHandlerWithRuns(t, nil, nil)
-	_, err := h.Dispatch("runs_show", map[string]any{})
+	_, err := h.Dispatch(context.Background(), "runs_show", map[string]any{})
 	if err == nil {
 		t.Error("runs_show without run_id should error")
 	}

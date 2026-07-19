@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -120,6 +121,9 @@ type TemplateStatus struct {
 type Pool struct {
 	mu        sync.Mutex
 	cfg       *Config
+	cfgPath   string    // if set, pool.yaml is reloaded on mtime/size change
+	cfgMod    time.Time // last successfully applied file mtime
+	cfgSize   int64     // last successfully applied file size (-1 = unset)
 	exec      Executor
 	clk       Clock
 	store     *poolstore.Store     // optional persistent hold ledger
@@ -137,6 +141,21 @@ func WithStore(s *poolstore.Store) Option {
 	return func(p *Pool) { p.store = s }
 }
 
+// WithConfigPath enables mtime/size-based reload of pool.yaml so edits
+// take effect without restarting the daemon. path is the absolute path
+// to pool.yaml (typically paths.PoolConfigPath()). Invalid reloads keep
+// the previous config.
+func WithConfigPath(path string) Option {
+	return func(p *Pool) {
+		p.cfgPath = path
+		p.cfgSize = -1
+		if fi, err := os.Stat(path); err == nil {
+			p.cfgMod = fi.ModTime()
+			p.cfgSize = fi.Size()
+		}
+	}
+}
+
 // New creates a Pool with the given config and the real executors.
 // Call Adopt(ctx) then Reconcile(ctx) once the daemon is ready to
 // bring the pool to desired state.
@@ -148,6 +167,7 @@ func New(cfg *Config, exec Executor, opts ...Option) *Pool {
 func newWithClock(cfg *Config, exec Executor, clk Clock, opts ...Option) *Pool {
 	p := &Pool{
 		cfg:          cfg,
+		cfgSize:      -1,
 		exec:         exec,
 		clk:          clk,
 		instances:    map[string]*Instance{},
@@ -157,6 +177,35 @@ func newWithClock(cfg *Config, exec Executor, clk Clock, opts ...Option) *Pool {
 		o(p)
 	}
 	return p
+}
+
+// reloadConfigLocked re-reads pool.yaml when cfgPath is set and the
+// file's size or mtime has changed. Callers must hold p.mu. Missing or
+// invalid files keep the previous config (a half-written save must not
+// blank the pool).
+func (p *Pool) reloadConfigLocked() {
+	if p.cfgPath == "" {
+		return
+	}
+	fi, err := os.Stat(p.cfgPath)
+	if err != nil {
+		return
+	}
+	mod, size := fi.ModTime(), fi.Size()
+	if p.cfgSize == size && p.cfgMod.Equal(mod) {
+		return
+	}
+	cfg, err := LoadConfig(p.cfgPath)
+	if err != nil {
+		slog.Warn("pool config reload failed — keeping previous",
+			"path", p.cfgPath, "error", err)
+		return
+	}
+	p.cfg = cfg
+	p.cfgMod = mod
+	p.cfgSize = size
+	slog.Info("pool config reloaded",
+		"templates", len(cfg.Templates), "path", p.cfgPath)
 }
 
 // Adopt rebuilds the in-memory inventory from live simctl/avdmanager
@@ -339,6 +388,7 @@ func (p *Pool) adoptInstance(in adoptInput) {
 // and the caller leaves the device alone (it'll appear as a GC
 // candidate later).
 func (p *Pool) findTemplateForDevice(platform string, holdsByDevice map[string]poolstore.Hold) string {
+	p.reloadConfigLocked()
 	var matches []string
 	for _, t := range p.cfg.Templates {
 		if t.Platform == platform {
@@ -721,6 +771,7 @@ func (p *Pool) GC() GCResult {
 func (p *Pool) Status() []TemplateStatus {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.reloadConfigLocked()
 
 	byTemplate := map[string]*TemplateStatus{}
 	for i := range p.cfg.Templates {
@@ -762,6 +813,7 @@ func (p *Pool) Status() []TemplateStatus {
 func (p *Pool) ForSelector(tags []string) []TemplateConfig {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.reloadConfigLocked()
 
 	var out []TemplateConfig
 	for _, t := range p.cfg.Templates {
@@ -776,6 +828,7 @@ func (p *Pool) ForSelector(tags []string) []TemplateConfig {
 func (p *Pool) TemplateNames() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.reloadConfigLocked()
 	names := make([]string, len(p.cfg.Templates))
 	for i, t := range p.cfg.Templates {
 		names[i] = t.Name
@@ -788,6 +841,7 @@ func (p *Pool) TemplateNames() []string {
 // --------------------------------------------------------------------------
 
 func (p *Pool) findTemplate(name string) *TemplateConfig {
+	p.reloadConfigLocked()
 	for i := range p.cfg.Templates {
 		if p.cfg.Templates[i].Name == name {
 			return &p.cfg.Templates[i]

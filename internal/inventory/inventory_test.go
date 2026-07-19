@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const sampleInventory = `[
@@ -172,6 +173,76 @@ func TestStore_Entries(t *testing.T) {
 	entries := s.Entries()
 	if len(entries) != 2 {
 		t.Errorf("Entries() returned %d entries; want 2", len(entries))
+	}
+}
+
+func TestStore_ReloadsOnFileChange(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	dir := filepath.Join(tmp, ".spyder")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "inventory.json")
+	if err := os.WriteFile(path, []byte(sampleInventory), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	s := New()
+	if _, ok := s.Lookup("Raspberry"); !ok {
+		t.Fatal("expected Raspberry after first load")
+	}
+
+	// Sleep so mtime advances on filesystems with 1s resolution.
+	time.Sleep(1100 * time.Millisecond)
+	const updated = `[
+  {
+    "alias": "S24",
+    "platform": "android",
+    "android_serial": "RFCX20VKMAR"
+  }
+]`
+	if err := os.WriteFile(path, []byte(updated), 0o600); err != nil {
+		t.Fatalf("rewrite: %v", err)
+	}
+
+	if _, ok := s.Lookup("Raspberry"); ok {
+		t.Error("old alias should be gone after reload")
+	}
+	entry, ok := s.Lookup("S24")
+	if !ok {
+		t.Fatal("expected S24 after reload")
+	}
+	if entry.AndroidSerial != "RFCX20VKMAR" {
+		t.Errorf("AndroidSerial = %q; want RFCX20VKMAR", entry.AndroidSerial)
+	}
+	if got := s.AliasFor("RFCX20VKMAR"); got != "S24" {
+		t.Errorf("AliasFor = %q; want S24", got)
+	}
+}
+
+func TestStore_InvalidJSONKeepsPrevious(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	dir := filepath.Join(tmp, ".spyder")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "inventory.json")
+	if err := os.WriteFile(path, []byte(sampleInventory), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := New()
+	if _, ok := s.Lookup("iPad"); !ok {
+		t.Fatal("expected iPad")
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	if err := os.WriteFile(path, []byte("{not valid"), 0o600); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+	if _, ok := s.Lookup("iPad"); !ok {
+		t.Error("invalid JSON should keep previous snapshot")
 	}
 }
 

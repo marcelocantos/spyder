@@ -9,11 +9,17 @@ payload-agnostic byte pipe.** LAN/trusted dev only, no authn (same trust model
 as the app-channel). A future production stream is a separate clean-slate
 design — do NOT accommodate it here.
 
+**Multi-rung (🎯T97 / ge 🎯T128):** the relay does **not** inspect
+`MessageHeader.magic`. H.264 (`SP2V`) and command-stream (`SP2S`) are end-to-end
+rungs negotiated by ge player + server; spyder only pipes binary messages and
+counts opaque frames/bytes. Class-1 oracle:
+`TestRelay_PipesCommandStreamMagic`.
+
 ## Architecture (what plugs where)
 
 ```
 ge server instance ──H.264──▶ spyder relay ──H.264──▶ dashboard browser player
-(GE_STREAM mode)    ◀──input── (T91.4, done) ◀──input── (WebCodecs)
+(STREAM mode)    ◀──input── (T91.4, done) ◀──input── (WebCodecs)
 ```
 
 ## DONE — spyder relay (T91.4), `internal/streamrelay/relay.go`
@@ -34,16 +40,16 @@ Uses `github.com/coder/websocket`.
 
 Binary messages are `wire::MessageHeader{uint32 magic, uint32 length}` + payload
 (`include/ge/Protocol.h`):
-- `kVideoStreamMagic` "GE2V" (server→player): header + `uint8 flags`(bit0=keyframe)
+- `kVideoStreamMagic` "SP2V" (server→player): header + `uint8 flags`(bit0=keyframe)
   + `uint32 seq` + H.264 bytes. Encoder output is **complete encoded frames**
   (CMSampleBuffer data), VideoToolbox H.264 High profile, low-latency
   (`VideoEncoder_apple.mm`). NOTE: verify Annex-B vs AVCC + whether SPS/PPS ride
   keyframes — the browser `VideoDecoder` config depends on it.
-- `kSdlEventMagic` "GE2I" (player→server): header + raw `SDL_Event` struct.
-- `kDeviceInfoMagic` "GE2D" (player→server): header + `wire::DeviceInfo`
+- `kSdlEventMagic` "SP2I" (player→server): header + raw `SDL_Event` struct.
+- `kDeviceInfoMagic` "SP2D" (player→server): header + `wire::DeviceInfo`
   {width,height,pixelRatio,deviceClass} — the player tells the server its dims;
   the server renders at `width/2`.
-- `kSessionConfigMagic` "GE2C" (server→player): header + `wire::SessionConfig`
+- `kSessionConfigMagic` "SP2C" (server→player): header + `wire::SessionConfig`
   {sensors,orientation}.
 - Sideband JSON (server→spyder): `{"type":"hello","name","pid","version"}`;
   spyder→server: `player_attached` / `player_detached` with `session_id`.
@@ -86,16 +92,16 @@ uses) delivers RGBA on the game thread. So:
      bg thread via a queue. Don't block the game thread on the socket.
    - First cut: single player/session.
 
-3. **GE_STREAM mode** — `sample/tiltbuggy/src/main.cpp` (mirror the GE_FACTORY
-   block): if `getenv("GE_STREAM")`, construct a `StreamClient(host,port,name)`
+3. **STREAM mode** — `sample/tiltbuggy/src/main.cpp` (mirror the FACTORY
+   block): if `getenv("STREAM")`, construct a `StreamClient(host,port,name)`
    with an input handler that `SDL_PushEvent`s the received events, install its
    frame sink, and fall through to the normal `ge::run` (direct). Spyder injects
-   `GE_STREAM=<daemon-host:port>` at launch (the relay lives on the daemon's
+   `STREAM=<daemon-host:port>` at launch (the relay lives on the daemon's
    HTTP addr, e.g. 127.0.0.1:3030). The local window shows the game; the remote
    player mirrors it and drives it.
 
 4. **Oracle (spyder, class-1)** — a gated live test: `launch_app(desktop, env
-   GE_STREAM=<addr>)`, then connect to `/stream/player/<name>` and assert
+   STREAM=<addr>)`, then connect to `/stream/player/<name>` and assert
    ordered, valid H.264 access units arrive (check NAL start codes / non-empty
    keyframe first), and that a synthetic input reaches the game (observe via
    `app_state`). No browser needed for the class-1 gate.

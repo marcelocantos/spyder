@@ -77,31 +77,56 @@ func NewServicePool[T any](r *Resolver, newConn func(ios.DeviceEntry) (T, error)
 //
 // On first use for a UDID (or after an Invalidate or TTL eviction),
 // Acquire opens a new connection via the pool's newConn factory.
+// Session resolve + newConn run WITHOUT holding the pool mutex so a
+// wedged handshake for one UDID cannot stall Acquire for others (🎯T99.2).
 func (p *ServicePool[T]) Acquire(udid string) (conn T, release func(), err error) {
+	var zero T
 	p.mu.Lock()
 	if p.stopped {
 		p.mu.Unlock()
-		var zero T
 		return zero, func() {}, errPoolClosed
 	}
-	e, ok := p.entries[udid]
-	if !ok {
-		dev, derr := p.resolver.Session(udid)
-		if derr != nil {
-			p.mu.Unlock()
-			var zero T
-			return zero, func() {}, derr
-		}
-		c, cerr := p.newConn(dev)
-		if cerr != nil {
-			p.mu.Unlock()
-			var zero T
-			return zero, func() {}, cerr
-		}
-		p.opens++
-		e = &poolEntry[T]{conn: c, lastUsed: time.Now()}
-		p.entries[udid] = e
+	if e, ok := p.entries[udid]; ok {
+		p.mu.Unlock()
+		e.mu.Lock()
+		e.lastUsed = time.Now()
+		return e.conn, func() {
+			e.lastUsed = time.Now()
+			e.mu.Unlock()
+		}, nil
 	}
+	p.mu.Unlock()
+
+	// Handshake outside p.mu (🎯T99.2).
+	dev, derr := p.resolver.Session(udid)
+	if derr != nil {
+		return zero, func() {}, derr
+	}
+	c, cerr := p.newConn(dev)
+	if cerr != nil {
+		return zero, func() {}, cerr
+	}
+
+	p.mu.Lock()
+	if p.stopped {
+		p.mu.Unlock()
+		_ = p.closeFn(c)
+		return zero, func() {}, errPoolClosed
+	}
+	// Race: another Acquire may have installed an entry while we handshook.
+	if e, ok := p.entries[udid]; ok {
+		p.mu.Unlock()
+		_ = p.closeFn(c)
+		e.mu.Lock()
+		e.lastUsed = time.Now()
+		return e.conn, func() {
+			e.lastUsed = time.Now()
+			e.mu.Unlock()
+		}, nil
+	}
+	p.opens++
+	e := &poolEntry[T]{conn: c, lastUsed: time.Now()}
+	p.entries[udid] = e
 	p.mu.Unlock()
 
 	e.mu.Lock()

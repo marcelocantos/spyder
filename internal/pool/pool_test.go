@@ -283,6 +283,94 @@ templates:
 	}
 }
 
+func TestPool_ReloadsConfigOnFileChange(t *testing.T) {
+	const yaml1 = `
+templates:
+  - name: iphone16
+    platform: ios
+    device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+    runtime_or_system_image: com.apple.CoreSimulator.SimRuntime.iOS-18-3
+    available_max: 1
+`
+	const yaml2 = `
+templates:
+  - name: pixel9
+    platform: android
+    device_type: pixel_9_pro
+    runtime_or_system_image: "system-images;android-35;google_apis;arm64-v8a"
+    available_max: 2
+  - name: iphone16
+    platform: ios
+    device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+    runtime_or_system_image: com.apple.CoreSimulator.SimRuntime.iOS-18-3
+    available_max: 3
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "pool.yaml")
+	if err := writeFile(path, yaml1); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	p := newWithClock(cfg, newFakeExec(), newFakeClock(time.Now()), WithConfigPath(path))
+	names := p.TemplateNames()
+	if len(names) != 1 || names[0] != "iphone16" {
+		t.Fatalf("initial TemplateNames = %v; want [iphone16]", names)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	if err := writeFile(path, yaml2); err != nil {
+		t.Fatal(err)
+	}
+	names = p.TemplateNames()
+	if len(names) != 2 {
+		t.Fatalf("after reload TemplateNames = %v; want 2 templates", names)
+	}
+	// Order follows yaml order.
+	if names[0] != "pixel9" || names[1] != "iphone16" {
+		t.Errorf("after reload TemplateNames = %v; want [pixel9 iphone16]", names)
+	}
+	// findTemplate path (via ForSelector empty tags = all).
+	all := p.ForSelector(nil)
+	if len(all) != 2 || all[1].AvailableMax != 3 {
+		t.Errorf("ForSelector after reload: %+v", all)
+	}
+}
+
+func TestPool_InvalidConfigKeepsPrevious(t *testing.T) {
+	const yaml1 = `
+templates:
+  - name: iphone16
+    platform: ios
+    device_type: com.apple.CoreSimulator.SimDeviceType.iPhone-16
+    runtime_or_system_image: com.apple.CoreSimulator.SimRuntime.iOS-18-3
+    available_max: 1
+`
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "pool.yaml")
+	if err := writeFile(path, yaml1); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newWithClock(cfg, newFakeExec(), newFakeClock(time.Now()), WithConfigPath(path))
+	if n := p.TemplateNames(); len(n) != 1 {
+		t.Fatalf("want 1 template, got %v", n)
+	}
+
+	time.Sleep(1100 * time.Millisecond)
+	if err := writeFile(path, "templates:\n  - name: broken\n"); err != nil {
+		t.Fatal(err)
+	}
+	if n := p.TemplateNames(); len(n) != 1 || n[0] != "iphone16" {
+		t.Errorf("invalid reload should keep previous: %v", n)
+	}
+}
+
 func TestConfigValidation(t *testing.T) {
 	tests := []struct {
 		name    string

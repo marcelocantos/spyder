@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -57,11 +58,11 @@ func TestServerFactory_Tiltbuggy_Live(t *testing.T) {
 		"bundle_id": "com.squz.tiltbuggy.factory",
 		"env":       map[string]any{"GE_FACTORY": "1"},
 	}
-	res, err := h.Dispatch("launch_app", launchArgs)
+	res, err := h.Dispatch(context.Background(), "launch_app", launchArgs)
 	if err != nil || res.IsError {
 		t.Fatalf("launch factory: err=%v %s", err, callText(res))
 	}
-	t.Cleanup(func() { _, _ = h.Dispatch("terminate_app", launchArgs) })
+	t.Cleanup(func() { _, _ = h.Dispatch(context.Background(), "terminate_app", launchArgs) })
 
 	// Wait for the factory to connect.
 	factoryID := waitForApp(t, mgr, "tiltbuggy-factory", 20*time.Second)
@@ -70,7 +71,7 @@ func TestServerFactory_Tiltbuggy_Live(t *testing.T) {
 	}
 
 	// Ask the factory to spawn a game instance.
-	spawnRes, err := h.Dispatch("app_spawn", map[string]any{"session_id": factoryID, "game": "tiltbuggy"})
+	spawnRes, err := h.Dispatch(context.Background(), "app_spawn", map[string]any{"session_id": factoryID, "game": "tiltbuggy"})
 	if err != nil || spawnRes.IsError {
 		t.Fatalf("app_spawn: err=%v %s", err, callText(spawnRes))
 	}
@@ -89,7 +90,7 @@ func TestServerFactory_Tiltbuggy_Live(t *testing.T) {
 	}
 
 	// The monitor surface works on the spawned instance.
-	tw, err := h.Dispatch("app_tweak_list", map[string]any{"session_id": inst.SessionID})
+	tw, err := h.Dispatch(context.Background(), "app_tweak_list", map[string]any{"session_id": inst.SessionID})
 	if err != nil || tw.IsError || !strings.Contains(callText(tw), "camera.zoom") {
 		t.Fatalf("app_tweak_list on spawned instance: err=%v %s", err, callText(tw))
 	}
