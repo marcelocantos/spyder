@@ -1,0 +1,99 @@
+<!doctype html>
+<!-- Copyright 2026 Marcelo Cantos
+     SPDX-License-Identifier: Apache-2.0
+
+     spyder browser player (🎯T101/🎯T106): the same player C++ tree,
+     compiled to wasm, served by the spyder daemon. Usage:
+
+         http://<spyder-host>:<port>/player/?name=<server-name>
+
+     Optional query params: host, port (default: this page's origin),
+     class (device-class override: phone|tablet|desktop, default desktop).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>spyder player</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%; overflow: hidden;
+    background: #000; touch-action: none; overscroll-behavior: none;
+  }
+  #canvas {
+    display: block; width: 100%; height: 100%;
+    image-rendering: auto; outline: none;
+  }
+  #status {
+    position: fixed; left: 0; right: 0; top: 40%;
+    color: #9a9a9a; font: 16px system-ui, sans-serif; text-align: center;
+    pointer-events: none; white-space: pre-line;
+  }
+</style>
+</head>
+<body>
+<div id="status">connecting…</div>
+<canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+<script>
+  const params = new URLSearchParams(location.search);
+  const name = params.get('name') || 'server';
+  const host = params.get('host') || location.hostname;
+  const port = params.get('port') || location.port || '3030';
+  const devClass = params.get('class') || 'desktop';
+  document.title = 'spyder player — ' + name;
+
+  const statusEl = document.getElementById('status');
+  const canvasEl = document.getElementById('canvas');
+
+  // Size the backing store to physical pixels; SDL reads the canvas size.
+  function fitCanvas() {
+    canvasEl.width  = Math.floor(innerWidth  * devicePixelRatio);
+    canvasEl.height = Math.floor(innerHeight * devicePixelRatio);
+  }
+  fitCanvas();
+
+  // Reconnect with exponential backoff (matches the native player's
+  // policy shape: 1s base, doubling, 30s cap; reset after a session that
+  // survived >30s).
+  function scheduleReconnect() {
+    let delay = Number(sessionStorage.getItem('spyder-backoff') || 1000);
+    const started = Number(sessionStorage.getItem('spyder-session-start') || 0);
+    if (started && Date.now() - started > 30000) delay = 1000;
+    sessionStorage.setItem('spyder-backoff', Math.min(delay * 2, 30000));
+    statusEl.textContent = 'disconnected — retrying in ' +
+                           Math.round(delay / 1000) + 's';
+    setTimeout(() => location.reload(), delay);
+  }
+
+  var Module = {
+    canvas: canvasEl,
+    arguments: ['--host', host, '--port', String(port), '--name', name,
+                '--device-class', devClass],
+    onRuntimeInitialized() {
+      sessionStorage.setItem('spyder-session-start', String(Date.now()));
+    },
+    postRun() {
+      // main() returned: wire closed or server gone.
+      scheduleReconnect();
+    },
+    onAbort(what) {
+      statusEl.textContent = 'player crashed: ' + what;
+      scheduleReconnect();
+    },
+    print(t) { console.log(t); sniffStatus(t); },
+    printErr(t) { console.error(t); sniffStatus(t); },
+  };
+
+  // The player's own logs are ground truth: hide the overlay once the
+  // main loop is presenting; surface hard connect failures.
+  function sniffStatus(t) {
+    if (/entering main loop|PlayerFPS/.test(t))
+      statusEl.style.display = 'none';
+    else if (/failed to connect/i.test(t))
+      statusEl.textContent = 'cannot reach server "' + name + '" — retrying';
+  }
+</script>
+<script src="player.js"></script>
+</body>
+</html>

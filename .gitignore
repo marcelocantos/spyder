@@ -13,3 +13,4 @@ ios/**/*.xcodeproj/project.xcworkspace/xcuserdata/
 devimages/
 selfIdentity.plist
 player/build/
+player/web/dist/

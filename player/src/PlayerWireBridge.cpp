@@ -433,7 +433,10 @@ bool PlayerWireBridge::pump() {
                         reinterpret_cast<const char*>(blob->data()), blob->size());
                     auto px = spyder::rasterizeSvgToPixels(
                         svg, tw < 0 ? -1 : int(tw), th < 0 ? -1 : int(th));
-                    if (px.isNull()) return false;
+                    if (px.isNull()) {
+                        SPDLOG_WARN("SP2S MakeSvg: rasterize failed (id={})", id);
+                        return false;
+                    }
                     CmdImage img;
                     img.id = id;
                     img.w = static_cast<uint16_t>(px.width);
@@ -458,7 +461,10 @@ bool PlayerWireBridge::pump() {
                     auto px = spyder::rasterizeTextToPixelsFromMemory(
                         text, fontBlob->data(), fontBlob->size(), faceIndex,
                         sizePt, {r, g, b, a});
-                    if (px.isNull()) return false;
+                    if (px.isNull()) {
+                        SPDLOG_WARN("SP2S MakeText: rasterize failed (id={})", id);
+                        return false;
+                    }
                     CmdImage img;
                     img.id = id;
                     img.w = static_cast<uint16_t>(px.width);
@@ -471,14 +477,32 @@ bool PlayerWireBridge::pump() {
                     const uint32_t id = c.u32();
                     const uint8_t format = c.u8();
                     const auto hash = c.hash();
-                    if (!c.ok || !cx->cache) return false;
+                    if (!c.ok || !cx->cache) {
+                        SPDLOG_WARN("SP2S MakeEncodedImage: cursor/cache bad "
+                                    "(ok={} id={})", c.ok, id);
+                        return false;
+                    }
                     const auto* blob = cx->cache->get(hash);
-                    if (!blob) return false;
+                    if (!blob) {
+                        SPDLOG_WARN("SP2S MakeEncodedImage: blob missing "
+                                    "(id={} fmt={})", id, int(format));
+                        return false;
+                    }
                     (void)format; // PNG/JPEG both via SDL_image
                     SDL_IOStream* io = SDL_IOFromConstMem(blob->data(), blob->size());
-                    if (!io) return false;
+                    if (!io) {
+                        SPDLOG_WARN("SP2S MakeEncodedImage: SDL_IOFromConstMem "
+                                    "failed (id={} {}B): {}",
+                                    id, blob->size(), SDL_GetError());
+                        return false;
+                    }
                     SDL_Surface* raw = IMG_Load_IO(io, true);
-                    if (!raw) return false;
+                    if (!raw) {
+                        SPDLOG_WARN("SP2S MakeEncodedImage: IMG_Load failed "
+                                    "(id={}, {}B): {}",
+                                    id, blob->size(), SDL_GetError());
+                        return false;
+                    }
                     SDL_Surface* rgba = raw;
                     bool owned = false;
                     if (raw->format != SDL_PIXELFORMAT_RGBA32) {
