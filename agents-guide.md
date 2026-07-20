@@ -390,12 +390,11 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_resume(session_id?)` | Resume the app's main loop. | |
 | `app_step(session_id?, frames?)` | Advance N frames while paused. | |
 | `app_speed(session_id?, multiplier?)` | Set a dt multiplier for the app's main loop. | |
-| `app_input(session_id?, type, ...)` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | For accel prefer `value=[x,y,z]`. One-shot accel is overwritten by real CoreMotion unless override is enabled. |
-| `app_sensor_override_enable(session_id?, sensor?, value?)` | **Sticky** claim of accel stream: real samples dropped until `app_sensor_disable`. Optional `value=[x,y,z]` latches a sample (re-asserted each frame). | Touch/keys unchanged. |
-| `app_sensor_override_set(session_id?, sensor?, value)` | Update latch while override is enabled. `value=[x,y,z]` required. | Errors if override not enabled. |
-| `app_sensor_mute_enable(session_id?, sensor?)` | **Sticky** mute: drop real samples, emit neutral `[0,0,0]` until disable. | |
-| `app_sensor_disable(session_id?, sensor?)` | Restore real device stream (passthrough). Ends override or mute. | Always call when done. |
-| `app_sensor_status(session_id?, sensor?)` | Query `{enabled, kind, value?}`. | |
+| `app_input(session_id?, type, ...)` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | For accel prefer `value=[x,y,z]`. One-shot accel is overwritten by real CoreMotion unless the sensor is suppressed. |
+| `app_sensor_suppress(session_id?, sensor?)` | **Sticky:** drop real samples for this sensor until `app_sensor_unsuppress`. Does **not** set a value. | One job only. |
+| `app_sensor_set(session_id?, sensor?, value)` | Set scripted sample `value=[x,y,z]` (re-asserted each frame). Requires prior suppress. | |
+| `app_sensor_unsuppress(session_id?, sensor?)` | Restore real device samples. | Always call when done. |
+| `app_sensor_status(session_id?, sensor?)` | Query `{suppressed, value?}`. | |
 | `app_state(session_id?, slice, select?)` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `select` is an optional jq expression evaluated server-side. |
 | `app_save_state(session_id?)` | Serialize app state. Returns a base64-encoded blob; the app picks the schema. | |
 | `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
@@ -707,21 +706,22 @@ agent round-trips, no parallel tool calls needed (this supersedes the
 old "parallel tool calls" framing):
 
 ```starlark
-# Sustained tilt: enable is sticky until disable (does not revert next step).
-app_sensor_override_enable(sensor="accel", value=[0.3, 0.0, 0.0])
+# Sustained tilt: suppress is sticky; set only updates the sample.
+app_sensor_suppress(sensor="accel")
+app_sensor_set(value=[0.3, 0.0, 0.0])
 for i in range(60):
     emit(app_state(slice="geometry"))  # tiltbuggy uses "geometry"; others vary
     sleep(16)
-app_sensor_override_set(value=[-0.3, 0.0, 0.0])  # still override
+app_sensor_set(value=[-0.3, 0.0, 0.0])
 sleep(500)
-app_sensor_disable(sensor="accel")  # restore CoreMotion
+app_sensor_unsuppress(sensor="accel")
 ```
 
-One-shot inject without override is still valid for emulators / no-sensor
+One-shot inject without suppress is still valid for emulators / no-sensor
 hosts, but on a physical device CoreMotion will overwrite it almost immediately:
 
 ```starlark
-# Best-effort one-shot (passthrough) — not for sustained tilt.
+# Best-effort one-shot (not suppressed) — not for sustained tilt.
 app_input(type="accel", value=[0.3, 0.0, 0.0])
 ```
 

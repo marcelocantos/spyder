@@ -1,4 +1,4 @@
-# Cardinal tilt with sticky override enable/disable + value=[x,y,z].
+# Cardinal tilt: suppress → set → unsuppress (one concern per call).
 # Params: session_id
 
 sid = params["session_id"] if "session_id" in params else ""
@@ -10,20 +10,20 @@ dirs = [
     {"name": "down", "value": [0.0, 1.5, 0.0]},
 ]
 
-def enable(value):
+def suppress():
     if sid:
-        return app_sensor_override_enable(session_id=sid, sensor="accel", value=value)
-    return app_sensor_override_enable(sensor="accel", value=value)
+        return app_sensor_suppress(session_id=sid, sensor="accel")
+    return app_sensor_suppress(sensor="accel")
 
 def set_value(value):
     if sid:
-        return app_sensor_override_set(session_id=sid, sensor="accel", value=value)
-    return app_sensor_override_set(sensor="accel", value=value)
+        return app_sensor_set(session_id=sid, sensor="accel", value=value)
+    return app_sensor_set(sensor="accel", value=value)
 
-def disable():
+def unsuppress():
     if sid:
-        return app_sensor_disable(session_id=sid, sensor="accel")
-    return app_sensor_disable(sensor="accel")
+        return app_sensor_unsuppress(session_id=sid, sensor="accel")
+    return app_sensor_unsuppress(sensor="accel")
 
 def pose():
     if sid:
@@ -36,8 +36,8 @@ def pose():
     return g
 
 results = []
-# Sticky enable — stays until disable, not one-frame.
-enable([0.0, 0.0, 9.8])
+suppress()
+set_value([0.0, 0.0, 9.8])
 sleep(200)
 results.append({"phase": "start", "pose": pose()})
 
@@ -48,6 +48,6 @@ for d in dirs:
     set_value([0.0, 0.0, 9.8])
     sleep(200)
 
-disable()
+unsuppress()
 results.append({"phase": "end", "pose": pose()})
 emit({"recipe": "explore_cardinal_tilt", "results": results})

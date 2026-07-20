@@ -224,14 +224,13 @@ const (
 	MethodStep             = "step"
 	MethodSpeed            = "speed"
 	MethodInputInject = "input_inject"
-	// Sticky per-sensor stream authority (not a blanket session mask).
-	// enable stays until sensor_disable; default is passthrough.
-	MethodSensorOverrideEnable = "sensor_override_enable"
-	MethodSensorOverrideSet    = "sensor_override_set"
-	MethodSensorMuteEnable     = "sensor_mute_enable"
-	MethodSensorDisable        = "sensor_disable"
-	MethodSensorStatus         = "sensor_status"
-	MethodStateQuery           = "state_query"
+	// Sticky per-sensor suppress: one concern per method (not blanket session).
+	// suppress stays until unsuppress; set only updates the scripted sample.
+	MethodSensorSuppress   = "sensor_suppress"
+	MethodSensorSet        = "sensor_set"
+	MethodSensorUnsuppress = "sensor_unsuppress"
+	MethodSensorStatus     = "sensor_status"
+	MethodStateQuery       = "state_query"
 	MethodSaveState        = "save_state"
 	MethodRestoreState     = "restore_state"
 	MethodScreenshotApp    = "screenshot_app"
@@ -270,10 +269,9 @@ var KnownMethods = []string{
 	MethodStep,
 	MethodSpeed,
 	MethodInputInject,
-	MethodSensorOverrideEnable,
-	MethodSensorOverrideSet,
-	MethodSensorMuteEnable,
-	MethodSensorDisable,
+	MethodSensorSuppress,
+	MethodSensorSet,
+	MethodSensorUnsuppress,
 	MethodSensorStatus,
 	MethodStateQuery,
 	MethodSaveState,
