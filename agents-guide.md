@@ -390,7 +390,11 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_resume(session_id?)` | Resume the app's main loop. | |
 | `app_step(session_id?, frames?)` | Advance N frames while paused. | |
 | `app_speed(session_id?, multiplier?)` | Set a dt multiplier for the app's main loop. | |
-| `app_input(session_id?, type, ...)` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | Event-type-specific fields vary. |
+| `app_input(session_id?, type, ...)` | Inject a synthetic SDL event (`finger_down`, `finger_up`, `finger_motion`, `key_down`, `key_up`, `accel`). | For accel prefer `value=[x,y,z]`. One-shot accel is overwritten by real CoreMotion unless the sensor is suppressed. |
+| `app_sensor_suppress(session_id?, sensor?)` | **Sticky:** drop real samples for this sensor until `app_sensor_unsuppress`. Does **not** set a value. | One job only. |
+| `app_sensor_set(session_id?, sensor?, value)` | Set scripted sample `value=[x,y,z]` (re-asserted each frame). Requires prior suppress. | |
+| `app_sensor_unsuppress(session_id?, sensor?)` | Restore real device samples. | Always call when done. |
+| `app_sensor_status(session_id?, sensor?)` | Query `{suppressed, value?}`. | |
 | `app_state(session_id?, slice, select?)` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `select` is an optional jq expression evaluated server-side. |
 | `app_save_state(session_id?)` | Serialize app state. Returns a base64-encoded blob; the app picks the schema. | |
 | `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
@@ -702,11 +706,23 @@ agent round-trips, no parallel tool calls needed (this supersedes the
 old "parallel tool calls" framing):
 
 ```starlark
-# Fire an accelerometer input, then sample physics state at ~60 Hz for ~1 s.
-app_input(type="accel", x=0.3, y=0.0, z=0.0)
+# Sustained tilt: suppress is sticky; set only updates the sample.
+app_sensor_suppress(sensor="accel")
+app_sensor_set(value=[0.3, 0.0, 0.0])
 for i in range(60):
-    emit(app_state(slice="physics", select=".marble.position"))
+    emit(app_state(slice="geometry"))  # tiltbuggy uses "geometry"; others vary
     sleep(16)
+app_sensor_set(value=[-0.3, 0.0, 0.0])
+sleep(500)
+app_sensor_unsuppress(sensor="accel")
+```
+
+One-shot inject without suppress is still valid for emulators / no-sensor
+hosts, but on a physical device CoreMotion will overwrite it almost immediately:
+
+```starlark
+# Best-effort one-shot (not suppressed) — not for sustained tilt.
+app_input(type="accel", value=[0.3, 0.0, 0.0])
 ```
 
 For a lossless capture with server-side buffering, use the
