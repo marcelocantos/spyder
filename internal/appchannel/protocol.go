@@ -223,7 +223,13 @@ const (
 	MethodResume           = "resume"
 	MethodStep             = "step"
 	MethodSpeed            = "speed"
-	MethodInputInject      = "input_inject"
+	MethodInputInject = "input_inject"
+	// Sticky per-sensor suppress: one concern per method (not blanket session).
+	// suppress stays until unsuppress; set only updates the scripted sample.
+	MethodSensorSuppress   = "sensor_suppress"
+	MethodSensorSet        = "sensor_set"
+	MethodSensorUnsuppress = "sensor_unsuppress"
+	MethodSensorStatus     = "sensor_status"
 	MethodStateQuery       = "state_query"
 	MethodSaveState        = "save_state"
 	MethodRestoreState     = "restore_state"
@@ -263,6 +269,10 @@ var KnownMethods = []string{
 	MethodStep,
 	MethodSpeed,
 	MethodInputInject,
+	MethodSensorSuppress,
+	MethodSensorSet,
+	MethodSensorUnsuppress,
+	MethodSensorStatus,
 	MethodStateQuery,
 	MethodSaveState,
 	MethodRestoreState,
