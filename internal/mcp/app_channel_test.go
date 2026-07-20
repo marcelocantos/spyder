@@ -119,14 +119,16 @@ func (c *smokeClient) serve() {
 			_ = appchannel.UnpackParams(env.Params, &p)
 			c.lastInput = p
 			result = map[string]bool{"injected": true}
-		case appchannel.MethodSensorControl:
-			var p map[string]any
-			_ = appchannel.UnpackParams(env.Params, &p)
-			mode, _ := p["mode"].(string)
-			if mode == "" {
-				mode = "passthrough"
-			}
-			result = map[string]any{"sensor": "accel", "mode": mode}
+		case appchannel.MethodSensorOverrideEnable:
+			result = map[string]any{"sensor": "accel", "enabled": true, "kind": "override"}
+		case appchannel.MethodSensorOverrideSet:
+			result = map[string]any{"sensor": "accel", "enabled": true, "kind": "override"}
+		case appchannel.MethodSensorMuteEnable:
+			result = map[string]any{"sensor": "accel", "enabled": true, "kind": "mute"}
+		case appchannel.MethodSensorDisable:
+			result = map[string]any{"sensor": "accel", "enabled": false, "kind": "passthrough"}
+		case appchannel.MethodSensorStatus:
+			result = map[string]any{"sensor": "accel", "enabled": false, "kind": "passthrough"}
 		case appchannel.MethodStateQuery:
 			var p struct {
 				Slice string `msgpack:"slice"`
@@ -272,7 +274,10 @@ func TestAppChannel_FullMethodSweep(t *testing.T) {
 		appchannel.MethodLowMemoryWarning,
 		appchannel.MethodPause, appchannel.MethodResume,
 		appchannel.MethodStep, appchannel.MethodSpeed,
-		appchannel.MethodInputInject, appchannel.MethodSensorControl,
+		appchannel.MethodInputInject,
+		appchannel.MethodSensorOverrideEnable, appchannel.MethodSensorOverrideSet,
+		appchannel.MethodSensorMuteEnable, appchannel.MethodSensorDisable,
+		appchannel.MethodSensorStatus,
 		appchannel.MethodStateQuery,
 		appchannel.MethodSaveState, appchannel.MethodRestoreState,
 		appchannel.MethodScreenshotApp,
@@ -344,9 +349,14 @@ func TestAppChannel_FullMethodSweep(t *testing.T) {
 				t.Errorf("input = %v", client.lastInput)
 			}
 		}},
-		{"app_sensor_control", map[string]any{"session_id": sessionID, "sensor": "accel", "mode": "override", "x": 1.0, "y": 0.0, "z": 0.0}, func(t *testing.T, body string) {
+		{"app_sensor_override_enable", map[string]any{"session_id": sessionID, "sensor": "accel", "value": []any{1.0, 0.0, 0.0}}, func(t *testing.T, body string) {
 			if !strings.Contains(body, "override") {
-				t.Errorf("sensor_control body: %s", body)
+				t.Errorf("override_enable body: %s", body)
+			}
+		}},
+		{"app_sensor_disable", map[string]any{"session_id": sessionID, "sensor": "accel"}, func(t *testing.T, body string) {
+			if !strings.Contains(body, "passthrough") {
+				t.Errorf("disable body: %s", body)
 			}
 		}},
 		{"app_state", map[string]any{"session_id": sessionID, "slice": "scene"}, func(t *testing.T, body string) {

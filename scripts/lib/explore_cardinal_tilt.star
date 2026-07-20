@@ -1,30 +1,29 @@
-# Cardinal tilt probe with fine-grained accel authority.
-# Takes accel stream (override), holds each direction, restores passthrough.
+# Cardinal tilt with sticky override enable/disable + value=[x,y,z].
 # Params: session_id
 
 sid = params["session_id"] if "session_id" in params else ""
 
 dirs = [
-    {"name": "right", "x": 1.5, "y": 0.0, "z": 0.0},
-    {"name": "left", "x": -1.5, "y": 0.0, "z": 0.0},
-    {"name": "up", "x": 0.0, "y": -1.5, "z": 0.0},
-    {"name": "down", "x": 0.0, "y": 1.5, "z": 0.0},
+    {"name": "right", "value": [1.5, 0.0, 0.0]},
+    {"name": "left", "value": [-1.5, 0.0, 0.0]},
+    {"name": "up", "value": [0.0, -1.5, 0.0]},
+    {"name": "down", "value": [0.0, 1.5, 0.0]},
 ]
 
-def set_override(x, y, z):
+def enable(value):
     if sid:
-        return app_sensor_control(session_id=sid, sensor="accel", mode="override", x=x, y=y, z=z)
-    return app_sensor_control(sensor="accel", mode="override", x=x, y=y, z=z)
+        return app_sensor_override_enable(session_id=sid, sensor="accel", value=value)
+    return app_sensor_override_enable(sensor="accel", value=value)
 
-def query_control():
+def set_value(value):
     if sid:
-        return app_sensor_control(session_id=sid, sensor="accel")
-    return app_sensor_control(sensor="accel")
+        return app_sensor_override_set(session_id=sid, sensor="accel", value=value)
+    return app_sensor_override_set(sensor="accel", value=value)
 
-def set_passthrough():
+def disable():
     if sid:
-        return app_sensor_control(session_id=sid, sensor="accel", mode="passthrough")
-    return app_sensor_control(sensor="accel", mode="passthrough")
+        return app_sensor_disable(session_id=sid, sensor="accel")
+    return app_sensor_disable(sensor="accel")
 
 def pose():
     if sid:
@@ -37,24 +36,18 @@ def pose():
     return g
 
 results = []
-# Claim accel stream only — touch/keys still real/passthrough.
-set_override(0.0, 0.0, 9.8)
+# Sticky enable — stays until disable, not one-frame.
+enable([0.0, 0.0, 9.8])
 sleep(200)
-results.append({"phase": "start", "pose": pose(), "control": query_control()})
+results.append({"phase": "start", "pose": pose()})
 
 for d in dirs:
-    # Update latch (re-asserted every frame while override is on).
-    set_override(d["x"], d["y"], d["z"])
+    set_value(d["value"])
     sleep(800)
-    results.append({
-        "phase": d["name"],
-        "accel": {"x": d["x"], "y": d["y"], "z": d["z"]},
-        "pose": pose(),
-    })
-    set_override(0.0, 0.0, 9.8)
+    results.append({"phase": d["name"], "value": d["value"], "pose": pose()})
+    set_value([0.0, 0.0, 9.8])
     sleep(200)
 
-# Always restore real sensors.
-set_passthrough()
-results.append({"phase": "end", "pose": pose(), "control": query_control()})
+disable()
+results.append({"phase": "end", "pose": pose()})
 emit({"recipe": "explore_cardinal_tilt", "results": results})

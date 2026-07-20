@@ -333,9 +333,8 @@ func (h *Handler) handleAppInput(args map[string]any) (*mcpgo.CallToolResult, er
 	return toolText(fmt.Sprintf("injected %s event", inputType))
 }
 
-// handleAppSensorControl is the fine-grained accel (etc.) stream authority
-// API — passthrough | override | mute — not a blanket session override.
-func (h *Handler) handleAppSensorControl(args map[string]any) (*mcpgo.CallToolResult, error) {
+// sensorRPC is shared by the sticky sensor enable/disable/status verbs.
+func (h *Handler) sensorRPC(method string, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -350,16 +349,33 @@ func (h *Handler) handleAppSensorControl(args map[string]any) (*mcpgo.CallToolRe
 	if _, ok := params["sensor"]; !ok {
 		params["sensor"] = "accel"
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodSensorControl, params, 5*time.Second)
+	res, err := s.Call(context.Background(), method, params, 5*time.Second)
 	if err != nil {
-		return toolErr("sensor_control: %v", err)
+		return toolErr("%s: %v", method, err)
 	}
 	var out map[string]any
 	if err := appchannel.UnpackParams(res, &out); err != nil {
-		// Some apps may return bare ack; surface raw.
 		return toolJSON(map[string]any{"ok": true, "raw": fmt.Sprint(res)})
 	}
 	return toolJSON(out)
+}
+
+// Sticky accel (etc.) stream authority — not a blanket session mask.
+// enable stays until app_sensor_disable; default is real-device passthrough.
+func (h *Handler) handleAppSensorOverrideEnable(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(appchannel.MethodSensorOverrideEnable, args)
+}
+func (h *Handler) handleAppSensorOverrideSet(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(appchannel.MethodSensorOverrideSet, args)
+}
+func (h *Handler) handleAppSensorMuteEnable(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(appchannel.MethodSensorMuteEnable, args)
+}
+func (h *Handler) handleAppSensorDisable(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(appchannel.MethodSensorDisable, args)
+}
+func (h *Handler) handleAppSensorStatus(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(appchannel.MethodSensorStatus, args)
 }
 
 // handleAppStateSlices returns the slice catalogue the app advertised
@@ -951,18 +967,44 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithNumber("multiplier", mcpgo.Required(), mcpgo.Description("Positive dt multiplier")),
 		),
 
-		mcpgo.NewTool("app_sensor_control",
-			mcpgo.WithDescription("Fine-grained sensor stream authority (not a blanket session mask). sensor=accel (default). mode=passthrough (real device samples flow; default) | override (drop real samples; script latch/inject owns the stream; re-asserted each frame) | mute (drop real samples; emit neutral 0,0,0). Optional x,y,z when setting override latches a sample. Omit mode to query current mode/latch. Always restore passthrough when done."),
-			mcpgo.WithString("session_id", mcpgo.Description("App-channel session id (omit when exactly one session is connected).")),
-			mcpgo.WithString("device", mcpgo.Description("Device alias/UDID with bundle_id when session_id omitted.")),
-			mcpgo.WithString("bundle_id", mcpgo.Description("Bundle id with device when session_id omitted.")),
-			mcpgo.WithString("sensor", mcpgo.Description("Sensor stream name. Only \"accel\" today.")),
-			mcpgo.WithString("mode", mcpgo.Description("passthrough | override | mute. Omit to query.")),
-			mcpgo.WithNumber("x", mcpgo.Description("Device-frame accel X when setting override sample.")),
-			mcpgo.WithNumber("y", mcpgo.Description("Device-frame accel Y when setting override sample.")),
-			mcpgo.WithNumber("z", mcpgo.Description("Device-frame accel Z when setting override sample.")),
+		mcpgo.NewTool("app_sensor_override_enable",
+			mcpgo.WithDescription("Sticky: claim accelerometer stream authority. Real device samples are dropped until app_sensor_disable. Optional value=[x,y,z] device-frame latch (re-asserted each frame). Touch/keys unchanged."),
+			mcpgo.WithString("session_id", mcpgo.Description("App-channel session id (omit when exactly one session).")),
+			mcpgo.WithString("device", mcpgo.Description("With bundle_id when session_id omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("With device when session_id omitted.")),
+			mcpgo.WithString("sensor", mcpgo.Description("Sensor name; only \"accel\" today (default).")),
+			mcpgo.WithArray("value", mcpgo.Description("Device-frame [x,y,z] sample to latch."), mcpgo.Items(map[string]any{"type": "number"})),
 		),
-		mcpgo.NewTool("app_input", mcpgo.WithDescription("Inject a synthetic input event into the app's event loop. The `type` field determines the event shape; remaining args are passed through as params (e.g. {type: \"finger_down\", x: 0.5, y: 0.5}, {type: \"key_down\", key: \"a\"}, {type: \"accel\", x: 0.0, y: 1.0, z: 0.0}). For sustained tilt against a real accelerometer, set app_sensor_control(mode=\"override\") first — otherwise CoreMotion will overwrite one-shot injects."),
+		mcpgo.NewTool("app_sensor_override_set",
+			mcpgo.WithDescription("Update the latched accel sample while override is enabled (sticky). Requires prior app_sensor_override_enable. value=[x,y,z] required."),
+			mcpgo.WithString("session_id", mcpgo.Description("App-channel session id.")),
+			mcpgo.WithString("device", mcpgo.Description("With bundle_id when session_id omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("With device when session_id omitted.")),
+			mcpgo.WithString("sensor", mcpgo.Description("Only \"accel\" today.")),
+			mcpgo.WithArray("value", mcpgo.Description("Device-frame [x,y,z]."), mcpgo.Items(map[string]any{"type": "number"})),
+		),
+		mcpgo.NewTool("app_sensor_mute_enable",
+			mcpgo.WithDescription("Sticky: mute accel (drop real samples, emit neutral 0,0,0 each frame) until app_sensor_disable."),
+			mcpgo.WithString("session_id", mcpgo.Description("App-channel session id.")),
+			mcpgo.WithString("device", mcpgo.Description("With bundle_id when session_id omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("With device when session_id omitted.")),
+			mcpgo.WithString("sensor", mcpgo.Description("Only \"accel\" today.")),
+		),
+		mcpgo.NewTool("app_sensor_disable",
+			mcpgo.WithDescription("Restore real device accel stream (passthrough). Ends a prior override or mute."),
+			mcpgo.WithString("session_id", mcpgo.Description("App-channel session id.")),
+			mcpgo.WithString("device", mcpgo.Description("With bundle_id when session_id omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("With device when session_id omitted.")),
+			mcpgo.WithString("sensor", mcpgo.Description("Only \"accel\" today.")),
+		),
+		mcpgo.NewTool("app_sensor_status",
+			mcpgo.WithDescription("Query accel stream authority: {enabled, kind: passthrough|override|mute, value?}."),
+			mcpgo.WithString("session_id", mcpgo.Description("App-channel session id.")),
+			mcpgo.WithString("device", mcpgo.Description("With bundle_id when session_id omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("With device when session_id omitted.")),
+			mcpgo.WithString("sensor", mcpgo.Description("Only \"accel\" today.")),
+		),
+		mcpgo.NewTool("app_input", mcpgo.WithDescription("Inject a synthetic input event into the app's event loop. The `type` field determines the event shape; remaining args are passed through as params (e.g. {type: \"finger_down\", x: 0.5, y: 0.5}, {type: \"key_down\", key: \"a\"}, {type: \"accel\", value: [x,y,z]}). For sustained tilt on a real accelerometer, call app_sensor_override_enable first — otherwise CoreMotion overwrites one-shot injects."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
