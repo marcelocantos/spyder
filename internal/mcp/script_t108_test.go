@@ -132,6 +132,44 @@ resolve_target(node={"label": "x"})
 	}
 }
 
+func TestFindHitTargetInStarlark(t *testing.T) {
+	res := runScript(t, `
+payload = {"targets": [
+    {"id": "other", "label": "reset", "center_norm": [0.1, 0.1]},
+    {"id": "reset", "role": "reset", "label": "TiltBuggy", "center_norm": [0.5, 0.07], "enabled": True},
+]}
+node = find_hit_target(nodes=payload, id="reset")
+xy = resolve_target(node=node)
+emit(xy)
+emit(node["id"])
+`, stubVerbs(), defaultLim())
+	if res.IsError {
+		t.Fatalf("%v", texts(res))
+	}
+	joined := strings.Join(texts(res), "\n")
+	if !strings.Contains(joined, "0.5") || !strings.Contains(joined, "0.07") {
+		t.Fatalf("xy: %s", joined)
+	}
+	if !strings.Contains(joined, "reset") {
+		t.Fatalf("id: %s", joined)
+	}
+
+	// Prefer id over label collision.
+	res = runScript(t, `
+find_hit_target(nodes=[{"id": "x", "label": "reset", "center_norm": [0,0]}], key="reset")
+`, stubVerbs(), defaultLim())
+	if !res.IsError {
+		t.Fatal("label must not address hit targets")
+	}
+
+	res = runScript(t, `
+find_hit_target(nodes=[{"id": "reset", "enabled": False, "center_norm": [0.5, 0.5]}], id="reset")
+`, stubVerbs(), defaultLim())
+	if !res.IsError {
+		t.Fatal("expected disabled error")
+	}
+}
+
 func TestRunExec_ParamsGlobal(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

@@ -8,15 +8,27 @@ import (
 	"strings"
 )
 
-// ResolveTarget derives inject coordinates from a ge-slice node dict.
-// Accepts any of:
+// ResolveTarget derives inject coordinates (app_input 0–1 surface space) from a
+// ge-slice node dict. Preference order (first match wins):
+//   - center_norm: [x,y] or {x|cx, y|cy}  — preferred for hit_targets (🎯T109)
+//   - bbox_norm: [x,y,w,h] or dict → centre in 0–1 space
 //   - screen: {cx|center_x|x, cy|center_y|y}
-//   - bbox: [x,y,w,h] or {x,y,w|width,h|height} → centre
+//   - bbox: [x,y,w,h] or {x,y,w|width,h|height} → centre (only when already in
+//     inject space; prefer center_norm/bbox_norm for pts-space targets)
 //   - cx/cy or x/y at top level
 // Missing required geometry returns a clear slice-contract error (no guessing).
 func ResolveTarget(node map[string]any) (cx, cy float64, err error) {
 	if node == nil {
 		return 0, 0, fmt.Errorf("resolve_target: nil node")
+	}
+	if cn, ok := node["center_norm"]; ok {
+		if x, y, ok := pairFromAny(cn); ok {
+			return x, y, nil
+		}
+		return 0, 0, fmt.Errorf("resolve_target: center_norm present but not a [x,y] pair — slice contract gap")
+	}
+	if bn, ok := node["bbox_norm"]; ok {
+		return bboxCenter(bn)
 	}
 	if s, ok := node["screen"].(map[string]any); ok {
 		if x, y, ok := pairXY(s, "cx", "cy"); ok {
@@ -39,11 +51,12 @@ func ResolveTarget(node map[string]any) (cx, cy float64, err error) {
 	if x, y, ok := pairXY(node, "x", "y"); ok {
 		return x, y, nil
 	}
-	return 0, 0, fmt.Errorf("resolve_target: no screen/bbox/cx,cy on node — slice contract gap")
+	return 0, 0, fmt.Errorf("resolve_target: no center_norm/bbox_norm/screen/bbox/cx,cy on node — slice contract gap")
 }
 
 // FindByLabel searches a list of node maps for label / name / id match
 // (case-sensitive). Returns the first hit or a clear error.
+// For hit_targets prefer FindHitTarget (id/role) over label matching.
 func FindByLabel(nodes []map[string]any, label string) (map[string]any, error) {
 	if label == "" {
 		return nil, fmt.Errorf("find_by_label: empty label")
@@ -61,6 +74,85 @@ func FindByLabel(nodes []map[string]any, label string) (map[string]any, error) {
 		}
 	}
 	return nil, fmt.Errorf("find_by_label: no node with label/name/id %q", label)
+}
+
+// FindHitTarget resolves a 🎯T109 hit-target by stable id, then role.
+// Display label is intentionally not matched — localization-safe addressing.
+// Disabled targets (enabled == false) fail closed.
+func FindHitTarget(nodes []map[string]any, key string) (map[string]any, error) {
+	if key == "" {
+		return nil, fmt.Errorf("find_hit_target: empty id/role")
+	}
+	// Prefer id over role when both could match different nodes.
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		if s, ok := asString(n["id"]); ok && s == key {
+			return requireEnabled(n, key)
+		}
+	}
+	for _, n := range nodes {
+		if n == nil {
+			continue
+		}
+		if s, ok := asString(n["role"]); ok && s == key {
+			return requireEnabled(n, key)
+		}
+	}
+	return nil, fmt.Errorf("find_hit_target: no target with id/role %q (label is not used for addressing)", key)
+}
+
+// TargetsFromHitSlice extracts the targets list from a hit_targets slice payload
+// ({"targets": [...]}) or accepts a bare list of target dicts.
+func TargetsFromHitSlice(v any) ([]map[string]any, error) {
+	if m, ok := v.(map[string]any); ok {
+		if t, ok := m["targets"]; ok {
+			return NodesFromAny(t)
+		}
+		// Single target dict with id/kind.
+		if _, hasID := m["id"]; hasID {
+			return []map[string]any{m}, nil
+		}
+		return nil, fmt.Errorf("targets: dict has no \"targets\" array (and is not a single target)")
+	}
+	return NodesFromAny(v)
+}
+
+func requireEnabled(n map[string]any, key string) (map[string]any, error) {
+	if v, ok := n["enabled"]; ok {
+		switch e := v.(type) {
+		case bool:
+			if !e {
+				return nil, fmt.Errorf("find_hit_target: target %q is disabled", key)
+			}
+		case string:
+			if e == "false" || e == "0" {
+				return nil, fmt.Errorf("find_hit_target: target %q is disabled", key)
+			}
+		}
+	}
+	return n, nil
+}
+
+// pairFromAny accepts [x,y], {x,y}, or {cx,cy}.
+func pairFromAny(v any) (float64, float64, bool) {
+	switch t := v.(type) {
+	case []any:
+		if len(t) < 2 {
+			return 0, 0, false
+		}
+		x, okx := asFloat(t[0])
+		y, oky := asFloat(t[1])
+		return x, y, okx && oky
+	case map[string]any:
+		if x, y, ok := pairXY(t, "cx", "cy"); ok {
+			return x, y, true
+		}
+		return pairXY(t, "x", "y")
+	default:
+		return 0, 0, false
+	}
 }
 
 // NodesFromAny coerces a state-query-ish value into a list of node maps.

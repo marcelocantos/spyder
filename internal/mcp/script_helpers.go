@@ -131,6 +131,46 @@ func builtinFindByLabel(_ *starlark.Thread, b *starlark.Builtin, args starlark.T
 	return goToStarlark(node), nil
 }
 
+// builtinFindHitTarget — 🎯T109: list/find by id or role (not display label).
+// nodes may be a bare list or a full hit_targets payload {"targets": [...]}.
+func builtinFindHitTarget(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var nodesV starlark.Value
+	var key string
+	var id, role string
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
+		"nodes", &nodesV,
+		"key?", &key,
+		"id?", &id,
+		"role?", &role,
+	); err != nil {
+		return nil, err
+	}
+	if key == "" {
+		key = id
+	}
+	if key == "" {
+		key = role
+	}
+	if key == "" {
+		return nil, fmt.Errorf("find_hit_target: key, id, or role required")
+	}
+	raw, err := starlarkToGo(nodesV)
+	if err != nil {
+		return nil, err
+	}
+	nodes, err := scriptlib.TargetsFromHitSlice(raw)
+	if err != nil {
+		return nil, fmt.Errorf("find_hit_target: %w", err)
+	}
+	// If both id and role kwargs were set and key came from id, still match by
+	// the single key via id-first then role (FindHitTarget).
+	node, err := scriptlib.FindHitTarget(nodes, key)
+	if err != nil {
+		return nil, err
+	}
+	return goToStarlark(node), nil
+}
+
 func pointSeries(v starlark.Value) ([]scriptlib.Point, error) {
 	list, ok := v.(*starlark.List)
 	if !ok {

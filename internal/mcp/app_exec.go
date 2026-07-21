@@ -183,6 +183,7 @@ func (st *execState) builtins(verbs map[string]toolFunc, params map[string]strin
 	g["assert_settle"] = starlark.NewBuiltin("assert_settle", builtinAssertSettle)
 	g["resolve_target"] = starlark.NewBuiltin("resolve_target", builtinResolveTarget)
 	g["find_by_label"] = starlark.NewBuiltin("find_by_label", builtinFindByLabel)
+	g["find_hit_target"] = starlark.NewBuiltin("find_hit_target", builtinFindHitTarget)
 
 	pd := starlark.NewDict(len(params))
 	for k, v := range params {
@@ -351,6 +352,7 @@ func helpBuiltin(verbs map[string]toolFunc) func(*starlark.Thread, *starlark.Bui
 	text := "verbs: " + strings.Join(names, ", ") +
 		"\ncontrol: emit(value), sleep(ms), health(), params (dict)\n" +
 		"t108: assert_trajectory, assert_drag_follow, assert_settle, resolve_target, find_by_label; " +
+		"t109: find_hit_target(nodes=…, id|role|key=…); " +
 		"list_scripts(), run_script(path=...)\n" +
 		"call verbs by keyword, e.g. app_screenshot(session_id=\"...\"); " +
 		"a bare expression or emit() adds to the result."
@@ -588,7 +590,7 @@ func contentText(content []mcpgo.Content) string {
 // in agents-guide.md; call help() from a script for the verb list).
 func appExecDefinition() mcpgo.Tool {
 	return mcpgo.NewTool("app_exec",
-		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)`, `emit(value)`, `health()`, `help()`, durable scripts via `script_path` / `run_script` / `list_scripts` (🎯T108), and assert/L1 helpers (`assert_trajectory`, `assert_drag_follow`, `assert_settle`, `resolve_target`, `find_by_label`). Global `params` dict carries script_path parameters.\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result. Deterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot`. Caps: wall-clock timeout (default 30s, max 120s) and a step budget."),
+		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)`, `emit(value)`, `health()`, `help()`, durable scripts via `script_path` / `run_script` / `list_scripts` (🎯T108), and assert/L1 helpers (`assert_trajectory`, `assert_drag_follow`, `assert_settle`, `resolve_target`, `find_by_label`, `find_hit_target`). Global `params` dict carries script_path parameters.\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result. Deterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot`. Caps: wall-clock timeout (default 30s, max 120s) and a step budget."),
 		mcpgo.WithString("script",
 			mcpgo.Description("Inline Starlark source. Provide this OR script_path."),
 		),
