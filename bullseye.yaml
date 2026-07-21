@@ -800,26 +800,176 @@ targets:
     discovered: 2026-07-19
     achieved: 2026-07-19
   T109:
-    name: L2+ semantic UI addressing (label/role → action) without coordinate scripts — ge hit-target contract, not host OCR
-    status: identified
+    name: 'Semantic discover-and-invoke: ge publishes hit targets (id/role + bbox); spyder scripts act without hard-coded coordinates'
+    status: achieved
     value: 0.0
     cost: 0.0
     acceptance:
-    - An agent can address primary interactive targets by stable label or role (e.g. tap the control labeled Play) when ge publishes a hit-target / UI descriptor slice with bbox and identity fields.
-    - Resolution is slice-driven (same host Starlark + inject path as T108.6); no in-app script VM and no OCR-as-product in spyder.
-    - Localization-safe identity prefers ids/roles over display strings when both exist; docs state the contract.
-    - 'Out of scope for this target: full XCUITest parity, cross-app automation, intent macros like open_settings() as a platform framework.'
-    context: Stretch from 2026-07-19 scenario modeling. Explicitly excluded from T108 so durable explore/collect/regress can ship without absorbing a full semantic UI stack. Depends on T108.6 patterns and on ge exposing rich enough descriptors (bbox work already partially exists). Park until T108 core is done unless a slice contract lands first on ge.
+    - A documented hit-target slice schema exists (id, kind, optional role/label, bbox, enabled, coordinate space) for interactables — not limited to buttons.
+    - ge v1 exports at least ge::Button / ButtonGroup hit regions into that schema; agents can list and tap by id or role via host Starlark + app_input (same inject path as T108.6).
+    - Localization-safe addressing prefers id/role over display label when both exist.
+    - Non-button ge interactables (or a small registry API) can publish the same descriptor shape using existing bbox/hit machinery (Rect, SVG bounds, custom regions).
+    - 'Optional: selected physics/SVG objects map into the same schema with screen- or inject-space bboxes (not world-only geometry).'
+    - No in-app script VM; no host CV/OCR product required for this target family to be achieved.
+    - 'End-to-end: at least one sample/game documents list → find → tap (and optional drag) without coordinate literals in the script body.'
+    - 'Out of scope for T109 core: full XCUITest/a11y parity, cross-app automation, intent macros like open_settings(), and screenshot CV decomposition (deferred child).'
+    context: 'Retargeted 2026-07-20. Original stretch was label/role → action via ge hit-target slices (not host OCR). Positive design: ge already models buttons and bbox/hit geometry; v1 surfaces that authority to spyder rather than re-perceiving pixels. CV/screenshot decomposition remains a future discovery adapter (T109.7 set_aside), not v1. Builds on T108.6 L1 resolve patterns. Sensor suppress/set is orthogonal (stream authority), not a substitute for hit targets.'
     depends_on:
     - T108.6
+    - T109.1
+    - T109.2
+    - T109.3
+    - T109.4
+    - T109.5
+    - T109.6
+    - T109.7
     tags:
     - semantic
     - L2
-    - stretch
+    - hit-targets
     - ge-slices
-    - set-aside-candidate
-    origin: 'scenario modeling 2026-07-19: click button labeled X stretch goal'
+    - bbox
+    - scripted-control
+    origin: scenario modeling 2026-07-19; expanded 2026-07-20 for ge UI model + bbox generalization; CV deferred
     discovered: 2026-07-19
+    achieved: 2026-07-20
+  T109.1:
+    name: Hit-target slice schema and coordinate-space contract are documented and stable for spyder consumers
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'A documented schema for hit targets includes at least: id, kind, bbox [x,y,w,h] or equivalent, and optional role, label, enabled.'
+    - Coordinate space for bbox is explicit (inject/point/content/normalized) and maps to app_input without ad-hoc guessing.
+    - agents-guide (or ge agents-guide cross-link) states the schema as a convention games can implement; slice name is agreed (e.g. hit_targets or ui).
+    - Missing required fields fail closed with a clear slice-contract error at resolve time (same spirit as T108.6).
+    context: Foundation for all discovery exporters and host helpers. No CV.
+    tags:
+    - schema
+    - contract
+    - docs
+    origin: subdivide(🎯T109)
+    discovered: 2026-07-20
+    achieved: 2026-07-20
+  T109.2:
+    name: ge exports ge::Button / ButtonGroup as hit targets in the agreed slice
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A debug/dev path (app-channel state slice) lists active Button/ButtonGroup regions with id (or stable name) and bbox in the contracted space.
+    - At least one in-repo sample or consumer registers buttons such that spyder app_state can list them.
+    - Export does not require the game to reimplement hit-testing — bounds come from the same rect/hitTest the button already uses (or an equivalent declared rect).
+    - Release/debug gating is documented if the surface is NDEBUG-only.
+    context: 'v1 ship path: buttons already exist in ge; surface them.'
+    depends_on:
+    - T109.1
+    tags:
+    - ge
+    - button
+    - export
+    origin: subdivide(🎯T109)
+    discovered: 2026-07-20
+    achieved: 2026-07-20
+  T109.3:
+    name: ge provides a small registry (or equivalent) so non-button interactables publish the same hit-target descriptor
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - Interactables beyond Button (e.g. LongPressWatcher regions, custom rects, SVG-backed controls with measured bounds) can register into the same hit-target list without a parallel schema.
+    - kind field distinguishes button vs region vs svg (or documented enum).
+    - Registry lifetime and thread rules are documented (game thread; consistent with app-channel state_query).
+    context: Generalize via bbox descriptors, not Button-only APIs.
+    depends_on:
+    - T109.1
+    - T109.2
+    tags:
+    - ge
+    - registry
+    - generalization
+    origin: subdivide(🎯T109)
+    discovered: 2026-07-20
+    achieved: 2026-07-20
+  T109.4:
+    name: Selected physics and/or SVG objects can appear as hit targets with inject-space bboxes
+    status: set_aside
+    value: 0.0
+    cost: 0.0
+    set_aside_reason: 'UI-only v1: button + same-shape region descriptors in hit_targets (tiltbuggy) satisfy parent acceptance; physics/SVG inject-space mapping deferred as optional generalization.'
+    acceptance:
+    - Documented path maps box2d body (or curated body list) and/or SVG element bounds into hit-target descriptors with bboxes usable for app_input.
+    - World-only geometry without screen/content mapping is insufficient — transform is specified and tested.
+    - 'At least one example: tap or grab a labelled physics body, or tap an SVG control by id, without coordinate literals in the script.'
+    context: Builds on T117 geometry slice and SVG bounds work; optional if T109.2+T109.5 already deliver v1 for UI-only — still part of the graph for full generalization.
+    depends_on:
+    - T109.1
+    - T109.3
+    tags:
+    - ge
+    - physics
+    - svg
+    - bbox
+    origin: subdivide(🎯T109)
+    discovered: 2026-07-20
+  T109.5:
+    name: spyder host Starlark can list, find, and invoke hit targets (tap; optional drag) without coordinate literals
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - 'Helpers or documented patterns: list targets from the hit-target slice; find by id/role (prefer id/role over label); tap centre (or documented hit point) via app_input.'
+    - 'Optional: drag from/to targets when both have bboxes.'
+    - Errors clearly when target missing, disabled, or bbox unmappable.
+    - Composes T108.6 L1 patterns; no second automation stack; no in-app VM.
+    context: Host side of discover-and-invoke.
+    depends_on:
+    - T109.1
+    - T109.2
+    tags:
+    - spyder
+    - starlark
+    - invoke
+    origin: subdivide(🎯T109)
+    discovered: 2026-07-20
+    achieved: 2026-07-20
+  T109.6:
+    name: 'End-to-end sample and agents-guide: list → find → tap against a live instrumented game'
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - agents-guide documents the full loop with a worked example.
+    - At least one sample/game path is runnable (desktop or device) showing semantic tap without hard-coded x,y in the script.
+    - 'Regression-friendly: id/role addressing is recommended over label for tests.'
+    context: Closes the product loop for v1.
+    depends_on:
+    - T109.5
+    - T109.2
+    tags:
+    - docs
+    - e2e
+    - sample
+    origin: subdivide(🎯T109)
+    discovered: 2026-07-20
+    achieved: 2026-07-20
+  T109.7:
+    name: Screenshot CV decomposition as an alternate discovery adapter for semantic invoke
+    status: set_aside
+    value: 0.0
+    cost: 0.0
+    set_aside_reason: Out of scope for T109 core by design — host screenshot CV/OCR is a future discovery adapter when ge slices are absent; v1 is ge-published hit targets only.
+    acceptance:
+    - A host-side CV (or similar) pipeline can produce hit-target-compatible objects from screenshots for explore when ge slices are absent.
+    - Same spyder invoke path (inject) as slice discovery; coordinate mapping documented.
+    - Not required for T109 parent aggregate — future rung only.
+    context: Parked by design 2026-07-20. ge hit-target export is v1; CV is a later discovery adapter when the engine is not the UI author.
+    tags:
+    - cv
+    - future
+    - vision
+    origin: subdivide(🎯T109)
+    discovered: 2026-07-20
   T11:
     name: Reservation system for parallel dev sessions across devices
     status: achieved
