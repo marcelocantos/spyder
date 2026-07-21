@@ -179,6 +179,8 @@ produces no output; its acknowledgement is dropped.
 - `params` — dict of parameters for durable scripts (always present; may be empty).
 - 🎯T108 asserts/L1: `assert_trajectory`, `assert_drag_follow`, `assert_settle`,
   `resolve_target`, `find_by_label` (fail closed with clear diagnostics).
+- 🎯T109 hit targets: `find_hit_target(nodes=…, id|role|key=…)` (id/role only —
+  not display label; disabled targets fail closed).
 - `list_scripts()` / `run_script(path=...)` — durable library (also CLI
   `spyder list-scripts` / `spyder run-script`).
 
@@ -246,6 +248,11 @@ observe → `resume`. Wall-clock `sleep` is fine for explore.
 when a physics/UI slice publishes `screen`/`bbox`. Missing geometry errors
 clearly (slice contract gap) — no pixel guessing. L0 coordinates still work
 everywhere.
+
+**L2 hit targets (🎯T109):** games publish a `hit_targets` slice; scripts
+list → find by **id/role** → tap centre via `app_input`. Prefer id/role over
+display `label` (localization-safe). Recipe: `l1_tap_hit_target`. See
+[Hit targets (🎯T109)](#hit-targets-t109) below.
 
 ### Worked examples (one per mode)
 
@@ -635,6 +642,93 @@ Every `app_*` builtin resolves its target session in this order:
    across all listeners, omit all three.
 
 `app_channel_list()` shows the listener + session topology.
+
+### Hit targets (🎯T109)
+
+Semantic discover-and-invoke: the **game** is the UI authority. It publishes
+interactables (buttons, regions, …) into a named state slice; spyder scripts
+list and inject without hard-coded coordinates and without host CV/OCR.
+
+**Agreed slice name:** `hit_targets`
+
+**Payload shape:**
+
+```json
+{
+  "targets": [
+    {
+      "id": "reset",
+      "kind": "button",
+      "role": "reset",
+      "label": "TiltBuggy",
+      "enabled": true,
+      "space": "pts",
+      "bbox": [302, 8, 420, 94.5],
+      "bbox_norm": [0.295, 0.01, 0.41, 0.123],
+      "center_norm": [0.5, 0.072]
+    }
+  ]
+}
+```
+
+| Field | Required | Notes |
+|-------|----------|--------|
+| `id` | yes (or stable name) | Preferred address key for tests/scripts |
+| `kind` | recommended | `button`, `region`, `svg`, … |
+| `role` | optional | Semantic role (`reset`, `confirm`, …); second address key |
+| `label` | optional | Display string only — **do not** address by label when id/role exist |
+| `enabled` | optional (default true) | `false` → `find_hit_target` fails closed |
+| `space` | recommended | Geometry units for raw `bbox` (e.g. `pts` y-down full surface) |
+| `center_norm` | preferred for inject | `[x, y]` in **app_input 0–1** surface space |
+| `bbox_norm` | preferred alt | `[x, y, w, h]` in 0–1; centre used when `center_norm` absent |
+| `bbox` | optional | Same shape as `bbox_norm` but in `space` units — not for inject if space is pts |
+
+**Coordinate contract:** `app_input(type="finger_down"|"finger_up"|"finger_motion", x, y)`
+uses **normalized surface coordinates** in `[0, 1]`. Resolve order in
+`resolve_target`: `center_norm` → `bbox_norm` → `screen` → `bbox` → top-level
+`cx`/`cy`. Missing geometry → clear slice-contract error (no pixel guessing).
+
+**Host helpers (Starlark builtins):**
+
+```starlark
+payload = app_state(slice="hit_targets")          # or session_id=…
+node = find_hit_target(nodes=payload, id="reset") # id | role | key=
+# also: find_hit_target(nodes=payload, role="reset")
+xy = resolve_target(node=node)                    # → {"cx", "cy"} in 0–1
+app_input(type="finger_down", x=xy["cx"], y=xy["cy"])
+app_input(type="finger_up", x=xy["cx"], y=xy["cy"])
+```
+
+Or the durable recipe (no coordinate literals in the script body):
+
+```starlark
+run_script(path="l1_tap_hit_target", params={
+    "session_id": sid,
+    "id": "reset",
+})
+```
+
+**Worked sample — tiltbuggy title reset:** the "TiltBuggy" heading is a
+`ge::Button` hit target (`id`/`role` = `reset`). Tap resets the buggy to
+spawn origin. Same-shape non-button: `kind=region` `id=playfield` covers
+draw-safe (descriptor only / optional address).
+
+```starlark
+# Displace, then semantic reset — no hard-coded x,y for the tap.
+app_sensor_suppress(sensor="accel")
+app_sensor_set(sensor="accel", value=[0.6, 0.0, 0.0])
+sleep(1000)
+app_sensor_set(sensor="accel", value=[0.0, 0.0, 0.0])
+run_script(path="l1_tap_hit_target", params={"session_id": sid, "id": "reset"})
+geo = app_state(slice="geometry")
+# expect buggy pos ≈ [0, 0]
+```
+
+**Fail closed:** missing id/role, disabled target, or missing
+`center_norm`/`bbox_norm`/injectable geometry → error (not a silent wrong tap).
+
+**Out of scope for T109:** host screenshot CV, XCUITest parity, cross-app
+automation. CV remains a future discovery adapter if slices are absent.
 
 ### Discovering state slices (🎯T80, T81)
 
