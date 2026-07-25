@@ -45,14 +45,36 @@ often fails; Android is supported via `adb`.
 ```bash
 make build
 make player                           # stream glass → bin/player (self-contained)
-bin/spyder serve                      # HTTP MCP server on :3030, endpoint /mcp
-bin/spyder serve --addr :3131         # custom addr
 bin/spyder run -- xcodebuild test ... # wrapper: runs cmd under device reservation
 bin/player --host localhost --port 3030 --name tiltbuggy
 
-# Register with Claude Code:
+# Register with Claude Code (points at the brew daemon):
 claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
 ```
+
+### One daemon only — do not double-serve
+
+Production/day-to-day MCP is **Homebrew only**:
+
+```bash
+brew services start spyder    # or: restart / stop
+spyder version                # e.g. v0.72.0
+# MCP initialize → serverInfo.version must match
+```
+
+**Never** run `bin/spyder serve` (or any tree-built binary) on `:3030`
+while `brew services` spyder is running. Two processes can both bind
+(IPv4 brew vs IPv6/`*` local), clients flip between them, and you get
+mismatched versions (`v0.x` vs `dev`).
+
+| Goal | Do this |
+|------|---------|
+| Normal agent / MCP work | `brew services start spyder` — leave it alone |
+| Test unreleased tree code | `brew services stop spyder`, then `bin/spyder serve` **or** keep brew and use `bin/spyder serve --addr :3131` (never `:3030`) |
+| Sanity check | `lsof -nP -iTCP:3030 -sTCP:LISTEN` — exactly **one** spyder, Cellar path |
+
+After any local serve experiment, stop it and restore brew if MCP clients
+expect the release build.
 
 ## Architecture
 
