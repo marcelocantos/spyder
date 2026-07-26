@@ -79,6 +79,11 @@ installation) runs in-process.
 | `record_stop` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with the local mp4 path. | Needs review |
 | `network` | `{device: string, owner: string, profile?: string}` or `{device: string, owner: string, clear: true}`. Exactly one of profile or clear required. | Text confirmation. | Beta — Android emulator only; iOS and physical Android return clear errors. |
 | `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); see *iOS log live-window contract* below. Field set and timestamp precision may evolve |
+| `app_metrics_list` | `{session_id? \| device+bundle_id?, instance?}`. | JSON `{session_id, result}` where `result` is the app's metrics catalogue (ge: `{instance, series:[{name,kind},…]}` or multi-instance wrapper). | Stable (🎯T110) — requires appchannel session advertising `metrics_list` |
+| `app_metrics_arm` | `{session_id?…, series: string[] (required), capacity?: number, instance?}`. | JSON `{session_id, result}` with arm status (`armed`, `capacity`, `count`, `series`, `instance`). | Stable (🎯T110) |
+| `app_metrics_disarm` | `{session_id?…, instance?}`. | JSON `{session_id, result}` status after clear. | Stable (🎯T110) |
+| `app_metrics_status` | `{session_id?…, instance?}`. | JSON `{session_id, result}` capture status. | Stable (🎯T110) |
+| `app_metrics_dump` | `{session_id?…, instance?}`. | JSON `{session_id, result}` full retained-frame history (`frames`, `count`, `series`, …) — not latest-only gauges. | Stable (🎯T110) |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, the `ErrLocked` sentinel, and
