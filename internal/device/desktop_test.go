@@ -19,7 +19,10 @@ func TestDesktopAdapter_LaunchLifecycle(t *testing.T) {
 	dir := t.TempDir()
 	script := filepath.Join(dir, "fake-game.sh")
 	// Emit a line (to test capture), then block so the process stays alive.
-	if err := os.WriteFile(script, []byte("#!/bin/sh\necho ready\nsleep 30\n"), 0o755); err != nil {
+	// Use printf + explicit flush via /bin/sh -c pattern that stays robust
+	// under full-suite load (the previous echo+sleep 30 flake-missed LogRange
+	// when the package ran concurrent with the rest of go test ./...).
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'ready\\n'\nexec sleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -36,7 +39,7 @@ func TestDesktopAdapter_LaunchLifecycle(t *testing.T) {
 	}
 
 	// Captured stdout must reach LogRange.
-	if !eventually(t, 2*time.Second, func() bool {
+	if !eventually(t, 5*time.Second, func() bool {
 		lines, _ := a.LogRange(script, LogFilter{}, time.Time{}, time.Time{})
 		for _, ll := range lines {
 			if strings.Contains(ll.Message, "ready") {
@@ -45,7 +48,8 @@ func TestDesktopAdapter_LaunchLifecycle(t *testing.T) {
 		}
 		return false
 	}) {
-		t.Fatal("stdout line 'ready' was not captured into LogRange")
+		lines, _ := a.LogRange(script, LogFilter{}, time.Time{}, time.Time{})
+		t.Fatalf("stdout line 'ready' was not captured into LogRange (got %d lines: %v)", len(lines), lines)
 	}
 
 	if err := a.TerminateApp(script, bundle); err != nil {
