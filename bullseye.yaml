@@ -996,6 +996,27 @@ targets:
     origin: manual
     discovered: 2026-04-19
     achieved: 2026-04-19
+  T110:
+    name: Spyder can arm, status, and dump per-instance ge metric traces (metric<T> series) with fine-grained selection
+    status: achieved
+    value: 0.0
+    cost: 0.0
+    actual_cost: 1.0
+    acceptance:
+    - MCP/tools for metrics_list, metrics_arm, metrics_disarm, metrics_status, metrics_dump against a specific app-channel session_id
+    - list reflects series names registered by that session's metric<> objects; arm selects a subset by name + capacity
+    - arm/dump/status address that session's instance only
+    - dump returns full retained-frame history for selected series on that session
+    - Works only when app channel is connected; clear errors for missing metrics support or wrong session
+    - Docs + test/fixture for RPC shapes including session targeting and series selection
+    context: Pairs with ge 🎯T166 (metric<T> assignment DX, per-instance ring) and yourworld2 🎯T68. Apps publish series via named metric objects; spyder does not care about C++ types but must select series by registered name, target the correct session, and dump full frame history — not process-global or latest-only perfEmit gauges.
+    tags:
+    - app-channel
+    - telemetry
+    - ge
+    origin: manual
+    discovered: 2026-07-21
+    achieved: 2026-07-21
   T12:
     name: Non-agent consumers (CLI, shell scripts, CI) can drive spyder via a REST API on the daemon, sharing the same reservation-authorised handlers as MCP
     status: achieved

@@ -413,7 +413,12 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_state_capture_stop(capture_id)` | Stop the capture and drain remaining samples. | |
 | `app_state_capture_list()` | List all active captures with metadata. | Read-only. |
 | `app_log_get(session_id?, select?)` | Drain structured logs the app has pushed since the last call. | |
-| `app_perf_get(session_id?, select?)` | Drain perf-counter samples the app has pushed since the last call. | |
+| `app_perf_get(session_id?, select?)` | Drain perf-counter samples the app has pushed since the last call. | Latest-only / push gauges — not a frame ring. |
+| `app_metrics_list(session_id?, instance?)` | List per-instance metric series the app registered (ge 🎯T166 / spyder 🎯T110). | |
+| `app_metrics_arm(session_id?, series, capacity?, instance?)` | Arm zero-I/O ring capture for named series on one instance. | `series` required (string array). Default capacity 3600. |
+| `app_metrics_disarm(session_id?, instance?)` | Stop capture and clear the ring on that instance. | |
+| `app_metrics_status(session_id?, instance?)` | `{armed, capacity, count, series, instance}`. | |
+| `app_metrics_dump(session_id?, instance?)` | Full retained-frame history for armed series (`frames: [[…],…]`). | Not latest-only gauges (`app_perf_get`). |
 | `is_running(device, bundle_id)` | Check whether an app is currently running. | |
 | `health()` | Live daemon / subprocess / device health snapshot as a dict. | Same source of truth as `spyder status` and `GET /api/v1/health`. Read-only; takes no args. |
 | `record_start(device, owner?)` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | iOS simulators only — physical devices return an immediate error. Observational; not gated by device reservation. Only one recording per device at a time. The `owner` you pass here is the one that must stop the recording. |
@@ -625,6 +630,33 @@ The full v1 method set (🎯T75): `ping`, `quit`, `flush`,
 `resume`, `step`, `speed`, `input_inject`, `state_query`,
 `save_state`, `restore_state`, `screenshot_app`. Push messages from
 the app: `log` (structured), `perf` (key/value counter batches).
+
+Per-instance frame-trace ring (ge 🎯T166 / spyder 🎯T110): wire
+methods `metrics_list`, `metrics_arm`, `metrics_disarm`,
+`metrics_status`, `metrics_dump` — MCP tools `app_metrics_*`. Apps
+register typed series (`metric<T>` / `ge::metrics::Scope`); spyder
+selects by name and dumps **full retained-frame history**, not the
+latest-only `perf` push (`app_perf_get`).
+
+```starlark
+# session connected; app advertised metrics_* in hello
+emit(app_metrics_list(session_id=sid))
+# → {"session_id":"…","result":{"instance":"…","series":[{"name":"dt","kind":"float"},…]}}
+
+app_metrics_arm(session_id=sid, series=["dt", "zoom"], capacity=3600)
+# … drive UX (tilt, taps, steps) …
+emit(app_metrics_status(session_id=sid))
+# → {"result":{"armed":true,"capacity":3600,"count":N,"series":["dt","zoom"],…}}
+
+emit(app_metrics_dump(session_id=sid))
+# → {"result":{"series":["dt","zoom"],"frames":[[dt0,z0],[dt1,z1],…],"count":N,…}}
+
+app_metrics_disarm(session_id=sid)
+```
+
+Pass `instance` when multiple ge metrics scopes share one process.
+Calls fail closed with a clear error when the session is missing or
+the app did not advertise the method.
 
 Apps need only implement the subset they care about — advertise the
 list in `hello.methods` and spyder's per-method builtins will

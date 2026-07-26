@@ -242,6 +242,13 @@ const (
 	MethodTweakSet   = "tweak_set"
 	MethodTweakReset = "tweak_reset"
 
+	// 🎯T110 per-instance metrics ring (ge 🎯T166): arm/select/dump frame traces.
+	MethodMetricsList   = "metrics_list"
+	MethodMetricsArm    = "metrics_arm"
+	MethodMetricsDisarm = "metrics_disarm"
+	MethodMetricsStatus = "metrics_status"
+	MethodMetricsDump   = "metrics_dump"
+
 	// MethodSpawnInstance (🎯T92.1): a game server that advertises this
 	// method is a device FACTORY — spyder calls it to fork a new game
 	// instance, which dials the given app-channel address back as its own
@@ -281,5 +288,10 @@ var KnownMethods = []string{
 	MethodTweakGet,
 	MethodTweakSet,
 	MethodTweakReset,
+	MethodMetricsList,
+	MethodMetricsArm,
+	MethodMetricsDisarm,
+	MethodMetricsStatus,
+	MethodMetricsDump,
 	MethodSpawnInstance,
 }

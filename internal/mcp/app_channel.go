@@ -764,6 +764,120 @@ func (h *Handler) handleAppPerfGet(args map[string]any) (*mcpgo.CallToolResult, 
 	})
 }
 
+// ── per-instance metrics ring (🎯T110 / ge 🎯T166) ─────────────────────────
+
+func metricsInstanceParams(args map[string]any) map[string]any {
+	params := map[string]any{}
+	if inst := optString(args, "instance"); inst != "" {
+		params["instance"] = inst
+	}
+	return params
+}
+
+func (h *Handler) handleAppMetricsList(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	if !s.Supports(appchannel.MethodMetricsList) {
+		return toolErr("metrics_list: app does not advertise metrics_list (ge 🎯T166)")
+	}
+	res, err := s.Call(context.Background(), appchannel.MethodMetricsList, metricsInstanceParams(args), 10*time.Second)
+	if err != nil {
+		return toolErr("metrics_list: %v", err)
+	}
+	out, err := appchannel.ApplyJQ("", res)
+	if err != nil {
+		return toolErr("metrics_list: %v", err)
+	}
+	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
+}
+
+func (h *Handler) handleAppMetricsArm(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	if !s.Supports(appchannel.MethodMetricsArm) {
+		return toolErr("metrics_arm: app does not advertise metrics_arm (ge 🎯T166)")
+	}
+	rawSeries, ok := args["series"]
+	if !ok {
+		return toolErr("metrics_arm: 'series' array is required")
+	}
+	params := metricsInstanceParams(args)
+	params["series"] = rawSeries
+	if cap, ok := args["capacity"].(float64); ok && cap > 0 {
+		params["capacity"] = int(cap)
+	}
+	res, err := s.Call(context.Background(), appchannel.MethodMetricsArm, params, 10*time.Second)
+	if err != nil {
+		return toolErr("metrics_arm: %v", err)
+	}
+	out, err := appchannel.ApplyJQ("", res)
+	if err != nil {
+		return toolErr("metrics_arm: %v", err)
+	}
+	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
+}
+
+func (h *Handler) handleAppMetricsDisarm(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	if !s.Supports(appchannel.MethodMetricsDisarm) {
+		return toolErr("metrics_disarm: app does not advertise metrics_disarm (ge 🎯T166)")
+	}
+	res, err := s.Call(context.Background(), appchannel.MethodMetricsDisarm, metricsInstanceParams(args), 10*time.Second)
+	if err != nil {
+		return toolErr("metrics_disarm: %v", err)
+	}
+	out, err := appchannel.ApplyJQ("", res)
+	if err != nil {
+		return toolErr("metrics_disarm: %v", err)
+	}
+	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
+}
+
+func (h *Handler) handleAppMetricsStatus(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	if !s.Supports(appchannel.MethodMetricsStatus) {
+		return toolErr("metrics_status: app does not advertise metrics_status (ge 🎯T166)")
+	}
+	res, err := s.Call(context.Background(), appchannel.MethodMetricsStatus, metricsInstanceParams(args), 10*time.Second)
+	if err != nil {
+		return toolErr("metrics_status: %v", err)
+	}
+	out, err := appchannel.ApplyJQ("", res)
+	if err != nil {
+		return toolErr("metrics_status: %v", err)
+	}
+	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
+}
+
+func (h *Handler) handleAppMetricsDump(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	if !s.Supports(appchannel.MethodMetricsDump) {
+		return toolErr("metrics_dump: app does not advertise metrics_dump (ge 🎯T166)")
+	}
+	res, err := s.Call(context.Background(), appchannel.MethodMetricsDump, metricsInstanceParams(args), 30*time.Second)
+	if err != nil {
+		return toolErr("metrics_dump: %v", err)
+	}
+	out, err := appchannel.ApplyJQ("", res)
+	if err != nil {
+		return toolErr("metrics_dump: %v", err)
+	}
+	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
+}
+
 // applyJQToValue runs a jq expression over an arbitrary Go value by
 // round-tripping through MessagePack. Lets the log/perf handlers
 // (which start from in-memory structs) share the same filter
@@ -1115,6 +1229,39 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to the samples array. Example: `[.[].samples.frame_ms] | max`.")),
+		),
+		// 🎯T110 per-instance metrics ring (ge metrics_list/arm/dump)
+		mcpgo.NewTool("app_metrics_list", mcpgo.WithDescription("List per-instance metric series registered by the app (ge 🎯T166). Pass instance when multiple game instances share a process."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id.")),
+			mcpgo.WithString("instance", mcpgo.Description("Optional ge::metrics::Scope id when multiple instances exist.")),
+		),
+		mcpgo.NewTool("app_metrics_arm", mcpgo.WithDescription("Arm zero-I/O ring capture for a subset of series on one game instance. Hot path is POD assign only until dump."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id.")),
+			mcpgo.WithString("instance", mcpgo.Description("Optional metrics Scope id.")),
+			mcpgo.WithArray("series", mcpgo.Description("Series names to capture (must be registered)."), mcpgo.Items(map[string]any{"type": "string"})),
+			mcpgo.WithNumber("capacity", mcpgo.Description("Ring capacity in frames (default 3600).")),
+		),
+		mcpgo.NewTool("app_metrics_disarm", mcpgo.WithDescription("Stop capture and clear the ring on the targeted instance."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id.")),
+			mcpgo.WithString("instance", mcpgo.Description("Optional metrics Scope id.")),
+		),
+		mcpgo.NewTool("app_metrics_status", mcpgo.WithDescription("Capture status for one instance (armed, capacity, count, series)."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id.")),
+			mcpgo.WithString("instance", mcpgo.Description("Optional metrics Scope id.")),
+		),
+		mcpgo.NewTool("app_metrics_dump", mcpgo.WithDescription("Dump full retained-frame history for the armed series on one instance (not latest-only gauges)."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id.")),
+			mcpgo.WithString("instance", mcpgo.Description("Optional metrics Scope id.")),
 		),
 		// 🎯T108 durable host Starlark library
 		mcpgo.NewTool("list_scripts",

@@ -36,6 +36,13 @@ type smokeClient struct {
 	speedMult        float64
 	lastInput        map[string]any
 	restoredState    []byte
+	// 🎯T110 metrics ring fixture (mirrors ge metrics_list/arm/status/dump shapes).
+	metricsArmed      bool
+	metricsCapacity   int
+	metricsCount      int
+	metricsSeries     []string // armed series names
+	metricsInstance   string
+	lastMetricsParams map[string]any
 }
 
 func dialSmoke(t *testing.T, port int, methods []string) *smokeClient {
@@ -153,6 +160,133 @@ func (c *smokeClient) serve() {
 				"height": 50,
 				"data":   []byte("\x89PNG\r\n\x1a\n fake png bytes"),
 			}
+		case appchannel.MethodMetricsList:
+			var p map[string]any
+			_ = appchannel.UnpackParams(env.Params, &p)
+			c.lastMetricsParams = p
+			inst := "default"
+			if v, ok := p["instance"].(string); ok && v != "" {
+				inst = v
+			}
+			c.metricsInstance = inst
+			result = map[string]any{
+				"instance": inst,
+				"series": []any{
+					map[string]any{"name": "dt", "kind": "float"},
+					map[string]any{"name": "zoom", "kind": "float"},
+				},
+			}
+		case appchannel.MethodMetricsArm:
+			var p map[string]any
+			_ = appchannel.UnpackParams(env.Params, &p)
+			c.lastMetricsParams = p
+			inst := "default"
+			if v, ok := p["instance"].(string); ok && v != "" {
+				inst = v
+			}
+			c.metricsInstance = inst
+			c.metricsSeries = nil
+			if raw, ok := p["series"].([]any); ok {
+				for _, el := range raw {
+					if s, ok := el.(string); ok {
+						c.metricsSeries = append(c.metricsSeries, s)
+					}
+				}
+			}
+			c.metricsCapacity = 3600
+			if n, ok := anyToInt(p["capacity"]); ok && n > 0 {
+				c.metricsCapacity = n
+			}
+			c.metricsArmed = len(c.metricsSeries) > 0
+			c.metricsCount = 0
+			if c.metricsArmed {
+				// Fixture: two retained frames so dump proves full history, not gauges.
+				c.metricsCount = 2
+			}
+			result = map[string]any{
+				"instance": inst,
+				"armed":    c.metricsArmed,
+				"capacity": c.metricsCapacity,
+				"count":    c.metricsCount,
+				"series":   c.metricsSeries,
+			}
+		case appchannel.MethodMetricsDisarm:
+			var p map[string]any
+			_ = appchannel.UnpackParams(env.Params, &p)
+			c.lastMetricsParams = p
+			inst := c.metricsInstance
+			if inst == "" {
+				inst = "default"
+			}
+			if v, ok := p["instance"].(string); ok && v != "" {
+				inst = v
+			}
+			c.metricsArmed = false
+			c.metricsCount = 0
+			c.metricsSeries = nil
+			result = map[string]any{
+				"instance": inst,
+				"armed":    false,
+				"capacity": 0,
+				"count":    0,
+				"series":   []string{},
+			}
+		case appchannel.MethodMetricsStatus:
+			var p map[string]any
+			_ = appchannel.UnpackParams(env.Params, &p)
+			c.lastMetricsParams = p
+			inst := c.metricsInstance
+			if inst == "" {
+				inst = "default"
+			}
+			if v, ok := p["instance"].(string); ok && v != "" {
+				inst = v
+			}
+			series := c.metricsSeries
+			if series == nil {
+				series = []string{}
+			}
+			result = map[string]any{
+				"instance": inst,
+				"armed":    c.metricsArmed,
+				"capacity": c.metricsCapacity,
+				"count":    c.metricsCount,
+				"series":   series,
+			}
+		case appchannel.MethodMetricsDump:
+			var p map[string]any
+			_ = appchannel.UnpackParams(env.Params, &p)
+			c.lastMetricsParams = p
+			inst := c.metricsInstance
+			if inst == "" {
+				inst = "default"
+			}
+			if v, ok := p["instance"].(string); ok && v != "" {
+				inst = v
+			}
+			series := c.metricsSeries
+			if series == nil {
+				series = []string{}
+			}
+			frames := []any{}
+			if c.metricsArmed && c.metricsCount >= 2 && len(series) >= 1 {
+				// One row per frame; columns follow armed series order.
+				row0 := make([]any, len(series))
+				row1 := make([]any, len(series))
+				for i := range series {
+					row0[i] = float64(i) + 0.1
+					row1[i] = float64(i) + 1.1
+				}
+				frames = []any{row0, row1}
+			}
+			result = map[string]any{
+				"instance": inst,
+				"series":   series,
+				"kinds":    []string{"float", "float"}[:min(2, len(series))],
+				"frames":   frames,
+				"count":    len(frames),
+				"capacity": c.metricsCapacity,
+			}
 		default:
 			rerr = &appchannel.RPCError{Code: appchannel.ErrCodeMethodNotFound, Message: "no handler"}
 		}
@@ -176,6 +310,38 @@ func (c *smokeClient) pushLog(level, format string) {
 		Format:    format,
 	})
 	_ = appchannel.WriteFrame(c.conn, &appchannel.Envelope{Method: appchannel.PushLog, Params: raw})
+}
+
+// anyToInt coerces msgpack/JSON number shapes used in tests.
+func anyToInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int8:
+		return int(n), true
+	case int16:
+		return int(n), true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case uint:
+		return int(n), true
+	case uint8:
+		return int(n), true
+	case uint16:
+		return int(n), true
+	case uint32:
+		return int(n), true
+	case uint64:
+		return int(n), true
+	case float32:
+		return int(n), true
+	case float64:
+		return int(n), true
+	default:
+		return 0, false
+	}
 }
 
 func (c *smokeClient) pushPerf(samples map[string]float64) {
@@ -645,6 +811,8 @@ func TestAppChannel_DispatchSurfaceCoverage(t *testing.T) {
 		"app_input", "app_state",
 		"app_save_state", "app_restore_state",
 		"app_screenshot", "app_log_get", "app_perf_get",
+		"app_metrics_list", "app_metrics_arm", "app_metrics_disarm",
+		"app_metrics_status", "app_metrics_dump",
 		"app_state_slices", "app_state_describe",
 		"app_state_capture_start",
 		"app_state_capture_get", "app_state_capture_stop",

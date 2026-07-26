@@ -667,6 +667,11 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_state_capture_list":  h.handleAppStateCaptureList,
 		"app_log_get":             h.handleAppLogGet,
 		"app_perf_get":            h.handleAppPerfGet,
+		"app_metrics_list":        h.handleAppMetricsList,
+		"app_metrics_arm":         h.handleAppMetricsArm,
+		"app_metrics_disarm":      h.handleAppMetricsDisarm,
+		"app_metrics_status":      h.handleAppMetricsStatus,
+		"app_metrics_dump":        h.handleAppMetricsDump,
 		"is_running":              h.handleIsRunning,
 		// --- pool tools (🎯T24) ---
 		"pool_list":  h.handlePoolList,

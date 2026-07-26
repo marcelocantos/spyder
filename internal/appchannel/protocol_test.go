@@ -152,6 +152,8 @@ func TestKnownMethodsCovered(t *testing.T) {
 		MethodResume, MethodStep, MethodSpeed, MethodInputInject,
 		MethodStateQuery, MethodSaveState, MethodRestoreState,
 		MethodScreenshotApp,
+		MethodMetricsList, MethodMetricsArm, MethodMetricsDisarm,
+		MethodMetricsStatus, MethodMetricsDump,
 	}
 	have := map[string]bool{}
 	for _, m := range KnownMethods {
