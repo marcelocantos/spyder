@@ -34,7 +34,7 @@ func newFakeStateApp(t *testing.T, port int, advertisedSlices []string) *fakeSta
 	helloParams, _ := PackParams(Hello{
 		AppName:    "fake-state",
 		AppVersion: "test",
-		Methods:    []string{MethodPing, MethodStateQuery},
+		Methods:    MethodDescriptors(MethodPing, MethodStateQuery),
 		Slices:     descs,
 	})
 	if err := WriteFrame(conn, &Envelope{ID: 1, Method: MethodHello, Params: helloParams}); err != nil {
@@ -181,7 +181,7 @@ func TestStateCapture_UnsupportedMethod(t *testing.T) {
 	defer conn.Close()
 	helloParams, _ := PackParams(Hello{
 		AppName: "no-state", AppVersion: "test",
-		Methods: []string{MethodPing}, // no state_query
+		Methods: MethodDescriptors(MethodPing), // no state_query
 	})
 	_ = WriteFrame(conn, &Envelope{ID: 1, Method: MethodHello, Params: helloParams})
 	_, _ = ReadFrame(conn)

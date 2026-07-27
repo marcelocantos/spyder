@@ -93,7 +93,7 @@ func dialInstance(t *testing.T, addr, name string) net.Conn {
 		t.Errorf("instance dial: %v", err)
 		return nil
 	}
-	hp, _ := PackParams(Hello{AppName: name, AppVersion: "test", Methods: []string{MethodPing}})
+	hp, _ := PackParams(Hello{AppName: name, AppVersion: "test", Methods: MethodDescriptors(MethodPing)})
 	if err := WriteFrame(conn, &Envelope{ID: 1, Method: MethodHello, Params: hp}); err != nil {
 		t.Errorf("instance hello: %v", err)
 		return conn

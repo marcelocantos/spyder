@@ -32,7 +32,7 @@ func (m *Manager) SpawnInstance(ctx context.Context, factory *Session, req Spawn
 	if factory == nil {
 		return nil, fmt.Errorf("appchannel: spawn: nil factory session")
 	}
-	if hi := factory.HelloInfo(); hi != nil && !slices.Contains(hi.Methods, MethodSpawnInstance) {
+	if hi := factory.HelloInfo(); hi != nil && !slices.Contains(MethodNames(hi.Methods), MethodSpawnInstance) {
 		return nil, fmt.Errorf("appchannel: session %s is not a factory (no %s capability)",
 			factory.ID, MethodSpawnInstance)
 	}

@@ -35,7 +35,7 @@ func newFakeApp(t *testing.T, addr string, methods []string) *fakeApp {
 	helloParams, _ := PackParams(Hello{
 		AppName:    "fake",
 		AppVersion: "test",
-		Methods:    methods,
+		Methods:    MethodDescriptors(methods...),
 	})
 	if err := WriteFrame(conn, &Envelope{ID: 1, Method: MethodHello, Params: helloParams}); err != nil {
 		t.Fatalf("write hello: %v", err)

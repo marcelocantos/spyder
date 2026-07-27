@@ -672,6 +672,8 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_metrics_disarm":      h.handleAppMetricsDisarm,
 		"app_metrics_status":      h.handleAppMetricsStatus,
 		"app_metrics_dump":        h.handleAppMetricsDump,
+		"app_methods":             h.handleAppMethods,
+		"app_call":                h.handleAppCall,
 		"is_running":              h.handleIsRunning,
 		// --- pool tools (🎯T24) ---
 		"pool_list":  h.handlePoolList,
