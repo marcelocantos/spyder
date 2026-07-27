@@ -31,7 +31,7 @@ func dialSliceApp(t *testing.T, port int, slices []string) net.Conn {
 	helloParams, _ := appchannel.PackParams(appchannel.Hello{
 		AppName:    "slice-smoke",
 		AppVersion: "test",
-		Methods:    []string{appchannel.MethodPing, appchannel.MethodStateQuery},
+		Methods:    appchannel.MethodDescriptors(appchannel.MethodPing, appchannel.MethodStateQuery),
 		Slices:     descs,
 	})
 	if err := appchannel.WriteFrame(conn, &appchannel.Envelope{ID: 1, Method: appchannel.MethodHello, Params: helloParams}); err != nil {

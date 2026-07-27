@@ -191,12 +191,100 @@ func (d *SliceDescriptor) DecodeMsgpack(dec *msgpack.Decoder) error {
 	return nil
 }
 
+// MethodDescriptor is one entry in hello.methods. Bare strings (engine
+// builtins, older apps) and maps {name, example_params?, doc?} both
+// decode. App-registered commands use the map form so agents discover
+// params without reading game source.
+type MethodDescriptor struct {
+	Name          string `msgpack:"name" json:"name"`
+	ExampleParams any    `msgpack:"example_params,omitempty" json:"example_params,omitempty"`
+	Doc           string `msgpack:"doc,omitempty" json:"doc,omitempty"`
+}
+
+// DecodeMsgpack accepts a string (name-only) or a map with name /
+// example_params / doc — same mixed-array pattern as SliceDescriptor.
+func (d *MethodDescriptor) DecodeMsgpack(dec *msgpack.Decoder) error {
+	code, err := dec.PeekCode()
+	if err != nil {
+		return err
+	}
+	if msgpcode.IsString(code) {
+		s, err := dec.DecodeString()
+		if err != nil {
+			return err
+		}
+		d.Name = s
+		return nil
+	}
+	m, err := dec.DecodeMap()
+	if err != nil {
+		return err
+	}
+	if v, ok := m["name"].(string); ok {
+		d.Name = v
+	}
+	if v, ok := m["example_params"]; ok {
+		d.ExampleParams = v
+	}
+	if v, ok := m["doc"].(string); ok {
+		d.Doc = v
+	}
+	return nil
+}
+
+// EncodeMsgpack emits a bare string when only Name is set (compact hello
+// for engine builtins); otherwise a map so example_params/doc ride the wire.
+func (d MethodDescriptor) EncodeMsgpack(enc *msgpack.Encoder) error {
+	if d.ExampleParams == nil && d.Doc == "" {
+		return enc.EncodeString(d.Name)
+	}
+	m := map[string]any{"name": d.Name}
+	if d.ExampleParams != nil {
+		m["example_params"] = d.ExampleParams
+	}
+	if d.Doc != "" {
+		m["doc"] = d.Doc
+	}
+	return enc.Encode(m)
+}
+
+// MethodDescriptors builds name-only descriptors (tests / fake apps).
+func MethodDescriptors(names ...string) []MethodDescriptor {
+	out := make([]MethodDescriptor, len(names))
+	for i, n := range names {
+		out[i] = MethodDescriptor{Name: n}
+	}
+	return out
+}
+
+// MethodNames extracts bare names from a hello methods list.
+func MethodNames(ms []MethodDescriptor) []string {
+	out := make([]string, 0, len(ms))
+	for _, m := range ms {
+		if m.Name != "" {
+			out = append(out, m.Name)
+		}
+	}
+	return out
+}
+
+// IsEngineMethod reports whether name is in spyder's built-in catalogue
+// (as opposed to an app-registered command).
+func IsEngineMethod(name string) bool {
+	for _, m := range KnownMethods {
+		if m == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Hello is the first message an app sends on a new connection.
 type Hello struct {
-	AppName    string   `msgpack:"app_name"`
-	AppVersion string   `msgpack:"app_version"`
-	Methods    []string `msgpack:"methods"`          // methods the app handles
-	Pushes     []string `msgpack:"pushes,omitempty"` // push categories the app emits
+	AppName    string              `msgpack:"app_name"`
+	AppVersion string              `msgpack:"app_version"`
+	Methods    []MethodDescriptor  `msgpack:"methods"`          // methods the app handles
+	Pushes     []string            `msgpack:"pushes,omitempty"` // push categories the app emits
 	// Slices enumerates the named state slices the app makes
 	// available to `state_query`. Lets agents discover what a game
 	// exposes without prior knowledge. Bare strings and {name, example}
@@ -206,8 +294,12 @@ type Hello struct {
 
 // HelloAck is spyder's response.
 type HelloAck struct {
-	SpyderVersion   string   `msgpack:"spyder_version"`
-	AcceptedMethods []string `msgpack:"accepted_methods"` // intersection of app's methods and spyder's known methods
+	SpyderVersion string `msgpack:"spyder_version"`
+	// AcceptedMethods is every non-empty method name from the app's hello
+	// (engine builtins and app-registered commands). Spyder forwards any
+	// accepted name via Session.Call / app_call; it no longer drops unknown
+	// names at handshake.
+	AcceptedMethods []string `msgpack:"accepted_methods"`
 }
 
 // Standard method names (apps and spyder share this catalogue).
@@ -261,9 +353,11 @@ const (
 	PushPerfCounters = "perf"
 )
 
-// KnownMethods is the catalogue spyder advertises in HelloAck (after
-// intersecting with what the app sent in Hello). Apps that lack any of
-// these don't get the corresponding MCP tool surface for that session.
+// KnownMethods is the engine/builtin method catalogue. Used to label
+// hello entries as kind=engine vs kind=app in app_methods discovery and
+// to document the fixed tool surface. Handshake accepts every method the
+// app advertises (including app-private names); KnownMethods is not an
+// accept-list anymore.
 var KnownMethods = []string{
 	MethodPing,
 	MethodQuit,

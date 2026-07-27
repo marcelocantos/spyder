@@ -103,7 +103,7 @@ func sessionInfoFrom(s *appchannel.Session) sessionInfo {
 	if h := s.HelloInfo(); h != nil {
 		info.AppName = h.AppName
 		info.AppVersion = h.AppVersion
-		info.Methods = h.Methods
+		info.Methods = appchannel.MethodNames(h.Methods)
 	}
 	return info
 }
@@ -764,6 +764,104 @@ func (h *Handler) handleAppPerfGet(args map[string]any) (*mcpgo.CallToolResult, 
 	})
 }
 
+// ── app-advertised methods (discovery + generic call) ─────────────────────
+
+// handleAppMethods returns the session's hello method catalogue so agents
+// can discover engine and app-registered RPCs (with optional example_params/doc).
+func (h *Handler) handleAppMethods(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	hello := s.HelloInfo()
+	if hello == nil {
+		return toolErr("app_methods: session has no hello (not connected)")
+	}
+	scope := optString(args, "scope")
+	if scope == "" {
+		scope = "all"
+	}
+	if scope != "all" && scope != "app" && scope != "engine" {
+		return toolErr("app_methods: scope must be all|app|engine")
+	}
+	methods := make([]map[string]any, 0, len(hello.Methods))
+	for _, m := range hello.Methods {
+		if m.Name == "" {
+			continue
+		}
+		kind := "app"
+		if appchannel.IsEngineMethod(m.Name) {
+			kind = "engine"
+		}
+		if scope == "app" && kind != "app" {
+			continue
+		}
+		if scope == "engine" && kind != "engine" {
+			continue
+		}
+		entry := map[string]any{
+			"name": m.Name,
+			"kind": kind,
+		}
+		if m.ExampleParams != nil {
+			entry["example_params"] = m.ExampleParams
+		}
+		if m.Doc != "" {
+			entry["doc"] = m.Doc
+		}
+		methods = append(methods, entry)
+	}
+	return toolJSON(map[string]any{
+		"session_id":  s.ID,
+		"app_name":    hello.AppName,
+		"app_version": hello.AppVersion,
+		"scope":       scope,
+		"methods":     methods,
+	})
+}
+
+// handleAppCall forwards an arbitrary RPC the app advertised in hello.
+// Prefer fixed app_* tools for engine methods; use this for game-private commands.
+func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	method := optString(args, "method")
+	if method == "" {
+		return toolErr("app_call: 'method' is required — discover names via app_methods")
+	}
+	if method == appchannel.MethodHello {
+		return toolErr("app_call: cannot invoke hello")
+	}
+	if !s.Supports(method) {
+		return toolErr("app_call: app does not advertise method %q (call app_methods)", method)
+	}
+	var params any
+	if raw, ok := args["params"]; ok {
+		params = raw
+	} else {
+		params = map[string]any{}
+	}
+	timeout := 10 * time.Second
+	if ms, ok := args["timeout_ms"].(float64); ok && ms > 0 {
+		timeout = time.Duration(ms) * time.Millisecond
+	}
+	res, err := s.Call(context.Background(), method, params, timeout)
+	if err != nil {
+		return toolErr("app_call %s: %v", method, err)
+	}
+	out, err := appchannel.ApplyJQ("", res)
+	if err != nil {
+		return toolErr("app_call %s: decode: %v", method, err)
+	}
+	return toolJSON(map[string]any{
+		"session_id": s.ID,
+		"method":     method,
+		"result":     out,
+	})
+}
+
 // ── per-instance metrics ring (🎯T110 / ge 🎯T166) ─────────────────────────
 
 func metricsInstanceParams(args map[string]any) map[string]any {
@@ -996,7 +1094,7 @@ func (h *Handler) handleGames(_ map[string]any) (*mcpgo.CallToolResult, error) {
 			}
 			isFactory := false
 			for _, m := range hi.Methods {
-				if m == appchannel.MethodSpawnInstance {
+				if m.Name == appchannel.MethodSpawnInstance {
 					isFactory = true
 					break
 				}
@@ -1021,6 +1119,23 @@ func appChannelDefinitions() []mcpgo.Tool {
 		),
 		mcpgo.NewTool("app_channel_list",
 			mcpgo.WithDescription("List active per-(device, bundle_id) appchannel listeners and the sessions accepted on each. Each entry has listener_id, device_id, bundle_id, port, owner, idle_since (only when no session is currently connected), and a sessions array (session_id, started_at, app_name, app_version, methods advertised in hello). Listeners are created automatically by `launch_app` and `deploy_app`."),
+		),
+
+		mcpgo.NewTool("app_methods",
+			mcpgo.WithDescription("Discover RPCs the connected app advertised in hello. Returns name, kind (engine|app), and optional example_params/doc for app-registered commands. Always call this after connect before inventing game automation — games may export semantic actions (e.g. select_country) that are not fixed spyder tools. scope=all|app|engine filters the catalogue."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("scope", mcpgo.Description("Filter: all (default), app (game-registered only), or engine (ge builtins only).")),
+		),
+		mcpgo.NewTool("app_call",
+			mcpgo.WithDescription("Invoke a method the app advertised in hello (generic pass-through). Prefer fixed app_* tools for engine methods; use app_call for game-private commands discovered via app_methods. Fails closed if the method was not advertised."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("method", mcpgo.Required(), mcpgo.Description("RPC method name from app_methods.")),
+			mcpgo.WithObject("params", mcpgo.Description("JSON-object params for the method (default {}). Use example_params from app_methods as a template.")),
+			mcpgo.WithNumber("timeout_ms", mcpgo.Description("RPC timeout in milliseconds (default 10000).")),
 		),
 
 		mcpgo.NewTool("app_ping", mcpgo.WithDescription("Ping the app (round-trip liveness check). Returns the timestamp the app saw."),

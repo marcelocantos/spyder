@@ -43,19 +43,32 @@ type smokeClient struct {
 	metricsSeries     []string // armed series names
 	metricsInstance   string
 	lastMetricsParams map[string]any
+	lastAppCallMethod string
+	lastAppCallParams any
 }
 
 func dialSmoke(t *testing.T, port int, methods []string) *smokeClient {
+	t.Helper()
+	return dialSmokeHello(t, port, appchannel.Hello{
+		AppName:    "smoke",
+		AppVersion: "1.0",
+		Methods:    appchannel.MethodDescriptors(methods...),
+	})
+}
+
+func dialSmokeHello(t *testing.T, port int, hello appchannel.Hello) *smokeClient {
 	t.Helper()
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	helloParams, _ := appchannel.PackParams(appchannel.Hello{
-		AppName:    "smoke",
-		AppVersion: "1.0",
-		Methods:    methods,
-	})
+	if hello.AppName == "" {
+		hello.AppName = "smoke"
+	}
+	if hello.AppVersion == "" {
+		hello.AppVersion = "1.0"
+	}
+	helloParams, _ := appchannel.PackParams(hello)
 	if err := appchannel.WriteFrame(conn, &appchannel.Envelope{ID: 1, Method: appchannel.MethodHello, Params: helloParams}); err != nil {
 		t.Fatalf("hello: %v", err)
 	}
@@ -288,7 +301,12 @@ func (c *smokeClient) serve() {
 				"capacity": c.metricsCapacity,
 			}
 		default:
-			rerr = &appchannel.RPCError{Code: appchannel.ErrCodeMethodNotFound, Message: "no handler"}
+			// App-registered methods (not engine builtins): echo for app_call tests.
+			var p any
+			_ = appchannel.UnpackParams(env.Params, &p)
+			c.lastAppCallMethod = env.Method
+			c.lastAppCallParams = p
+			result = map[string]any{"ok": true, "method": env.Method, "echo": p}
 		}
 		if rerr != nil {
 			_ = appchannel.WriteFrame(c.conn, &appchannel.Envelope{ID: env.ID, Error: rerr})

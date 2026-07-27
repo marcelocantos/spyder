@@ -125,7 +125,7 @@ func TestHelloRoundTrip(t *testing.T) {
 	helloParams, _ := PackParams(Hello{
 		AppName:    "tiltbuggy",
 		AppVersion: "0.13.0",
-		Methods:    []string{"ping", "quit", "state_query"},
+		Methods:    MethodDescriptors("ping", "quit", "state_query"),
 	})
 	env := &Envelope{ID: 1, Method: MethodHello, Params: helloParams}
 	var buf bytes.Buffer
@@ -140,6 +140,37 @@ func TestHelloRoundTrip(t *testing.T) {
 	}
 	if len(hello.Methods) != 3 {
 		t.Errorf("methods = %v; want 3 entries", hello.Methods)
+	}
+}
+
+func TestMethodDescriptorRoundTrip(t *testing.T) {
+	hello := Hello{
+		AppName: "g",
+		Methods: []MethodDescriptor{
+			{Name: "ping"},
+			{Name: "select_country", ExampleParams: map[string]any{"id": "FR"}, Doc: "pick"},
+		},
+	}
+	raw, err := PackParams(hello)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Hello
+	if err := UnpackParams(raw, &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Methods) != 2 {
+		t.Fatalf("methods=%v", out.Methods)
+	}
+	if out.Methods[0].Name != "ping" || out.Methods[0].Doc != "" {
+		t.Errorf("bare ping = %+v", out.Methods[0])
+	}
+	if out.Methods[1].Name != "select_country" || out.Methods[1].Doc != "pick" {
+		t.Errorf("rich = %+v", out.Methods[1])
+	}
+	ex, ok := out.Methods[1].ExampleParams.(map[string]any)
+	if !ok || ex["id"] != "FR" {
+		t.Errorf("example=%v", out.Methods[1].ExampleParams)
 	}
 }
 

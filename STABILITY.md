@@ -84,6 +84,8 @@ installation) runs in-process.
 | `app_metrics_disarm` | `{session_id?…, instance?}`. | JSON `{session_id, result}` status after clear. | Stable (🎯T110) |
 | `app_metrics_status` | `{session_id?…, instance?}`. | JSON `{session_id, result}` capture status. | Stable (🎯T110) |
 | `app_metrics_dump` | `{session_id?…, instance?}`. | JSON `{session_id, result}` full retained-frame history (`frames`, `count`, `series`, …) — not latest-only gauges. | Stable (🎯T110) |
+| `app_methods` | `{session_id? \| device+bundle_id?, scope?: "all"\|"app"\|"engine"}`. | JSON `{session_id, app_name, app_version, scope, methods:[{name, kind, example_params?, doc?}]}` from hello. | Stable — discovery surface for engine + app-registered RPCs |
+| `app_call` | `{session_id?…, method: string (required), params?: object, timeout_ms?}`. | JSON `{session_id, method, result}` from the app's handler. | Stable — generic pass-through; method must appear in hello; not a per-game MCP tool |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, the `ErrLocked` sentinel, and

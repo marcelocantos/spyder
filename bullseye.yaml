@@ -1017,6 +1017,23 @@ targets:
     origin: manual
     discovered: 2026-07-21
     achieved: 2026-07-21
+  T111:
+    name: spyder covers the device workflows that currently force a fallback to raw adb
+    status: identified
+    value: 0.0
+    cost: 0.0
+    acceptance:
+    - A perf primitive reports an app's fps over an N-second window (compositor-side, e.g. SurfaceFlinger timestats on Android), and surfaces app-channel perfEmit counters via CLI
+    - A port-forward primitive tunnels a device TCP port to the host (parity with `adb forward` / iproxy), usable for debug oracles
+    - An input-injection primitive performs taps and swipes for scripted runs
+    - A log-tail primitive streams app logs live (beyond crash fetch)
+    - A yourworld2 release-perf measurement session completes using spyder only, no direct adb
+    context: '2026-07-27 yourworld2 500m/perf session fell back to adb for fps measurement (SurfaceFlinger timestats), oracle port forwarding, scripted swipes, and logcat. Install/launch/screenshot exist but the session bypassed them out of habit — a single spyder-native path would keep the workflow honest. Tag: yourworld2-audit.'
+    tags:
+    - yourworld2-audit
+    - android
+    origin: manual
+    discovered: 2026-07-27
   T12:
     name: Non-agent consumers (CLI, shell scripts, CI) can drive spyder via a REST API on the daemon, sharing the same reservation-authorised handlers as MCP
     status: achieved

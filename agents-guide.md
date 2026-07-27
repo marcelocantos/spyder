@@ -407,6 +407,8 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
 | `app_screenshot(session_id?)` | Request a PNG from the app's own framebuffer (sibling to the OS-path `screenshot`). | |
 | `app_state_slices(session_id?)` | Return the list of named state slices the app has registered. | |
+| `app_methods(session_id?, scope?)` | Discover RPCs the app advertised in hello (`name`, `kind` engine\|app, optional `example_params`/`doc`). | `scope=all\|app\|engine` (default all). Always call after connect before inventing game automation. |
+| `app_call(session_id?, method, params?, timeout_ms?)` | Invoke any method advertised in hello (generic pass-through). | Prefer fixed `app_*` tools for engine methods; use for **game-private** commands. Fails closed if not advertised. |
 | `app_state_describe(session_id?, slice)` | Return a types-only structural sketch of a slice without the full payload. | |
 | `app_state_capture_start(session_id?, slice, interval_ms?, select?)` | Start a polling capture of a state slice. Returns a `capture_id`. | Default 100 ms interval. Minimum 10 ms. |
 | `app_state_capture_get(capture_id)` | Drain accumulated samples; capture continues. | Clears the buffer. |
@@ -597,7 +599,9 @@ more leverage.
 - **Handshake**: first frame app→spyder must be a `hello` request:
   `{id, method: "hello", params: {app_name, app_version, methods: [...]}}`.
   Spyder responds with `{id, result: {spyder_version, accepted_methods}}`
-  (intersection of the app's advertised methods with spyder's known set).
+  (`accepted_methods` = every method name the app advertised — engine and
+  app-registered). Agents discover the catalogue via `app_methods` and invoke
+  game-private methods with `app_call`.
 
 ### Worked example
 
@@ -661,6 +665,40 @@ the app did not advertise the method.
 Apps need only implement the subset they care about — advertise the
 list in `hello.methods` and spyder's per-method builtins will
 gracefully refuse calls to anything the app didn't claim.
+
+### App-advertised commands (`app_methods` / `app_call`)
+
+Games may register **private RPCs** on the app-channel (ge
+`registerMethod`) beyond the engine catalogue — semantic actions such
+as `select_country` or `reset_pose` that are not fixed spyder tools and
+must not become per-game MCP tools.
+
+**Agent loop (required discovery):**
+
+```starlark
+# 1. Possibility + actual surface for THIS session
+ms = app_methods(session_id=sid)           # or scope="app"
+# → {app_name, methods:[{name, kind, example_params?, doc?}, …]}
+
+# 2. Invoke only names from the catalogue
+app_call(session_id=sid, method="select_country",
+         params={"id": "FR"})              # template: example_params
+
+# 3. Verify via slices / metrics / screenshot
+emit(app_state(session_id=sid, slice="scene"))
+```
+
+| Rule | Detail |
+|------|--------|
+| Discovery first | Always `app_methods` after connect; never hard-code a game method in a shared recipe without params filled from discovery |
+| `kind` | `engine` = ge builtins (`ping`, `input_inject`, …); `app` = game-registered |
+| `example_params` / `doc` | Optional; volunteered at `registerMethod` so agents write calls without reading C++ |
+| Fail closed | `app_call` errors if the method was not in hello |
+| Not full save/restore | Prefer small intentional commands over blunt `app_restore_state` |
+
+Handshake accepts **every** method name the app advertised (engine +
+app). Fixed `app_*` tools still require their engine method; game
+commands go through `app_call` only.
 
 ### Session addressing
 

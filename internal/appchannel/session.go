@@ -136,7 +136,7 @@ func (s *Session) Supports(method string) bool {
 		return false
 	}
 	for _, x := range s.hello.Methods {
-		if x == method {
+		if x.Name == method {
 			return true
 		}
 	}
@@ -262,7 +262,7 @@ func (s *Session) supportsLocked(method string) bool {
 		return true // pre-handshake, allow (hello itself)
 	}
 	for _, x := range s.hello.Methods {
-		if x == method {
+		if x.Name == method {
 			return true
 		}
 	}
@@ -395,17 +395,10 @@ func (s *Session) handshake() error {
 		return fmt.Errorf("appchannel: bad hello: %w", err)
 	}
 
-	// Intersect app's methods with spyder's known catalogue.
-	known := map[string]bool{}
-	for _, m := range KnownMethods {
-		known[m] = true
-	}
-	accepted := make([]string, 0, len(hello.Methods))
-	for _, m := range hello.Methods {
-		if known[m] {
-			accepted = append(accepted, m)
-		}
-	}
+	// Accept every method the app advertised (engine + app-registered).
+	// Agents discover the surface via app_methods and invoke via app_call
+	// (or the fixed app_* tools for known engine methods).
+	accepted := MethodNames(hello.Methods)
 	ack := &HelloAck{SpyderVersion: spyderVersion, AcceptedMethods: accepted}
 
 	s.mu.Lock()
