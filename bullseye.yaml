@@ -1019,9 +1019,10 @@ targets:
     achieved: 2026-07-21
   T111:
     name: spyder covers the device workflows that currently force a fallback to raw adb
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 8.0
     acceptance:
     - A perf primitive reports an app's fps over an N-second window (compositor-side, e.g. SurfaceFlinger timestats on Android), and surfaces app-channel perfEmit counters via CLI
     - A port-forward primitive tunnels a device TCP port to the host (parity with `adb forward` / iproxy), usable for debug oracles
@@ -1034,6 +1035,33 @@ targets:
     - android
     origin: manual
     discovered: 2026-07-27
+    achieved: 2026-07-28
+  T112:
+    name: OS control surface (FPS window, port forward, OS inject) is platform-honest on iOS and Android under the same tool names
+    status: achieved
+    value: 8.0
+    cost: 8.0
+    actual_cost: 8.0
+    acceptance:
+    - The same MCP/CLI tool names (perf_fps, port_forward_start/stop/list, input_tap, input_swipe) are the agent surface on both platforms — no adb/iproxy in the documented happy path
+    - Android keeps (or retains) real OS backends for FPS window, TCP port forward, and pixel tap/swipe as shipped under T111
+    - iOS port forward tunnels a device TCP port to the host (usbmux/iproxy-class via go-ios or equivalent in-process), with start/stop/list lifecycle and clear errors
+    - iOS perf_fps either returns a real compositor/system FPS when a supported path exists, or fails closed with an explicit unsupported message that points agents to cooperative app_perf_get / app_metrics_* when the app is ge/app-channel
+    - iOS input_tap/input_swipe either inject via a real OS path where available (e.g. simulator if cheap) or fail closed pointing to app_input / mobile-mcp — never silent no-op
+    - agents-guide documents one release-perf / device-control recipe with Android and iOS columns (or equivalent platform matrix); callers never shell out to adb or iproxy
+    - STABILITY rows state platform support honestly (Android vs iOS vs cooperative fallback)
+    - Unit tests cover iOS adapters/parsers/error paths on the real entry points; live iOS smoke for port forward when hardware is available
+    context: 'Follow-on to T111. Design intent was always capability-first (FPS over a window, host↔device TCP, scripted gestures, live logs), not "Android adb tools." ADB is the Android mechanism only. Discussion held that iOS should share the same surface: port forward is practicable via go-ios/usbmux; compositor FPS is weak on device so cooperative counters are the honest stand-in; OS HID inject is not free on physical iOS without WDA (mobile-mcp domain) — fail closed or sim-only. T111 closed the Android audit + docs; this target closes the dual-platform product framing and the missing iOS backends. Related: T111 achieved 2026-07-28.'
+    tags:
+    - os-control
+    - ios
+    - android
+    - port-forward
+    - t111-followon
+    - capability-first
+    origin: manual
+    discovered: 2026-07-28
+    achieved: 2026-07-28
   T12:
     name: Non-agent consumers (CLI, shell scripts, CI) can drive spyder via a REST API on the daemon, sharing the same reservation-authorised handlers as MCP
     status: achieved

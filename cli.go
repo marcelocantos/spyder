@@ -76,6 +76,11 @@ func init() {
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
+		{"perf-fps", "spyder perf-fps <device> --package PKG [--window-sec N] [--as OWNER] [--json]", runPerfFPS},
+		{"port-forward", "spyder port-forward <device> start --device-port P [--local-port P] | stop --local-port P | list [--as OWNER] [--json]", runPortForward},
+		{"input-tap", "spyder input-tap <device> --x N --y N [--as OWNER]", runInputTap},
+		{"input-swipe", "spyder input-swipe <device> --x1 N --y1 N --x2 N --y2 N [--duration-ms N] [--as OWNER]", runInputSwipe},
+		{"app-perf-get", "spyder app-perf-get [--session-id ID] [--json]  (app-channel perfEmit counters)", runAppPerfGet},
 		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow | --capture [--ttl-sec N] [--max-bytes N] [--max-lines N] [--as OWNER] | --capture-get SID | --capture-stop SID | --capture-list]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 		{"list-scripts", "spyder list-scripts [--json]", runListScripts},
@@ -1272,6 +1277,161 @@ func runNet(args []string) {
 		a["profile"] = profile
 	}
 	dispatchAndExit(ctx, "network", a, false, !verbose(pf))
+}
+
+// 🎯T111 Android OS control CLI peers (REST → same handlers as MCP).
+
+func runPerfFPS(args []string) {
+	// Window can exceed DefaultLaunch; allow up to 3 minutes wall.
+	pf, ctx, cancel := setupCommand("perf-fps", args,
+		[]string{"--package", "--bundle-id", "--window-sec", "--as"}, []string{"--json"}, 3*time.Minute)
+	defer cancel()
+	requirePositional("perf-fps", pf, 1)
+	pkg := pf.flags["--package"]
+	if pkg == "" {
+		pkg = pf.flags["--bundle-id"]
+	}
+	if pkg == "" {
+		fatalUsage("perf-fps", fmt.Errorf("--package (or --bundle-id) is required"))
+	}
+	a := map[string]any{
+		"device":  pf.positional[0],
+		"package": pkg,
+		"owner":   deriveOwner(pf.flags["--as"]),
+	}
+	if w := pf.flags["--window-sec"]; w != "" {
+		if f, err := strconv.ParseFloat(w, 64); err == nil {
+			a["window_sec"] = f
+		}
+	}
+	dispatchAndExit(ctx, "perf_fps", a, pf.bools["--json"], !verbose(pf))
+}
+
+func runPortForward(args []string) {
+	if len(args) < 2 {
+		fatalUsage("port-forward", fmt.Errorf("usage: spyder port-forward <device> start|stop|list ..."))
+	}
+	// device is first positional; action is second — parse manually after setup.
+	pf, ctx, cancel := setupCommand("port-forward", args,
+		[]string{"--device-port", "--local-port", "--as"}, []string{"--json"}, clitimeout.DefaultLaunch)
+	defer cancel()
+	if len(pf.positional) < 2 {
+		fatalUsage("port-forward", fmt.Errorf("expected <device> start|stop|list"))
+	}
+	dev := pf.positional[0]
+	action := pf.positional[1]
+	owner := deriveOwner(pf.flags["--as"])
+	jm := pf.bools["--json"]
+	switch action {
+	case "start":
+		dp := pf.flags["--device-port"]
+		if dp == "" {
+			fatalUsage("port-forward", fmt.Errorf("start requires --device-port"))
+		}
+		dpi, err := strconv.Atoi(dp)
+		if err != nil {
+			fatalUsage("port-forward", fmt.Errorf("--device-port: %v", err))
+		}
+		a := map[string]any{"device": dev, "device_port": float64(dpi), "owner": owner}
+		if lp := pf.flags["--local-port"]; lp != "" {
+			lpi, err := strconv.Atoi(lp)
+			if err != nil {
+				fatalUsage("port-forward", fmt.Errorf("--local-port: %v", err))
+			}
+			a["local_port"] = float64(lpi)
+		}
+		dispatchAndExit(ctx, "port_forward_start", a, jm, !verbose(pf))
+	case "stop":
+		lp := pf.flags["--local-port"]
+		if lp == "" {
+			fatalUsage("port-forward", fmt.Errorf("stop requires --local-port"))
+		}
+		lpi, err := strconv.Atoi(lp)
+		if err != nil {
+			fatalUsage("port-forward", fmt.Errorf("--local-port: %v", err))
+		}
+		dispatchAndExit(ctx, "port_forward_stop", map[string]any{
+			"device": dev, "local_port": float64(lpi), "owner": owner,
+		}, jm, !verbose(pf))
+	case "list":
+		dispatchAndExit(ctx, "port_forward_list", map[string]any{
+			"device": dev, "owner": owner,
+		}, jm, !verbose(pf))
+	default:
+		fatalUsage("port-forward", fmt.Errorf("unknown action %q — expected start|stop|list", action))
+	}
+}
+
+func runInputTap(args []string) {
+	pf, ctx, cancel := setupCommand("input-tap", args,
+		[]string{"--x", "--y", "--as"}, nil, clitimeout.DefaultLaunch)
+	defer cancel()
+	requirePositional("input-tap", pf, 1)
+	x, y := pf.flags["--x"], pf.flags["--y"]
+	if x == "" || y == "" {
+		fatalUsage("input-tap", fmt.Errorf("--x and --y are required"))
+	}
+	xi, err := strconv.Atoi(x)
+	if err != nil {
+		fatalUsage("input-tap", fmt.Errorf("--x: %v", err))
+	}
+	yi, err := strconv.Atoi(y)
+	if err != nil {
+		fatalUsage("input-tap", fmt.Errorf("--y: %v", err))
+	}
+	dispatchAndExit(ctx, "input_tap", map[string]any{
+		"device": pf.positional[0],
+		"x":      float64(xi),
+		"y":      float64(yi),
+		"owner":  deriveOwner(pf.flags["--as"]),
+	}, false, !verbose(pf))
+}
+
+func runInputSwipe(args []string) {
+	pf, ctx, cancel := setupCommand("input-swipe", args,
+		[]string{"--x1", "--y1", "--x2", "--y2", "--duration-ms", "--as"}, nil, clitimeout.DefaultLaunch)
+	defer cancel()
+	requirePositional("input-swipe", pf, 1)
+	need := []string{"--x1", "--y1", "--x2", "--y2"}
+	for _, k := range need {
+		if pf.flags[k] == "" {
+			fatalUsage("input-swipe", fmt.Errorf("%s is required", k))
+		}
+	}
+	parse := func(k string) int {
+		n, err := strconv.Atoi(pf.flags[k])
+		if err != nil {
+			fatalUsage("input-swipe", fmt.Errorf("%s: %v", k, err))
+		}
+		return n
+	}
+	a := map[string]any{
+		"device": pf.positional[0],
+		"x1":     float64(parse("--x1")),
+		"y1":     float64(parse("--y1")),
+		"x2":     float64(parse("--x2")),
+		"y2":     float64(parse("--y2")),
+		"owner":  deriveOwner(pf.flags["--as"]),
+	}
+	if d := pf.flags["--duration-ms"]; d != "" {
+		di, err := strconv.Atoi(d)
+		if err != nil {
+			fatalUsage("input-swipe", fmt.Errorf("--duration-ms: %v", err))
+		}
+		a["duration_ms"] = float64(di)
+	}
+	dispatchAndExit(ctx, "input_swipe", a, false, !verbose(pf))
+}
+
+func runAppPerfGet(args []string) {
+	pf, ctx, cancel := setupCommand("app-perf-get", args,
+		[]string{"--session-id"}, []string{"--json"}, clitimeout.DefaultLaunch)
+	defer cancel()
+	a := map[string]any{}
+	if sid := pf.flags["--session-id"]; sid != "" {
+		a["session_id"] = sid
+	}
+	dispatchAndExit(ctx, "app_perf_get", a, pf.bools["--json"], !verbose(pf))
 }
 
 func runLog(args []string) {

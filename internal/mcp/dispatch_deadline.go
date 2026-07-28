@@ -19,6 +19,11 @@ var (
 	DeadlineDeviceOp = 60 * time.Second
 	// DeadlineInstall covers install/deploy (zipconduit + cold tunnel).
 	DeadlineInstall = 5 * time.Minute
+	// DeadlinePerfFPS covers perf_fps: max window_sec is 120, plus margin
+	// for gfxinfo reset/dump and adb RTT (🎯T111). Must stay ≥ max window
+	// + DeadlinePerfFPSMargin or long windows time out mid-measure.
+	DeadlinePerfFPS       = 150 * time.Second
+	DeadlinePerfFPSMargin = 30 * time.Second
 )
 
 // toolDeadlineClass returns the wall-clock bound for a tool name.
@@ -26,6 +31,9 @@ func toolDeadlineClass(name string) time.Duration {
 	switch name {
 	case "install_app", "deploy_app":
 		return DeadlineInstall
+	case "perf_fps":
+		// Explicit class: window_sec max 120 must fit under this bound.
+		return DeadlinePerfFPS
 	case "devices", "resolve", "device_state", "list_apps", "is_running",
 		"reservations", "runs_list", "runs_show", "runs_artefacts",
 		"app_channel_list", "health", "app_exec", "list_scripts", "run_script":
@@ -33,6 +41,7 @@ func toolDeadlineClass(name string) time.Duration {
 		return DeadlineFastRead
 	case "screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",
+		"port_forward_start", "port_forward_stop", "input_tap", "input_swipe",
 		"crashes", "logs", "log_stream", "baseline_update", "diff",
 		"reserve", "release", "renew",
 		"sim_list", "sim_create", "sim_boot", "sim_shutdown", "sim_erase",

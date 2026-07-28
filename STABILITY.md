@@ -78,6 +78,12 @@ installation) runs in-process.
 | `record_start` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with subprocess PID and output path. | Needs review — iOS simulator UDID must be passed directly; iOS physical devices return an immediate error. |
 | `record_stop` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with the local mp4 path. | Needs review |
 | `network` | `{device: string, owner: string, profile?: string}` or `{device: string, owner: string, clear: true}`. Exactly one of profile or clear required. | Text confirmation. | Beta — Android emulator only; iOS and physical Android return clear errors. |
+| `perf_fps` | `{device, package\|bundle_id, window_sec?, owner?}`. | Android: JSON result with fps/total_frames (gfxinfo). iOS: clear error → app_perf_get/metrics. | Stable (🎯T111/T112) — platform-honest |
+| `port_forward_start` | `{device, device_port, local_port?, owner?}`. | JSON `{device, platform, local_port, device_port, spec, host_url}`. Android adb; iOS usbmux. | Stable (🎯T111/T112) |
+| `port_forward_stop` | `{device, local_port, owner?}`. | JSON `{device, platform, local_port, removed}`. | Stable (🎯T111/T112) |
+| `port_forward_list` | `{device, owner?}`. | JSON `{device, platform, forwards:[…]}`. | Stable (🎯T111/T112) |
+| `input_tap` | `{device, x, y, owner?}`. | Android: injected. iOS: clear error → app_input/mobile-mcp. | Stable (🎯T111/T112) |
+| `input_swipe` | `{device, x1, y1, x2, y2, duration_ms?, owner?}`. | Same Android/iOS split as tap. | Stable (🎯T111/T112) |
 | `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); see *iOS log live-window contract* below. Field set and timestamp precision may evolve |
 | `app_metrics_list` | `{session_id? \| device+bundle_id?, instance?}`. | JSON `{session_id, result}` where `result` is the app's metrics catalogue (ge: `{instance, series:[{name,kind},…]}` or multi-instance wrapper). | Stable (🎯T110) — requires appchannel session advertising `metrics_list` |
 | `app_metrics_arm` | `{session_id?…, series: string[] (required), capacity?: number, instance?}`. | JSON `{session_id, result}` with arm status (`armed`, `capacity`, `count`, `series`, `instance`). | Stable (🎯T110) |
