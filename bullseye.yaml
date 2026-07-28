@@ -1019,9 +1019,10 @@ targets:
     achieved: 2026-07-21
   T111:
     name: spyder covers the device workflows that currently force a fallback to raw adb
-    status: identified
+    status: achieved
     value: 0.0
     cost: 0.0
+    actual_cost: 8.0
     acceptance:
     - A perf primitive reports an app's fps over an N-second window (compositor-side, e.g. SurfaceFlinger timestats on Android), and surfaces app-channel perfEmit counters via CLI
     - A port-forward primitive tunnels a device TCP port to the host (parity with `adb forward` / iproxy), usable for debug oracles
@@ -1034,6 +1035,7 @@ targets:
     - android
     origin: manual
     discovered: 2026-07-27
+    achieved: 2026-07-28
   T12:
     name: Non-agent consumers (CLI, shell scripts, CI) can drive spyder via a REST API on the daemon, sharing the same reservation-authorised handlers as MCP
     status: achieved
