@@ -1038,9 +1038,10 @@ targets:
     achieved: 2026-07-28
   T112:
     name: OS control surface (FPS window, port forward, OS inject) is platform-honest on iOS and Android under the same tool names
-    status: identified
+    status: achieved
     value: 8.0
     cost: 8.0
+    actual_cost: 8.0
     acceptance:
     - The same MCP/CLI tool names (perf_fps, port_forward_start/stop/list, input_tap, input_swipe) are the agent surface on both platforms — no adb/iproxy in the documented happy path
     - Android keeps (or retains) real OS backends for FPS window, TCP port forward, and pixel tap/swipe as shipped under T111
@@ -1060,6 +1061,7 @@ targets:
     - capability-first
     origin: manual
     discovered: 2026-07-28
+    achieved: 2026-07-28
   T12:
     name: Non-agent consumers (CLI, shell scripts, CI) can drive spyder via a REST API on the daemon, sharing the same reservation-authorised handlers as MCP
     status: achieved
