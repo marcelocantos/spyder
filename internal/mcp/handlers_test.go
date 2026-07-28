@@ -41,6 +41,13 @@ type stubAdapter struct {
 	clearNetwork      func(id string) error
 	logRange          func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
 	logStream         func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
+	// 🎯T111 optional Android control (interfaces on AndroidAdapter)
+	measureFrameStats func(id, packageName string, window time.Duration) (device.FrameStats, error)
+	forwardTCP        func(id string, localPort, devicePort int) (device.PortForward, error)
+	unforwardTCP      func(id string, localPort int) error
+	listForwards      func(id string) ([]device.PortForward, error)
+	injectTap         func(id string, x, y int) error
+	injectSwipe       func(id string, x1, y1, x2, y2, durationMs int) error
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -152,6 +159,43 @@ func (s *stubAdapter) LogStream(ctx context.Context, id string, filter device.Lo
 		return nil
 	}
 	return s.logStream(ctx, id, filter, out)
+}
+
+func (s *stubAdapter) MeasureFrameStats(id, packageName string, window time.Duration) (device.FrameStats, error) {
+	if s.measureFrameStats == nil {
+		return device.FrameStats{}, nil
+	}
+	return s.measureFrameStats(id, packageName, window)
+}
+func (s *stubAdapter) ForwardTCP(id string, localPort, devicePort int) (device.PortForward, error) {
+	if s.forwardTCP == nil {
+		return device.PortForward{}, nil
+	}
+	return s.forwardTCP(id, localPort, devicePort)
+}
+func (s *stubAdapter) UnforwardTCP(id string, localPort int) error {
+	if s.unforwardTCP == nil {
+		return nil
+	}
+	return s.unforwardTCP(id, localPort)
+}
+func (s *stubAdapter) ListForwards(id string) ([]device.PortForward, error) {
+	if s.listForwards == nil {
+		return nil, nil
+	}
+	return s.listForwards(id)
+}
+func (s *stubAdapter) InjectTap(id string, x, y int) error {
+	if s.injectTap == nil {
+		return nil
+	}
+	return s.injectTap(id, x, y)
+}
+func (s *stubAdapter) InjectSwipe(id string, x1, y1, x2, y2, durationMs int) error {
+	if s.injectSwipe == nil {
+		return nil
+	}
+	return s.injectSwipe(id, x1, y1, x2, y2, durationMs)
 }
 
 // newHandlerWithStubs returns a Handler wired up with the given stubs.

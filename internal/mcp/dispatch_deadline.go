@@ -33,6 +33,7 @@ func toolDeadlineClass(name string) time.Duration {
 		return DeadlineFastRead
 	case "screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",
+		"perf_fps", "port_forward_start", "port_forward_stop", "input_tap", "input_swipe",
 		"crashes", "logs", "log_stream", "baseline_update", "diff",
 		"reserve", "release", "renew",
 		"sim_list", "sim_create", "sim_boot", "sim_shutdown", "sim_erase",
