@@ -83,10 +83,10 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   baseline      Manage visual baselines; subcommand: update
   record        Start or stop a screen recording (--start | --stop, --as OWNER)
   net           Apply or clear network conditions (--profile NAME | --clear, --as OWNER)
-  perf-fps      Android gfxinfo FPS over a window (--package, --window-sec)
-  port-forward  Android TCP tunnel (start|stop|list; adb forward parity)
-  input-tap     Android OS-level tap (--x --y)
-  input-swipe   Android OS-level swipe (--x1 --y1 --x2 --y2)
+  perf-fps      FPS over a window (Android gfxinfo; iOS → app_perf_get)
+  port-forward  Host↔device TCP (Android adb; iOS usbmux; start|stop|list)
+  input-tap     OS-level tap (Android; iOS → app_input/mobile-mcp)
+  input-swipe   OS-level swipe (Android; iOS → app_input/mobile-mcp)
   app-perf-get  Drain app-channel perfEmit counters (ge cooperative gauges)
   log           Fetch or tail device logs (--follow for live SSE stream)
 
