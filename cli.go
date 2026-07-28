@@ -1304,7 +1304,9 @@ func runPerfFPS(args []string) {
 			a["window_sec"] = f
 		}
 	}
-	dispatchAndExit(ctx, "perf_fps", a, pf.bools["--json"], !verbose(pf))
+	// Data tools always print (JSON or pretty); never quietOnSuccess.
+	// quiet would swallow --json local_port/fps payloads (🎯T111/T112).
+	dispatchAndExit(ctx, "perf_fps", a, pf.bools["--json"], false)
 }
 
 func runPortForward(args []string) {
@@ -1340,7 +1342,8 @@ func runPortForward(args []string) {
 			}
 			a["local_port"] = float64(lpi)
 		}
-		dispatchAndExit(ctx, "port_forward_start", a, jm, !verbose(pf))
+		// Always print: start/list return host_url/local_port JSON; stop confirms.
+		dispatchAndExit(ctx, "port_forward_start", a, jm, false)
 	case "stop":
 		lp := pf.flags["--local-port"]
 		if lp == "" {
@@ -1352,11 +1355,11 @@ func runPortForward(args []string) {
 		}
 		dispatchAndExit(ctx, "port_forward_stop", map[string]any{
 			"device": dev, "local_port": float64(lpi), "owner": owner,
-		}, jm, !verbose(pf))
+		}, jm, false)
 	case "list":
 		dispatchAndExit(ctx, "port_forward_list", map[string]any{
 			"device": dev, "owner": owner,
-		}, jm, !verbose(pf))
+		}, jm, false)
 	default:
 		fatalUsage("port-forward", fmt.Errorf("unknown action %q — expected start|stop|list", action))
 	}
@@ -1431,7 +1434,7 @@ func runAppPerfGet(args []string) {
 	if sid := pf.flags["--session-id"]; sid != "" {
 		a["session_id"] = sid
 	}
-	dispatchAndExit(ctx, "app_perf_get", a, pf.bools["--json"], !verbose(pf))
+	dispatchAndExit(ctx, "app_perf_get", a, pf.bools["--json"], false)
 }
 
 func runLog(args []string) {
