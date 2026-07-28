@@ -8,6 +8,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -20,7 +21,7 @@ import (
 // other platforms fail with a clear "not supported" message.
 
 type frameStatsMeasurer interface {
-	MeasureFrameStats(id, packageName string, window time.Duration) (device.FrameStats, error)
+	MeasureFrameStats(ctx context.Context, id, packageName string, window time.Duration) (device.FrameStats, error)
 }
 
 type portForwarder interface {
@@ -68,9 +69,15 @@ func (h *Handler) handlePerfFPS(args map[string]any) (*mcpgo.CallToolResult, err
 	if v, ok := args["window_sec"].(float64); ok && v > 0 {
 		windowSec = v
 	}
+	// Max 120s must fit under DeadlinePerfFPS (150s = 120 + 30s margin).
 	if windowSec > 120 {
 		return toolErr("window_sec max is 120")
 	}
+	window := time.Duration(windowSec * float64(time.Second))
+	// Local ctx so the wait is cancellable even though toolFunc has no Dispatch
+	// context; bound matches DeadlinePerfFPS (window + margin).
+	ctx, cancel := context.WithTimeout(context.Background(), window+DeadlinePerfFPSMargin)
+	defer cancel()
 
 	// Authorize + resolve under mu, but do not hold mu across the wait window.
 	h.mu.Lock()
@@ -83,7 +90,7 @@ func (h *Handler) handlePerfFPS(args map[string]any) (*mcpgo.CallToolResult, err
 	if !ok {
 		return toolErr("adapter does not support frame-stats measurement")
 	}
-	st, merr := m.MeasureFrameStats(id, pkg, time.Duration(windowSec*float64(time.Second)))
+	st, merr := m.MeasureFrameStats(ctx, id, pkg, window)
 	if merr != nil {
 		return toolErr("perf_fps: %v", merr)
 	}

@@ -34,7 +34,7 @@ func TestPerfFPS_AndroidPath(t *testing.T) {
 	var gotID, gotPkg string
 	var gotWin time.Duration
 	android := &stubAdapter{
-		measureFrameStats: func(id, packageName string, window time.Duration) (device.FrameStats, error) {
+		measureFrameStats: func(ctx context.Context, id, packageName string, window time.Duration) (device.FrameStats, error) {
 			gotID, gotPkg, gotWin = id, packageName, window
 			return device.FrameStats{
 				Package: packageName, WindowSec: window.Seconds(),
@@ -164,5 +164,22 @@ func TestT111_IOSRejected(t *testing.T) {
 	}
 	if !strings.Contains(resultText(t, &r), "Android") {
 		t.Errorf("body=%s", resultText(t, &r))
+	}
+}
+
+// perf_fps max window is 120s; Dispatch deadline must cover window + margin
+// so window_sec=90 does not time out at the old 60s device-op class.
+func TestPerfFPS_DeadlineCoversMaxWindow(t *testing.T) {
+	d := toolDeadlineClass("perf_fps")
+	if d < 120*time.Second+DeadlinePerfFPSMargin {
+		t.Fatalf("perf_fps deadline %v < max window 120s + margin %v", d, DeadlinePerfFPSMargin)
+	}
+	// window_sec=90 must fit under the class deadline with margin.
+	if d <= 90*time.Second {
+		t.Fatalf("perf_fps deadline %v cannot cover window_sec=90", d)
+	}
+	// Default device-op class remains 60s for other tools.
+	if toolDeadlineClass("input_tap") != DeadlineDeviceOp {
+		t.Errorf("input_tap should stay on DeadlineDeviceOp")
 	}
 }

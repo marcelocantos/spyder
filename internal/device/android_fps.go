@@ -8,6 +8,7 @@
 package device
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -19,14 +20,14 @@ import (
 
 // FrameStats is a windowed FPS sample derived from dumpsys gfxinfo.
 type FrameStats struct {
-	Package       string  `json:"package"`
-	WindowSec     float64 `json:"window_sec"`
-	TotalFrames   int     `json:"total_frames"`
-	JankyFrames   int     `json:"janky_frames,omitempty"`
-	JankyPercent  float64 `json:"janky_percent,omitempty"`
-	FPS           float64 `json:"fps"`
-	Source        string  `json:"source"` // "gfxinfo"
-	RawExcerpt    string  `json:"raw_excerpt,omitempty"`
+	Package      string  `json:"package"`
+	WindowSec    float64 `json:"window_sec"`
+	TotalFrames  int     `json:"total_frames"`
+	JankyFrames  int     `json:"janky_frames,omitempty"`
+	JankyPercent float64 `json:"janky_percent,omitempty"`
+	FPS          float64 `json:"fps"`
+	Source       string  `json:"source"` // "gfxinfo"
+	RawExcerpt   string  `json:"raw_excerpt,omitempty"`
 }
 
 // androidAdb runs `adb <args...>` and returns stdout/stderr. Tests replace it.
@@ -34,8 +35,21 @@ var androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
 	return runCapture("adb", args...)
 }
 
-// androidSleep is time.Sleep; tests replace it to avoid real waits.
-var androidSleep = time.Sleep
+// androidSleepUntil sleeps until d elapses or ctx is cancelled.
+// Tests replace it to avoid real waits.
+var androidSleepUntil = func(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
 
 var (
 	reTotalFrames = regexp.MustCompile(`(?m)^Total frames rendered:\s*(\d+)`)
@@ -67,9 +81,12 @@ func ParseGfxInfo(out string) (total, janky int, jankyPct float64, err error) {
 // MeasureFrameStats resets gfxinfo for package, waits window, dumps again,
 // and returns FPS = total_frames / window_sec (compositor/UI rendering stats).
 //
-// Requires a connected Android device and adb. packageName is the Android
-// package (bundle id), e.g. com.example.app.
-func (a *AndroidAdapter) MeasureFrameStats(id, packageName string, window time.Duration) (FrameStats, error) {
+// ctx cancels the wait window (and should match the MCP dispatch deadline
+// for long window_sec values). packageName is the Android package (bundle id).
+func (a *AndroidAdapter) MeasureFrameStats(ctx context.Context, id, packageName string, window time.Duration) (FrameStats, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if id == "" {
 		return FrameStats{}, errors.New("device identifier is empty")
 	}
@@ -82,6 +99,9 @@ func (a *AndroidAdapter) MeasureFrameStats(id, packageName string, window time.D
 	if _, err := exec.LookPath("adb"); err != nil {
 		return FrameStats{}, fmt.Errorf("adb not found in PATH: %w", err)
 	}
+	if err := ctx.Err(); err != nil {
+		return FrameStats{}, err
+	}
 
 	// Reset counters so the window is clean.
 	if _, stderr, err := androidAdb("-s", id, "shell", "dumpsys", "gfxinfo", packageName, "reset"); err != nil {
@@ -92,7 +112,9 @@ func (a *AndroidAdapter) MeasureFrameStats(id, packageName string, window time.D
 		return FrameStats{}, fmt.Errorf("gfxinfo reset: %v\n%s", err, truncate(msg, 200))
 	}
 
-	androidSleep(window)
+	if err := androidSleepUntil(ctx, window); err != nil {
+		return FrameStats{}, fmt.Errorf("gfxinfo window wait: %w", err)
+	}
 
 	out, stderr, err := androidAdb("-s", id, "shell", "dumpsys", "gfxinfo", packageName)
 	if err != nil {

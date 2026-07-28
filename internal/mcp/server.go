@@ -962,7 +962,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Android device alias or serial")),
 			mcpgo.WithString("package", mcpgo.Description("Android package name (or pass bundle_id)")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("Alias for package")),
-			mcpgo.WithNumber("window_sec", mcpgo.Description("Sample window in seconds (default 3, max 120)")),
+			mcpgo.WithNumber("window_sec", mcpgo.Description("Sample window in seconds (default 3, max 120). Dispatch deadline is 150s so a 120s window finishes (reset/dump margin).")),
 			mcpgo.WithString("owner", mcpgo.Description("Reservation owner when the device is reserved")),
 		),
 		mcpgo.NewTool("port_forward_start",

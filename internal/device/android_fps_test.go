@@ -4,6 +4,7 @@
 package device
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
@@ -52,15 +53,15 @@ func TestMeasureFrameStats_CommandBoundary(t *testing.T) {
 		t.Skip("adb not in PATH")
 	}
 	var calls [][]string
-	oldAdb, oldSleep := androidAdb, androidSleep
+	var slept time.Duration
+	oldAdb, oldSleep := androidAdb, androidSleepUntil
 	t.Cleanup(func() {
 		androidAdb = oldAdb
-		androidSleep = oldSleep
+		androidSleepUntil = oldSleep
 	})
-	androidSleep = func(d time.Duration) {
-		if d != 2*time.Second {
-			t.Errorf("sleep=%v want 2s", d)
-		}
+	androidSleepUntil = func(ctx context.Context, d time.Duration) error {
+		slept = d
+		return ctx.Err()
 	}
 	androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
 		cp := append([]string{}, args...)
@@ -72,9 +73,12 @@ func TestMeasureFrameStats_CommandBoundary(t *testing.T) {
 	}
 
 	a := NewAndroidAdapter()
-	st, err := a.MeasureFrameStats("SERIAL", "com.example.app", 2*time.Second)
+	st, err := a.MeasureFrameStats(context.Background(), "SERIAL", "com.example.app", 2*time.Second)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if slept != 2*time.Second {
+		t.Errorf("slept=%v want 2s", slept)
 	}
 	if st.TotalFrames != 300 {
 		t.Errorf("total=%d", st.TotalFrames)
@@ -97,15 +101,39 @@ func TestMeasureFrameStats_CommandBoundary(t *testing.T) {
 	}
 }
 
+func TestMeasureFrameStats_ContextCancel(t *testing.T) {
+	if _, err := exec.LookPath("adb"); err != nil {
+		t.Skip("adb not in PATH")
+	}
+	oldAdb, oldSleep := androidAdb, androidSleepUntil
+	t.Cleanup(func() {
+		androidAdb = oldAdb
+		androidSleepUntil = oldSleep
+	})
+	androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
+		return []byte(""), nil, nil
+	}
+	// Real cancel path through androidSleepUntil default would block; use
+	// cancelled context before sleep returns from default? Override sleep.
+	androidSleepUntil = func(ctx context.Context, d time.Duration) error {
+		return context.Canceled
+	}
+	a := NewAndroidAdapter()
+	_, err := a.MeasureFrameStats(context.Background(), "SERIAL", "com.example.app", time.Second)
+	if err == nil || !strings.Contains(err.Error(), "window wait") {
+		t.Fatalf("want window wait cancel error, got %v", err)
+	}
+}
+
 func TestMeasureFrameStats_Validation(t *testing.T) {
 	a := NewAndroidAdapter()
-	if _, err := a.MeasureFrameStats("", "pkg", time.Second); err == nil {
+	if _, err := a.MeasureFrameStats(context.Background(), "", "pkg", time.Second); err == nil {
 		t.Error("empty id")
 	}
-	if _, err := a.MeasureFrameStats("s", "", time.Second); err == nil {
+	if _, err := a.MeasureFrameStats(context.Background(), "s", "", time.Second); err == nil {
 		t.Error("empty package")
 	}
-	if _, err := a.MeasureFrameStats("s", "pkg", 0); err == nil {
+	if _, err := a.MeasureFrameStats(context.Background(), "s", "pkg", 0); err == nil {
 		t.Error("zero window")
 	}
 }

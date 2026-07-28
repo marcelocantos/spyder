@@ -42,7 +42,7 @@ type stubAdapter struct {
 	logRange          func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
 	logStream         func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
 	// 🎯T111 optional Android control (interfaces on AndroidAdapter)
-	measureFrameStats func(id, packageName string, window time.Duration) (device.FrameStats, error)
+	measureFrameStats func(ctx context.Context, id, packageName string, window time.Duration) (device.FrameStats, error)
 	forwardTCP        func(id string, localPort, devicePort int) (device.PortForward, error)
 	unforwardTCP      func(id string, localPort int) error
 	listForwards      func(id string) ([]device.PortForward, error)
@@ -161,11 +161,11 @@ func (s *stubAdapter) LogStream(ctx context.Context, id string, filter device.Lo
 	return s.logStream(ctx, id, filter, out)
 }
 
-func (s *stubAdapter) MeasureFrameStats(id, packageName string, window time.Duration) (device.FrameStats, error) {
+func (s *stubAdapter) MeasureFrameStats(ctx context.Context, id, packageName string, window time.Duration) (device.FrameStats, error) {
 	if s.measureFrameStats == nil {
 		return device.FrameStats{}, nil
 	}
-	return s.measureFrameStats(id, packageName, window)
+	return s.measureFrameStats(ctx, id, packageName, window)
 }
 func (s *stubAdapter) ForwardTCP(id string, localPort, devicePort int) (device.PortForward, error) {
 	if s.forwardTCP == nil {

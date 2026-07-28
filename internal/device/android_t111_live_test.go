@@ -7,6 +7,7 @@
 package device
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -69,7 +70,7 @@ func TestT111_AndroidControl_Live(t *testing.T) {
 	}
 
 	// Short FPS window — systemui is usually present
-	st, err := a.MeasureFrameStats(serial, "com.android.systemui", time.Second)
+	st, err := a.MeasureFrameStats(context.Background(), serial, "com.android.systemui", time.Second)
 	if err != nil {
 		// Some builds hide gfxinfo for system packages; still log
 		t.Logf("MeasureFrameStats (may be package-limited): %v", err)
