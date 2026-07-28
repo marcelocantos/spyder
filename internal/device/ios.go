@@ -86,6 +86,9 @@ type IOSAdapter struct {
 	healthModel *health.Model
 	pinned      func(udid string) bool
 	now         func() time.Time
+
+	// fwdStore tracks live usbmux TCP forwards (🎯T112 port_forward_*).
+	fwdStore iosForwardStore
 }
 
 type cachedState struct {

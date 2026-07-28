@@ -359,12 +359,12 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `launch_app(device, bundle_id, env?)` | Foreground an arbitrary app by bundle id. Optional `env` dict injects environment variables into the launched process — see "Launching with env" below. | iOS-17+ uses go-ios's `appservice.LaunchApp` (CoreDevice/RemoteXPC, needs tunnel); iOS ≤16 uses `instruments.ProcessControl` (DTX-over-lockdown, no tunnel, needs DDI mounted). Path selection automatic per device. Android uses `adb monkey -c LAUNCHER` (no env) or `am start --es KEY VALUE` (with env). |
 | `terminate_app(device, bundle_id)` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
 | `rotate(device, orientation)` | Rotate an iOS simulator or Android emulator to a named orientation. Physical iOS/Android devices return a clear error. | Orientations: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. iOS uses `xcrun simctl io <udid> rotate`; Android uses `adb emu rotate` (driven N times to reach the target). |
-| `perf_fps(device, package\|bundle_id, window_sec?, owner?)` | Android UI/compositor FPS over N seconds (`dumpsys gfxinfo` reset→wait→dump). | **Do not shell out to adb.** CLI: `spyder perf-fps`. Cooperative ge gauges: `app_perf_get` / CLI `spyder app-perf-get`. |
-| `port_forward_start(device, device_port, local_port?, owner?)` | Host↔device TCP tunnel (adb forward parity). Android only. `local_port=0` = ephemeral. | CLI: `spyder port-forward <d> start --device-port P`. |
+| `perf_fps(device, package\|bundle_id, window_sec?, owner?)` | **Capability:** FPS over N seconds. **Android:** gfxinfo. **iOS:** fails closed → `app_perf_get` / `app_metrics_*`. | Never shell out to adb. CLI: `spyder perf-fps`. |
+| `port_forward_start(device, device_port, local_port?, owner?)` | **Capability:** host↔device TCP. **Android:** adb forward. **iOS:** go-ios usbmux (iproxy-class). `local_port=0` ephemeral. | CLI: `spyder port-forward <d> start --device-port P`. Never iproxy/adb by hand. |
 | `port_forward_stop(device, local_port, owner?)` | Remove a forward by host local port. | CLI: `spyder port-forward <d> stop --local-port P`. |
-| `port_forward_list(device, owner?)` | List forwards for this Android serial. | CLI: `spyder port-forward <d> list`. |
-| `input_tap(device, x, y, owner?)` | OS-level pixel tap on Android. Minimal inject — not UI automation. | Prefer `app_input` for ge apps. CLI: `spyder input-tap`. |
-| `input_swipe(device, x1, y1, x2, y2, duration_ms?, owner?)` | OS-level pixel swipe on Android. | CLI: `spyder input-swipe`. |
+| `port_forward_list(device, owner?)` | List forwards for this device. | CLI: `spyder port-forward <d> list`. |
+| `input_tap(device, x, y, owner?)` | **Capability:** OS pixel tap. **Android:** real. **iOS:** fails closed → `app_input` / mobile-mcp. | Minimal inject — not UI automation. |
+| `input_swipe(device, x1, y1, x2, y2, duration_ms?, owner?)` | **Capability:** OS pixel swipe. Same Android/iOS split as tap. | CLI: `spyder input-swipe`. |
 | `install_app(device, path)` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | **Agents must use this tool (or `spyder install`), not shell out to `devicectl`/`adb`.** iOS: in-process go-ios `zipconduit` (works on iOS 16 lockdown and iOS 17+ RSD; CoreDevice's installapp capability is incomplete on some devices). Android: `adb install -r`, after best-effort settings that suppress Play Protect "Send app for a security check?" prompts on sideload (`verifier_verify_adb_installs=0`, `package_verifier_user_consent=-1`, `upload_apk_enable=0`). |
 | `uninstall_app(device, bundle_id)` | Remove an app by bundle id / package name. | iOS: go-ios `installation_proxy`; Android: `adb uninstall`. |
 | `deploy_app(device, path, bundle_id?, env?)` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. Optional `env` dict forwarded to the launch step — see "Launching with env" below. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
@@ -1687,43 +1687,40 @@ spyder run -- xcodebuild -project MyApp.xcodeproj \
 - The wrapper forwards stdin/stdout/stderr and the command's exit code.
 - Release failures are logged but do not mask the test's exit code.
 
-## Release-perf session without raw adb (🎯T111)
+## Device OS control without raw adb/iproxy (🎯T111 + 🎯T112)
 
-When measuring a real Android build (yourworld2-style: FPS window, on-device
-oracle port, scripted swipes, live logs), **use spyder only** — do not shell
-out to `adb`, `adb forward`, `adb shell input`, or `adb logcat`.
+**Capability-first surface** — same tool names on Android and iOS. Backends
+differ; agents never shell out to `adb` or `iproxy`.
 
-### Recipe (Android)
+| Capability | Tool | Android | iOS |
+|------------|------|---------|-----|
+| FPS over a window | `perf_fps` | gfxinfo (real) | fail closed → `app_perf_get` / `app_metrics_*` |
+| Host↔device TCP | `port_forward_*` | adb forward | go-ios usbmux forward (real) |
+| OS tap / swipe | `input_tap` / `input_swipe` | real | fail closed → `app_input` / mobile-mcp |
+| Live logs | `logs` / `log_capture_*` / SSE | logcat | syslog (already) |
+
+### Recipe (platform-honest)
 
 ```starlark
-# 0. Reserve (mutating tools need owner if reserved)
+# Android release-perf style
 reserve(device="Pixel", owner="release-perf", ttl_seconds=3600)
-
-# 1. Live logs — T111 log-tail path (already shipped; not a new tool)
 cap = log_capture_start(device="Pixel", bundle_id="com.example.app", owner="release-perf")
-# … or: logs(device="Pixel", bundle_id=…, since=…) / REST SSE log_stream
-
-# 2. Host↔device TCP for an on-device oracle / debug listener
 fwd = port_forward_start(device="Pixel", device_port=8080, local_port=0, owner="release-perf")
-# host reaches the device service at fwd.host_url (e.g. 127.0.0.1:49152)
-
-# 3. Scripted gesture (OS-level; pixels). Prefer app_input for ge apps.
 input_swipe(device="Pixel", x1=100, y1=800, x2=100, y2=200, duration_ms=400, owner="release-perf")
-input_tap(device="Pixel", x=540, y=1200, owner="release-perf")
-
-# 4. Compositor/UI FPS over a window (gfxinfo; not SurfaceFlinger timestats)
 fps = perf_fps(device="Pixel", package="com.example.app", window_sec=5, owner="release-perf")
-# → result.fps, result.total_frames, result.janky_frames
-
-# 5. Cooperative ge gauges (if app-channel is up) — CLI: spyder app-perf-get
-# app_perf_get(session_id=sid)   # perfEmit push counters
-# app_metrics_arm / app_metrics_dump for full frame rings (T110)
-
-# 6. Drain logs and clean up
-log_capture_get(session_id=cap["session_id"])
+# … use fwd.host_url for on-device oracle …
 port_forward_stop(device="Pixel", local_port=fwd["local_port"], owner="release-perf")
 log_capture_stop(session_id=cap["session_id"])
 release(device="Pixel", owner="release-perf")
+
+# iOS: same tools — port forward + logs real; FPS/inject use cooperative path
+reserve(device="iPad", owner="release-perf", ttl_seconds=3600)
+fwd = port_forward_start(device="iPad", device_port=8080, local_port=0, owner="release-perf")
+# host_url works the same
+# perf_fps / input_* → error with pointer; drive ge apps via:
+#   app_input(...); app_perf_get(session_id=sid); app_metrics_*
+port_forward_stop(device="iPad", local_port=fwd["local_port"], owner="release-perf")
+release(device="iPad", owner="release-perf")
 ```
 
 ### CLI peers
@@ -1731,14 +1728,14 @@ release(device="Pixel", owner="release-perf")
 ```bash
 spyder perf-fps Pixel --package com.example.app --window-sec 5 --json
 spyder port-forward Pixel start --device-port 8080 --json
+spyder port-forward iPad start --device-port 8080 --json
 spyder input-swipe Pixel --x1 100 --y1 800 --x2 100 --y2 200
 spyder log Pixel --bundle-id com.example.app --capture --as release-perf
-spyder app-perf-get --json   # app-channel perfEmit, when session connected
+spyder app-perf-get --json   # cooperative gauges (both platforms)
 ```
 
-**Not in scope of T111:** full UI tree/OCR (mobile-mcp), iOS compositor FPS /
-iproxy (Android is the audit driver), replacing ge `app_input` / metrics for
-cooperative apps.
+**Not in scope:** full UI tree/OCR (mobile-mcp); fake iOS compositor FPS;
+reimplementing WDA inside spyder.
 
 ## Managed log-capture sessions (🎯T60)
 

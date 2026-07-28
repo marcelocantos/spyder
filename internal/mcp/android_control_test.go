@@ -152,17 +152,56 @@ func TestInputTapSwipe(t *testing.T) {
 	}
 }
 
-func TestT111_IOSRejected(t *testing.T) {
-	// iOS adapter without T111 interfaces
-	ios := &stubAdapter{}
+func TestT112_IOSFailClosedInjectAndFPS(t *testing.T) {
+	// Real IOSAdapter methods fail closed; stub without inject still fails type assert.
+	// Use real IOSAdapter for fail-closed messages.
+	ios := device.NewIOSAdapter()
 	h := newHandlerWithStubs(t, ios, nil)
 	r := dispatchJSON(t, h, "input_tap", map[string]any{
 		"device": "iPad", "x": 1.0, "y": 1.0,
 	})
 	if !r.IsError {
-		t.Fatal("expected android-only error")
+		t.Fatal("expected iOS inject fail-closed")
 	}
-	if !strings.Contains(resultText(t, &r), "Android") {
+	body := resultText(t, &r)
+	if !strings.Contains(body, "app_input") && !strings.Contains(body, "mobile-mcp") {
+		t.Errorf("want pointer to cooperative tools, got: %s", body)
+	}
+	r2 := dispatchJSON(t, h, "perf_fps", map[string]any{
+		"device": "iPad", "package": "com.example", "window_sec": 1.0,
+	})
+	if !r2.IsError {
+		t.Fatal("expected iOS perf_fps fail-closed")
+	}
+	b2 := resultText(t, &r2)
+	if !strings.Contains(b2, "app_perf_get") && !strings.Contains(b2, "not supported") {
+		t.Errorf("want FPS unsupported message, got: %s", b2)
+	}
+}
+
+func TestT112_IOSPortForward_ViaStub(t *testing.T) {
+	var started bool
+	ios := &stubAdapter{
+		forwardTCP: func(id string, localPort, devicePort int) (device.PortForward, error) {
+			started = true
+			return device.PortForward{Serial: id, LocalPort: 17000, DevicePort: devicePort}, nil
+		},
+		listForwards: func(id string) ([]device.PortForward, error) {
+			return []device.PortForward{{LocalPort: 17000, DevicePort: 9000}}, nil
+		},
+		unforwardTCP: func(id string, localPort int) error { return nil },
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	r := dispatchJSON(t, h, "port_forward_start", map[string]any{
+		"device": "iPad", "device_port": 9000.0, "local_port": 17000.0,
+	})
+	if r.IsError {
+		t.Fatalf("ios forward start: %s", resultText(t, &r))
+	}
+	if !started {
+		t.Error("forward not called")
+	}
+	if !strings.Contains(resultText(t, &r), "17000") {
 		t.Errorf("body=%s", resultText(t, &r))
 	}
 }

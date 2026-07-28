@@ -1,9 +1,11 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 //
-// 🎯T111 — OS-level Android control primitives: frame stats (gfxinfo FPS
-// window), TCP port forward, and minimal tap/swipe inject. Callers must
-// not shell out to adb; spyder owns the invocation.
+// 🎯T111 / 🎯T112 — shared OS control surface: frame stats, TCP port
+// forward, and minimal tap/swipe inject. Android uses adb-backed OS
+// paths; iOS uses usbmux forward (real) and fail-closed FPS/inject with
+// pointers to cooperative tools. Callers must not shell out to adb or
+// iproxy.
 
 package mcp
 
@@ -17,8 +19,8 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 )
 
-// Optional capability interfaces — AndroidAdapter implements these;
-// other platforms fail with a clear "not supported" message.
+// Optional capability interfaces — AndroidAdapter and IOSAdapter implement
+// these (iOS fail-closes FPS/inject; both implement port forward).
 
 type frameStatsMeasurer interface {
 	MeasureFrameStats(ctx context.Context, id, packageName string, window time.Duration) (device.FrameStats, error)
@@ -35,20 +37,36 @@ type touchInjector interface {
 	InjectSwipe(id string, x1, y1, x2, y2, durationMs int) error
 }
 
-func (h *Handler) requireAndroidCap(dev, owner string) (device.Adapter, string, *mcpgo.CallToolResult) {
+// requireOSControlCap authorizes and resolves a device for the shared OS
+// control surface (Android + iOS). Desktop is rejected.
+func (h *Handler) requireOSControlCap(dev, owner string) (device.Adapter, string, string, *mcpgo.CallToolResult) {
 	if res := h.authorize(dev, owner); res != nil {
-		return nil, "", res
+		return nil, "", "", res
 	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
 		res, _ := toolErr("%v", err)
+		return nil, "", "", res
+	}
+	if platform != "android" && platform != "ios" {
+		res, _ := toolErr("device %s is %s — OS control tools support android and ios only (🎯T111/T112)", dev, platform)
+		return nil, "", "", res
+	}
+	return adapter, platform, id, nil
+}
+
+// requireAndroidCap is retained for any android-only call sites; prefer
+// requireOSControlCap for the shared surface.
+func (h *Handler) requireAndroidCap(dev, owner string) (device.Adapter, string, *mcpgo.CallToolResult) {
+	ad, platform, id, res := h.requireOSControlCap(dev, owner)
+	if res != nil {
 		return nil, "", res
 	}
 	if platform != "android" {
-		res, _ := toolErr("device %s is %s — this tool is Android-only (🎯T111)", dev, platform)
-		return nil, "", res
+		r, _ := toolErr("device %s is %s — this call requires android", dev, platform)
+		return nil, "", r
 	}
-	return adapter, id, nil
+	return ad, id, nil
 }
 
 // handlePerfFPS measures compositor/UI FPS over a window via gfxinfo.
@@ -81,7 +99,7 @@ func (h *Handler) handlePerfFPS(args map[string]any) (*mcpgo.CallToolResult, err
 
 	// Authorize + resolve under mu, but do not hold mu across the wait window.
 	h.mu.Lock()
-	adapter, id, errRes := h.requireAndroidCap(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	h.mu.Unlock()
 	if errRes != nil {
 		return errRes, nil
@@ -94,10 +112,15 @@ func (h *Handler) handlePerfFPS(args map[string]any) (*mcpgo.CallToolResult, err
 	if merr != nil {
 		return toolErr("perf_fps: %v", merr)
 	}
+	note := "FPS = total_frames / window_sec from dumpsys gfxinfo (Android). For cooperative ge counters use app_perf_get / app_metrics_*."
+	if platform == "ios" {
+		note = "iOS has no compositor FPS path; this call should have failed closed — use app_perf_get / app_metrics_*."
+	}
 	return toolJSON(map[string]any{
-		"device": dev,
-		"result": st,
-		"note":   "FPS = total_frames / window_sec from dumpsys gfxinfo (compositor/UI path). For cooperative ge counters use app_perf_get / app_metrics_*.",
+		"device":   dev,
+		"platform": platform,
+		"result":   st,
+		"note":     note,
 	})
 }
 
@@ -120,7 +143,7 @@ func (h *Handler) handlePortForwardStart(args map[string]any) (*mcpgo.CallToolRe
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	adapter, id, errRes := h.requireAndroidCap(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -134,6 +157,7 @@ func (h *Handler) handlePortForwardStart(args map[string]any) (*mcpgo.CallToolRe
 	}
 	return toolJSON(map[string]any{
 		"device":      dev,
+		"platform":    platform,
 		"local_port":  fw.LocalPort,
 		"device_port": fw.DevicePort,
 		"spec":        fw.Spec,
@@ -155,7 +179,7 @@ func (h *Handler) handlePortForwardStop(args map[string]any) (*mcpgo.CallToolRes
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	adapter, id, errRes := h.requireAndroidCap(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -168,6 +192,7 @@ func (h *Handler) handlePortForwardStop(args map[string]any) (*mcpgo.CallToolRes
 	}
 	return toolJSON(map[string]any{
 		"device":     dev,
+		"platform":   platform,
 		"local_port": localPort,
 		"removed":    true,
 	})
@@ -184,7 +209,7 @@ func (h *Handler) handlePortForwardList(args map[string]any) (*mcpgo.CallToolRes
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	adapter, id, errRes := h.requireAndroidCap(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -196,10 +221,10 @@ func (h *Handler) handlePortForwardList(args map[string]any) (*mcpgo.CallToolRes
 	if lerr != nil {
 		return toolErr("port_forward_list: %v", lerr)
 	}
-	return toolJSON(map[string]any{"device": dev, "forwards": list})
+	return toolJSON(map[string]any{"device": dev, "platform": platform, "forwards": list})
 }
 
-// handleInputTap OS-level pixel tap (Android).
+// handleInputTap OS-level pixel tap (Android real; iOS fail-closed 🎯T112).
 func (h *Handler) handleInputTap(args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
@@ -218,7 +243,7 @@ func (h *Handler) handleInputTap(args map[string]any) (*mcpgo.CallToolResult, er
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	adapter, id, errRes := h.requireAndroidCap(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -229,10 +254,10 @@ func (h *Handler) handleInputTap(args map[string]any) (*mcpgo.CallToolResult, er
 	if err := inj.InjectTap(id, x, y); err != nil {
 		return toolErr("input_tap: %v", err)
 	}
-	return toolJSON(map[string]any{"device": dev, "x": x, "y": y, "injected": true})
+	return toolJSON(map[string]any{"device": dev, "platform": platform, "x": x, "y": y, "injected": true})
 }
 
-// handleInputSwipe OS-level pixel swipe (Android).
+// handleInputSwipe OS-level pixel swipe (Android real; iOS fail-closed 🎯T112).
 func (h *Handler) handleInputSwipe(args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
@@ -263,7 +288,7 @@ func (h *Handler) handleInputSwipe(args map[string]any) (*mcpgo.CallToolResult, 
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	adapter, id, errRes := h.requireAndroidCap(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -276,6 +301,7 @@ func (h *Handler) handleInputSwipe(args map[string]any) (*mcpgo.CallToolResult, 
 	}
 	return toolJSON(map[string]any{
 		"device":      dev,
+		"platform":    platform,
 		"x1":          x1,
 		"y1":          y1,
 		"x2":          x2,
