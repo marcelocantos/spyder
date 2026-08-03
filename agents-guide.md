@@ -174,7 +174,10 @@ produces no output; its acknowledgement is dropped.
 
 - `sleep(ms)` — server-side wall-clock delay, ms-accurate. The way to time a
   sequence; does not burn the Starlark step budget.
-- `help()` — returns the verb list.
+- `help()` — returns the verb list. `help("topic")` (🎯T113) returns a
+  focused guide with copy-paste recipes for that flow; topics: `app`,
+  `capture`, `deploy`, `device`, `reservations`, `scripts`, `stream`.
+  An unknown topic errors with the valid topic list.
 - `emit(x)` — emit a value explicitly. Required for all but the final value.
 - `params` — dict of parameters for durable scripts (always present; may be empty).
 - 🎯T108 asserts/L1: `assert_trajectory`, `assert_drag_follow`, `assert_settle`,
@@ -253,6 +256,36 @@ everywhere.
 list → find by **id/role** → tap centre via `app_input`. Prefer id/role over
 display `label` (localization-safe). Recipe: `l1_tap_hit_target`. See
 [Hit targets (🎯T109)](#hit-targets-t109) below.
+
+### Deploy and mode-smoke seeds (🎯T120)
+
+First-party seeds for the flows every ge/yourworld session reinvents.
+Both are bundled (`list_scripts` source=`bundled`), mirrored in
+`scripts/lib/`, overridable under `~/.spyder/scripts/`, and runnable
+as-is — use them as copy-paste starting points for game-specific
+variants.
+
+- **`deploy_and_sid`** — deploy a build and return the live app-channel
+  session id: `deploy_app` → bounded `app_channel_list` poll → emit
+  `{bundle_id, pid, session_id, port}`. Fails closed with a clear
+  message if the app never dials back.
+
+  ```starlark
+  run_script(path="deploy_and_sid",
+             params={"device": "Jevons", "path": "/path/to/YourWorld.app"})
+  ```
+
+- **`yw_mode_smoke`** — start a fresh game mode, optionally frame the
+  camera, read the `game` slice, capture an app screenshot. Discovery
+  first: it checks `app_methods(scope="app")` for `start_mode` /
+  `set_view` and fails closed if the game doesn't advertise them
+  (debug builds only).
+
+  ```starlark
+  run_script(path="yw_mode_smoke",
+             params={"session_id": sid, "mode": "europe",
+                     "lon": "31.5", "lat": "33.8", "zoom": "2.25"})
+  ```
 
 ### Worked examples (one per mode)
 
@@ -373,6 +406,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `release(device, owner)` | Free a reservation. | Non-owner releases conflict. Also stops any active recording owned by the releaser. Any applied network profile is cleared automatically. |
 | `renew(device, owner, ttl_seconds?)` | Extend a reservation's TTL. | |
 | `reservations()` | List active reservations. | Read-only. |
+| `reservation_status(device, owner?)` | 🎯T116 observability: `{reserved, holder?, expires_at?, caller_holds, would_gate, gated_verbs, policy}` for one device — whether the calling `owner` currently holds it and which verbs a foreign hold would gate. | Read-only; never gated itself. Anonymous callers (`owner` omitted) report `would_gate: true` whenever anyone holds the device. |
 | `runs_list()` | List run-artefact bundles under `~/.spyder/runs/`, newest first. | Read-only. |
 | `runs_show(run_id)` | Return a single run's full manifest (device, owner, timestamps, artefacts). | Read-only. |
 | `baseline_update(suite, case, variant?, screenshot_path?, screenshot_base64?, manifest?)` | Store a new visual baseline for `suite/case/variant`. | Supply PNG via `screenshot_path` or `screenshot_base64`. Optional `manifest` JSON enables structural diffing. |
@@ -1350,6 +1384,39 @@ holding the device. Read and observational tools (`devices`, `resolve`,
 can screenshot or record any device, even one held by someone else.
 `record_stop` authenticates against the owner that started the recording,
 not the device reservation.
+
+### Reservations inside `app_exec` (🎯T116)
+
+**`app_exec` does not auto-reserve.** Verbs inside a script run under
+exactly the same authorization as direct calls: each mutating builtin
+passes its own `owner=` argument, and there is no implicit owner or
+implicit TTL. (The one auto-reserving surface is the `spyder run` CLI
+wrapper, which reserves for the wrapped command's lifetime under
+`filepath.Base(cwd)` — that never applies to `app_exec` scripts.)
+
+Contention is fail-fast, never a hang: when another owner holds the
+device, a mutating verb aborts the script immediately with a structured
+conflict error naming the holder, the expiry, and the note — e.g.
+`device iPad is reserved by tiltbuggy until 2026-08-03T12:00:00Z`.
+Observational verbs are unaffected and always succeed.
+
+To make contention observable before (or instead of) tripping over it,
+call `reservation_status`:
+
+```starlark
+st = reservation_status(device="iPad", owner="tiltbuggy")
+if st["would_gate"]:
+    emit("held by " + st["holder"] + " — mutating verbs would fail")
+else:
+    launch_app(device="iPad", bundle_id="com.example.app", owner="tiltbuggy")
+```
+
+`gated_verbs` in the result enumerates the device-state-mutating surface
+(`launch_app`, `terminate_app`, `install_app`, `uninstall_app`,
+`deploy_app`, `launch_player`, `rotate`, `network`, `perf_fps`,
+`port_forward_*`, `input_tap`, `input_swipe`); everything else passes
+regardless of who holds the device. `help("reservations")` inside a
+script carries the same policy and recipes.
 
 ### Literal device reservation
 

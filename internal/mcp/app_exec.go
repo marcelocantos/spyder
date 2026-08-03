@@ -342,7 +342,9 @@ func (st *execState) content() []mcpgo.Content {
 
 // helpBuiltin returns a builtin that lists the available verbs, so an
 // agent can discover the API from within a script (there are no per-tool
-// MCP schemas once app_exec is the sole entry point).
+// MCP schemas once app_exec is the sole entry point). 🎯T113: an optional
+// topic argument — help("app"), help("deploy"), … — returns a focused
+// guide with copy-paste recipes instead of the full verb dump.
 func helpBuiltin(verbs map[string]toolFunc) func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
 	names := make([]string, 0, len(verbs))
 	for n := range verbs {
@@ -355,9 +357,22 @@ func helpBuiltin(verbs map[string]toolFunc) func(*starlark.Thread, *starlark.Bui
 		"t109: find_hit_target(nodes=…, id|role|key=…); " +
 		"list_scripts(), run_script(path=...)\n" +
 		"call verbs by keyword, e.g. app_screenshot(session_id=\"...\"); " +
-		"a bare expression or emit() adds to the result."
-	return func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
-		return starlark.String(text), nil
+		"a bare expression or emit() adds to the result.\n" +
+		"topics: help(\"<topic>\") for a focused guide with recipes — " + helpTopicList() + "\n" +
+		"reservations gate device-state-mutating verbs only (observational verbs always succeed) — help(\"reservations\")."
+	return func(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+		var topic string
+		if err := starlark.UnpackArgs(b.Name(), args, kwargs, "topic?", &topic); err != nil {
+			return nil, err
+		}
+		if topic == "" {
+			return starlark.String(text), nil
+		}
+		guide, ok := helpTopics[topic]
+		if !ok {
+			return nil, fmt.Errorf("help: unknown topic %q — topics: %s", topic, helpTopicList())
+		}
+		return starlark.String(guide), nil
 	}
 }
 
@@ -590,7 +605,7 @@ func contentText(content []mcpgo.Content) string {
 // in agents-guide.md; call help() from a script for the verb list).
 func appExecDefinition() mcpgo.Tool {
 	return mcpgo.NewTool("app_exec",
-		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)`, `emit(value)`, `health()`, `help()`, durable scripts via `script_path` / `run_script` / `list_scripts` (🎯T108), and assert/L1 helpers (`assert_trajectory`, `assert_drag_follow`, `assert_settle`, `resolve_target`, `find_by_label`, `find_hit_target`). Global `params` dict carries script_path parameters.\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result. Deterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot`. Caps: wall-clock timeout (default 30s, max 120s) and a step budget."),
+		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)`, `emit(value)`, `health()`, `help()` (bare = verb list; `help(\"topic\")` = focused guide with recipes — topics: app, capture, deploy, device, reservations, scripts, stream), durable scripts via `script_path` / `run_script` / `list_scripts` (🎯T108), and assert/L1 helpers (`assert_trajectory`, `assert_drag_follow`, `assert_settle`, `resolve_target`, `find_by_label`, `find_hit_target`). Global `params` dict carries script_path parameters.\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result. Deterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot`. Caps: wall-clock timeout (default 30s, max 120s) and a step budget."),
 		mcpgo.WithString("script",
 			mcpgo.Description("Inline Starlark source. Provide this OR script_path."),
 		),

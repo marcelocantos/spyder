@@ -600,10 +600,12 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"release":       h.handleRelease,
 		"renew":         h.handleRenew,
 		"reservations":  h.handleReservations,
-		"runs_list":     h.handleRunsList,
-		"runs_show":     h.handleRunsShow,
-		"rotate":        h.handleRotate,
-		"crashes":       h.handleCrashes,
+		// --- reservation observability (🎯T116) ---
+		"reservation_status": h.handleReservationStatus,
+		"runs_list":          h.handleRunsList,
+		"runs_show":          h.handleRunsShow,
+		"rotate":             h.handleRotate,
+		"crashes":            h.handleCrashes,
 		// --- simulator tools ---
 		"sim_list":     h.handleSimList,
 		"sim_create":   h.handleSimCreate,
@@ -928,6 +930,17 @@ func allBaseDefinitions() []mcpgo.Tool {
 
 		mcpgo.NewTool("reservations",
 			mcpgo.WithDescription("List all active reservations across all devices. Read-only."),
+		),
+
+		mcpgo.NewTool("reservation_status",
+			mcpgo.WithDescription("Report reservation observability for one device (🎯T116): whether it is reserved, the holder and expiry, whether the calling owner currently holds it, and which verbs a foreign hold gates. Read-only; never gated itself. Policy: reservations gate device-state-mutating verbs only; observational verbs (screenshot, record_*, logs, state reads) always succeed."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID to inspect"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Caller identity to evaluate against the current hold (optional; anonymous callers are gated whenever anyone holds the device)"),
+			),
 		),
 
 		mcpgo.NewTool("runs_list",

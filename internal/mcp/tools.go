@@ -961,6 +961,73 @@ func (h *Handler) handleReservations(_ map[string]any) (*mcpgo.CallToolResult, e
 	return toolJSON(h.reservations.List())
 }
 
+// reservationGatedVerbs lists exactly the verbs whose handlers call
+// authorize() — the device-state-mutating surface a foreign reservation
+// blocks. Observational verbs (screenshot, record_*, logs, state reads)
+// never consult reservations — standing policy, do not "fix". Keep this
+// list in sync with the h.authorize call sites (tools.go,
+// android_control.go requireOSControlCap, launch_player.go).
+var reservationGatedVerbs = []string{
+	"deploy_app",
+	"input_swipe",
+	"input_tap",
+	"install_app",
+	"launch_app",
+	"launch_player",
+	"network",
+	"perf_fps",
+	"port_forward_list",
+	"port_forward_start",
+	"port_forward_stop",
+	"rotate",
+	"terminate_app",
+	"uninstall_app",
+}
+
+// reservationPolicy is the one-line statement of the gating policy,
+// surfaced verbatim by reservation_status and help("reservations").
+const reservationPolicy = "reservations gate device-state-mutating verbs only; " +
+	"observational verbs (screenshot, record_*, logs, state reads) always succeed"
+
+// handleReservationStatus reports reservation observability for one
+// device (🎯T116): whether it is held, by whom, whether the calling
+// owner currently holds it (and so would pass authorize()), and which
+// verbs a foreign hold gates. Read-only; never gated itself.
+func (h *Handler) handleReservationStatus(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return toolErr("reservation_status: %v", err)
+	}
+	owner := optString(args, "owner")
+
+	out := map[string]any{
+		"device":       dev,
+		"caller_owner": owner,
+		"reserved":     false,
+		"caller_holds": false,
+		"would_gate":   false,
+		"gated_verbs":  reservationGatedVerbs,
+		"policy":       reservationPolicy,
+	}
+	if h.reservations == nil {
+		out["note"] = "reservations not configured on this server — nothing is gated"
+		return toolJSON(out)
+	}
+	r, ok := h.reservations.Get(dev)
+	if !ok {
+		return toolJSON(out)
+	}
+	out["reserved"] = true
+	out["holder"] = r.Owner
+	out["expires_at"] = r.ExpiresAt.Format(time.RFC3339)
+	if r.Note != "" {
+		out["note"] = r.Note
+	}
+	out["caller_holds"] = owner != "" && r.Owner == owner
+	out["would_gate"] = r.Owner != owner
+	return toolJSON(out)
+}
+
 // --- run-artefact tools --------------------------------------------
 
 func (h *Handler) handleRunsList(_ map[string]any) (*mcpgo.CallToolResult, error) {
