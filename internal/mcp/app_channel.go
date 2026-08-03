@@ -1049,35 +1049,8 @@ func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
 	return out, nil
 }
 
-// handleAppSpawn asks a game-server factory session (one advertising
-// spawn_instance) to fork a game instance and returns the new instance's
-// session once it dials back (🎯T92.1). The target session is the factory
-// (resolved from session_id or device+bundle_id); the instance dials the same
-// app-channel listener the factory is on, so it connects as its own session
-// with the full monitor surface.
-func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, error) {
-	if h.appChannel == nil {
-		return toolErr("app channel not configured")
-	}
-	factory, errRes := h.requireSession(args)
-	if errRes != nil {
-		return errRes, nil
-	}
-	game, err := requireString(args, "game")
-	if err != nil {
-		return toolErr("%v", err)
-	}
-	// The instance dials the same listener the factory is on (127.0.0.1 for
-	// the local/server-mode case this path targets — LAN/dev only, per T91.4).
-	addr := fmt.Sprintf("127.0.0.1:%d", factory.Port)
-	inst, err := h.appChannel.SpawnInstance(context.Background(), factory,
-		appchannel.SpawnRequest{Game: game, AppChannel: addr, InstanceID: optString(args, "instance_id")},
-		30*time.Second)
-	if err != nil {
-		return toolErr("spawn: %v", err)
-	}
-	return toolJSON(sessionInfoFrom(inst))
-}
+// handleAppSpawn lives in app_spawn.go (🎯T92.1 factory path, 🎯T117
+// device path) together with handleGames.
 
 // handleAppAcquire reserves a game instance from a factory, spawning one if
 // none is idle and capacity allows (🎯T92.1 clause 2). A player/agent "coming
@@ -1121,45 +1094,8 @@ func (h *Handler) handleAppRelease(args map[string]any) (*mcpgo.CallToolResult, 
 	return toolJSON(map[string]any{"released": sessionID})
 }
 
-// handleGames returns the game catalog (🎯T92 clause 3): the launchable
-// games alongside the device inventory — desktop targets (platform=desktop
-// inventory entries) and connected server-mode FACTORIES (app-channel
-// sessions advertising spawn_instance, which can manufacture instances). It
-// unifies "what can I start, and where" across media.
-func (h *Handler) handleGames(_ map[string]any) (*mcpgo.CallToolResult, error) {
-	desktop := []map[string]string{}
-	for _, e := range h.inventory.Entries() {
-		if e.Platform == "desktop" {
-			desktop = append(desktop, map[string]string{
-				"alias":           e.Alias,
-				"executable_path": e.ExecutablePath,
-			})
-		}
-	}
-	factories := []map[string]string{}
-	if h.appChannel != nil {
-		for _, s := range h.appChannel.Sessions() {
-			hi := s.HelloInfo()
-			if hi == nil {
-				continue
-			}
-			isFactory := false
-			for _, m := range hi.Methods {
-				if m.Name == appchannel.MethodSpawnInstance {
-					isFactory = true
-					break
-				}
-			}
-			if isFactory {
-				factories = append(factories, map[string]string{
-					"session_id": s.ID,
-					"app_name":   hi.AppName,
-				})
-			}
-		}
-	}
-	return toolJSON(map[string]any{"desktop": desktop, "factories": factories})
-}
+// handleGames lives in app_spawn.go alongside handleAppSpawn (🎯T92
+// clause 3, 🎯T117).
 
 // appChannelDefinitions returns the MCP tool surface.
 func appChannelDefinitions() []mcpgo.Tool {
@@ -1327,12 +1263,14 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("name", mcpgo.Description("Tweak name to reset; omit to reset all tweaks.")),
 		),
-		mcpgo.NewTool("app_spawn", mcpgo.WithDescription("Ask a game-server FACTORY session (one advertising spawn_instance) to fork a new game instance; returns the instance's app-channel session once it connects (🎯T92.1 — a game server is a device factory). The instance is its own session with the full monitor surface (tweaks/logs/state/screenshot)."),
+		mcpgo.NewTool("app_spawn", mcpgo.WithDescription("Start a game session on any medium and return a ready app-channel session — never guess between this and launch_app. Two paths: (1) FACTORY (🎯T92.1): target a session advertising spawn_instance (session_id, or device+bundle_id of the factory) plus game=; the factory forks an instance that connects as its own session. (2) DEVICE (🎯T117): device+bundle_id of an installed bundle (mobile or desktop; no games registry entry needed — the device's installed bundles are the catalog) launches it with the app channel wired and waits for the session; game= is not used. If the pair already has a live session it is returned with already_running=true. Device launches mutate device state and are reservation-gated (owner=)."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target FACTORY session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
-			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
-			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
-			mcpgo.WithString("game", mcpgo.Required(), mcpgo.Description("Name/identifier of the game the factory should instantiate.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID. With bundle_id: resolves a live factory session for the pair, else launches the installed bundle on the device (🎯T117).")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device (see device).")),
+			mcpgo.WithString("game", mcpgo.Description("Factory path only: name/identifier of the game the factory should instantiate. Omit on the device path — there the bundle_id names the game.")),
 			mcpgo.WithString("instance_id", mcpgo.Description("Optional caller-supplied instance id passed to the factory.")),
+			mcpgo.WithString("owner", mcpgo.Description("Device path only: reservation owner identity for the launch.")),
+			mcpgo.WithObject("env", mcpgo.Description("Device path only: extra environment for the launched app (SPYDER_APP_CHANNEL is injected automatically).")),
 		),
 		mcpgo.NewTool("app_acquire", mcpgo.WithDescription("Reserve a game instance from a FACTORY session, spawning one if none is idle and capacity allows (🎯T92.1). The target session is the factory (session_id or device+bundle_id). Returns the reserved instance's session with the full monitor surface. Release with app_release."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target FACTORY session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
@@ -1344,7 +1282,9 @@ func appChannelDefinitions() []mcpgo.Tool {
 		mcpgo.NewTool("app_release", mcpgo.WithDescription("Release a previously acquired game instance back to its factory pool; it is GC'd after a linger window unless re-acquired (🎯T92.1)."),
 			mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("The instance session id returned by app_acquire.")),
 		),
-		mcpgo.NewTool("games", mcpgo.WithDescription("The game catalog (🎯T92): launchable games across media — desktop targets (platform=desktop inventory entries with executable_path) and connected server-mode factories (sessions advertising spawn_instance, which manufacture instances via app_spawn / app_acquire). Complements `devices` (physical / sim / emu).")),
+		mcpgo.NewTool("games", mcpgo.WithDescription("The game catalog (🎯T92, 🎯T117): launchable games across media — desktop targets (platform=desktop inventory entries with executable_path), connected server-mode factories (sessions advertising spawn_instance, which manufacture instances via app_spawn / app_acquire), and mobile devices, whose installed bundles ARE the mobile catalog (no registry entry needed): pass device=<alias> to list them as spawn candidates for app_spawn(device=..., bundle_id=...). Complements `devices` (physical / sim / emu)."),
+			mcpgo.WithString("device", mcpgo.Description("Optional device alias or UUID: also list that device's installed third-party bundles (the mobile game catalog, 🎯T117) under `installed`.")),
+		),
 		mcpgo.NewTool("app_save_state", mcpgo.WithDescription("Ask the app to serialize its state. Returns {state_b64, size}; pass the b64 blob back via app_restore_state."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),

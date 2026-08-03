@@ -145,6 +145,55 @@ screen recording, install/uninstall, network shaping) return a clear
 "not supported on desktop" — use the app-channel equivalents (e.g.
 `app_screenshot`) instead.
 
+### Starting games: `games()` + `app_spawn` (🎯T92, 🎯T117)
+
+`app_spawn` is the one verb that starts a game and hands back a **ready
+app-channel session**, whatever the medium. You never have to choose between
+`app_spawn` and `launch_app`: reach for `app_spawn` whenever you want a
+session to drive; `launch_app` is the lower-level fire-and-forget launch
+(no session wait) for when you explicitly don't want one.
+
+There is **no mobile games registry**. A mobile game *is* an installed bundle
+on a device spyder already knows — the device adapters (go-ios
+installationproxy on iOS, adb on Android) are the source of truth, and
+`deploy_app` is how a bundle gets there. `games()` reflects that:
+
+```jsonc
+games()
+// {
+//   "desktop":        [{"alias": "tiltbuggy-desktop", "executable_path": "..."}],
+//   "factories":      [{"session_id": "abc123", "app_name": "gameserver"}],
+//   "mobile_devices": [{"alias": "iPhone", "platform": "ios"}, ...],
+//   "hint": "..."
+// }
+games(device="iPhone")
+// adds: "installed": {"device": "iPhone", "apps": [
+//   {"bundle_id": "com.squz.yourworld", "name": "YourWorld", "version": "2.1"}, ...]}
+```
+
+Three spawn paths, resolved in this order:
+
+```jsonc
+// 1. Factory (🎯T92.1): a server-mode session advertising spawn_instance
+//    forks an instance; game= names which game the factory should make.
+app_spawn(session_id="abc123", game="tiltbuggy")
+
+// 2. Device (🎯T117): device + bundle_id of an installed bundle — mobile or
+//    desktop — no registry entry, no game=. Spyder launches it with the app
+//    channel wired, waits (≤30 s) for the app to dial back, and returns
+//    {device, bundle_id, session: {session_id, app_name, methods, ...}}.
+app_spawn(device="iPhone", bundle_id="com.squz.yourworld", owner="agent")
+
+// If the pair already has a live session, app_spawn returns it with
+// already_running=true instead of double-launching. If the bundle isn't
+// installed, it fails closed and points you at deploy_app.
+```
+
+With `device+bundle_id`, a live *factory* session for the pair wins (path 1
+through it); otherwise you get the device launch. Device spawns mutate device
+state and are **reservation-gated** like `launch_app` (pass `owner=`); the
+factory path targets an abstract instance, not a device, and is not.
+
 ## The `app_exec` entry point
 
 `app_exec` is spyder's only MCP tool. It runs a Starlark script with every
@@ -463,6 +512,10 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_metrics_disarm(session_id?, instance?)` | Stop capture and clear the ring on that instance. | |
 | `app_metrics_status(session_id?, instance?)` | `{armed, capacity, count, series, instance}`. | |
 | `app_metrics_dump(session_id?, instance?)` | Full retained-frame history for armed series (`frames: [[…],…]`). | Not latest-only gauges (`app_perf_get`). |
+| `games(device?)` | The game catalog: desktop targets, connected factories, and mobile devices. With `device=`, also that device's installed bundles — the mobile catalog (🎯T117). | Read-only. See "Starting games" above. |
+| `app_spawn(session_id?\|device+bundle_id, game?, owner?, env?, instance_id?)` | Start a game and return a **ready session**: factory fork (with `game=`, 🎯T92.1) or device launch of an installed bundle (no `game=`, 🎯T117). | Device path is reservation-gated (`owner=`); returns `already_running=true` with the existing session if one is live. See "Starting games" above. |
+| `app_acquire(session_id?\|device+bundle_id, game, owner?)` | Reserve a factory instance, spawning one if none is idle and capacity allows (🎯T92.1). | Release with `app_release`. |
+| `app_release(session_id)` | Release an acquired instance back to its factory pool. | GC'd after a linger window unless re-acquired. |
 | `is_running(device, bundle_id)` | Check whether an app is currently running. | |
 | `health()` | Live daemon / subprocess / device health snapshot as a dict. | Same source of truth as `spyder status` and `GET /api/v1/health`. Read-only; takes no args. |
 | `record_start(device, owner?)` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | iOS simulators only — physical devices return an immediate error. Observational; not gated by device reservation. Only one recording per device at a time. The `owner` you pass here is the one that must stop the recording. |
