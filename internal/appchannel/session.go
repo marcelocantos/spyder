@@ -426,12 +426,22 @@ var spyderVersion = "dev"
 // once at daemon startup.
 func SetSpyderVersion(v string) { spyderVersion = v }
 
+// maxEndedSessions bounds the stale-session diagnosis memory (🎯T119).
+const maxEndedSessions = 256
+
 // Manager owns the per-session table and the listener that produces
 // new sessions. One per daemon.
 type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	keyed    map[AppKey]*Listener
+
+	// ended remembers the AppKey each recently ended session was
+	// accepted under, so a stale session_id can be diagnosed with the
+	// (device, bundle_id) it belonged to (🎯T119). endedOrder is the
+	// FIFO eviction queue.
+	ended      map[string]AppKey
+	endedOrder []string
 
 	closeFn func()
 }
@@ -441,6 +451,7 @@ func NewManager() *Manager {
 	m := &Manager{
 		sessions: map[string]*Session{},
 		keyed:    map[AppKey]*Listener{},
+		ended:    map[string]AppKey{},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.closeFn = cancel
@@ -601,6 +612,7 @@ func (l *Listener) Stop() {
 	l.mgr.mu.Lock()
 	for _, s := range sessions {
 		delete(l.mgr.sessions, s.ID)
+		l.mgr.noteEndedLocked(s.ID, l.Key)
 	}
 	if l.Key != (AppKey{}) {
 		if existing, ok := l.mgr.keyed[l.Key]; ok && existing == l {
@@ -675,6 +687,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	// TTL clock from the disconnect.
 	l.mgr.mu.Lock()
 	delete(l.mgr.sessions, id)
+	l.mgr.noteEndedLocked(id, l.Key)
 	l.mgr.mu.Unlock()
 	l.mu.Lock()
 	for i, ls := range l.sessions {
@@ -685,6 +698,31 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	}
 	l.lastTouched = time.Now()
 	l.mu.Unlock()
+}
+
+// noteEndedLocked records that session id (accepted under key) has
+// ended, evicting the oldest record past maxEndedSessions. Caller
+// holds m.mu.
+func (m *Manager) noteEndedLocked(id string, key AppKey) {
+	if _, dup := m.ended[id]; dup {
+		return
+	}
+	m.ended[id] = key
+	m.endedOrder = append(m.endedOrder, id)
+	if len(m.endedOrder) > maxEndedSessions {
+		delete(m.ended, m.endedOrder[0])
+		m.endedOrder = m.endedOrder[1:]
+	}
+}
+
+// EndedSessionKey reports the (device, bundle_id) key a now-ended
+// session was accepted under, when the session ended recently enough
+// to still be remembered (🎯T119 stale-sid diagnosis).
+func (m *Manager) EndedSessionKey(id string) (AppKey, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key, ok := m.ended[id]
+	return key, ok
 }
 
 // GetSession returns the session by ID, if any.

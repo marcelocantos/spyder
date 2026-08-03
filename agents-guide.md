@@ -356,7 +356,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `device_state(device)` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
 | `screenshot(device, owner?)` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
 | `list_apps(device)` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
-| `launch_app(device, bundle_id, env?)` | Foreground an arbitrary app by bundle id. Optional `env` dict injects environment variables into the launched process — see "Launching with env" below. | iOS-17+ uses go-ios's `appservice.LaunchApp` (CoreDevice/RemoteXPC, needs tunnel); iOS ≤16 uses `instruments.ProcessControl` (DTX-over-lockdown, no tunnel, needs DDI mounted). Path selection automatic per device. Android uses `adb monkey -c LAUNCHER` (no env) or `am start --es KEY VALUE` (with env). |
+| `launch_app(device, bundle_id, env?)` | Foreground an arbitrary app by bundle id. Returns `{device, bundle_id, session_id?, channel_port?}` — the session fields appear when the app completes the app-channel handshake within the post-launch wait (🎯T119), so you don't need a follow-up `app_channel_list`. Optional `env` dict injects environment variables into the launched process — see "Launching with env" below. | iOS-17+ uses go-ios's `appservice.LaunchApp` (CoreDevice/RemoteXPC, needs tunnel); iOS ≤16 uses `instruments.ProcessControl` (DTX-over-lockdown, no tunnel, needs DDI mounted). Path selection automatic per device. Android uses `adb monkey -c LAUNCHER` (no env) or `am start --es KEY VALUE` (with env). |
 | `terminate_app(device, bundle_id)` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
 | `rotate(device, orientation)` | Rotate an iOS simulator or Android emulator to a named orientation. Physical iOS/Android devices return a clear error. | Orientations: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. iOS uses `xcrun simctl io <udid> rotate`; Android uses `adb emu rotate` (driven N times to reach the target). |
 | `perf_fps(device, package\|bundle_id, window_sec?, owner?)` | **Capability:** FPS over N seconds. **Android:** gfxinfo. **iOS:** fails closed → `app_perf_get` / `app_metrics_*`. | Never shell out to adb. CLI: `spyder perf-fps`. |
@@ -367,7 +367,8 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `input_swipe(device, x1, y1, x2, y2, duration_ms?, owner?)` | **Capability:** OS pixel swipe. Same Android/iOS split as tap. | CLI: `spyder input-swipe`. |
 | `install_app(device, path)` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | **Agents must use this tool (or `spyder install`), not shell out to `devicectl`/`adb`.** iOS: in-process go-ios `zipconduit` (works on iOS 16 lockdown and iOS 17+ RSD; CoreDevice's installapp capability is incomplete on some devices). Android: `adb install -r`, after best-effort settings that suppress Play Protect "Send app for a security check?" prompts on sideload (`verifier_verify_adb_installs=0`, `package_verifier_user_consent=-1`, `upload_apk_enable=0`). |
 | `uninstall_app(device, bundle_id)` | Remove an app by bundle id / package name. | iOS: go-ios `installation_proxy`; Android: `adb uninstall`. |
-| `deploy_app(device, path, bundle_id?, env?)` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. Optional `env` dict forwarded to the launch step — see "Launching with env" below. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
+| `deploy_app(device, path, bundle_id?, env?)` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid, replaced, session_id?, channel_port?}` (🎯T121): `replaced` reports whether the install overwrote a build already on the device; `session_id`/`channel_port` appear when the app completes the app-channel handshake within the post-launch wait — scripts can branch on the result without a second `app_channel_list` call. Optional `env` dict forwarded to the launch step — see "Launching with env" below. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
+| `ensure_session(device, bundle_id?, path?, owner?, env?, timeout_ms?)` | One verb from device+bundle to a **ready app-channel session** (🎯T118): installs `path` if the bundle isn't on the device, launches with `SPYDER_APP_CHANNEL` wired, waits for the app's `hello`, and returns `{session_id, channel_port, pid, deployed, launched}`. Idempotent — a healthy existing session is returned untouched (`deployed=false, launched=false`) with no reservation needed. | Replaces the manual `deploy_app` → `launch_app` → `sleep` → `app_channel_list` dance. `bundle_id` optional when `path` is given (derived). Default handshake wait 15 s (`timeout_ms`, max 60 000). |
 | `reserve(device?, selector?, owner, ttl_seconds?, note?)` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
 | `release(device, owner)` | Free a reservation. | Non-owner releases conflict. Also stops any active recording owned by the releaser. Any applied network profile is cleared automatically. |
 | `renew(device, owner, ttl_seconds?)` | Extend a reservation's TTL. | |
@@ -409,6 +410,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_sensor_unsuppress(session_id?, sensor?)` | Restore real device samples. | Always call when done. |
 | `app_sensor_status(session_id?, sensor?)` | Query `{suppressed, value?}`. | |
 | `app_state(session_id?, slice, select?)` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `select` is an optional jq expression evaluated server-side. |
+| `state_query(session_id?, slice?, select?)` | **Read-only** session-state probe (🎯T122). Never mutates game state — use it instead of `place_active` or other game commands to learn what's active. With `slice` omitted the app returns its default session-state summary (ge convention: `mode`, `active_adm`, `current_index`, `placed_count`, `view` lon/lat, `paused`). | Observational; always succeeds regardless of who holds the device reservation. Also accepts `device`+`bundle_id` addressing. |
 | `app_save_state(session_id?)` | Serialize app state. Returns a base64-encoded blob; the app picks the schema. | |
 | `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
 | `app_screenshot(session_id?)` | Request a PNG from the app's own framebuffer (sibling to the OS-path `screenshot`). | |
@@ -611,27 +613,35 @@ more leverage.
 
 ### Worked example
 
+The one-verb path (🎯T118) — `ensure_session` deploys if needed, launches,
+waits for the handshake, and hands back the session id. This replaces the
+manual deploy → launch → sleep → `app_channel_list` dance:
+
 ```starlark
-# 1. Deploy. spyder auto-creates the per-(device, bundle_id)
-#    listener and injects SPYDER_APP_CHANNEL into the launch env.
-deploy_app(device="Jevons", path="/path/to/MyApp.app")
+# 1. One call: install if missing, launch with SPYDER_APP_CHANNEL wired,
+#    wait for hello. Idempotent — a healthy existing session is returned
+#    as-is (deployed=false, launched=false), so it's safe to lead every
+#    script with this.
+r = ensure_session(device="Jevons", bundle_id="com.example.app",
+                   path="/path/to/MyApp.app")
+sid = r["session_id"]
 
-# 2. App connects, sends hello → app_channel_list shows the session.
-emit(app_channel_list())
-# → {"listeners": [{
-#      "listener_id": "...", "device_id": "...", "bundle_id": "com.example.app",
-#      "port": 54321, "sessions": [{"session_id": "...", "app_name": "MultiMaze", ...}]
-#    }]}
-
-# 3. Drive the app. Either pass session_id, or address by (device, bundle_id);
+# 2. Drive the app. Pass session_id, or address by (device, bundle_id);
 #    or, when only one session is connected, omit all three.
-emit(app_state(device="Jevons", bundle_id="com.example.app", slice="scene"))
-app_input(type="finger_down", x=0.5, y=0.5)
-app_pause()
-app_step(frames=3)
-emit(app_screenshot())
-app_quit()  # clean exit, no macOS crash notification
+emit(state_query(session_id=sid))            # read-only: mode/active/view
+emit(app_state(session_id=sid, slice="scene"))
+app_input(session_id=sid, type="finger_down", x=0.5, y=0.5)
+app_pause(session_id=sid)
+app_step(session_id=sid, frames=3)
+emit(app_screenshot(session_id=sid))
+app_quit(session_id=sid)  # clean exit, no macOS crash notification
 ```
+
+`deploy_app` and `launch_app` also return the session directly when the
+app connects within the post-launch wait —
+`deploy_app(...)` → `{bundle_id, pid, replaced, session_id?, channel_port?}`
+(🎯T121) — so even the manual path never needs a follow-up
+`app_channel_list` just to find the sid.
 
 ### Method catalogue
 
@@ -718,6 +728,37 @@ Every `app_*` builtin resolves its target session in this order:
    across all listeners, omit all three.
 
 `app_channel_list()` shows the listener + session topology.
+
+**Stale session ids are diagnosed, not mystery errors (🎯T119).** When a
+session_id refers to a session that has ended (app relaunched, crashed,
+or disconnected), the error says so explicitly, names the
+(device, bundle_id) it belonged to, and — when a replacement session is
+already live for that pair — names the live session_id to use instead.
+When nothing is live, it points at
+`ensure_session(device=..., bundle_id=...)` as the recovery. Prefer
+addressing by `device`+`bundle_id` in scripts that relaunch the app —
+that resolves the current session server-side every call, so there is no
+sid to go stale.
+
+### Read-only state probe (`state_query`, 🎯T122)
+
+To learn what a game session is doing — which mode is active, what's
+selected, where the camera is — call `state_query`. It forwards the
+app-channel `state_query` method and returns the answer verbatim,
+sending **nothing mutating**: no placement, no carousel advance, no mode
+restart. Do not probe with `place_active` or other game commands; those
+change the state you're trying to observe.
+
+```starlark
+emit(state_query(device="Jevons", bundle_id="com.example.app"))
+# → {"mode": "landmarks", "active_adm": null, "current_index": 2,
+#    "placed_count": 5, "view": {"lon": 151.21, "lat": -33.87},
+#    "paused": false}
+```
+
+With `slice` given it behaves like `app_state` (named-slice query); the
+`select` jq filter works on either form. Because it is observational, it
+always succeeds regardless of who holds the device reservation.
 
 ### Hit targets (🎯T109)
 

@@ -152,10 +152,22 @@ func (c *smokeClient) serve() {
 				Slice string `msgpack:"slice"`
 			}
 			_ = appchannel.UnpackParams(env.Params, &p)
-			result = map[string]any{
-				"slice":  p.Slice,
-				"sample": "data for " + p.Slice,
-				"nested": map[string]int{"a": 1, "b": 2},
+			if p.Slice == "" {
+				// Default session-state summary (🎯T122 read-only probe shape).
+				result = map[string]any{
+					"mode":          "landmarks",
+					"active_adm":    nil,
+					"current_index": 2,
+					"placed_count":  5,
+					"view":          map[string]float64{"lon": 151.21, "lat": -33.87},
+					"paused":        false,
+				}
+			} else {
+				result = map[string]any{
+					"slice":  p.Slice,
+					"sample": "data for " + p.Slice,
+					"nested": map[string]int{"a": 1, "b": 2},
+				}
 			}
 		case appchannel.MethodSaveState:
 			result = map[string][]byte{"state": []byte("opaque-state-blob-" + time.Now().Format("150405"))}
@@ -832,6 +844,7 @@ func TestAppChannel_DispatchSurfaceCoverage(t *testing.T) {
 		"app_metrics_list", "app_metrics_arm", "app_metrics_disarm",
 		"app_metrics_status", "app_metrics_dump",
 		"app_state_slices", "app_state_describe",
+		"ensure_session", "state_query",
 		"app_state_capture_start",
 		"app_state_capture_get", "app_state_capture_stop",
 		"app_state_capture_list",

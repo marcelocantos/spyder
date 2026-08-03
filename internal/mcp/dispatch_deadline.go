@@ -29,7 +29,8 @@ var (
 // toolDeadlineClass returns the wall-clock bound for a tool name.
 func toolDeadlineClass(name string) time.Duration {
 	switch name {
-	case "install_app", "deploy_app":
+	case "install_app", "deploy_app", "ensure_session":
+		// ensure_session may install on its deploy-if-needed path.
 		return DeadlineInstall
 	case "perf_fps":
 		// Explicit class: window_sec max 120 must fit under this bound.
