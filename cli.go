@@ -610,7 +610,10 @@ func runScreenshot(args []string) {
 	defer cancel()
 	requirePositional("screenshot", pf, 1)
 	dev := pf.positional[0]
-	a := map[string]any{"device": dev}
+	// inline: the CLI writes the file itself (possibly on a different
+	// host than the daemon), so it needs the image bytes, not the
+	// daemon-side path the tool returns by default (🎯T114).
+	a := map[string]any{"device": dev, "inline": true}
 	if o := pf.flags["--as"]; o != "" {
 		a["owner"] = o
 	} else {

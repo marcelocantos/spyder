@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -318,6 +320,15 @@ func (c *smokeClient) serve() {
 			_ = appchannel.UnpackParams(env.Params, &p)
 			c.lastAppCallMethod = env.Method
 			c.lastAppCallParams = p
+			// start_mode mimics a game RPC with a required key, for the
+			// 🎯T123 missing-required-key failure path.
+			if env.Method == "start_mode" {
+				m, _ := p.(map[string]any)
+				if _, ok := m["mode"]; !ok {
+					rerr = &appchannel.RPCError{Code: 400, Message: "key mode not found"}
+					break
+				}
+			}
 			result = map[string]any{"ok": true, "method": env.Method, "echo": p}
 		}
 		if rerr != nil {
@@ -585,8 +596,11 @@ func TestAppChannel_FullMethodSweep(t *testing.T) {
 			}
 		}},
 		{"app_screenshot", map[string]any{"session_id": sessionID}, func(t *testing.T, body string) {
-			// Screenshot returns an image content block; body inspection is
-			// limited to verifying the dispatcher succeeded.
+			// Default result is a saved-file JSON (🎯T114); the dedicated
+			// tests below cover path/dimensions and the inline opt-in.
+			if !strings.Contains(body, `"path"`) {
+				t.Errorf("expected path in default app_screenshot result; body=%s", body)
+			}
 		}},
 	}
 
@@ -855,5 +869,65 @@ func TestAppChannel_DispatchSurfaceCoverage(t *testing.T) {
 			t.Errorf("dispatcher rejects %q as unknown: %v", name, err)
 		}
 		_ = context.Background()
+	}
+}
+
+// --- 🎯T114: app_screenshot defaults to a saved file, inline is opt-in ---
+
+func TestAppScreenshot_DefaultWritesFileReturnsPath(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	client := dialSmoke(t, port, []string{appchannel.MethodPing, appchannel.MethodScreenshotApp})
+	defer client.close()
+	sid := waitForAppSession(t, h)
+
+	r := dispatchJSON(t, h, "app_screenshot", map[string]any{"session_id": sid})
+	if r.IsError {
+		t.Fatalf("app_screenshot: %s", resultText(t, &r))
+	}
+	for _, c := range r.Content {
+		if c.Type == "image" {
+			t.Fatal("default app_screenshot must not inline the image")
+		}
+	}
+	body := dispatchJSONMap(t, h, "app_screenshot", map[string]any{"session_id": sid})
+	path, _ := body["path"].(string)
+	if path == "" {
+		t.Fatalf("no path in result: %v", body)
+	}
+	if !strings.Contains(path, filepath.Join(".spyder", "screenshots")) {
+		t.Errorf("path %q not under the default screenshots dir", path)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("saved screenshot unreadable: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("saved screenshot is empty")
+	}
+	if body["width"] != float64(100) || body["height"] != float64(50) {
+		t.Errorf("dimensions = %vx%v; want 100x50", body["width"], body["height"])
+	}
+}
+
+func TestAppScreenshot_InlineOptIn(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	client := dialSmoke(t, port, []string{appchannel.MethodPing, appchannel.MethodScreenshotApp})
+	defer client.close()
+	sid := waitForAppSession(t, h)
+
+	r := dispatchJSON(t, h, "app_screenshot", map[string]any{"session_id": sid, "inline": true})
+	if r.IsError {
+		t.Fatalf("app_screenshot inline: %s", resultText(t, &r))
+	}
+	var foundImage bool
+	for _, c := range r.Content {
+		if c.Type == "image" && c.Data != "" {
+			foundImage = true
+		}
+	}
+	if !foundImage {
+		t.Fatalf("inline=true should return an image content block; got %+v", r.Content)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image/png"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -22,6 +23,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
@@ -345,22 +347,53 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 		return toolErr("screenshot on %s: %v", dev, err)
 	}
 	h.archiveArtefact(dev, owner, "screenshot", "image/png", ".png", png)
-	if outPath != "" {
-		abs, err := resolveOutputPath(outPath)
-		if err != nil {
-			return toolErr("%v", err)
-		}
-		if err := writeOutputFile(abs, png); err != nil {
-			return toolErr("saving screenshot: %v", err)
-		}
-		return toolText(fmt.Sprintf(
-			"screenshot of %s saved to %s (%d bytes)", dev, abs, len(png)))
+	if inline, _ := args["inline"].(bool); inline {
+		return mcpgo.NewToolResultImage(
+			fmt.Sprintf("screenshot of %s (%d bytes)", dev, len(png)),
+			base64.StdEncoding.EncodeToString(png),
+			"image/png",
+		), nil
 	}
-	return mcpgo.NewToolResultImage(
-		fmt.Sprintf("screenshot of %s (%d bytes)", dev, len(png)),
-		base64.StdEncoding.EncodeToString(png),
-		"image/png",
-	), nil
+	// 🎯T114: default is a filesystem-path result, not multi-MB inline
+	// base64 in the transcript.
+	if outPath == "" {
+		outPath = defaultScreenshotPath("screenshot-"+sanitizeFilename(dev), "png")
+	}
+	abs, err := resolveOutputPath(outPath)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := writeOutputFile(abs, png); err != nil {
+		return toolErr("saving screenshot: %v", err)
+	}
+	width, height := pngDimensions(png)
+	return toolJSON(map[string]any{
+		"device": dev,
+		"path":   abs,
+		"width":  width,
+		"height": height,
+		"bytes":  len(png),
+	})
+}
+
+// defaultScreenshotPath returns a timestamped file path under the
+// screenshots directory (~/.spyder/screenshots) for the 🎯T114 default
+// save-to-disk behaviour of the screenshot verbs.
+func defaultScreenshotPath(prefix, ext string) string {
+	name := fmt.Sprintf("%s-%s.%s",
+		prefix, time.Now().UTC().Format("20060102-150405.000000000"), ext)
+	return filepath.Join(paths.ScreenshotsBase(), name)
+}
+
+// pngDimensions best-effort decodes a PNG header for its dimensions.
+// Returns zeros when the data is not decodable PNG (e.g. stub bytes in
+// tests) — the path result is still useful without them.
+func pngDimensions(data []byte) (width, height int) {
+	cfg, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return 0, 0
+	}
+	return cfg.Width, cfg.Height
 }
 
 // archiveArtefact writes data into the active run for (device, owner)

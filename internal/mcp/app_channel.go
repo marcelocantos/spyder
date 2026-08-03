@@ -6,7 +6,10 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -760,23 +763,38 @@ func (h *Handler) handleAppScreenshot(args map[string]any) (*mcpgo.CallToolResul
 	if err := appchannel.UnpackParams(res, &resp); err != nil {
 		return toolErr("screenshot_app: decode: %v", err)
 	}
-	if outPath := optString(args, "path"); outPath != "" {
-		abs, err := resolveOutputPath(outPath)
-		if err != nil {
-			return toolErr("%v", err)
-		}
-		if err := writeOutputFile(abs, resp.Data); err != nil {
-			return toolErr("saving app screenshot: %v", err)
-		}
-		return toolText(fmt.Sprintf(
-			"app screenshot %dx%d saved to %s (%d bytes)",
-			resp.Width, resp.Height, abs, len(resp.Data)))
+	if inline, _ := args["inline"].(bool); inline {
+		return mcpgo.NewToolResultImage(
+			fmt.Sprintf("app screenshot %dx%d (%d bytes)", resp.Width, resp.Height, len(resp.Data)),
+			base64.StdEncoding.EncodeToString(resp.Data),
+			"image/"+resp.Format,
+		), nil
 	}
-	return mcpgo.NewToolResultImage(
-		fmt.Sprintf("app screenshot %dx%d (%d bytes)", resp.Width, resp.Height, len(resp.Data)),
-		base64.StdEncoding.EncodeToString(resp.Data),
-		"image/"+resp.Format,
-	), nil
+	// 🎯T114: default is a filesystem-path result, not multi-MB inline
+	// base64 in the transcript. Pass inline=true for the old behaviour.
+	format := resp.Format
+	if format == "" {
+		format = "png"
+	}
+	outPath := optString(args, "path")
+	if outPath == "" {
+		outPath = defaultScreenshotPath("app-screenshot-"+sanitizeFilename(s.ID), format)
+	}
+	abs, err := resolveOutputPath(outPath)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := writeOutputFile(abs, resp.Data); err != nil {
+		return toolErr("saving app screenshot: %v", err)
+	}
+	return toolJSON(map[string]any{
+		"session_id": s.ID,
+		"path":       abs,
+		"width":      resp.Width,
+		"height":     resp.Height,
+		"format":     format,
+		"bytes":      len(resp.Data),
+	})
 }
 
 func (h *Handler) handleAppLogGet(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -871,6 +889,19 @@ func (h *Handler) handleAppMethods(args map[string]any) (*mcpgo.CallToolResult, 
 	})
 }
 
+// appCallArgKeys are the only argument names app_call accepts. Anything
+// else — classically an args= bag instead of params= — is rejected with
+// an error naming the correct key (🎯T115), so the RPC body is never
+// silently dropped.
+var appCallArgKeys = map[string]bool{
+	"session_id": true,
+	"device":     true,
+	"bundle_id":  true,
+	"method":     true,
+	"params":     true,
+	"timeout_ms": true,
+}
+
 // handleAppCall forwards an arbitrary RPC the app advertised in hello.
 // Prefer fixed app_* tools for engine methods; use this for game-private commands.
 func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -888,6 +919,17 @@ func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, err
 	if !s.Supports(method) {
 		return toolErr("app_call: app does not advertise method %q (call app_methods)", method)
 	}
+	var unknown []string
+	for k := range args {
+		if !appCallArgKeys[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return toolErr("app_call %s: unknown argument %s — pass the RPC body as params={...}%s",
+			method, strings.Join(unknown, ", "), expectedParamsHint(s, method))
+	}
 	var params any
 	if raw, ok := args["params"]; ok {
 		params = raw
@@ -900,7 +942,10 @@ func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, err
 	}
 	res, err := s.Call(context.Background(), method, params, timeout)
 	if err != nil {
-		return toolErr("app_call %s: %v", method, err)
+		// 🎯T123: a failed call names the method, shows the advertised
+		// example_params, and summarises what was actually sent.
+		return toolErr("app_call %s: %v%s; got params: %s",
+			method, err, expectedParamsHint(s, method), summarizeParams(params))
 	}
 	out, err := appchannel.ApplyJQ("", res)
 	if err != nil {
@@ -911,6 +956,55 @@ func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, err
 		"method":     method,
 		"result":     out,
 	})
+}
+
+// expectedParamsHint renders the method's advertised example_params as
+// "; expected params like {...} (from app_methods example_params)", or
+// "" when the app volunteered no example (🎯T123).
+func expectedParamsHint(s *appchannel.Session, method string) string {
+	hello := s.HelloInfo()
+	if hello == nil {
+		return ""
+	}
+	for _, m := range hello.Methods {
+		if m.Name != method || m.ExampleParams == nil {
+			continue
+		}
+		example := ""
+		if b, err := json.Marshal(m.ExampleParams); err == nil {
+			example = string(b)
+		} else {
+			example = fmt.Sprint(m.ExampleParams)
+		}
+		return fmt.Sprintf("; expected params like %s (from app_methods example_params)", example)
+	}
+	return ""
+}
+
+// maxParamsSummaryBytes caps the rendered RPC body in app_call error
+// messages: enough to recognise the payload, never a multi-MB dump.
+const maxParamsSummaryBytes = 200
+
+// summarizeParams renders a compact description of an RPC body for
+// error messages (🎯T123): full JSON when small, a keys-only sketch for
+// large maps, and a truncated prefix otherwise.
+func summarizeParams(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("<%T>", v)
+	}
+	if len(b) <= maxParamsSummaryBytes {
+		return string(b)
+	}
+	if m, ok := v.(map[string]any); ok {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return fmt.Sprintf("{keys: %s} (%d bytes total)", strings.Join(keys, ", "), len(b))
+	}
+	return fmt.Sprintf("%s… (%d bytes total)", b[:maxParamsSummaryBytes], len(b))
 }
 
 // ── per-instance metrics ring (🎯T110 / ge 🎯T166) ─────────────────────────
@@ -1116,12 +1210,12 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("scope", mcpgo.Description("Filter: all (default), app (game-registered only), or engine (ge builtins only).")),
 		),
 		mcpgo.NewTool("app_call",
-			mcpgo.WithDescription("Invoke a method the app advertised in hello (generic pass-through). Prefer fixed app_* tools for engine methods; use app_call for game-private commands discovered via app_methods. Fails closed if the method was not advertised."),
+			mcpgo.WithDescription("Invoke a method the app advertised in hello (generic pass-through). Prefer fixed app_* tools for engine methods; use app_call for game-private commands discovered via app_methods. Fails closed if the method was not advertised. The RPC body goes in `params` — the ONLY accepted bag name; `args=` (or any other key) is rejected with an error naming `params`."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("method", mcpgo.Required(), mcpgo.Description("RPC method name from app_methods.")),
-			mcpgo.WithObject("params", mcpgo.Description("JSON-object params for the method (default {}). Use example_params from app_methods as a template.")),
+			mcpgo.WithObject("params", mcpgo.Description("JSON-object params for the method (default {}). Use example_params from app_methods as a template. This is the only accepted name for the RPC body — not args.")),
 			mcpgo.WithNumber("timeout_ms", mcpgo.Description("RPC timeout in milliseconds (default 10000).")),
 		),
 
@@ -1296,11 +1390,12 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("state_b64", mcpgo.Required(), mcpgo.Description("base64-encoded state blob")),
 		),
-		mcpgo.NewTool("app_screenshot", mcpgo.WithDescription("Request a screenshot from the app's own framebuffer (sibling to spyder's DTX-based `screenshot`; useful when DTX is wedged or you need state-correlated capture). By default returns the image inline; pass path to instead save it to that file and return a text confirmation."),
+		mcpgo.NewTool("app_screenshot", mcpgo.WithDescription("Request a screenshot from the app's own framebuffer (sibling to spyder's DTX-based `screenshot`; useful when DTX is wedged or you need state-correlated capture). By default saves the image under ~/.spyder/screenshots and returns {path, width, height, format, bytes} — no multi-MB inline base64. Pass inline=true to get the image inline for visual inspection, or path to choose the output location."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
-			mcpgo.WithString("path", mcpgo.Description("Optional output file path. When set, the image is written here (a leading ~ is expanded; parent directories are created) and the tool returns a text confirmation instead of the inline image.")),
+			mcpgo.WithString("path", mcpgo.Description("Optional output file path (a leading ~ is expanded; parent directories are created). Default: a timestamped file under ~/.spyder/screenshots.")),
+			mcpgo.WithBoolean("inline", mcpgo.Description("When true, return the image inline (base64 image block) instead of writing a file. Default false (🎯T114).")),
 		),
 
 		mcpgo.NewTool("app_state_slices", mcpgo.WithDescription("Return the slice catalogue the app advertised in its hello. Each entry has a `name` and an optional `example` payload — agents that get an example can write jq filters immediately; agents that don't can call app_state_describe to learn the shape without paying the full-payload cost."),

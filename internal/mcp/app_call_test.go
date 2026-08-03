@@ -142,6 +142,115 @@ func TestAppCall_MethodRequired(t *testing.T) {
 	}
 }
 
+// 🎯T115: params is the one documented bag name; args (or anything else)
+// is rejected with an error that names params and shows example_params.
+func TestAppCall_RejectsArgsBagName(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	client := dialSmokeHello(t, port, appchannel.Hello{
+		Methods: []appchannel.MethodDescriptor{
+			{Name: appchannel.MethodPing},
+			{Name: "select_country", ExampleParams: map[string]any{"id": "FR"}},
+		},
+	})
+	defer client.close()
+	sid := waitForAppSession(t, h)
+
+	r := dispatchJSON(t, h, "app_call", map[string]any{
+		"session_id": sid,
+		"method":     "select_country",
+		"args":       map[string]any{"id": "FR"},
+	})
+	if !r.IsError {
+		t.Fatalf("args= must be rejected; got %s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	for _, want := range []string{
+		"unknown argument args",
+		"params={...}",
+		`{"id":"FR"}`, // example_params rides the error
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("error missing %q; got: %s", want, body)
+		}
+	}
+	if client.lastAppCallMethod != "" {
+		t.Errorf("rejected call must not reach the app; app saw %q", client.lastAppCallMethod)
+	}
+}
+
+// 🎯T123: a failed app_call names the method, shows the advertised
+// example_params, and summarises the payload actually sent.
+func TestAppCall_FailureNamesMethodExampleAndPayload(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	client := dialSmokeHello(t, port, appchannel.Hello{
+		Methods: []appchannel.MethodDescriptor{
+			{Name: appchannel.MethodPing},
+			{Name: "start_mode", ExampleParams: map[string]any{"mode": "sandbox"}},
+		},
+	})
+	defer client.close()
+	sid := waitForAppSession(t, h)
+
+	// Missing the required "mode" key → smoke app returns an RPC error.
+	r := dispatchJSON(t, h, "app_call", map[string]any{
+		"session_id": sid,
+		"method":     "start_mode",
+		"params":     map[string]any{"speed": 3},
+	})
+	if !r.IsError {
+		t.Fatalf("expected failure, got %s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	for _, want := range []string{
+		"start_mode",         // method name
+		"key mode not found", // app's own error
+		`{"mode":"sandbox"}`, // expected example_params
+		"example_params",     // provenance of the example
+		`"speed":3`,          // summary of the payload received
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("error missing %q; got: %s", want, body)
+		}
+	}
+}
+
+// 🎯T123: the payload summary stays compact — large values are reduced
+// to a keys-only sketch, never dumped into the error.
+func TestAppCall_FailurePayloadSummaryIsCompact(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	client := dialSmokeHello(t, port, appchannel.Hello{
+		Methods: []appchannel.MethodDescriptor{
+			{Name: appchannel.MethodPing},
+			{Name: "start_mode", ExampleParams: map[string]any{"mode": "sandbox"}},
+		},
+	})
+	defer client.close()
+	sid := waitForAppSession(t, h)
+
+	blob := strings.Repeat("x", 5000)
+	r := dispatchJSON(t, h, "app_call", map[string]any{
+		"session_id": sid,
+		"method":     "start_mode",
+		"params":     map[string]any{"blob": blob, "note": "tiny"},
+	})
+	if !r.IsError {
+		t.Fatalf("expected failure, got %s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	if strings.Contains(body, strings.Repeat("x", 300)) {
+		t.Errorf("payload blob leaked into the error: %d bytes", len(body))
+	}
+	if !strings.Contains(body, "blob") || !strings.Contains(body, "note") {
+		t.Errorf("keys-only sketch missing payload keys; got: %s", body)
+	}
+	if len(body) > 1000 {
+		t.Errorf("error message too large (%d bytes): %s", len(body), body[:200])
+	}
+}
+
 func TestAppMethodsToolsDispatchKnown(t *testing.T) {
 	h := startAppChannelHandler(t)
 	for _, name := range []string{"app_methods", "app_call"} {

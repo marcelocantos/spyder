@@ -214,7 +214,11 @@ expression** in the script (REPL-style "last value"). Intermediate bare
 expressions are discarded — a bare `app_input(...)` in the middle of a script
 produces no output; its acknowledgement is dropped.
 
-- Image-returning verbs (`screenshot`, `app_screenshot`) emit image blocks.
+- Screenshot verbs (`screenshot`, `app_screenshot`) default to saving a PNG
+  under `~/.spyder/screenshots/` and returning `{path, width, height, bytes}`
+  as a dict — no multi-MB base64 in the transcript (🎯T114). Pass
+  `inline=True` when you need the image inline to look at it; that emits an
+  image block.
 - JSON-returning verbs return dicts/lists you can index directly:
   `d = app_state(slice="hud"); emit(d["score"])`.
 - Text-returning verbs return strings.
@@ -251,7 +255,8 @@ citing the script position.
 **Determinism:** all calls in one script run in script order with zero agent
 round-trips. For frame-perfect capture: `app_pause(session_id=s)`,
 `app_input(...)`, `app_step(session_id=s, frames=1)`,
-`emit(app_screenshot(session_id=s))`, `app_resume(session_id=s)`.
+`emit(app_screenshot(session_id=s, inline=True))`, `app_resume(session_id=s)`
+(drop `inline=True` to get a saved-file path instead of the inline image).
 
 **Durable handles:** a returned id is a plain string backed by a server-side
 registry. Capture it in a variable and reuse it in the same script, OR pass it
@@ -380,7 +385,8 @@ assert_trajectory(points=pts, min_x=-1.0, max_x=2.0, min_y=-1.0, max_y=2.0)
 {"name": "app_exec", "arguments": {"script": "devices(platform=\"all\")"}}
 ```
 
-**Timed tap then screenshot** — tap the screen, wait 500 ms, capture:
+**Timed tap then screenshot** — tap the screen, wait 500 ms, capture
+(returns `{path, width, height, …}`; add `inline=True` to see the image):
 
 ```starlark
 app_input(type="finger_down", x=0.5, y=0.5)
@@ -397,7 +403,7 @@ s = "my-session-id"
 app_pause(session_id=s)
 app_input(session_id=s, type="finger_down", x=0.5, y=0.5)
 app_step(session_id=s, frames=1)
-emit(app_screenshot(session_id=s))
+emit(app_screenshot(session_id=s, inline=True))
 app_resume(session_id=s)
 ```
 
@@ -436,7 +442,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `devices(platform?)` | List connected iOS + Android devices, annotated with inventory alias. iOS-17+ devices visible to USBMux but whose RSD tunnel hasn't settled yet appear with `tunnel_pending: true` (🎯T84) — they show up rather than disappearing during the settling window, but DTX-backed tools (screenshot, launch_app, …) may fail with a clear "tunnel not ready" error until the flag clears. | `platform` filter: `ios`, `android`, or `all` (default). |
 | `resolve(device)` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
 | `device_state(device)` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
-| `screenshot(device, owner?)` | PNG of the current screen, returned inline as an image content block. | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
+| `screenshot(device, owner?, path?, inline?)` | PNG of the current screen. Default: saved under `~/.spyder/screenshots/` (or `path`), returning `{path, width, height, bytes}`; `inline=True` returns the image inline instead (🎯T114). | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
 | `list_apps(device)` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
 | `launch_app(device, bundle_id, env?)` | Foreground an arbitrary app by bundle id. Returns `{device, bundle_id, session_id?, channel_port?}` — the session fields appear when the app completes the app-channel handshake within the post-launch wait (🎯T119), so you don't need a follow-up `app_channel_list`. Optional `env` dict injects environment variables into the launched process — see "Launching with env" below. | iOS-17+ uses go-ios's `appservice.LaunchApp` (CoreDevice/RemoteXPC, needs tunnel); iOS ≤16 uses `instruments.ProcessControl` (DTX-over-lockdown, no tunnel, needs DDI mounted). Path selection automatic per device. Android uses `adb monkey -c LAUNCHER` (no env) or `am start --es KEY VALUE` (with env). |
 | `terminate_app(device, bundle_id)` | Stop an app by bundle id. | iOS: resolve PID via DVT, then kill. Android: `adb am force-stop`. |
@@ -496,10 +502,10 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `state_query(session_id?, slice?, select?)` | **Read-only** session-state probe (🎯T122). Never mutates game state — use it instead of `place_active` or other game commands to learn what's active. With `slice` omitted the app returns its default session-state summary (ge convention: `mode`, `active_adm`, `current_index`, `placed_count`, `view` lon/lat, `paused`). | Observational; always succeeds regardless of who holds the device reservation. Also accepts `device`+`bundle_id` addressing. |
 | `app_save_state(session_id?)` | Serialize app state. Returns a base64-encoded blob; the app picks the schema. | |
 | `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
-| `app_screenshot(session_id?)` | Request a PNG from the app's own framebuffer (sibling to the OS-path `screenshot`). | |
+| `app_screenshot(session_id?, path?, inline?)` | Request a PNG from the app's own framebuffer (sibling to the OS-path `screenshot`). Default: saved under `~/.spyder/screenshots/` (or `path`), returning `{path, width, height, format, bytes}`; `inline=True` returns the image inline instead (🎯T114). | |
 | `app_state_slices(session_id?)` | Return the list of named state slices the app has registered. | |
 | `app_methods(session_id?, scope?)` | Discover RPCs the app advertised in hello (`name`, `kind` engine\|app, optional `example_params`/`doc`). | `scope=all\|app\|engine` (default all). Always call after connect before inventing game automation. |
-| `app_call(session_id?, method, params?, timeout_ms?)` | Invoke any method advertised in hello (generic pass-through). | Prefer fixed `app_*` tools for engine methods; use for **game-private** commands. Fails closed if not advertised. |
+| `app_call(session_id?, method, params?, timeout_ms?)` | Invoke any method advertised in hello (generic pass-through). The RPC body goes in `params` — the only accepted bag name; `args=` is rejected with an error naming `params` (🎯T115). | Prefer fixed `app_*` tools for engine methods; use for **game-private** commands. Fails closed if not advertised. |
 | `app_state_describe(session_id?, slice)` | Return a types-only structural sketch of a slice without the full payload. | |
 | `app_state_capture_start(session_id?, slice, interval_ms?, select?)` | Start a polling capture of a state slice. Returns a `capture_id`. | Default 100 ms interval. Minimum 10 ms. |
 | `app_state_capture_get(capture_id)` | Drain accumulated samples; capture continues. | Clears the buffer. |
@@ -797,6 +803,8 @@ emit(app_state(session_id=sid, slice="scene"))
 | `kind` | `engine` = ge builtins (`ping`, `input_inject`, …); `app` = game-registered |
 | `example_params` / `doc` | Optional; volunteered at `registerMethod` so agents write calls without reading C++ |
 | Fail closed | `app_call` errors if the method was not in hello |
+| `params` is the only bag | The RPC body key is `params`; `args=` (or any other name) is rejected with an error naming `params` and showing the method's `example_params` (🎯T115) |
+| Rich failures | A failed call names the method, shows `expected params like {...}` from `example_params`, and appends a compact summary of the params actually sent — large payloads are reduced to a keys-only sketch (🎯T123) |
 | Not full save/restore | Prefer small intentional commands over blunt `app_restore_state` |
 
 Handshake accepts **every** method name the app advertised (engine +
@@ -1594,8 +1602,10 @@ equivalent `spyder run` exit path) closes the run. The run's
 timestamp, mime type, and size.
 
 Currently the `screenshot` builtin writes its PNG into the active run's
-directory in addition to returning it inline. Future tools (recording,
-log capture, crash collection) will follow the same convention.
+directory in addition to its normal result (a saved-file path by
+default, or the inline image with `inline=True`). Future tools
+(recording, log capture, crash collection) will follow the same
+convention.
 
 ```bash
 # List all runs, newest first.

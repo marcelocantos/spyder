@@ -358,6 +358,8 @@ func helpBuiltin(verbs map[string]toolFunc) func(*starlark.Thread, *starlark.Bui
 		"list_scripts(), run_script(path=...)\n" +
 		"call verbs by keyword, e.g. app_screenshot(session_id=\"...\"); " +
 		"a bare expression or emit() adds to the result.\n" +
+		"app_call(method=..., params={...}): the RPC body key is params (args is rejected). " +
+		"screenshot verbs save to a file and return {path, width, height} by default; pass inline=True for the image.\n" +
 		"topics: help(\"<topic>\") for a focused guide with recipes — " + helpTopicList() + "\n" +
 		"reservations gate device-state-mutating verbs only (observational verbs always succeed) — help(\"reservations\")."
 	return func(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
