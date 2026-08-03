@@ -105,7 +105,9 @@ verbs available as builtins:
 | `rotate` | Rotate an iOS simulator or Android emulator to portrait, landscape-left, landscape-right, or portrait-upside-down. Physical devices return an error. |
 | `install_app` | Install a .app/.ipa (iOS) or .apk (Android) on a device. |
 | `uninstall_app` | Remove an app by bundle id / package name. |
-| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid}`. |
+| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid, replaced, session_id?, channel_port?}` — session fields appear when the app completes the app-channel handshake. |
+| `ensure_session` | One verb from device+bundle to a ready app-channel session: deploy if needed → launch → wait for handshake → `{session_id, ...}`. Idempotent when a healthy session exists. |
+| `state_query` | Read-only session-state probe over the app channel (mode/active/view). Never mutates game state; not reservation-gated. |
 | `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. `reserve` accepts a literal `device` pin or a `selector` JSON predicate for fuzzy matching — see [agents-guide.md](agents-guide.md#fuzzy-reservation-selector). |
 | `runs_list` / `runs_show` | Inspect per-reservation artefact bundles under `~/.spyder/runs/`. |
 | `baseline_update` | Store a reference screenshot (and optional UI manifest) as a visual baseline. |

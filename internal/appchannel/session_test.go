@@ -124,6 +124,43 @@ func waitForSession(t *testing.T, l *Listener) *Session {
 
 // tests ----------------------------------------------------------------
 
+// A session that ends is remembered with its (device, bundle_id) key so
+// a stale session_id can be diagnosed (🎯T119).
+func TestEndedSessionKeyRemembered(t *testing.T) {
+	m := NewManager()
+	t.Cleanup(m.Close)
+	key := AppKey{DeviceID: "dev-1", BundleID: "com.example.app"}
+	l, err := m.GetOrCreateListener(key)
+	if err != nil {
+		t.Fatalf("GetOrCreateListener: %v", err)
+	}
+	t.Cleanup(l.Stop)
+	app := newFakeApp(t, fmt.Sprintf("127.0.0.1:%d", l.Port), []string{MethodPing})
+	s := waitForSession(t, l)
+	sid := s.ID
+
+	if _, ok := m.EndedSessionKey(sid); ok {
+		t.Fatal("live session must not be reported as ended")
+	}
+
+	app.close()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, live := m.GetSession(sid); !live {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	got, ok := m.EndedSessionKey(sid)
+	if !ok || got != key {
+		t.Fatalf("EndedSessionKey(%s) = %v, %v; want %v, true", sid, got, ok, key)
+	}
+	if _, ok := m.EndedSessionKey("nope"); ok {
+		t.Fatal("unknown id must not be reported as ended")
+	}
+}
+
 func TestHandshakeBasic(t *testing.T) {
 	_, l := startManagerAndListener(t)
 	app := newFakeApp(t, fmt.Sprintf("127.0.0.1:%d", l.Port), []string{MethodPing, MethodQuit})

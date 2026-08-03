@@ -127,8 +127,7 @@ func (h *Handler) requireSession(args map[string]any) (*appchannel.Session, *mcp
 	if id := optString(args, "session_id"); id != "" {
 		s, ok := h.appChannel.GetSession(id)
 		if !ok {
-			res, _ := toolErr("no such session: %s", id)
-			return nil, res
+			return nil, h.staleSessionError(id)
 		}
 		if s.Listener() != nil {
 			s.Listener().Touch()
@@ -173,6 +172,27 @@ func (h *Handler) requireSession(args map[string]any) (*appchannel.Session, *mcp
 	}
 	res, _ := toolErr("session_id (or device+bundle_id) is required (have %d active sessions)", len(sessions))
 	return nil, res
+}
+
+// staleSessionError builds the 🎯T119 stale-session diagnosis: say
+// explicitly that the sid is stale (not a generic lookup error), name
+// the live replacement session for the same (device, bundle_id) when
+// one exists, and point at the recovery verb otherwise.
+func (h *Handler) staleSessionError(id string) *mcpgo.CallToolResult {
+	key, known := h.appChannel.EndedSessionKey(id)
+	if !known || key == (appchannel.AppKey{}) {
+		res, _ := toolErr("no such session: %s — not a live session id (it may predate a daemon restart); list live sessions with app_channel_list(), or call ensure_session(device=..., bundle_id=...) to establish one", id)
+		return res
+	}
+	if l, ok := h.appChannel.LookupKeyed(key); ok {
+		if sessions := l.Sessions(); len(sessions) > 0 {
+			live := sessions[len(sessions)-1]
+			res, _ := toolErr("stale session_id %s: that session for device=%s bundle_id=%s has ended; the live session is %s — use it, or address by device+bundle_id instead of session_id", id, key.DeviceID, key.BundleID, live.ID)
+			return res
+		}
+	}
+	res, _ := toolErr("stale session_id %s: the app session for device=%s bundle_id=%s has ended and no live session exists — relaunch (e.g. ensure_session(device=%q, bundle_id=%q)) and use the new session_id", id, key.DeviceID, key.BundleID, key.DeviceID, key.BundleID)
+	return res
 }
 
 // findAppChannelListener finds a keyed listener by listener_id.
@@ -526,6 +546,37 @@ func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, er
 		return toolErr("state_query: %v", err)
 	}
 	out, err := appchannel.ApplyJQ(selectExpr, res)
+	if err != nil {
+		if jqErr, ok := err.(*appchannel.JQError); ok {
+			return toolJSON(map[string]any{"select_error": jqErr})
+		}
+		return toolErr("state_query: %v", err)
+	}
+	return toolJSON(out)
+}
+
+// handleStateQuery is the 🎯T122 read-only probe: forward `state_query`
+// to the app and return its answer verbatim. It never sends a mutating
+// method, so an agent can learn mode/active/view without side effects
+// (contrast probing via place_active or other game commands). `slice` is
+// optional — omitted, the app returns its default session-state summary
+// (ge convention: mode, active_adm, current_index, placed_count, view
+// lon/lat, paused). Observational: like every app_* read it is not
+// reservation-gated.
+func (h *Handler) handleStateQuery(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	params := map[string]string{}
+	if slice := optString(args, "slice"); slice != "" {
+		params["slice"] = slice
+	}
+	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, params, 10*time.Second)
+	if err != nil {
+		return toolErr("state_query: %v", err)
+	}
+	out, err := appchannel.ApplyJQ(optString(args, "select"), res)
 	if err != nil {
 		if jqErr, ok := err.(*appchannel.JQError); ok {
 			return toolJSON(map[string]any{"select_error": jqErr})
@@ -1229,6 +1280,23 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Event type: finger_down, finger_up, finger_motion, key_down, key_up, accel")),
 		),
 
+		mcpgo.NewTool("ensure_session",
+			mcpgo.WithDescription("One verb from device+bundle to a ready app-channel session (🎯T118): installs the artifact if `path` is given and the bundle isn't on the device, launches with SPYDER_APP_CHANNEL wired, waits for the app's hello handshake, and returns {session_id, channel_port, pid, deployed, launched}. Idempotent — when a healthy session already exists for (device, bundle_id) it is returned untouched (deployed=false, launched=false) and no reservation is needed. Replaces the manual deploy_app → launch_app → sleep → app_channel_list dance."),
+			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or UUID.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id. Optional when path is given (derived from the artifact).")),
+			mcpgo.WithString("path", mcpgo.Description("Optional .app/.ipa (iOS) or .apk (Android) path; installed only when the bundle is not already on the device.")),
+			mcpgo.WithString("owner", mcpgo.Description("Reservation owner for the mutating (deploy/launch) path; the healthy-session fast path needs none.")),
+			mcpgo.WithObject("env", mcpgo.Description("Optional env for the launch step — same semantics as launch_app's env.")),
+			mcpgo.WithNumber("timeout_ms", mcpgo.Description("How long to wait for the app-channel handshake after launch (default 15000, max 60000).")),
+		),
+		mcpgo.NewTool("state_query",
+			mcpgo.WithDescription("Read-only session-state probe (🎯T122): forward `state_query` to the app and return its answer. Never mutates game state — use this instead of place_active/game commands to learn what's active. With `slice` omitted the app returns its default session-state summary (ge convention: mode, active_adm, current_index, placed_count, view lon/lat, paused). Observational; not reservation-gated."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("slice", mcpgo.Description("Optional state slice name; omit for the app's default session-state summary.")),
+			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to the result server-side.")),
+		),
 		mcpgo.NewTool("app_state", mcpgo.WithDescription("Query a named slice of the app's state. The app's hello advertises which slices it supports."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),

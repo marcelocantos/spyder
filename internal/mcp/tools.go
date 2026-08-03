@@ -421,6 +421,16 @@ func (h *Handler) handleListApps(args map[string]any) (*mcpgo.CallToolResult, er
 	return toolJSON(apps)
 }
 
+// launchAppResult is the JSON payload returned by launch_app. SessionID
+// and ChannelPort are populated when the app dials back and completes
+// the app-channel handshake within the post-launch wait (🎯T119).
+type launchAppResult struct {
+	Device      string `json:"device"`
+	BundleID    string `json:"bundle_id"`
+	SessionID   string `json:"session_id,omitempty"`
+	ChannelPort int    `json:"channel_port,omitempty"`
+}
+
 func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
@@ -432,24 +442,42 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 	}
 	owner := optString(args, "owner")
 	env := optStringMap(args, "env")
+	deviceID, errRes := h.launchAppLocked(dev, bundleID, owner, env)
+	if errRes != nil {
+		return errRes, nil
+	}
+	out := launchAppResult{Device: dev, BundleID: bundleID}
+	if s, ok := h.waitForChannelSession(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID}, postLaunchSessionWait); ok {
+		out.SessionID = s.ID
+		out.ChannelPort = s.Port
+	}
+	return toolJSON(out)
+}
+
+// launchAppLocked runs the mutating part of launch_app under h.mu and
+// returns the resolved device id for the post-launch session wait.
+func (h *Handler) launchAppLocked(dev, bundleID, owner string, env map[string]string) (string, *mcpgo.CallToolResult) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if res := h.authorize(dev, owner); res != nil {
-		return res, nil
+		return "", res
 	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
-		return toolErr("%v", err)
+		res, _ := toolErr("%v", err)
+		return "", res
 	}
 	env, err = h.ensureAppChannelEnv(env, platform, id, bundleID)
 	if err != nil {
-		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
+		res, _ := toolErr("launch_app %s on %s: %v", bundleID, dev, err)
+		return "", res
 	}
 	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
-		return toolErr("launch_app %s on %s: %v", bundleID, dev, err)
+		res, _ := toolErr("launch_app %s on %s: %v", bundleID, dev, err)
+		return "", res
 	}
 	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
-	return toolText(fmt.Sprintf("launched %s on %s", bundleID, dev))
+	return id, nil
 }
 
 // ensureAppChannelEnv injects SPYDER_APP_CHANNEL=host:port into the
@@ -1498,10 +1526,18 @@ func (h *Handler) handleUninstallApp(args map[string]any) (*mcpgo.CallToolResult
 	return toolText(fmt.Sprintf("uninstalled %s from %s", bundleID, dev))
 }
 
-// deployResult is the JSON payload returned by deploy_app on success.
+// deployResult is the JSON payload returned by deploy_app on success
+// (🎯T121). Replaced reports whether the install overwrote a build that
+// was already on the device. SessionID/ChannelPort are populated when
+// the app dials back and completes the app-channel handshake within the
+// post-launch wait, so scripts can branch without a second
+// app_channel_list call.
 type deployResult struct {
-	BundleID string `json:"bundle_id"`
-	PID      int    `json:"pid"`
+	BundleID    string `json:"bundle_id"`
+	PID         int    `json:"pid"`
+	Replaced    bool   `json:"replaced"`
+	SessionID   string `json:"session_id,omitempty"`
+	ChannelPort int    `json:"channel_port,omitempty"`
 }
 
 // handleDeployApp is the public deploy_app tool. It refuses the spyder stream
@@ -1511,8 +1547,11 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 	return h.deployApp(args, false /*allowPlayer*/)
 }
 
-// deployApp runs terminate → install → launch → verify-pid.
-// allowPlayer is true only for launch_player's internal call.
+// deployApp runs terminate → install → launch → verify-pid, then waits
+// briefly for the app-channel handshake so the result can carry the
+// session id (🎯T121). allowPlayer is true only for launch_player's
+// internal call — the player doesn't use the app channel, so that path
+// skips the session wait.
 func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
@@ -1531,15 +1570,37 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 		return toolErr("%v", err)
 	}
 
+	out, deviceID, errRes := h.deployAppLocked(dev, path, bundleID, owner, env, allowPlayer)
+	if errRes != nil {
+		return errRes, nil
+	}
+	if !allowPlayer {
+		if s, ok := h.waitForChannelSession(appchannel.AppKey{DeviceID: deviceID, BundleID: out.BundleID}, postLaunchSessionWait); ok {
+			out.SessionID = s.ID
+			out.ChannelPort = s.Port
+		}
+	}
+	return toolJSON(out)
+}
+
+// deployAppLocked runs the mutating deploy pipeline under h.mu and
+// returns the structured result plus the resolved device id for the
+// post-launch session wait.
+func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[string]string, allowPlayer bool) (deployResult, string, *mcpgo.CallToolResult) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	fail := func(format string, a ...any) (deployResult, string, *mcpgo.CallToolResult) {
+		res, _ := toolErr(format, a...)
+		return deployResult{}, "", res
+	}
+
 	if res := h.authorize(dev, owner); res != nil {
-		return res, nil
+		return deployResult{}, "", res
 	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
 	if err != nil {
-		return toolErr("%v", err)
+		return fail("%v", err)
 	}
 
 	// Derive bundle id from the path if not supplied.
@@ -1547,16 +1608,29 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 		var deriveErr error
 		bundleID, deriveErr = deriveBundleID(platform, path)
 		if deriveErr != nil {
-			return toolErr("cannot derive bundle_id from %q: %v — pass --bundle-id explicitly", path, deriveErr)
+			return fail("cannot derive bundle_id from %q: %v — pass --bundle-id explicitly", path, deriveErr)
 		}
 	}
 
 	if !allowPlayer && isSpyderPlayerTarget(bundleID, path) {
-		return toolErr(
+		return fail(
 			"deploy_app: refusing the spyder stream player (%s) — use launch_player "+
 				"or `spyder launch-player <device> [--server NAME]` so STREAM_ADDR and "+
 				"server name are injected; plain deploy leaves the glass with no relay address",
 			bundleID)
+	}
+
+	// replaced: best-effort pre-install presence check (🎯T121). A
+	// ListApps failure must not fail the deploy — it only degrades the
+	// replaced signal to false.
+	replaced := false
+	if apps, listErr := adapter.ListApps(id); listErr == nil {
+		for _, app := range apps {
+			if app.BundleID == bundleID {
+				replaced = true
+				break
+			}
+		}
 	}
 
 	// Step 1: terminate (ignore "not running" errors — it's fine if the
@@ -1564,22 +1638,22 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 	if termErr := adapter.TerminateApp(id, bundleID); termErr != nil {
 		// Only propagate if the error is not "not running" or "not found".
 		if !isNotRunningError(termErr) {
-			return toolErr("deploy_app: terminate %s on %s: %v", bundleID, dev, termErr)
+			return fail("deploy_app: terminate %s on %s: %v", bundleID, dev, termErr)
 		}
 	}
 
 	// Step 2: install (fail fast on error).
 	if err := adapter.InstallApp(id, path); err != nil {
-		return toolErr("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
+		return fail("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
 	}
 
 	// Step 3: launch.
 	env, err = h.ensureAppChannelEnv(env, platform, id, bundleID)
 	if err != nil {
-		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
+		return fail("deploy_app: launch %s on %s: %v", bundleID, dev, err)
 	}
 	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
-		return toolErr("deploy_app: launch %s on %s: %v", bundleID, dev, err)
+		return fail("deploy_app: launch %s on %s: %v", bundleID, dev, err)
 	}
 
 	// Step 4: verify new PID. Android (and cold iOS launches) can take a
@@ -1587,10 +1661,10 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 	// sees the process — poll briefly so deploy does not false-fail.
 	pid, err := waitForAppPID(adapter, id, bundleID, 3*time.Second)
 	if err != nil {
-		return toolErr("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
+		return fail("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
 	}
 
-	return toolJSON(deployResult{BundleID: bundleID, PID: pid})
+	return deployResult{BundleID: bundleID, PID: pid, Replaced: replaced}, id, nil
 }
 
 // isSpyderPlayerTarget reports whether a deploy targets the stream glass
