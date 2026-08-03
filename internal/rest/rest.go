@@ -15,8 +15,10 @@
 //	                 ({"content":[{"type":"text","text":"…"}, …],
 //	                   "isError": bool})
 //
-// Image-bearing tools (screenshot) yield an image content block with
-// base64 data + mimeType, identical to the MCP surface.
+// Image-bearing tools (screenshot with inline=true) yield an image
+// content block with base64 data + mimeType, identical to the MCP
+// surface; by default the screenshot tools return a saved-file path
+// JSON instead (🎯T114).
 package rest
 
 import (

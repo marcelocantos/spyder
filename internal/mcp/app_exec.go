@@ -355,7 +355,9 @@ func helpBuiltin(verbs map[string]toolFunc) func(*starlark.Thread, *starlark.Bui
 		"t109: find_hit_target(nodes=…, id|role|key=…); " +
 		"list_scripts(), run_script(path=...)\n" +
 		"call verbs by keyword, e.g. app_screenshot(session_id=\"...\"); " +
-		"a bare expression or emit() adds to the result."
+		"a bare expression or emit() adds to the result.\n" +
+		"app_call(method=..., params={...}): the RPC body key is params (args is rejected). " +
+		"screenshot verbs save to a file and return {path, width, height} by default; pass inline=True for the image."
 	return func(_ *starlark.Thread, _ *starlark.Builtin, _ starlark.Tuple, _ []starlark.Tuple) (starlark.Value, error) {
 		return starlark.String(text), nil
 	}

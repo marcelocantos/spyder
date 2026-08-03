@@ -105,12 +105,12 @@ func TestScreenshot_ArchivedInActiveRun(t *testing.T) {
 	_ = dispatchJSON(t, h, "reserve", map[string]any{"device": "iPad", "owner": "tiltbuggy"})
 
 	res := dispatchJSON(t, h, "screenshot", map[string]any{
-		"device": "iPad", "owner": "tiltbuggy",
+		"device": "iPad", "owner": "tiltbuggy", "inline": true,
 	})
 	if res.IsError {
 		t.Fatalf("screenshot: %s", resultText(t, &res))
 	}
-	// Still returns the image inline.
+	// inline=true still returns the image inline (🎯T114 opt-in).
 	var foundImage bool
 	for _, c := range res.Content {
 		if c.Type == "image" {
@@ -149,7 +149,7 @@ func TestScreenshot_ArchivedInActiveRun(t *testing.T) {
 	}
 }
 
-func TestScreenshot_NoRunStore_StillReturnsImage(t *testing.T) {
+func TestScreenshot_NoRunStore_StillSucceeds(t *testing.T) {
 	// No runs store wired → screenshot path still works, just doesn't
 	// archive. This protects the "runs is optional" contract.
 	png := []byte{0x89, 0x50, 0x4e, 0x47}
