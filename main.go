@@ -93,6 +93,11 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
 Serve:
   spyder serve [--addr :3030]
 
+  Default bind is 127.0.0.1:3030 (loopback). SPYDER_ADDR overrides the
+  default when --addr is absent; --addr always wins. The Homebrew
+  service sets SPYDER_ADDR=":3030" so LAN devices (stream glasses,
+  app-channel dial-backs) can reach the daemon.
+
   Runs an MCP server over streamable HTTP. Register with Claude Code:
     claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
 
@@ -152,6 +157,14 @@ func main() {
 // runServe parses optional --addr and starts the HTTP MCP server.
 func runServe(args []string) {
 	cfg := daemon.Config{Addr: defaultAddr, Version: version}
+	// SPYDER_ADDR overrides the loopback default when --addr is absent —
+	// the deliberate opt-in for LAN exposure under process supervisors
+	// that can't pass flags per-host (the Homebrew service plist sets it
+	// so device glasses and app-channel dial-backs can reach the daemon).
+	// An explicit --addr still wins.
+	if env := os.Getenv("SPYDER_ADDR"); env != "" {
+		cfg.Addr = env
+	}
 	for len(args) > 0 {
 		switch args[0] {
 		case "--addr", "-a":
