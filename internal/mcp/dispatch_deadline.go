@@ -35,10 +35,14 @@ func toolDeadlineClass(name string) time.Duration {
 	case "perf_fps":
 		// Explicit class: window_sec max 120 must fit under this bound.
 		return DeadlinePerfFPS
+	case "app_exec", "run_script", "list_scripts":
+		// Outer dispatch must not undercut max_duration_ms (default 30s,
+		// ceiling maxExecDuration). FastRead (15s) was killing multi-step
+		// device recipes that correctly request 60–120s budgets.
+		return maxExecDuration + 5*time.Second
 	case "devices", "resolve", "device_state", "list_apps", "is_running",
 		"reservations", "runs_list", "runs_show", "runs_artefacts",
-		"app_channel_list", "health", "app_exec", "list_scripts", "run_script":
-		// app_exec/run_script have their own max_duration; still bound outer dispatch.
+		"app_channel_list", "health":
 		return DeadlineFastRead
 	case "screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",
