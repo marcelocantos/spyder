@@ -40,7 +40,10 @@ const (
 	// defaultExecDuration is the wall-clock budget when the caller omits
 	// max_duration_ms. maxExecDuration is the hard ceiling.
 	defaultExecDuration = 30 * time.Second
-	maxExecDuration     = 120 * time.Second
+	// Multi-step device recipes (cold boot, kill/relaunch, restore polls)
+	// routinely exceed 2m when Unity monopolises the main thread; the host
+	// budget is the only wall-clock gate now that hops wait for the pump.
+	maxExecDuration     = 10 * time.Minute
 	// maxSleepMillis caps a single sleep() so a script can't park on one
 	// call past the duration budget; sleep also stops at the deadline.
 	maxSleepMillis = int64(maxExecDuration / time.Millisecond)
@@ -618,7 +621,7 @@ func appExecDefinition() mcpgo.Tool {
 			mcpgo.Description("Optional string map injected as the Starlark global `params` for durable scripts."),
 		),
 		mcpgo.WithNumber("max_duration_ms",
-			mcpgo.Description("Wall-clock budget for the whole script in milliseconds (default 30000, capped at 120000)."),
+			mcpgo.Description("Wall-clock budget for the whole script in milliseconds (default 30000, capped at 600000)."),
 		),
 	)
 }

@@ -544,7 +544,7 @@ func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, er
 		return nil, err
 	}
 	selectExpr := optString(args, "select")
-	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, 10*time.Second)
+	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, appchannel.DefaultRequestTimeout)
 	if err != nil {
 		return toolErr("state_query: %v", err)
 	}
@@ -575,7 +575,7 @@ func (h *Handler) handleStateQuery(args map[string]any) (*mcpgo.CallToolResult, 
 	if slice := optString(args, "slice"); slice != "" {
 		params["slice"] = slice
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, params, 10*time.Second)
+	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, params, appchannel.DefaultRequestTimeout)
 	if err != nil {
 		return toolErr("state_query: %v", err)
 	}
@@ -688,7 +688,7 @@ func (h *Handler) handleAppStateDescribe(args map[string]any) (*mcpgo.CallToolRe
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, 10*time.Second)
+	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, appchannel.DefaultRequestTimeout)
 	if err != nil {
 		return toolErr("state_describe: %v", err)
 	}
@@ -936,7 +936,7 @@ func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, err
 	} else {
 		params = map[string]any{}
 	}
-	timeout := 10 * time.Second
+	timeout := appchannel.DefaultRequestTimeout
 	if ms, ok := args["timeout_ms"].(float64); ok && ms > 0 {
 		timeout = time.Duration(ms) * time.Millisecond
 	}
@@ -1490,7 +1490,7 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("path", mcpgo.Description("Script name or path (alias: name).")),
 			mcpgo.WithString("name", mcpgo.Description("Alias for path.")),
 			mcpgo.WithObject("params", mcpgo.Description("Optional string map injected as Starlark global params.")),
-			mcpgo.WithNumber("max_duration_ms", mcpgo.Description("Wall-clock budget ms (default 30000, max 120000).")),
+			mcpgo.WithNumber("max_duration_ms", mcpgo.Description("Wall-clock budget ms (default 30000, max 600000).")),
 		),
 	}
 }

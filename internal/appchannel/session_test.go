@@ -251,10 +251,57 @@ func TestCallTimeout(t *testing.T) {
 	})
 	s := waitForSession(t, l)
 
+	// Idle silence 100ms with no intermediate progress → timeout (not a
+	// wall-clock budget from t0; there is simply no activity).
 	_, err := s.Call(context.Background(), "slow", nil, 100*time.Millisecond)
 	rerr, ok := err.(*RPCError)
 	if !ok || rerr.Code != ErrCodeTimeout {
 		t.Fatalf("err = %v; want ErrCodeTimeout", err)
+	}
+}
+
+// Progress heartbeats keep a Call alive across a total duration longer
+// than the idle budget — the framework waits while something is happening.
+func TestCallWaitsWhileProgressBeats(t *testing.T) {
+	_, l := startManagerAndListener(t)
+	app := newFakeApp(t, fmt.Sprintf("127.0.0.1:%d", l.Port), []string{"slow"})
+	defer app.close()
+
+	started := make(chan struct{})
+	app.on("slow", func(_ []byte) (any, error) {
+		close(started)
+		time.Sleep(400 * time.Millisecond)
+		return map[string]string{"ok": "1"}, nil
+	})
+	s := waitForSession(t, l)
+
+	// Idle budget shorter than total work; progress pushes every 50ms.
+	stopBeats := make(chan struct{})
+	go func() {
+		<-started
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stopBeats:
+				return
+			case <-ticker.C:
+				_ = app.push(PushProgress, ProgressPush{
+					Timestamp:   time.Now().UnixMilli(),
+					MainQueue:   1,
+					MsSincePump: 10,
+				})
+			}
+		}
+	}()
+	defer close(stopBeats)
+
+	res, err := s.Call(context.Background(), "slow", nil, 120*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Call should succeed while progress beats arrive: %v", err)
+	}
+	if len(res) == 0 {
+		t.Fatal("empty result")
 	}
 }
 

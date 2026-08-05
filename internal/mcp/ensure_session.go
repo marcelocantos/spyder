@@ -31,9 +31,13 @@ const (
 	// defaultEnsureSessionWait / maxEnsureSessionWait bound ensure_session's
 	// handshake wait (timeout_ms).
 	defaultEnsureSessionWait = 15 * time.Second
-	maxEnsureSessionWait     = 60 * time.Second
+	maxEnsureSessionWait     = 90 * time.Second
 	// sessionPollInterval paces the handshake polls.
 	sessionPollInterval = 25 * time.Millisecond
+	// defaultReadyWait is the absolute outer bound for the post-hello
+	// state_query readiness wait (ctx). Idle silence for the call itself
+	// is progress-aware (appchannel.DefaultIdleSilence + progress beats).
+	defaultReadyWait = 3 * time.Minute
 )
 
 // ensureSessionResult is the JSON payload returned by ensure_session.
@@ -170,6 +174,11 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 	if !ok {
 		return toolErr("ensure_session: %s launched on %s (pid %d) but no app-channel session formed within %s — the app may not support SPYDER_APP_CHANNEL; check app_channel_list()", bundleID, dev, pid, wait)
 	}
+	// After hello, wait until the app can answer a main-thread slice.
+	// Channel connect ≠ main pump free (Unity cold load).
+	if !waitForSessionReady(s, defaultReadyWait) {
+		return toolErr("ensure_session: session %s formed but app never answered state_query within %s (main thread stalled?)", s.ID, defaultReadyWait)
+	}
 	return toolJSON(ensureSessionResult{
 		Device:      dev,
 		BundleID:    bundleID,
@@ -213,6 +222,28 @@ func (h *Handler) waitForChannelSession(key appchannel.AppKey, timeout time.Dura
 // capability — an app that doesn't advertise ping counts as healthy.
 func sessionHealthy(s *appchannel.Session) bool {
 	_, err := s.Call(context.Background(), appchannel.MethodPing, nil, 2*time.Second)
+	if err == nil {
+		return true
+	}
+	var rpcErr *appchannel.RPCError
+	if errors.As(err, &rpcErr) && rpcErr.Code == appchannel.ErrCodeUnsupported {
+		return true
+	}
+	return false
+}
+
+// waitForSessionReady waits for one successful state_query after hello.
+// Uses progress-aware Call (idle silence, not wall-clock from t0) with an
+// absolute outer bound on ctx. Kit progress heartbeats keep the call alive
+// while main work is queued; true silence fails after DefaultIdleSilence.
+func waitForSessionReady(s *appchannel.Session, absolute time.Duration) bool {
+	if s == nil || absolute <= 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), absolute)
+	defer cancel()
+	_, err := s.Call(ctx, appchannel.MethodStateQuery,
+		map[string]string{"slice": "session"}, 0)
 	if err == nil {
 		return true
 	}

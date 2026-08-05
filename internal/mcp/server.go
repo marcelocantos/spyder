@@ -526,11 +526,14 @@ var (
 // until done is closed. Returns immediately if done fires before
 // the threshold — the common (fast) case adds one goroutine
 // allocation and one select wakeup, no log noise.
-// cancelAtDeadline, when non-nil, is invoked when the slow threshold fires
-// so watchSlowDispatch can escalate from logging to cancelling (🎯T99.1).
-// The primary cancel path is context.WithTimeout; this is an additional
-// log-visible escalation that re-invokes cancel (idempotent).
+//
+// Does NOT cancel the context. Cancellation is owned solely by
+// withToolDeadline (tool-class wall clock). Cancelling here used to fire
+// at threshold+interval (30s+60s = 90s) and killed multi-step app_exec
+// recipes that correctly requested multi-minute budgets.
+// cancel is accepted for call-site compatibility but ignored.
 func watchSlowDispatch(tool, device string, started time.Time, done <-chan struct{}, cancel context.CancelFunc) {
+	_ = cancel
 	select {
 	case <-done:
 		return
@@ -549,9 +552,6 @@ func watchSlowDispatch(tool, device string, started time.Time, done <-chan struc
 			slog.Warn("mcp dispatch still in flight",
 				"tool", tool, "device", device,
 				"in_flight_ms", time.Since(started).Milliseconds())
-			if cancel != nil {
-				cancel()
-			}
 		}
 	}
 }
