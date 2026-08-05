@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -1733,8 +1734,12 @@ func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[str
 		}
 	}
 
-	// Step 1: terminate (ignore "not running" errors — it's fine if the
-	// app isn't already up; the important thing is we tried).
+	// Step 1: prefer a clean app-channel quit (flush → quit) so the process
+	// can run destructors (Audio, GPU) and exit 0. Hard terminate is only a
+	// backstop — SIGKILL mid-frame was showing up as yourworld SIGABRT
+	// crash reports during redeploy.
+	h.softQuitRunningApp(id, bundleID)
+	h.waitUntilNotRunning(adapter, id, bundleID, 2*time.Second)
 	if termErr := adapter.TerminateApp(id, bundleID); termErr != nil {
 		// Only propagate if the error is not "not running" or "not found".
 		if !isNotRunningError(termErr) {
@@ -1807,6 +1812,51 @@ func waitForAppPID(adapter device.Adapter, id, bundleID string, timeout time.Dur
 			return 0, last
 		}
 		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// softQuitRunningApp asks a live app-channel session to flush + quit so the
+// process can tear down cleanly (SDL_QUIT → exit 0). Best-effort: any failure
+// is ignored; the caller must still hard-terminate as a backstop.
+func (h *Handler) softQuitRunningApp(deviceID, bundleID string) {
+	if h.appChannel == nil || deviceID == "" || bundleID == "" {
+		return
+	}
+	l, ok := h.appChannel.LookupKeyed(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID})
+	if !ok {
+		return
+	}
+	var s *appchannel.Session
+	for _, sess := range l.Sessions() {
+		if sess.HelloInfo() != nil {
+			s = sess
+			break
+		}
+	}
+	if s == nil || !s.Supports(appchannel.MethodQuit) {
+		return
+	}
+	ctx := context.Background()
+	if s.Supports(appchannel.MethodFlush) {
+		_, _ = s.Call(ctx, appchannel.MethodFlush, nil, 2*time.Second)
+	}
+	_, _ = s.Call(ctx, appchannel.MethodQuit, nil, 3*time.Second)
+}
+
+// waitUntilNotRunning polls AppPID until the process is gone or timeout.
+func (h *Handler) waitUntilNotRunning(adapter device.Adapter, deviceID, bundleID string, timeout time.Duration) {
+	if adapter == nil || timeout <= 0 {
+		return
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := adapter.AppPID(deviceID, bundleID); err != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 

@@ -133,8 +133,10 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 			}
 		}
 		// A running instance can't adopt the channel env after the fact —
-		// terminate it so the relaunch picks up SPYDER_APP_CHANNEL.
+		// soft-quit then hard-terminate so the relaunch picks up SPYDER_APP_CHANNEL.
 		if p, perr := adapter.AppPID(id, bundleID); perr == nil && p > 0 {
+			h.softQuitRunningApp(id, bundleID)
+			h.waitUntilNotRunning(adapter, id, bundleID, 2*time.Second)
 			if terr := adapter.TerminateApp(id, bundleID); terr != nil && !isNotRunningError(terr) {
 				res, _ := toolErr("ensure_session: terminate %s on %s: %v", bundleID, dev, terr)
 				return res
