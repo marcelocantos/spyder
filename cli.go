@@ -331,6 +331,21 @@ func (r *toolResultContent) firstText() string {
 	return ""
 }
 
+// allText returns every text content block, newline-joined. Most handlers
+// return a single block, but a Starlark run (run_script / app_exec) returns
+// one per emit() plus a trailing error block when the script fails — so
+// firstText() alone would hide every result after the first, and mask the
+// failure reason behind an emit.
+func (r *toolResultContent) allText() string {
+	var texts []string
+	for _, c := range r.Content {
+		if c.Type == "text" {
+			texts = append(texts, c.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
 // firstImage returns the decoded bytes + MIME type of the first image
 // content block, or (nil, "", false) when none is present.
 func (r *toolResultContent) firstImage() ([]byte, string, bool) {
@@ -359,7 +374,7 @@ func (r *toolResultContent) firstImage() ([]byte, string, bool) {
 // prose path classify. Errors always print regardless of
 // quietOnSuccess.
 func renderResult(r *toolResultContent, jsonMode, quietOnSuccess bool) {
-	text := r.firstText()
+	text := r.allText()
 	if r.IsError {
 		code := cliexit.MapDaemonError(0, "", text)
 		cliexit.Errorf(code, "%s", text)
@@ -381,10 +396,14 @@ func renderResult(r *toolResultContent, jsonMode, quietOnSuccess bool) {
 // positional args + a map of string flags + a map of bool flags. It
 // stops at the first non-flag token; all subsequent tokens are
 // positional.
+// Repeatable string flags (e.g. `--param k=v --param k2=v2`) land in
+// repeats keyed by flag name, in argv order; flags keeps the last value
+// so single-valued callers are unaffected.
 type parsedFlags struct {
 	positional []string
 	flags      map[string]string
 	bools      map[string]bool
+	repeats    map[string][]string
 }
 
 func parseFlags(args []string, stringFlags, boolFlags []string) (parsedFlags, error) {
@@ -397,7 +416,7 @@ func parseFlags(args []string, stringFlags, boolFlags []string) (parsedFlags, er
 		isBool[f] = true
 	}
 
-	out := parsedFlags{flags: map[string]string{}, bools: map[string]bool{}}
+	out := parsedFlags{flags: map[string]string{}, bools: map[string]bool{}, repeats: map[string][]string{}}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if !strings.HasPrefix(a, "-") {
@@ -413,6 +432,7 @@ func parseFlags(args []string, stringFlags, boolFlags []string) (parsedFlags, er
 				return parsedFlags{}, fmt.Errorf("%s requires a value", a)
 			}
 			out.flags[a] = args[i+1]
+			out.repeats[a] = append(out.repeats[a], args[i+1])
 			i++
 			continue
 		}
@@ -1678,9 +1698,9 @@ func runRunScript(args []string) {
 	}
 	a := map[string]any{"path": pf.positional[0]}
 	params := map[string]string{}
-	// --param may appear multiple times; parseFlags keeps last only — accept
-	// free-form k=v positionals after the script name as well.
-	if p := pf.flags["--param"]; p != "" {
+	// --param may appear multiple times; free-form k=v positionals after the
+	// script name work too.
+	for _, p := range pf.repeats["--param"] {
 		k, v, ok := strings.Cut(p, "=")
 		if !ok {
 			fatalUsage("run-script", fmt.Errorf("--param wants k=v, got %q", p))
