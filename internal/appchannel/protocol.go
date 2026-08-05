@@ -351,6 +351,10 @@ const (
 	// Push (app → spyder) message methods.
 	PushLog          = "log"
 	PushPerfCounters = "perf"
+	// PushProgress is a liveness/progress beat from the app while main-thread
+	// work is queued (kit DevSurface). Carries main_queue + ms_since_pump so
+	// the host can wait through busy loads and only stall on silence.
+	PushProgress = "progress"
 )
 
 // KnownMethods is the engine/builtin method catalogue. Used to label

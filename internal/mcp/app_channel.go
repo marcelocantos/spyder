@@ -6,7 +6,10 @@ package mcp
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -127,8 +130,7 @@ func (h *Handler) requireSession(args map[string]any) (*appchannel.Session, *mcp
 	if id := optString(args, "session_id"); id != "" {
 		s, ok := h.appChannel.GetSession(id)
 		if !ok {
-			res, _ := toolErr("no such session: %s", id)
-			return nil, res
+			return nil, h.staleSessionError(id)
 		}
 		if s.Listener() != nil {
 			s.Listener().Touch()
@@ -173,6 +175,27 @@ func (h *Handler) requireSession(args map[string]any) (*appchannel.Session, *mcp
 	}
 	res, _ := toolErr("session_id (or device+bundle_id) is required (have %d active sessions)", len(sessions))
 	return nil, res
+}
+
+// staleSessionError builds the 🎯T119 stale-session diagnosis: say
+// explicitly that the sid is stale (not a generic lookup error), name
+// the live replacement session for the same (device, bundle_id) when
+// one exists, and point at the recovery verb otherwise.
+func (h *Handler) staleSessionError(id string) *mcpgo.CallToolResult {
+	key, known := h.appChannel.EndedSessionKey(id)
+	if !known || key == (appchannel.AppKey{}) {
+		res, _ := toolErr("no such session: %s — not a live session id (it may predate a daemon restart); list live sessions with app_channel_list(), or call ensure_session(device=..., bundle_id=...) to establish one", id)
+		return res
+	}
+	if l, ok := h.appChannel.LookupKeyed(key); ok {
+		if sessions := l.Sessions(); len(sessions) > 0 {
+			live := sessions[len(sessions)-1]
+			res, _ := toolErr("stale session_id %s: that session for device=%s bundle_id=%s has ended; the live session is %s — use it, or address by device+bundle_id instead of session_id", id, key.DeviceID, key.BundleID, live.ID)
+			return res
+		}
+	}
+	res, _ := toolErr("stale session_id %s: the app session for device=%s bundle_id=%s has ended and no live session exists — relaunch (e.g. ensure_session(device=%q, bundle_id=%q)) and use the new session_id", id, key.DeviceID, key.BundleID, key.DeviceID, key.BundleID)
+	return res
 }
 
 // findAppChannelListener finds a keyed listener by listener_id.
@@ -521,11 +544,42 @@ func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, er
 		return nil, err
 	}
 	selectExpr := optString(args, "select")
-	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, 10*time.Second)
+	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, appchannel.DefaultRequestTimeout)
 	if err != nil {
 		return toolErr("state_query: %v", err)
 	}
 	out, err := appchannel.ApplyJQ(selectExpr, res)
+	if err != nil {
+		if jqErr, ok := err.(*appchannel.JQError); ok {
+			return toolJSON(map[string]any{"select_error": jqErr})
+		}
+		return toolErr("state_query: %v", err)
+	}
+	return toolJSON(out)
+}
+
+// handleStateQuery is the 🎯T122 read-only probe: forward `state_query`
+// to the app and return its answer verbatim. It never sends a mutating
+// method, so an agent can learn mode/active/view without side effects
+// (contrast probing via place_active or other game commands). `slice` is
+// optional — omitted, the app returns its default session-state summary
+// (ge convention: mode, active_adm, current_index, placed_count, view
+// lon/lat, paused). Observational: like every app_* read it is not
+// reservation-gated.
+func (h *Handler) handleStateQuery(args map[string]any) (*mcpgo.CallToolResult, error) {
+	s, errRes := h.requireSession(args)
+	if errRes != nil {
+		return errRes, nil
+	}
+	params := map[string]string{}
+	if slice := optString(args, "slice"); slice != "" {
+		params["slice"] = slice
+	}
+	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, params, appchannel.DefaultRequestTimeout)
+	if err != nil {
+		return toolErr("state_query: %v", err)
+	}
+	out, err := appchannel.ApplyJQ(optString(args, "select"), res)
 	if err != nil {
 		if jqErr, ok := err.(*appchannel.JQError); ok {
 			return toolJSON(map[string]any{"select_error": jqErr})
@@ -634,7 +688,7 @@ func (h *Handler) handleAppStateDescribe(args map[string]any) (*mcpgo.CallToolRe
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, 10*time.Second)
+	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, appchannel.DefaultRequestTimeout)
 	if err != nil {
 		return toolErr("state_describe: %v", err)
 	}
@@ -709,23 +763,38 @@ func (h *Handler) handleAppScreenshot(args map[string]any) (*mcpgo.CallToolResul
 	if err := appchannel.UnpackParams(res, &resp); err != nil {
 		return toolErr("screenshot_app: decode: %v", err)
 	}
-	if outPath := optString(args, "path"); outPath != "" {
-		abs, err := resolveOutputPath(outPath)
-		if err != nil {
-			return toolErr("%v", err)
-		}
-		if err := writeOutputFile(abs, resp.Data); err != nil {
-			return toolErr("saving app screenshot: %v", err)
-		}
-		return toolText(fmt.Sprintf(
-			"app screenshot %dx%d saved to %s (%d bytes)",
-			resp.Width, resp.Height, abs, len(resp.Data)))
+	if inline, _ := args["inline"].(bool); inline {
+		return mcpgo.NewToolResultImage(
+			fmt.Sprintf("app screenshot %dx%d (%d bytes)", resp.Width, resp.Height, len(resp.Data)),
+			base64.StdEncoding.EncodeToString(resp.Data),
+			"image/"+resp.Format,
+		), nil
 	}
-	return mcpgo.NewToolResultImage(
-		fmt.Sprintf("app screenshot %dx%d (%d bytes)", resp.Width, resp.Height, len(resp.Data)),
-		base64.StdEncoding.EncodeToString(resp.Data),
-		"image/"+resp.Format,
-	), nil
+	// 🎯T114: default is a filesystem-path result, not multi-MB inline
+	// base64 in the transcript. Pass inline=true for the old behaviour.
+	format := resp.Format
+	if format == "" {
+		format = "png"
+	}
+	outPath := optString(args, "path")
+	if outPath == "" {
+		outPath = defaultScreenshotPath("app-screenshot-"+sanitizeFilename(s.ID), format)
+	}
+	abs, err := resolveOutputPath(outPath)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	if err := writeOutputFile(abs, resp.Data); err != nil {
+		return toolErr("saving app screenshot: %v", err)
+	}
+	return toolJSON(map[string]any{
+		"session_id": s.ID,
+		"path":       abs,
+		"width":      resp.Width,
+		"height":     resp.Height,
+		"format":     format,
+		"bytes":      len(resp.Data),
+	})
 }
 
 func (h *Handler) handleAppLogGet(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -820,6 +889,19 @@ func (h *Handler) handleAppMethods(args map[string]any) (*mcpgo.CallToolResult, 
 	})
 }
 
+// appCallArgKeys are the only argument names app_call accepts. Anything
+// else — classically an args= bag instead of params= — is rejected with
+// an error naming the correct key (🎯T115), so the RPC body is never
+// silently dropped.
+var appCallArgKeys = map[string]bool{
+	"session_id": true,
+	"device":     true,
+	"bundle_id":  true,
+	"method":     true,
+	"params":     true,
+	"timeout_ms": true,
+}
+
 // handleAppCall forwards an arbitrary RPC the app advertised in hello.
 // Prefer fixed app_* tools for engine methods; use this for game-private commands.
 func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -837,19 +919,33 @@ func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, err
 	if !s.Supports(method) {
 		return toolErr("app_call: app does not advertise method %q (call app_methods)", method)
 	}
+	var unknown []string
+	for k := range args {
+		if !appCallArgKeys[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return toolErr("app_call %s: unknown argument %s — pass the RPC body as params={...}%s",
+			method, strings.Join(unknown, ", "), expectedParamsHint(s, method))
+	}
 	var params any
 	if raw, ok := args["params"]; ok {
 		params = raw
 	} else {
 		params = map[string]any{}
 	}
-	timeout := 10 * time.Second
+	timeout := appchannel.DefaultRequestTimeout
 	if ms, ok := args["timeout_ms"].(float64); ok && ms > 0 {
 		timeout = time.Duration(ms) * time.Millisecond
 	}
 	res, err := s.Call(context.Background(), method, params, timeout)
 	if err != nil {
-		return toolErr("app_call %s: %v", method, err)
+		// 🎯T123: a failed call names the method, shows the advertised
+		// example_params, and summarises what was actually sent.
+		return toolErr("app_call %s: %v%s; got params: %s",
+			method, err, expectedParamsHint(s, method), summarizeParams(params))
 	}
 	out, err := appchannel.ApplyJQ("", res)
 	if err != nil {
@@ -860,6 +956,55 @@ func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, err
 		"method":     method,
 		"result":     out,
 	})
+}
+
+// expectedParamsHint renders the method's advertised example_params as
+// "; expected params like {...} (from app_methods example_params)", or
+// "" when the app volunteered no example (🎯T123).
+func expectedParamsHint(s *appchannel.Session, method string) string {
+	hello := s.HelloInfo()
+	if hello == nil {
+		return ""
+	}
+	for _, m := range hello.Methods {
+		if m.Name != method || m.ExampleParams == nil {
+			continue
+		}
+		example := ""
+		if b, err := json.Marshal(m.ExampleParams); err == nil {
+			example = string(b)
+		} else {
+			example = fmt.Sprint(m.ExampleParams)
+		}
+		return fmt.Sprintf("; expected params like %s (from app_methods example_params)", example)
+	}
+	return ""
+}
+
+// maxParamsSummaryBytes caps the rendered RPC body in app_call error
+// messages: enough to recognise the payload, never a multi-MB dump.
+const maxParamsSummaryBytes = 200
+
+// summarizeParams renders a compact description of an RPC body for
+// error messages (🎯T123): full JSON when small, a keys-only sketch for
+// large maps, and a truncated prefix otherwise.
+func summarizeParams(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return fmt.Sprintf("<%T>", v)
+	}
+	if len(b) <= maxParamsSummaryBytes {
+		return string(b)
+	}
+	if m, ok := v.(map[string]any); ok {
+		keys := make([]string, 0, len(m))
+		for k := range m {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		return fmt.Sprintf("{keys: %s} (%d bytes total)", strings.Join(keys, ", "), len(b))
+	}
+	return fmt.Sprintf("%s… (%d bytes total)", b[:maxParamsSummaryBytes], len(b))
 }
 
 // ── per-instance metrics ring (🎯T110 / ge 🎯T166) ─────────────────────────
@@ -998,35 +1143,8 @@ func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
 	return out, nil
 }
 
-// handleAppSpawn asks a game-server factory session (one advertising
-// spawn_instance) to fork a game instance and returns the new instance's
-// session once it dials back (🎯T92.1). The target session is the factory
-// (resolved from session_id or device+bundle_id); the instance dials the same
-// app-channel listener the factory is on, so it connects as its own session
-// with the full monitor surface.
-func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, error) {
-	if h.appChannel == nil {
-		return toolErr("app channel not configured")
-	}
-	factory, errRes := h.requireSession(args)
-	if errRes != nil {
-		return errRes, nil
-	}
-	game, err := requireString(args, "game")
-	if err != nil {
-		return toolErr("%v", err)
-	}
-	// The instance dials the same listener the factory is on (127.0.0.1 for
-	// the local/server-mode case this path targets — LAN/dev only, per T91.4).
-	addr := fmt.Sprintf("127.0.0.1:%d", factory.Port)
-	inst, err := h.appChannel.SpawnInstance(context.Background(), factory,
-		appchannel.SpawnRequest{Game: game, AppChannel: addr, InstanceID: optString(args, "instance_id")},
-		30*time.Second)
-	if err != nil {
-		return toolErr("spawn: %v", err)
-	}
-	return toolJSON(sessionInfoFrom(inst))
-}
+// handleAppSpawn lives in app_spawn.go (🎯T92.1 factory path, 🎯T117
+// device path) together with handleGames.
 
 // handleAppAcquire reserves a game instance from a factory, spawning one if
 // none is idle and capacity allows (🎯T92.1 clause 2). A player/agent "coming
@@ -1070,45 +1188,8 @@ func (h *Handler) handleAppRelease(args map[string]any) (*mcpgo.CallToolResult, 
 	return toolJSON(map[string]any{"released": sessionID})
 }
 
-// handleGames returns the game catalog (🎯T92 clause 3): the launchable
-// games alongside the device inventory — desktop targets (platform=desktop
-// inventory entries) and connected server-mode FACTORIES (app-channel
-// sessions advertising spawn_instance, which can manufacture instances). It
-// unifies "what can I start, and where" across media.
-func (h *Handler) handleGames(_ map[string]any) (*mcpgo.CallToolResult, error) {
-	desktop := []map[string]string{}
-	for _, e := range h.inventory.Entries() {
-		if e.Platform == "desktop" {
-			desktop = append(desktop, map[string]string{
-				"alias":           e.Alias,
-				"executable_path": e.ExecutablePath,
-			})
-		}
-	}
-	factories := []map[string]string{}
-	if h.appChannel != nil {
-		for _, s := range h.appChannel.Sessions() {
-			hi := s.HelloInfo()
-			if hi == nil {
-				continue
-			}
-			isFactory := false
-			for _, m := range hi.Methods {
-				if m.Name == appchannel.MethodSpawnInstance {
-					isFactory = true
-					break
-				}
-			}
-			if isFactory {
-				factories = append(factories, map[string]string{
-					"session_id": s.ID,
-					"app_name":   hi.AppName,
-				})
-			}
-		}
-	}
-	return toolJSON(map[string]any{"desktop": desktop, "factories": factories})
-}
+// handleGames lives in app_spawn.go alongside handleAppSpawn (🎯T92
+// clause 3, 🎯T117).
 
 // appChannelDefinitions returns the MCP tool surface.
 func appChannelDefinitions() []mcpgo.Tool {
@@ -1129,12 +1210,12 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("scope", mcpgo.Description("Filter: all (default), app (game-registered only), or engine (ge builtins only).")),
 		),
 		mcpgo.NewTool("app_call",
-			mcpgo.WithDescription("Invoke a method the app advertised in hello (generic pass-through). Prefer fixed app_* tools for engine methods; use app_call for game-private commands discovered via app_methods. Fails closed if the method was not advertised."),
+			mcpgo.WithDescription("Invoke a method the app advertised in hello (generic pass-through). Prefer fixed app_* tools for engine methods; use app_call for game-private commands discovered via app_methods. Fails closed if the method was not advertised. The RPC body goes in `params` — the ONLY accepted bag name; `args=` (or any other key) is rejected with an error naming `params`."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("method", mcpgo.Required(), mcpgo.Description("RPC method name from app_methods.")),
-			mcpgo.WithObject("params", mcpgo.Description("JSON-object params for the method (default {}). Use example_params from app_methods as a template.")),
+			mcpgo.WithObject("params", mcpgo.Description("JSON-object params for the method (default {}). Use example_params from app_methods as a template. This is the only accepted name for the RPC body — not args.")),
 			mcpgo.WithNumber("timeout_ms", mcpgo.Description("RPC timeout in milliseconds (default 10000).")),
 		),
 
@@ -1229,6 +1310,23 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("type", mcpgo.Required(), mcpgo.Description("Event type: finger_down, finger_up, finger_motion, key_down, key_up, accel")),
 		),
 
+		mcpgo.NewTool("ensure_session",
+			mcpgo.WithDescription("One verb from device+bundle to a ready app-channel session (🎯T118): installs the artifact if `path` is given and the bundle isn't on the device, launches with SPYDER_APP_CHANNEL wired, waits for the app's hello handshake, and returns {session_id, channel_port, pid, deployed, launched}. Idempotent — when a healthy session already exists for (device, bundle_id) it is returned untouched (deployed=false, launched=false) and no reservation is needed. Replaces the manual deploy_app → launch_app → sleep → app_channel_list dance."),
+			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or UUID.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id. Optional when path is given (derived from the artifact).")),
+			mcpgo.WithString("path", mcpgo.Description("Optional .app/.ipa (iOS) or .apk (Android) path; installed only when the bundle is not already on the device.")),
+			mcpgo.WithString("owner", mcpgo.Description("Reservation owner for the mutating (deploy/launch) path; the healthy-session fast path needs none.")),
+			mcpgo.WithObject("env", mcpgo.Description("Optional env for the launch step — same semantics as launch_app's env.")),
+			mcpgo.WithNumber("timeout_ms", mcpgo.Description("How long to wait for the app-channel handshake after launch (default 15000, max 60000).")),
+		),
+		mcpgo.NewTool("state_query",
+			mcpgo.WithDescription("Read-only session-state probe (🎯T122): forward `state_query` to the app and return its answer. Never mutates game state — use this instead of place_active/game commands to learn what's active. With `slice` omitted the app returns its default session-state summary (ge convention: mode, active_adm, current_index, placed_count, view lon/lat, paused). Observational; not reservation-gated."),
+			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
+			mcpgo.WithString("slice", mcpgo.Description("Optional state slice name; omit for the app's default session-state summary.")),
+			mcpgo.WithString("select", mcpgo.Description("Optional jq expression applied to the result server-side.")),
+		),
 		mcpgo.NewTool("app_state", mcpgo.WithDescription("Query a named slice of the app's state. The app's hello advertises which slices it supports."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
@@ -1259,12 +1357,14 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("name", mcpgo.Description("Tweak name to reset; omit to reset all tweaks.")),
 		),
-		mcpgo.NewTool("app_spawn", mcpgo.WithDescription("Ask a game-server FACTORY session (one advertising spawn_instance) to fork a new game instance; returns the instance's app-channel session once it connects (🎯T92.1 — a game server is a device factory). The instance is its own session with the full monitor surface (tweaks/logs/state/screenshot)."),
+		mcpgo.NewTool("app_spawn", mcpgo.WithDescription("Start a game session on any medium and return a ready app-channel session — never guess between this and launch_app. Two paths: (1) FACTORY (🎯T92.1): target a session advertising spawn_instance (session_id, or device+bundle_id of the factory) plus game=; the factory forks an instance that connects as its own session. (2) DEVICE (🎯T117): device+bundle_id of an installed bundle (mobile or desktop; no games registry entry needed — the device's installed bundles are the catalog) launches it with the app channel wired and waits for the session; game= is not used. If the pair already has a live session it is returned with already_running=true. Device launches mutate device state and are reservation-gated (owner=)."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target FACTORY session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
-			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
-			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
-			mcpgo.WithString("game", mcpgo.Required(), mcpgo.Description("Name/identifier of the game the factory should instantiate.")),
+			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID. With bundle_id: resolves a live factory session for the pair, else launches the installed bundle on the device (🎯T117).")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device (see device).")),
+			mcpgo.WithString("game", mcpgo.Description("Factory path only: name/identifier of the game the factory should instantiate. Omit on the device path — there the bundle_id names the game.")),
 			mcpgo.WithString("instance_id", mcpgo.Description("Optional caller-supplied instance id passed to the factory.")),
+			mcpgo.WithString("owner", mcpgo.Description("Device path only: reservation owner identity for the launch.")),
+			mcpgo.WithObject("env", mcpgo.Description("Device path only: extra environment for the launched app (SPYDER_APP_CHANNEL is injected automatically).")),
 		),
 		mcpgo.NewTool("app_acquire", mcpgo.WithDescription("Reserve a game instance from a FACTORY session, spawning one if none is idle and capacity allows (🎯T92.1). The target session is the factory (session_id or device+bundle_id). Returns the reserved instance's session with the full monitor surface. Release with app_release."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target FACTORY session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
@@ -1276,7 +1376,9 @@ func appChannelDefinitions() []mcpgo.Tool {
 		mcpgo.NewTool("app_release", mcpgo.WithDescription("Release a previously acquired game instance back to its factory pool; it is GC'd after a linger window unless re-acquired (🎯T92.1)."),
 			mcpgo.WithString("session_id", mcpgo.Required(), mcpgo.Description("The instance session id returned by app_acquire.")),
 		),
-		mcpgo.NewTool("games", mcpgo.WithDescription("The game catalog (🎯T92): launchable games across media — desktop targets (platform=desktop inventory entries with executable_path) and connected server-mode factories (sessions advertising spawn_instance, which manufacture instances via app_spawn / app_acquire). Complements `devices` (physical / sim / emu).")),
+		mcpgo.NewTool("games", mcpgo.WithDescription("The game catalog (🎯T92, 🎯T117): launchable games across media — desktop targets (platform=desktop inventory entries with executable_path), connected server-mode factories (sessions advertising spawn_instance, which manufacture instances via app_spawn / app_acquire), and mobile devices, whose installed bundles ARE the mobile catalog (no registry entry needed): pass device=<alias> to list them as spawn candidates for app_spawn(device=..., bundle_id=...). Complements `devices` (physical / sim / emu)."),
+			mcpgo.WithString("device", mcpgo.Description("Optional device alias or UUID: also list that device's installed third-party bundles (the mobile game catalog, 🎯T117) under `installed`.")),
+		),
 		mcpgo.NewTool("app_save_state", mcpgo.WithDescription("Ask the app to serialize its state. Returns {state_b64, size}; pass the b64 blob back via app_restore_state."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
@@ -1288,11 +1390,12 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("state_b64", mcpgo.Required(), mcpgo.Description("base64-encoded state blob")),
 		),
-		mcpgo.NewTool("app_screenshot", mcpgo.WithDescription("Request a screenshot from the app's own framebuffer (sibling to spyder's DTX-based `screenshot`; useful when DTX is wedged or you need state-correlated capture). By default returns the image inline; pass path to instead save it to that file and return a text confirmation."),
+		mcpgo.NewTool("app_screenshot", mcpgo.WithDescription("Request a screenshot from the app's own framebuffer (sibling to spyder's DTX-based `screenshot`; useful when DTX is wedged or you need state-correlated capture). By default saves the image under ~/.spyder/screenshots and returns {path, width, height, format, bytes} — no multi-MB inline base64. Pass inline=true to get the image inline for visual inspection, or path to choose the output location."),
 			mcpgo.WithString("session_id", mcpgo.Description("Target session id. Alternatively pass device+bundle_id; omit all three when only one session is connected.")),
 			mcpgo.WithString("device", mcpgo.Description("Device alias or UUID — used with bundle_id to resolve the keyed listener when session_id is omitted.")),
 			mcpgo.WithString("bundle_id", mcpgo.Description("App bundle id — used with device to resolve the keyed listener when session_id is omitted.")),
-			mcpgo.WithString("path", mcpgo.Description("Optional output file path. When set, the image is written here (a leading ~ is expanded; parent directories are created) and the tool returns a text confirmation instead of the inline image.")),
+			mcpgo.WithString("path", mcpgo.Description("Optional output file path (a leading ~ is expanded; parent directories are created). Default: a timestamped file under ~/.spyder/screenshots.")),
+			mcpgo.WithBoolean("inline", mcpgo.Description("When true, return the image inline (base64 image block) instead of writing a file. Default false (🎯T114).")),
 		),
 
 		mcpgo.NewTool("app_state_slices", mcpgo.WithDescription("Return the slice catalogue the app advertised in its hello. Each entry has a `name` and an optional `example` payload — agents that get an example can write jq filters immediately; agents that don't can call app_state_describe to learn the shape without paying the full-payload cost."),
@@ -1387,7 +1490,7 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("path", mcpgo.Description("Script name or path (alias: name).")),
 			mcpgo.WithString("name", mcpgo.Description("Alias for path.")),
 			mcpgo.WithObject("params", mcpgo.Description("Optional string map injected as Starlark global params.")),
-			mcpgo.WithNumber("max_duration_ms", mcpgo.Description("Wall-clock budget ms (default 30000, max 120000).")),
+			mcpgo.WithNumber("max_duration_ms", mcpgo.Description("Wall-clock budget ms (default 30000, max 600000).")),
 		),
 	}
 }

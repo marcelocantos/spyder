@@ -526,11 +526,14 @@ var (
 // until done is closed. Returns immediately if done fires before
 // the threshold — the common (fast) case adds one goroutine
 // allocation and one select wakeup, no log noise.
-// cancelAtDeadline, when non-nil, is invoked when the slow threshold fires
-// so watchSlowDispatch can escalate from logging to cancelling (🎯T99.1).
-// The primary cancel path is context.WithTimeout; this is an additional
-// log-visible escalation that re-invokes cancel (idempotent).
+//
+// Does NOT cancel the context. Cancellation is owned solely by
+// withToolDeadline (tool-class wall clock). Cancelling here used to fire
+// at threshold+interval (30s+60s = 90s) and killed multi-step app_exec
+// recipes that correctly requested multi-minute budgets.
+// cancel is accepted for call-site compatibility but ignored.
 func watchSlowDispatch(tool, device string, started time.Time, done <-chan struct{}, cancel context.CancelFunc) {
+	_ = cancel
 	select {
 	case <-done:
 		return
@@ -549,9 +552,6 @@ func watchSlowDispatch(tool, device string, started time.Time, done <-chan struc
 			slog.Warn("mcp dispatch still in flight",
 				"tool", tool, "device", device,
 				"in_flight_ms", time.Since(started).Milliseconds())
-			if cancel != nil {
-				cancel()
-			}
 		}
 	}
 }
@@ -600,10 +600,12 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"release":       h.handleRelease,
 		"renew":         h.handleRenew,
 		"reservations":  h.handleReservations,
-		"runs_list":     h.handleRunsList,
-		"runs_show":     h.handleRunsShow,
-		"rotate":        h.handleRotate,
-		"crashes":       h.handleCrashes,
+		// --- reservation observability (🎯T116) ---
+		"reservation_status": h.handleReservationStatus,
+		"runs_list":          h.handleRunsList,
+		"runs_show":          h.handleRunsShow,
+		"rotate":             h.handleRotate,
+		"crashes":            h.handleCrashes,
 		// --- simulator tools ---
 		"sim_list":     h.handleSimList,
 		"sim_create":   h.handleSimCreate,
@@ -624,13 +626,13 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"record_stop":     h.handleRecordStop,
 		"network":         h.handleNetwork,
 		// --- Android OS control (🎯T111) ---
-		"perf_fps":            h.handlePerfFPS,
-		"port_forward_start":  h.handlePortForwardStart,
-		"port_forward_stop":   h.handlePortForwardStop,
-		"port_forward_list":   h.handlePortForwardList,
-		"input_tap":           h.handleInputTap,
-		"input_swipe":         h.handleInputSwipe,
-		"logs":            h.handleLogsRange,
+		"perf_fps":           h.handlePerfFPS,
+		"port_forward_start": h.handlePortForwardStart,
+		"port_forward_stop":  h.handlePortForwardStop,
+		"port_forward_list":  h.handlePortForwardList,
+		"input_tap":          h.handleInputTap,
+		"input_swipe":        h.handleInputSwipe,
+		"logs":               h.handleLogsRange,
 		// --- log-capture sessions ---
 		"log_capture_start": h.handleLogCaptureStart,
 		"log_capture_get":   h.handleLogCaptureGet,
@@ -649,11 +651,13 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_resume":              h.handleAppResume,
 		"app_step":                h.handleAppStep,
 		"app_speed":               h.handleAppSpeed,
-		"app_input":             h.handleAppInput,
-		"app_sensor_suppress":   h.handleAppSensorSuppress,
-		"app_sensor_set":        h.handleAppSensorSet,
-		"app_sensor_unsuppress": h.handleAppSensorUnsuppress,
-		"app_sensor_status":     h.handleAppSensorStatus,
+		"app_input":               h.handleAppInput,
+		"app_sensor_suppress":     h.handleAppSensorSuppress,
+		"app_sensor_set":          h.handleAppSensorSet,
+		"app_sensor_unsuppress":   h.handleAppSensorUnsuppress,
+		"app_sensor_status":       h.handleAppSensorStatus,
+		"ensure_session":          h.handleEnsureSession,
+		"state_query":             h.handleStateQuery,
 		"app_state":               h.handleAppState,
 		"app_tweak_list":          h.handleAppTweakList,
 		"app_tweak_get":           h.handleAppTweakGet,
@@ -744,7 +748,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("screenshot",
-			mcpgo.WithDescription("Capture a PNG screenshot of the device. By default returns the image inline for the agent to inspect; pass path to instead save the PNG to that file and return a text confirmation (no inline image). iOS uses the in-process go-ios DTX `ScreenshotService` over lockdown (requires the bundled tunnel for iOS-17+; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted — open the device once in Xcode or `ios image auto <udid>`); Android uses adb shell screencap. Read-only; not subject to reservations — any session may screenshot any device. Pass owner to archive the PNG into the active run."),
+			mcpgo.WithDescription("Capture a PNG screenshot of the device. By default saves the PNG under ~/.spyder/screenshots and returns {path, width, height, bytes} — no multi-MB inline base64. Pass inline=true to get the image inline for visual inspection, or path to choose the output location. iOS uses the in-process go-ios DTX `ScreenshotService` over lockdown (requires the bundled tunnel for iOS-17+; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted — open the device once in Xcode or `ios image auto <udid>`); Android uses adb shell screencap. Read-only; not subject to reservations — any session may screenshot any device. Pass owner to archive the PNG into the active run."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -753,7 +757,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 				mcpgo.Description("Owner identity; when present and a run is active, the screenshot is archived into the run."),
 			),
 			mcpgo.WithString("path",
-				mcpgo.Description("Optional output file path. When set, the PNG is written here (a leading ~ is expanded; parent directories are created) and the tool returns a text confirmation instead of the inline image. Independent of owner/run archival."),
+				mcpgo.Description("Optional output file path (a leading ~ is expanded; parent directories are created). Default: a timestamped file under ~/.spyder/screenshots. Independent of owner/run archival."),
+			),
+			mcpgo.WithBoolean("inline",
+				mcpgo.Description("When true, return the image inline (base64 image block) instead of writing a file. Default false (🎯T114)."),
 			),
 		),
 
@@ -766,7 +773,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("launch_app",
-			mcpgo.WithDescription("Foreground an app by bundle id. iOS-17+ uses the in-process go-ios `appservice` launch (CoreDevice/RemoteXPC, requires the bundled tunnel); iOS ≤16 uses go-ios's `instruments.ProcessControl` (DTX-over-lockdown, no tunnel required but needs the Developer Disk Image mounted — open the device once in Xcode or `ios image auto <udid>`). Path selection is automatic per device. Android uses adb monkey with the LAUNCHER intent (or `am start` when env is supplied); iOS simulators use `xcrun simctl launch`. Strictly enforced: rejects if the device is reserved by a different owner.\n\nOptional `env` map sets environment variables for the launched process. On iOS the values become the process environment (readable via `getenv()`); on iOS simulators they're forwarded via `SIMCTL_CHILD_<KEY>=<VALUE>`; on Android they're passed as Intent string-extras and the app's Java/Kotlin shim must extract them and call `setenv()` before native code runs (see agents-guide.md for the shim pattern). The conventional key for dev-time network logging is `SPYDER_APP_CHANNEL=host:port` — apps that opt in install a TCP log sink targeting that address."),
+			mcpgo.WithDescription("Foreground an app by bundle id. Returns {device, bundle_id, session_id?, channel_port?} — session_id/channel_port appear when the app completes the app-channel handshake within the post-launch wait (🎯T119). iOS-17+ uses the in-process go-ios `appservice` launch (CoreDevice/RemoteXPC, requires the bundled tunnel); iOS ≤16 uses go-ios's `instruments.ProcessControl` (DTX-over-lockdown, no tunnel required but needs the Developer Disk Image mounted — open the device once in Xcode or `ios image auto <udid>`). Path selection is automatic per device. Android uses adb monkey with the LAUNCHER intent (or `am start` when env is supplied); iOS simulators use `xcrun simctl launch`. Strictly enforced: rejects if the device is reserved by a different owner.\n\nOptional `env` map sets environment variables for the launched process. On iOS the values become the process environment (readable via `getenv()`); on iOS simulators they're forwarded via `SIMCTL_CHILD_<KEY>=<VALUE>`; on Android they're passed as Intent string-extras and the app's Java/Kotlin shim must extract them and call `setenv()` before native code runs (see agents-guide.md for the shim pattern). The conventional key for dev-time network logging is `SPYDER_APP_CHANNEL=host:port` — apps that opt in install a TCP log sink targeting that address."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -857,7 +864,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 		),
 		mcpgo.NewTool("deploy_app",
-			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid} on success. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nRefuses the spyder stream player (com.spyder.player / Player*.app / player Android APK) — use launch_player so STREAM_ADDR and server name are injected.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
+			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid, replaced, session_id?, channel_port?} on success — replaced reports whether the install overwrote a build already on the device, and session_id/channel_port appear when the app completes the app-channel handshake within the post-launch wait (🎯T121), so scripts can branch without a second app_channel_list call. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nRefuses the spyder stream player (com.spyder.player / Player*.app / player Android APK) — use launch_player so STREAM_ADDR and server name are injected.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -926,6 +933,17 @@ func allBaseDefinitions() []mcpgo.Tool {
 
 		mcpgo.NewTool("reservations",
 			mcpgo.WithDescription("List all active reservations across all devices. Read-only."),
+		),
+
+		mcpgo.NewTool("reservation_status",
+			mcpgo.WithDescription("Report reservation observability for one device (🎯T116): whether it is reserved, the holder and expiry, whether the calling owner currently holds it, and which verbs a foreign hold gates. Read-only; never gated itself. Policy: reservations gate device-state-mutating verbs only; observational verbs (screenshot, record_*, logs, state reads) always succeed."),
+			mcpgo.WithString("device",
+				mcpgo.Required(),
+				mcpgo.Description("Device alias or UUID to inspect"),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Caller identity to evaluate against the current hold (optional; anonymous callers are gated whenever anyone holds the device)"),
+			),
 		),
 
 		mcpgo.NewTool("runs_list",

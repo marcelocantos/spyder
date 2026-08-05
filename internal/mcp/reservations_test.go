@@ -261,3 +261,72 @@ func TestMutatingTool_AnonymousCaller_FreeDevice_Proceeds(t *testing.T) {
 		t.Error("adapter should have been called")
 	}
 }
+
+// --- reservation_status (🎯T116) ---------------------------------------
+
+func TestReservationStatus_FreeDevice(t *testing.T) {
+	h, _ := newHandlerWithReservations(t, nil, nil)
+	r := dispatchJSON(t, h, "reservation_status", map[string]any{
+		"device": "iPad",
+		"owner":  "tiltbuggy",
+	})
+	if r.IsError {
+		t.Fatalf("reservation_status should succeed; body=%s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	for _, want := range []string{`"reserved": false`, `"would_gate": false`, `"caller_holds": false`, "gated_verbs", "deploy_app", "policy"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("free-device status missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestReservationStatus_HeldByOther(t *testing.T) {
+	h, s := newHandlerWithReservations(t, nil, nil)
+	_, _ = s.Acquire("iPad", "someone-else", 0, "long soak")
+
+	r := dispatchJSON(t, h, "reservation_status", map[string]any{
+		"device": "iPad",
+		"owner":  "tiltbuggy",
+	})
+	if r.IsError {
+		t.Fatalf("reservation_status should succeed; body=%s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	for _, want := range []string{`"reserved": true`, `"would_gate": true`, `"caller_holds": false`, "someone-else", "expires_at", "long soak", "launch_app", "terminate_app"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("held-by-other status missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestReservationStatus_HeldByCaller(t *testing.T) {
+	h, s := newHandlerWithReservations(t, nil, nil)
+	_, _ = s.Acquire("iPad", "tiltbuggy", 0, "")
+
+	r := dispatchJSON(t, h, "reservation_status", map[string]any{
+		"device": "iPad",
+		"owner":  "tiltbuggy",
+	})
+	if r.IsError {
+		t.Fatalf("reservation_status should succeed; body=%s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	for _, want := range []string{`"reserved": true`, `"would_gate": false`, `"caller_holds": true`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("held-by-caller status missing %q: %s", want, body)
+		}
+	}
+}
+
+func TestReservationStatus_NoStore(t *testing.T) {
+	h := newTestHandler(t) // no reservation store wired
+	r := dispatchJSON(t, h, "reservation_status", map[string]any{"device": "iPad"})
+	if r.IsError {
+		t.Fatalf("reservation_status should succeed without a store; body=%s", resultText(t, &r))
+	}
+	body := resultText(t, &r)
+	if !strings.Contains(body, "not configured") || !strings.Contains(body, `"would_gate": false`) {
+		t.Errorf("no-store status should note absence and gate nothing: %s", body)
+	}
+}

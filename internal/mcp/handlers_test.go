@@ -4,9 +4,12 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -366,12 +369,52 @@ func TestHandleDeviceState(t *testing.T) {
 
 // --- handleScreenshot --------------------------------------------------
 
-func TestHandleScreenshot_ReturnsImage(t *testing.T) {
-	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03}
-	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return png, nil }}
+// 🎯T114: the default screenshot result is a saved file + dimensions,
+// not multi-MB inline base64.
+func TestHandleScreenshot_DefaultWritesFileReturnsPath(t *testing.T) {
+	pngData := encodeTestPNG(t, 3, 2)
+	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return pngData, nil }}
 	h := newHandlerWithStubs(t, ios, nil)
 
 	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad"})
+	if r.IsError {
+		t.Fatalf("screenshot should succeed; body=%v", r)
+	}
+	for i := range r.Content {
+		if r.Content[i].Type == "image" {
+			t.Fatal("default screenshot must not inline the image")
+		}
+	}
+	var body struct {
+		Path   string `json:"path"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+		Bytes  int    `json:"bytes"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, &r)), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if !strings.Contains(body.Path, filepath.Join(".spyder", "screenshots")) {
+		t.Errorf("path %q not under the default screenshots dir", body.Path)
+	}
+	saved, err := os.ReadFile(body.Path)
+	if err != nil {
+		t.Fatalf("saved screenshot unreadable: %v", err)
+	}
+	if !bytes.Equal(saved, pngData) {
+		t.Error("saved bytes differ from the captured PNG")
+	}
+	if body.Width != 3 || body.Height != 2 {
+		t.Errorf("dimensions = %dx%d; want 3x2", body.Width, body.Height)
+	}
+}
+
+func TestHandleScreenshot_InlineOptIn(t *testing.T) {
+	pngData := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02, 0x03}
+	ios := &stubAdapter{screenshot: func(id string) ([]byte, error) { return pngData, nil }}
+	h := newHandlerWithStubs(t, ios, nil)
+
+	r := dispatchJSON(t, h, "screenshot", map[string]any{"device": "iPad", "inline": true})
 	if r.IsError {
 		t.Fatalf("screenshot should succeed; body=%v", r)
 	}
@@ -392,6 +435,17 @@ func TestHandleScreenshot_ReturnsImage(t *testing.T) {
 	if img.Data == "" {
 		t.Error("image content has empty data")
 	}
+}
+
+// encodeTestPNG renders a real width×height PNG so the path-result
+// dimensions come from an actual decode.
+func encodeTestPNG(t *testing.T, width, height int) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, width, height))); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
 }
 
 // --- handleListApps, handleLaunchApp, handleTerminateApp ---------------

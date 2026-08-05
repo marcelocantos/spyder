@@ -19,8 +19,13 @@ import (
 )
 
 const (
-	// DefaultRequestTimeout bounds a single spyder→app call.
-	DefaultRequestTimeout = 30 * time.Second
+	// DefaultIdleSilence is how long a Call may see *no progress* before
+	// timing out. Progress is any session frame that proves the peer is
+	// still advancing (response, log/perf push, or a progress beat with a
+	// fresh main pump). This is not a wall-clock budget from call start:
+	// a 60s cold load that still pumps frames never times out; a wedged
+	// main thread with no pump does.
+	DefaultIdleSilence = 10 * time.Second
 
 	// HelloTimeout bounds how long spyder waits for the app's first
 	// frame to arrive.
@@ -32,6 +37,12 @@ const (
 	// DefaultPerfBufferSamples bounds the per-session perf push buffer.
 	DefaultPerfBufferSamples = 10_000
 )
+
+// DefaultRequestTimeout is the idle-silence budget used when Call is
+// passed timeout<=0. Kept as an alias so existing call sites that mean
+// "use the default" keep compiling; semantics are progress-aware idle,
+// not wall-clock from t0.
+const DefaultRequestTimeout = DefaultIdleSilence
 
 // KeyedListenerIdleTTL is how long a per-(device, bundle_id) listener
 // survives with no live session and no activity before the sweeper
@@ -106,10 +117,22 @@ type Session struct {
 	perfBuf     []PerfPush
 	perfDropped int
 
+	// lastProgress is updated whenever the session sees evidence that
+	// the peer is still advancing (see noteProgress). Call waits until
+	// a response arrives or lastProgress goes idle for too long.
+	lastProgress atomic.Int64 // unix nano
+
 	// State captures: per-session table of background pollers that
 	// sample state_query{slice} on a fixed interval. Each captureID
 	// is unique within a session.
 	stateCaptures map[string]*StateCapture
+}
+
+// ProgressPush is the app → spyder beat while main-thread work is queued.
+type ProgressPush struct {
+	Timestamp   int64 `msgpack:"ts" json:"timestamp"`
+	MainQueue   int64 `msgpack:"main_queue" json:"main_queue"`
+	MsSincePump int64 `msgpack:"ms_since_pump" json:"ms_since_pump"`
 }
 
 // Listener returns the listener that accepted this session. Nil for
@@ -145,6 +168,17 @@ func (s *Session) Supports(method string) bool {
 
 // Call sends a request to the app and waits for the response. Returns
 // the result bytes (decode with UnpackParams) or an *RPCError.
+//
+// Wait policy is progress-aware, not "wall clock from t0":
+//   - timeout is the maximum *silence* between progress signals (idle).
+//     timeout<=0 uses DefaultIdleSilence.
+//   - Any session activity resets the idle timer: response frames, log/perf
+//     pushes, and kit progress heartbeats (sent while main work is queued).
+//   - ctx cancellation is the absolute outer bound (script / tool budgets).
+//
+// A multi-minute cold load that still produces heartbeats or frames succeeds.
+// A dead peer (no traffic at all) fails after the idle budget. Recipes do not
+// need settle-sleeps; the framework waits while something is happening.
 func (s *Session) Call(ctx context.Context, method string, params any, timeout time.Duration) (msgpack.RawMessage, error) {
 	s.mu.Lock()
 	if s.closed {
@@ -158,8 +192,9 @@ func (s *Session) Call(ctx context.Context, method string, params any, timeout t
 	}
 	s.mu.Unlock()
 
-	if timeout <= 0 {
-		timeout = DefaultRequestTimeout
+	idle := timeout
+	if idle <= 0 {
+		idle = DefaultIdleSilence
 	}
 	id := atomic.AddUint64(&s.nextID, 1)
 	if id == 0 {
@@ -180,24 +215,50 @@ func (s *Session) Call(ctx context.Context, method string, params any, timeout t
 		s.mu.Unlock()
 	}()
 
+	// Count the outbound request as progress so a quiet-but-alive peer
+	// that answers just inside idle still works without a prior beat.
+	s.noteProgress()
+
 	if err := s.writeEnvelope(&Envelope{ID: id, Method: method, Params: raw}); err != nil {
 		return nil, err
 	}
 
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
 
-	select {
-	case env := <-p.done:
-		if env.Error != nil {
-			return nil, env.Error
+	for {
+		select {
+		case env := <-p.done:
+			if env.Error != nil {
+				return nil, env.Error
+			}
+			return env.Result, nil
+		case <-ctx.Done():
+			return nil, &RPCError{Code: ErrCodeTimeout, Message: fmt.Sprintf("timeout calling %s: %v", method, ctx.Err())}
+		case <-s.done:
+			return nil, &RPCError{Code: ErrCodeNotConnected, Message: "session closed"}
+		case <-ticker.C:
+			last := s.lastProgress.Load()
+			if last == 0 {
+				continue
+			}
+			silent := time.Since(time.Unix(0, last))
+			if silent > idle {
+				return nil, &RPCError{
+					Code: ErrCodeTimeout,
+					Message: fmt.Sprintf(
+						"timeout calling %s: no progress for %s (idle budget %s)",
+						method, silent.Round(time.Millisecond), idle,
+					),
+				}
+			}
 		}
-		return env.Result, nil
-	case <-ctx.Done():
-		return nil, &RPCError{Code: ErrCodeTimeout, Message: fmt.Sprintf("timeout calling %s after %s", method, timeout)}
-	case <-s.done:
-		return nil, &RPCError{Code: ErrCodeNotConnected, Message: "session closed"}
 	}
+}
+
+// noteProgress records that the peer is still advancing.
+func (s *Session) noteProgress() {
+	s.lastProgress.Store(time.Now().UnixNano())
 }
 
 // Notify sends a push (no id, no response expected).
@@ -308,6 +369,7 @@ func (s *Session) readLoop(ctx context.Context) {
 func (s *Session) handleFrame(env *Envelope) {
 	switch {
 	case env.IsResponse():
+		s.noteProgress()
 		s.mu.Lock()
 		p := s.pending[env.ID]
 		s.mu.Unlock()
@@ -332,6 +394,7 @@ func (s *Session) handleFrame(env *Envelope) {
 func (s *Session) handlePush(env *Envelope) {
 	switch env.Method {
 	case PushLog:
+		s.noteProgress()
 		var lp LogPush
 		if err := UnpackParams(env.Params, &lp); err != nil {
 			slog.Debug("appchannel: bad log push", "error", err)
@@ -346,6 +409,7 @@ func (s *Session) handlePush(env *Envelope) {
 		s.logBuf = append(s.logBuf, lp)
 		s.mu.Unlock()
 	case PushPerfCounters:
+		s.noteProgress()
 		var pp PerfPush
 		if err := UnpackParams(env.Params, &pp); err != nil {
 			slog.Debug("appchannel: bad perf push", "error", err)
@@ -359,6 +423,18 @@ func (s *Session) handlePush(env *Envelope) {
 		}
 		s.perfBuf = append(s.perfBuf, pp)
 		s.mu.Unlock()
+	case PushProgress:
+		// Channel-thread heartbeats while main work is queued. Counts as
+		// progress for Call's idle timer (something is still happening on
+		// the peer). Payload (main_queue, ms_since_pump) is diagnostic;
+		// absolute outer bounds stay on ctx / script max_duration.
+		var pp ProgressPush
+		if err := UnpackParams(env.Params, &pp); err != nil {
+			slog.Debug("appchannel: bad progress push", "error", err)
+			return
+		}
+		_ = pp
+		s.noteProgress()
 	default:
 		slog.Debug("appchannel: unknown push", "method", env.Method)
 	}
@@ -426,12 +502,22 @@ var spyderVersion = "dev"
 // once at daemon startup.
 func SetSpyderVersion(v string) { spyderVersion = v }
 
+// maxEndedSessions bounds the stale-session diagnosis memory (🎯T119).
+const maxEndedSessions = 256
+
 // Manager owns the per-session table and the listener that produces
 // new sessions. One per daemon.
 type Manager struct {
 	mu       sync.Mutex
 	sessions map[string]*Session
 	keyed    map[AppKey]*Listener
+
+	// ended remembers the AppKey each recently ended session was
+	// accepted under, so a stale session_id can be diagnosed with the
+	// (device, bundle_id) it belonged to (🎯T119). endedOrder is the
+	// FIFO eviction queue.
+	ended      map[string]AppKey
+	endedOrder []string
 
 	closeFn func()
 }
@@ -441,6 +527,7 @@ func NewManager() *Manager {
 	m := &Manager{
 		sessions: map[string]*Session{},
 		keyed:    map[AppKey]*Listener{},
+		ended:    map[string]AppKey{},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.closeFn = cancel
@@ -601,6 +688,7 @@ func (l *Listener) Stop() {
 	l.mgr.mu.Lock()
 	for _, s := range sessions {
 		delete(l.mgr.sessions, s.ID)
+		l.mgr.noteEndedLocked(s.ID, l.Key)
 	}
 	if l.Key != (AppKey{}) {
 		if existing, ok := l.mgr.keyed[l.Key]; ok && existing == l {
@@ -675,6 +763,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	// TTL clock from the disconnect.
 	l.mgr.mu.Lock()
 	delete(l.mgr.sessions, id)
+	l.mgr.noteEndedLocked(id, l.Key)
 	l.mgr.mu.Unlock()
 	l.mu.Lock()
 	for i, ls := range l.sessions {
@@ -685,6 +774,31 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	}
 	l.lastTouched = time.Now()
 	l.mu.Unlock()
+}
+
+// noteEndedLocked records that session id (accepted under key) has
+// ended, evicting the oldest record past maxEndedSessions. Caller
+// holds m.mu.
+func (m *Manager) noteEndedLocked(id string, key AppKey) {
+	if _, dup := m.ended[id]; dup {
+		return
+	}
+	m.ended[id] = key
+	m.endedOrder = append(m.endedOrder, id)
+	if len(m.endedOrder) > maxEndedSessions {
+		delete(m.ended, m.endedOrder[0])
+		m.endedOrder = m.endedOrder[1:]
+	}
+}
+
+// EndedSessionKey reports the (device, bundle_id) key a now-ended
+// session was accepted under, when the session ended recently enough
+// to still be remembered (🎯T119 stale-sid diagnosis).
+func (m *Manager) EndedSessionKey(id string) (AppKey, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	key, ok := m.ended[id]
+	return key, ok
 }
 
 // GetSession returns the session by ID, if any.

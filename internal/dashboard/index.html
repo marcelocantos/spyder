@@ -353,7 +353,10 @@ function shouldThumb(id) {
 }
 async function grabScreenshot(id, isThumb) {
   try {
-    const r = await callTool("app_screenshot", {session_id: id});
+    // inline: the dashboard renders the frame as a data: URL, so it
+    // needs the image bytes, not the daemon-side saved-file path that
+    // app_screenshot returns by default (T114).
+    const r = await callTool("app_screenshot", {session_id: id, inline: true});
     if (!r.image) return;
     const url = "data:" + r.image.mimeType + ";base64," + r.image.data;
     let w = 0, h = 0;

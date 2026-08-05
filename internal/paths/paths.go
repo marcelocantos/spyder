@@ -44,3 +44,10 @@ func BaselinesBase() string {
 func PoolConfigPath() string {
 	return filepath.Join(Base(), "pool.yaml")
 }
+
+// ScreenshotsBase returns the default directory for screenshot files
+// (~/.spyder/screenshots). Screenshot verbs write here when the caller
+// asks for neither an explicit path nor an inline image (🎯T114).
+func ScreenshotsBase() string {
+	return filepath.Join(Base(), "screenshots")
+}
