@@ -18,7 +18,7 @@ func TestT111ToolsDispatchKnown(t *testing.T) {
 	h := newTestHandler(t)
 	for _, name := range []string{
 		"perf_fps", "port_forward_start", "port_forward_stop", "port_forward_list",
-		"input_tap", "input_swipe",
+		"input_tap", "input_swipe", "device_setting",
 	} {
 		_, err := h.Dispatch(context.Background(), name, map[string]any{
 			"device": "x", "package": "p", "device_port": 1.0, "local_port": 1.0,

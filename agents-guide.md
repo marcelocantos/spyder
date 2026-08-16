@@ -499,6 +499,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_sensor_unsuppress(session_id?, sensor?)` | Restore real device samples. | Always call when done. |
 | `app_sensor_status(session_id?, sensor?)` | Query `{suppressed, value?}`. | |
 | `app_state(session_id?, slice, select?)` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `select` is an optional jq expression evaluated server-side. |
+| `wait_state(session_id? \| device+bundle_id?, slice, select?, timeout_ms?, poll_ms?)` | Poll `app_state` until the jq `select` is truthy; return that value (🎯T129). | Timeout error includes the last observed value. Prefer `select="select(.present and .active)"` so the object comes back. Replaces hand-rolled `for`+`sleep` waits. `assert_*` are unchanged. |
 | `state_query(session_id?, slice?, select?)` | **Read-only** session-state probe (🎯T122). Never mutates game state — use it instead of `place_active` or other game commands to learn what's active. With `slice` omitted the app returns its default session-state summary (ge convention: `mode`, `active_adm`, `current_index`, `placed_count`, `view` lon/lat, `paused`). | Observational; always succeeds regardless of who holds the device reservation. Also accepts `device`+`bundle_id` addressing. |
 | `app_save_state(session_id?)` | Serialize app state. Returns a base64-encoded blob; the app picks the schema. | |
 | `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
@@ -1868,6 +1869,7 @@ differ; agents never shell out to `adb` or `iproxy`.
 | FPS over a window | `perf_fps` | gfxinfo (real) | fail closed → `app_perf_get` / `app_metrics_*` |
 | Host↔device TCP | `port_forward_*` | adb forward | go-ios usbmux forward (real) |
 | OS tap / swipe | `input_tap` / `input_swipe` | real | fail closed → `app_input` / mobile-mcp |
+| System setting (refresh rate) | `device_setting` | real (`refresh_rate` → peak+min; restore deletes) | fail closed → not supported |
 | Live logs | `logs` / `log_capture_*` / SSE | logcat | syslog (already) |
 
 ### Recipe (platform-honest)
@@ -1901,6 +1903,9 @@ spyder perf-fps Pixel --package com.example.app --window-sec 5 --json
 spyder port-forward Pixel start --device-port 8080 --json
 spyder port-forward iPad start --device-port 8080 --json
 spyder input-swipe Pixel --x1 100 --y1 800 --x2 100 --y2 200
+spyder device-setting S24 set --key refresh_rate --value 60 --json
+spyder device-setting S24 restore --key refresh_rate --json
+spyder wait-state --device S24 --bundle-id com.minicades.stockcars --slice carousel --select 'select(.present and .active)' --json
 spyder log Pixel --bundle-id com.example.app --capture --as release-perf
 spyder app-perf-get --json   # cooperative gauges (both platforms)
 ```

@@ -45,12 +45,15 @@ type stubAdapter struct {
 	logRange          func(id string, filter device.LogFilter, since, until time.Time) ([]device.LogLine, error)
 	logStream         func(ctx context.Context, id string, filter device.LogFilter, out chan<- device.LogLine) error
 	// 🎯T111 optional Android control (interfaces on AndroidAdapter)
-	measureFrameStats func(ctx context.Context, id, packageName string, window time.Duration) (device.FrameStats, error)
-	forwardTCP        func(id string, localPort, devicePort int) (device.PortForward, error)
-	unforwardTCP      func(id string, localPort int) error
-	listForwards      func(id string) ([]device.PortForward, error)
-	injectTap         func(id string, x, y int) error
-	injectSwipe       func(id string, x1, y1, x2, y2, durationMs int) error
+	measureFrameStats    func(ctx context.Context, id, packageName string, window time.Duration) (device.FrameStats, error)
+	forwardTCP           func(id string, localPort, devicePort int) (device.PortForward, error)
+	unforwardTCP         func(id string, localPort int) error
+	listForwards         func(id string) ([]device.PortForward, error)
+	injectTap            func(id string, x, y int) error
+	injectSwipe          func(id string, x1, y1, x2, y2, durationMs int) error
+	setSystemSetting     func(id, key, value string) (device.SettingResult, error)
+	restoreSystemSetting func(id, key string) (device.SettingResult, error)
+	getSystemSetting     func(id, key string) (device.SettingResult, error)
 }
 
 func (s *stubAdapter) List() ([]device.Info, error) {
@@ -199,6 +202,24 @@ func (s *stubAdapter) InjectSwipe(id string, x1, y1, x2, y2, durationMs int) err
 		return nil
 	}
 	return s.injectSwipe(id, x1, y1, x2, y2, durationMs)
+}
+func (s *stubAdapter) SetSystemSetting(id, key, value string) (device.SettingResult, error) {
+	if s.setSystemSetting == nil {
+		return device.SettingResult{Key: key, Action: "set", Value: value}, nil
+	}
+	return s.setSystemSetting(id, key, value)
+}
+func (s *stubAdapter) RestoreSystemSetting(id, key string) (device.SettingResult, error) {
+	if s.restoreSystemSetting == nil {
+		return device.SettingResult{Key: key, Action: "restore"}, nil
+	}
+	return s.restoreSystemSetting(id, key)
+}
+func (s *stubAdapter) GetSystemSetting(id, key string) (device.SettingResult, error) {
+	if s.getSystemSetting == nil {
+		return device.SettingResult{Key: key, Action: "get"}, nil
+	}
+	return s.getSystemSetting(id, key)
 }
 
 // newHandlerWithStubs returns a Handler wired up with the given stubs.

@@ -47,10 +47,9 @@ emit(m)
 emit(app_call(session_id=sid, method="set_view",
               params={"lon": 31.5, "lat": 33.8, "zoom": 2.25}))
 
-# bounded poll of a HUD slice
-for i in range(10):
-    emit(app_state(session_id=sid, slice="hud"))
-    sleep(200)`,
+# wait until a slice predicate is true (returns the satisfying value)
+emit(wait_state(session_id=sid, slice="hud",
+                select="select(.score != null)", timeout_ms=5000, poll_ms=200))`,
 
 	"device": `device — inventory, state, and OS-level observation
 
@@ -72,7 +71,11 @@ device_state(device="iPad")
 emit(screenshot(device="iPad"))
 
 # is my app up? (no forced launch)
-is_running(device="iPad", bundle_id="com.example.app")`,
+is_running(device="iPad", bundle_id="com.example.app")
+
+# allowlisted OS setting (Android). iOS fails closed: not supported.
+device_setting(device="S24", key="refresh_rate", value="60")
+device_setting(device="S24", key="refresh_rate", restore=True)`,
 
 	"deploy": `deploy — install, launch, and reach the app channel
 

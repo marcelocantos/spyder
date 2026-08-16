@@ -88,6 +88,8 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   input-tap     OS-level tap (Android; iOS → app_input/mobile-mcp)
   input-swipe   OS-level swipe (Android; iOS → app_input/mobile-mcp)
   app-perf-get  Drain app-channel perfEmit counters (ge cooperative gauges)
+  wait-state    Poll an app-channel slice until a jq select is truthy
+  device-setting Set/restore/get allowlisted Android settings (iOS: not supported)
   log           Fetch or tail device logs (--follow for live SSE stream)
 
 Serve:
