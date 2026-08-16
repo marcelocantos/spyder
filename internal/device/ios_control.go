@@ -27,6 +27,11 @@ const ErrIOSPerfFPSUnsupported = "perf_fps is not supported on iOS (no composito
 const ErrIOSInjectUnsupported = "OS input inject is not supported on iOS physical devices. " +
 	"Use app_input (ge/app-channel) or mobile-mcp for UI automation"
 
+// ErrIOSSettingUnsupported is returned by device_setting on iOS (🎯T112 / 🎯T130).
+// There is no allowlisted system-settings path for refresh rate on iOS.
+const ErrIOSSettingUnsupported = "device_setting is not supported on iOS (no allowlisted system-settings path). " +
+	"Refresh rate and similar OS settings are Android-only"
+
 // MeasureFrameStats implements the shared frameStats surface on iOS by
 // failing closed with an actionable message (🎯T112).
 func (a *IOSAdapter) MeasureFrameStats(ctx context.Context, id, packageName string, window time.Duration) (FrameStats, error) {
@@ -67,4 +72,41 @@ func (a *IOSAdapter) InjectSwipe(id string, x1, y1, x2, y2, durationMs int) erro
 		return fmt.Errorf("coordinates must be non-negative pixel values")
 	}
 	return fmt.Errorf("%s", ErrIOSInjectUnsupported)
+}
+
+// SetSystemSetting fails closed on iOS after allowlist check (🎯T130).
+func (a *IOSAdapter) SetSystemSetting(id, key, value string) (SettingResult, error) {
+	if err := iosSettingArgs(id, key); err != nil {
+		return SettingResult{}, err
+	}
+	if value == "" {
+		return SettingResult{}, fmt.Errorf("value is required to set %s", key)
+	}
+	return SettingResult{}, fmt.Errorf("%s", ErrIOSSettingUnsupported)
+}
+
+// RestoreSystemSetting fails closed on iOS after allowlist check (🎯T130).
+func (a *IOSAdapter) RestoreSystemSetting(id, key string) (SettingResult, error) {
+	if err := iosSettingArgs(id, key); err != nil {
+		return SettingResult{}, err
+	}
+	return SettingResult{}, fmt.Errorf("%s", ErrIOSSettingUnsupported)
+}
+
+// GetSystemSetting fails closed on iOS after allowlist check (🎯T130).
+func (a *IOSAdapter) GetSystemSetting(id, key string) (SettingResult, error) {
+	if err := iosSettingArgs(id, key); err != nil {
+		return SettingResult{}, err
+	}
+	return SettingResult{}, fmt.Errorf("%s", ErrIOSSettingUnsupported)
+}
+
+func iosSettingArgs(id, key string) error {
+	if id == "" {
+		return fmt.Errorf("device identifier is empty")
+	}
+	if _, err := SettingAndroidNames(key); err != nil {
+		return err
+	}
+	return nil
 }

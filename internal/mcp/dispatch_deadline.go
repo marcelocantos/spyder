@@ -24,6 +24,10 @@ var (
 	// + DeadlinePerfFPSMargin or long windows time out mid-measure.
 	DeadlinePerfFPS       = 150 * time.Second
 	DeadlinePerfFPSMargin = 30 * time.Second
+	// DeadlineWaitState covers wait_state: max timeout_ms is 120s plus
+	// a poll/fetch margin so a last attempt is not killed by dispatch.
+	DeadlineWaitState       = 150 * time.Second
+	DeadlineWaitStateMargin = 30 * time.Second
 )
 
 // toolDeadlineClass returns the wall-clock bound for a tool name.
@@ -35,6 +39,8 @@ func toolDeadlineClass(name string) time.Duration {
 	case "perf_fps":
 		// Explicit class: window_sec max 120 must fit under this bound.
 		return DeadlinePerfFPS
+	case "wait_state":
+		return DeadlineWaitState
 	case "app_exec", "run_script", "list_scripts":
 		// Outer dispatch must not undercut max_duration_ms (default 30s,
 		// ceiling maxExecDuration). FastRead (15s) was killing multi-step

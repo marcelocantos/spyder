@@ -81,6 +81,8 @@ func init() {
 		{"input-tap", "spyder input-tap <device> --x N --y N [--as OWNER]", runInputTap},
 		{"input-swipe", "spyder input-swipe <device> --x1 N --y1 N --x2 N --y2 N [--duration-ms N] [--as OWNER]", runInputSwipe},
 		{"app-perf-get", "spyder app-perf-get [--session-id ID] [--json]  (app-channel perfEmit counters)", runAppPerfGet},
+		{"wait-state", "spyder wait-state [--session-id ID | --device D --bundle-id B] --slice S [--select JQ] [--timeout-ms N] [--poll-ms N] [--json]", runWaitState},
+		{"device-setting", "spyder device-setting <device> set|restore|get --key refresh_rate [--value N] [--as OWNER] [--json]", runDeviceSetting},
 		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow | --capture [--ttl-sec N] [--max-bytes N] [--max-lines N] [--as OWNER] | --capture-get SID | --capture-stop SID | --capture-list]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 		{"list-scripts", "spyder list-scripts [--json]", runListScripts},
@@ -1447,6 +1449,79 @@ func runInputSwipe(args []string) {
 		a["duration_ms"] = float64(di)
 	}
 	dispatchAndExit(ctx, "input_swipe", a, false, !verbose(pf))
+}
+
+func runWaitState(args []string) {
+	pf, ctx, cancel := setupCommand("wait-state", args,
+		[]string{"--session-id", "--device", "--bundle-id", "--slice", "--select", "--timeout-ms", "--poll-ms"},
+		[]string{"--json"}, 3*time.Minute)
+	defer cancel()
+	slice := pf.flags["--slice"]
+	if slice == "" {
+		fatalUsage("wait-state", fmt.Errorf("--slice is required"))
+	}
+	a := map[string]any{"slice": slice}
+	if sid := pf.flags["--session-id"]; sid != "" {
+		a["session_id"] = sid
+	}
+	if d := pf.flags["--device"]; d != "" {
+		a["device"] = d
+	}
+	if b := pf.flags["--bundle-id"]; b != "" {
+		a["bundle_id"] = b
+	}
+	if sel := pf.flags["--select"]; sel != "" {
+		a["select"] = sel
+	}
+	if v := pf.flags["--timeout-ms"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			fatalUsage("wait-state", fmt.Errorf("--timeout-ms: %v", err))
+		}
+		a["timeout_ms"] = float64(n)
+	}
+	if v := pf.flags["--poll-ms"]; v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			fatalUsage("wait-state", fmt.Errorf("--poll-ms: %v", err))
+		}
+		a["poll_ms"] = float64(n)
+	}
+	dispatchAndExit(ctx, "wait_state", a, pf.bools["--json"], false)
+}
+
+func runDeviceSetting(args []string) {
+	pf, ctx, cancel := setupCommand("device-setting", args,
+		[]string{"--key", "--value", "--as"}, []string{"--json"}, clitimeout.DefaultLaunch)
+	defer cancel()
+	if len(pf.positional) < 2 {
+		fatalUsage("device-setting", fmt.Errorf("expected <device> set|restore|get"))
+	}
+	dev := pf.positional[0]
+	action := pf.positional[1]
+	key := pf.flags["--key"]
+	if key == "" {
+		fatalUsage("device-setting", fmt.Errorf("--key is required"))
+	}
+	a := map[string]any{
+		"device": dev,
+		"key":    key,
+		"owner":  deriveOwner(pf.flags["--as"]),
+	}
+	switch action {
+	case "set":
+		if pf.flags["--value"] == "" {
+			fatalUsage("device-setting", fmt.Errorf("set requires --value"))
+		}
+		a["value"] = pf.flags["--value"]
+	case "restore":
+		a["restore"] = true
+	case "get":
+		a["get"] = true
+	default:
+		fatalUsage("device-setting", fmt.Errorf("unknown action %q — expected set|restore|get", action))
+	}
+	dispatchAndExit(ctx, "device_setting", a, pf.bools["--json"], false)
 }
 
 func runAppPerfGet(args []string) {
