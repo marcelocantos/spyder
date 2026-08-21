@@ -37,3 +37,12 @@ func TestRunsBase(t *testing.T) {
 		t.Errorf("RunsBase() = %q; want %q", got, want)
 	}
 }
+
+func TestUSBSpeedPath(t *testing.T) {
+	t.Setenv("HOME", "/custom/home")
+	got := USBSpeedPath()
+	want := filepath.Join("/custom/home", ".spyder", "usb-speed.json")
+	if got != want {
+		t.Errorf("USBSpeedPath() = %q; want %q", got, want)
+	}
+}

@@ -95,7 +95,7 @@ verbs available as builtins:
 
 | Verb | Purpose |
 |---|---|
-| `devices` | List connected iOS + Android devices, annotated with inventory alias. |
+| `devices` | List connected iOS + Android devices, annotated with inventory alias. USB-attached physical phones/tablets include `usb_speed`, `usb_ceiling`, and `usb_anomaly` (live slower than the remembered ceiling). |
 | `resolve` | Symbolic name → structured entry with all known UUIDs. |
 | `device_state` | Battery, charging, thermal, foreground app. 2 s TTL cache. |
 | `screenshot` | PNG of the current screen. iOS via DVT; Android via `adb screencap`. |

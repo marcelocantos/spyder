@@ -105,6 +105,10 @@ map symbolic aliases to platform-specific identifiers:
 - `executable_path` — for `"platform": "desktop"` entries, the binary spyder
   launches. It doubles as the desktop "device id". `working_dir` optionally
   overrides the launched process's cwd (default: the binary's own directory).
+- `usb_max` — optional seed for the USB link-speed ceiling (`"480 Mb/s"`,
+  `"5 Gb/s"`, `"10 Gb/s"`). Spyder persists the highest observed speed per
+  serial in `~/.spyder/usb-speed.json` (ratchet-up only); inventory is not
+  the source of truth and is never written back.
 - A missing inventory file is treated as empty, not an error.
 
 Alias lookup is case-insensitive. Raw identifiers that aren't in the inventory
@@ -439,7 +443,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 
 | Builtin | Purpose | Notes |
 |---|---|---|
-| `devices(platform?)` | List connected iOS + Android devices, annotated with inventory alias. iOS-17+ devices visible to USBMux but whose RSD tunnel hasn't settled yet appear with `tunnel_pending: true` (🎯T84) — they show up rather than disappearing during the settling window, but DTX-backed tools (screenshot, launch_app, …) may fail with a clear "tunnel not ready" error until the flag clears. | `platform` filter: `ios`, `android`, or `all` (default). |
+| `devices(platform?)` | List connected iOS + Android devices, annotated with inventory alias. iOS-17+ devices visible to USBMux but whose RSD tunnel hasn't settled yet appear with `tunnel_pending: true` (🎯T84) — they show up rather than disappearing during the settling window, but DTX-backed tools (screenshot, launch_app, …) may fail with a clear "tunnel not ready" error until the flag clears. USB-attached physical phones/tablets also carry `usb_speed` (IOKit negotiated Device Speed: `"480 Mb/s"`, `"5 Gb/s"`, `"10 Gb/s"`), `usb_ceiling` (highest speed observed for that serial), and `usb_anomaly` (true only when live < ceiling) (🎯T131 / 🎯T131.1). Wireless ADB, iOS Wi-Fi, simulators, emulators, and desktop omit those fields. | `platform` filter: `ios`, `android`, or `all` (default). |
 | `resolve(device)` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
 | `device_state(device)` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
 | `screenshot(device, owner?, path?, inline?)` | PNG of the current screen. Default: saved under `~/.spyder/screenshots/` (or `path`), returning `{path, width, height, bytes}`; `inline=True` returns the image inline instead (🎯T114). | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |

@@ -32,6 +32,20 @@ type Info struct {
 	// during the settling window after a connect/reconnect/tunnel
 	// restart. Always false for iOS ≤16 and Android.
 	TunnelPending bool `json:"tunnel_pending,omitempty"`
+
+	// USBSpeed is the IOKit negotiated Device Speed of a USB-attached
+	// physical phone or tablet (🎯T131), mapped through kUSBDeviceSpeed:
+	// 2 → "480 Mb/s", 3 → "5 Gb/s", 4 → "10 Gb/s". Omitted for wireless
+	// ADB, iOS Wi-Fi, simulators, emulators, desktop, and any id with
+	// no serial match in the ioreg census.
+	USBSpeed string `json:"usb_speed,omitempty"`
+	// USBCeiling is the highest USBSpeed observed for this serial
+	// (🎯T131.1). Omitted until a USB observation (or inventory usb_max
+	// seed) exists.
+	USBCeiling string `json:"usb_ceiling,omitempty"`
+	// USBAnomaly is true when USBSpeed is slower than USBCeiling.
+	// Equal live and ceiling is not an anomaly.
+	USBAnomaly bool `json:"usb_anomaly,omitempty"`
 }
 
 // LogFilter restricts which log lines are returned by LogRange or LogStream.

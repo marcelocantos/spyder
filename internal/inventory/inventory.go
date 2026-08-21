@@ -38,13 +38,18 @@ type Entry struct {
 	// entry; it doubles as the desktop "device id" (analogous to ios_uuid /
 	// android_serial). WorkingDir optionally overrides the launched process's
 	// cwd (default: the binary's own directory).
-	ExecutablePath string            `json:"executable_path,omitempty"`
-	WorkingDir     string            `json:"working_dir,omitempty"`
-	Notes            string            `json:"notes,omitempty"`
+	ExecutablePath string `json:"executable_path,omitempty"`
+	WorkingDir     string `json:"working_dir,omitempty"`
+	Notes          string `json:"notes,omitempty"`
 	// ExpectedPresent marks a fleet device that should trigger needs_attention when absent (🎯T99.6).
 	ExpectedPresent bool              `json:"expected_present,omitempty"`
-	Tags           []string          `json:"tags,omitempty"`  // free-form labels for selector matching
-	Attrs          map[string]string `json:"attrs,omitempty"` // key/value pairs for exact-match selector predicates
+	Tags            []string          `json:"tags,omitempty"`  // free-form labels for selector matching
+	Attrs           map[string]string `json:"attrs,omitempty"` // key/value pairs for exact-match selector predicates
+	// USBMax is an optional seed for the USB speed ceiling (🎯T131.1),
+	// e.g. "5 Gb/s". Spyder's persist file under ~/.spyder/ is the
+	// source of truth; this field does not ratchet down a higher
+	// observed ceiling and is never written back here.
+	USBMax string `json:"usb_max,omitempty"`
 }
 
 // Store holds the inventory, reloaded from disk when inventory.json changes.
