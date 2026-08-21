@@ -51,3 +51,10 @@ func PoolConfigPath() string {
 func ScreenshotsBase() string {
 	return filepath.Join(Base(), "screenshots")
 }
+
+// USBSpeedPath returns the USB link-speed ceiling store
+// (~/.spyder/usb-speed.json). Highest observed kUSBDeviceSpeed per
+// physical-device serial; ratchets up only (🎯T131.1).
+func USBSpeedPath() string {
+	return filepath.Join(Base(), "usb-speed.json")
+}

@@ -27,6 +27,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/selector"
+	"github.com/marcelocantos/spyder/internal/usbspeed"
 )
 
 // appliedNetwork tracks a network profile applied to a device by a
@@ -107,6 +108,13 @@ type Handler struct {
 	// selfRestartGrace is how long after a tool deadline we wait for the
 	// handler goroutine to finish before requesting self-restart.
 	selfRestartGrace time.Duration
+
+	// readUSBCensus, when set, replaces usbspeed.ReadCensus (ioreg exec).
+	// Tests inject canned bytes; nil means the live IOUSB snapshot.
+	readUSBCensus func() ([]byte, error)
+	// usbCeilings remembers the highest USB speed per serial (🎯T131.1).
+	// Nil until first devices() call, then opened from paths.USBSpeedPath().
+	usbCeilings *usbspeed.Store
 }
 
 // launchKey indexes launchTimes. The device dimension is the
@@ -725,7 +733,7 @@ func legacyDefinitions() []mcpgo.Tool {
 func allBaseDefinitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
 		mcpgo.NewTool("devices",
-			mcpgo.WithDescription("List connected mobile devices across platforms, with alias, platform, model, and OS version."),
+			mcpgo.WithDescription("List connected mobile devices across platforms, with alias, platform, model, and OS version. USB-attached physical phones/tablets include usb_speed, usb_ceiling, and usb_anomaly (live < ceiling)."),
 			mcpgo.WithString("platform",
 				mcpgo.Description("Filter by platform: ios, android, or all (default)"),
 			),

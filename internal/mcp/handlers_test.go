@@ -336,6 +336,95 @@ func TestHandleDevices_IOSOnly_HardFailOnError(t *testing.T) {
 	}
 }
 
+func TestHandleDevices_USBSpeedJoin(t *testing.T) {
+	ios := &stubAdapter{list: func() ([]device.Info, error) {
+		return []device.Info{
+			{UUID: "00008130-0009702E1110001C", Platform: "ios", Name: "Jevons"},
+			{UUID: "C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8", Platform: "ios", Name: "sim"},
+		}, nil
+	}}
+	android := &stubAdapter{list: func() ([]device.Info, error) {
+		return []device.Info{
+			{UUID: "RFCX20VKMAR", Platform: "android", Name: "S24"},
+			{UUID: "emulator-5554", Platform: "android", Name: "emu"},
+			{UUID: "192.168.1.8:5555", Platform: "android", Name: "wireless"},
+		}, nil
+	}}
+	h := newHandlerWithStubs(t, ios, android)
+	h.readUSBCensus = func() ([]byte, error) {
+		return []byte(`+-o Root  <class IORegistryEntry>
+  +-o SAMSUNG_Android@01221000  <class IOUSBHostDevice, id 0x1>
+        {
+          "USB Product Name" = "SAMSUNG_Android"
+          "bDeviceClass" = 0
+          "Device Speed" = 3
+          "USB Serial Number" = "RFCX20VKMAR"
+        }
+  +-o iPad@01222000  <class IOUSBHostDevice, id 0x2>
+        {
+          "USB Product Name" = "iPad"
+          "bDeviceClass" = 0
+          "Device Speed" = 4
+          "USB Serial Number" = "000081300009702E1110001C"
+        }
+  +-o USB3.1 Hub@01200000  <class IOUSBHostDevice, id 0x3>
+        {
+          "USB Product Name" = "USB3.1 Hub"
+          "bDeviceClass" = 9
+          "Device Speed" = 4
+          "USB Serial Number" = "HUBSERIAL"
+        }
+`), nil
+	}
+
+	r := dispatchJSON(t, h, "devices", map[string]any{"platform": "all"})
+	if r.IsError {
+		t.Fatalf("isError true; body=%s", resultText(t, &r))
+	}
+	var got []device.Info
+	if err := json.Unmarshal([]byte(resultText(t, &r)), &got); err != nil {
+		t.Fatalf("unmarshal: %v\nbody=%s", err, resultText(t, &r))
+	}
+	byUUID := map[string]device.Info{}
+	for _, d := range got {
+		byUUID[d.UUID] = d
+	}
+	if byUUID["RFCX20VKMAR"].USBSpeed != "5 Gb/s" {
+		t.Errorf("S24 usb_speed = %q; want 5 Gb/s", byUUID["RFCX20VKMAR"].USBSpeed)
+	}
+	if byUUID["00008130-0009702E1110001C"].USBSpeed != "10 Gb/s" {
+		t.Errorf("Jevons usb_speed = %q; want 10 Gb/s", byUUID["00008130-0009702E1110001C"].USBSpeed)
+	}
+	for _, uuid := range []string{"C6F6FA50-30B5-4E4C-B7A1-8E0F5D1E1FA8", "emulator-5554", "192.168.1.8:5555"} {
+		d := byUUID[uuid]
+		if d.USBSpeed != "" || d.USBCeiling != "" || d.USBAnomaly {
+			t.Errorf("%s should omit usb fields; got %+v", uuid, d)
+		}
+	}
+}
+
+func TestHandleDevices_USBCensusFailureStillLists(t *testing.T) {
+	android := &stubAdapter{list: func() ([]device.Info, error) {
+		return []device.Info{{UUID: "RFCX20VKMAR", Platform: "android"}}, nil
+	}}
+	h := newHandlerWithStubs(t, nil, android)
+	h.readUSBCensus = func() ([]byte, error) {
+		return nil, errors.New("ioreg: boom")
+	}
+
+	r := dispatchJSON(t, h, "devices", map[string]any{"platform": "android"})
+	if r.IsError {
+		t.Fatalf("ioreg failure must not fail devices(); body=%s", resultText(t, &r))
+	}
+	text := resultText(t, &r)
+	if !strings.Contains(text, "RFCX20VKMAR") {
+		t.Errorf("device missing after ioreg failure; body=%s", text)
+	}
+	if strings.Contains(text, "usb_speed") {
+		t.Errorf("usb_speed must be omitted on ioreg failure; body=%s", text)
+	}
+}
+
 // --- handleResolve -----------------------------------------------------
 
 func TestHandleResolve_Known(t *testing.T) {

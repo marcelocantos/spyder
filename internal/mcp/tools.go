@@ -30,6 +30,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/selector"
 	"github.com/marcelocantos/spyder/internal/simemu"
+	"github.com/marcelocantos/spyder/internal/usbspeed"
 )
 
 // handleLogsRange returns log lines between since and until for a device.
@@ -240,6 +241,8 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 		}
 	}
 
+	h.annotateUSB(devices)
+
 	if platform == "all" && len(perAdapterErrors) > 0 {
 		return toolJSON(struct {
 			Devices []device.Info `json:"devices"`
@@ -247,6 +250,49 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 		}{devices, perAdapterErrors})
 	}
 	return toolJSON(devices)
+}
+
+// annotateUSB joins one ioreg census onto the just-listed devices
+// (🎯T131 / 🎯T131.1). ioreg failure omits the USB fields and leaves
+// the list intact.
+func (h *Handler) annotateUSB(devices []device.Info) {
+	if len(devices) == 0 {
+		return
+	}
+	read := h.readUSBCensus
+	if read == nil {
+		read = usbspeed.ReadCensus
+	}
+	raw, err := read()
+	if err != nil {
+		return
+	}
+	if h.usbCeilings == nil {
+		h.usbCeilings = usbspeed.Open(paths.USBSpeedPath())
+	}
+	usbspeed.Enrich(devices, raw, h.usbCeilings, usbMaxSeeds(h.inventory))
+}
+
+func usbMaxSeeds(inv *inventory.Store) map[string]string {
+	if inv == nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, e := range inv.Entries() {
+		if e.USBMax == "" {
+			continue
+		}
+		if e.IOSUUID != "" {
+			out[e.IOSUUID] = e.USBMax
+		}
+		if e.AndroidSerial != "" {
+			out[e.AndroidSerial] = e.USBMax
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (h *Handler) handleResolve(args map[string]any) (*mcpgo.CallToolResult, error) {

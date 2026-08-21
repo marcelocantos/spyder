@@ -40,7 +40,10 @@ func newTestHandler(t *testing.T) *Handler {
 	if err := os.WriteFile(filepath.Join(dir, "inventory.json"), []byte(testInventory), 0o600); err != nil {
 		t.Fatalf("write inventory: %v", err)
 	}
-	return NewHandler()
+	h := NewHandler()
+	// Hermetic default: don't exec live ioreg in unit tests (🎯T131).
+	h.readUSBCensus = func() ([]byte, error) { return []byte{}, nil }
+	return h
 }
 
 func TestResolveAdapter_InventoryIOS(t *testing.T) {
