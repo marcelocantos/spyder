@@ -1,0 +1,531 @@
+# hygiene.yaml — declared, drift-validated hygiene posture for spyder.
+# Schema reference: the `hygiene` skill (~/.claude/skills/hygiene/SKILL.md).
+# Validate with `/hygiene`; aggregate the fleet with `/hygiene fleet`. Tracks
+# steady-state ("we maintain X"), the complement to bullseye's aspirational
+# targets ("achieve X").
+#
+# Tests run on the laptop (TEST-REPORT.json), not in per-PR CI. The only
+# GitHub Actions workflow is tag-triggered release.yml (darwin-arm64).
+# Tiers are PER DIMENSION (schema v1): a dimension's held tier is the highest T
+# such that every item in it with tier <= T is satisfied. `floors` is the
+# per-dimension ratchet (below floor => DRIFT); `aspires` is the gap horizon;
+# `enforce` is intent-only and does not affect tiers.
+
+schema_version: 1
+
+repo: spyder
+aspires: 3
+floors:            # per-dimension held-tier ratchet; below floor => DRIFT
+  correctness: 2   # make test + release.yml Test + TEST-REPORT.json; no PR CI
+  security: 2      # go.sum + GitHub secret scanning; vuln/SAST scanners are T3
+  quality: 2       # Makefile vet + fmt-check; not wired in Actions
+  deps: 2          # committed go.sum; no Dependabot
+  release: 2       # tag-triggered darwin-arm64 tarball + Homebrew tap
+  governance: 2    # Apache-2 LICENSE, README, .gitignore, NOTICE, squash-only
+  build: 2         # Makefile build + go 1.26 pin + go.sum; player is in-tree
+  docs: 2          # README + agents-guide.md + STABILITY.md; no docs-in-CI
+  perf: 0          # no benchmark suite
+  vcs: 2           # player vendor .a files via Git LFS; no committed hooks
+  agent: 2         # CLAUDE.md + bullseye.yaml; no AGENTS.md
+
+tiers:
+  1: baseline    # LICENSE + README + .gitignore; tests build & run
+  2: maintained  # full matrix, lint/format, release + governance
+  3: hardened    # security scanning, SBOM/signing, fuzzing, perf
+
+items:
+
+  # ============================== CORRECTNESS =============================
+  - id: correctness.unit-tests
+    dim: correctness
+    desc: Hermetic unit suite is invocable via Makefile (`go test ./...`)
+    state: present
+    cadence: continuous
+    enforce: blocking
+    tier: 1
+    evidence: {make_target: test}
+
+  - id: correctness.release-tests
+    dim: correctness
+    desc: go test ./... runs on the darwin-arm64 release job (tag publish only)
+    state: enforced
+    cadence: per-release
+    enforce: blocking
+    tier: 2
+    evidence: {ci_step: {workflow: release.yml, name: Test}}
+
+  - id: correctness.test-report
+    dim: correctness
+    desc: Laptop attestation TEST-REPORT.json is produced by make test-report
+    state: present
+    cadence: continuous
+    enforce: warning
+    tier: 2
+    evidence: {make_target: test-report}
+
+  - id: correctness.live-tests
+    dim: correctness
+    desc: Gated real-device live tests exist (`go test -run '_Live$'`)
+    state: present
+    cadence: periodic:on-demand
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: internal/device/ios_goios_live_test.go}}
+
+  - id: correctness.player-wire
+    dim: correctness
+    desc: Player compile-time wire-layout oracle (`make -C player check-wire`)
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: player/Makefile, matches: '(?m)^check-wire:'}}
+
+  - id: correctness.pr-ci
+    dim: correctness
+    desc: Per-PR GitHub Actions test workflow
+    state: skipped
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: >-
+      Hosted CI cannot exercise go-ios / adb / RSD. CLAUDE.md makes the laptop
+      the test runner; TEST-REPORT.json is the merge attestation. release.yml
+      is the only workflow and fires on published releases, not PRs.
+    evidence: {absent: {file: {path: .github/workflows/ci.yml}}}
+
+  - id: correctness.windows
+    dim: correctness
+    desc: Windows CI / Windows release target
+    state: skipped
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: >-
+      release.yml is darwin-arm64 only (macOS-specific device tooling). Linux
+      and Windows builds are explicitly out of scope in that workflow's comment.
+    evidence:
+      {absent: {file: {path: .github/workflows/release.yml, matches: 'windows-latest'}}}
+
+  - id: correctness.fuzzing
+    dim: correctness
+    desc: Fuzz harnesses over protocol parsers (app-channel, os_log, Starlark)
+    state: planned
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: Parsers are unit-tested from fixtures; no go test -fuzz targets or CI fuzz job.
+    evidence: {absent: {make_target: fuzz}}
+
+  - id: correctness.race
+    dim: correctness
+    desc: Data-race detector (go test -race) in the default test path
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: Makefile `test` is `go test ./...` with no -race.
+    evidence: {absent: {file: {path: Makefile, matches: 'go test -race'}}}
+
+  # =========================== SECURITY / SUPPLY ==========================
+  - id: security.dep-pinning
+    dim: security
+    desc: go.sum committed — reproducible, pinned module graph
+    state: present
+    cadence: per-release
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: go.sum}}
+
+  - id: security.secret-scan-github
+    dim: security
+    desc: GitHub secret scanning is enabled on the repository
+    state: present
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence:
+      {gh_setting: {key: security_and_analysis.secret_scanning.status, equals: enabled}}
+
+  - id: security.push-protection
+    dim: security
+    desc: GitHub secret-scanning push protection is enabled
+    state: present
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    evidence:
+      {gh_setting: {key: security_and_analysis.secret_scanning_push_protection.status, equals: enabled}}
+
+  - id: security.actions-perms
+    dim: security
+    desc: "release.yml declares an explicit permissions block (contents: write)"
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence:
+      {file: {path: .github/workflows/release.yml, matches: '(?m)^permissions:'}}
+
+  - id: security.gitleaks
+    dim: security
+    desc: gitleaks (or equivalent) scanner in-repo / in Actions
+    state: skipped
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: >-
+      GitHub native secret scanning and push protection are enabled; no
+      in-tree gitleaks config or CI job.
+    evidence: {absent: {scanner: {tool: gitleaks}}}
+
+  - id: security.dep-vuln-scan
+    dim: security
+    desc: Vulnerability scanning of Go modules (govulncheck)
+    state: planned
+    cadence: periodic:30d
+    enforce: warning
+    tier: 3
+    reason: go.sum is pinned but no govulncheck (or OSV) job runs against it.
+    evidence: {absent: {scanner: {tool: govulncheck}}}
+
+  - id: security.sast-codeql
+    dim: security
+    desc: CodeQL static analysis for Go
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: No CodeQL workflow; go vet is the local static check (Makefile).
+    evidence: {absent: {ci_job: "release.yml#codeql"}}
+
+  - id: security.signed-releases
+    dim: security
+    desc: Release artifacts carry provenance / are signed (cosign/sigstore)
+    state: planned
+    cadence: per-release
+    enforce: informational
+    tier: 3
+    reason: release.yml uploads a tarball via `gh release upload`; no signing step.
+    evidence: {absent: {ci_step: {workflow: release.yml, name: Sign}}}
+
+  # ============================== CODE QUALITY ============================
+  - id: quality.vet
+    dim: quality
+    desc: go vet is a Makefile target and part of make bullseye / pre-release
+    state: present
+    cadence: continuous
+    enforce: warning
+    tier: 2
+    evidence: {make_target: vet}
+
+  - id: quality.format
+    dim: quality
+    desc: gofmt-check is a Makefile target (gofmt -l) and part of make bullseye
+    state: present
+    cadence: continuous
+    enforce: warning
+    tier: 2
+    evidence: {make_target: fmt-check}
+
+  - id: quality.lint
+    dim: quality
+    desc: staticcheck / golangci-lint in CI
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: No golangci-lint config or CI job; local gate is gofmt + go vet.
+    evidence: {absent: {scanner: {tool: golangci-lint}}}
+
+  - id: quality.ci-format
+    dim: quality
+    desc: gofmt-clean is enforced in GitHub Actions
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: >-
+      fmt-check exists locally but is not a release.yml (or PR) step. Entropy
+      audit 2026-08-22 found gofmt drift on HEAD.
+    evidence: {absent: {ci_step: {workflow: release.yml, name: Format}}}
+
+  # =========================== DEPENDENCY HEALTH ==========================
+  - id: deps.lockfile
+    dim: deps
+    desc: go.sum committed for the root module
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: go.sum}}
+
+  - id: deps.dependabot
+    dim: deps
+    desc: Dependabot (or equivalent) keeps Go modules and Actions current
+    state: planned
+    cadence: periodic:30d
+    enforce: informational
+    tier: 3
+    reason: No .github/dependabot.yml; GitHub Dependabot security updates are disabled.
+    evidence: {absent: {file: {path: .github/dependabot.yml}}}
+
+  # ========================== RELEASE & VERSIONING =======================
+  - id: release.ci-built
+    dim: release
+    desc: Release tarball (spyder + ios + spyder-killusbmuxd) is built by CI
+    state: present
+    cadence: per-release
+    enforce: warning
+    tier: 2
+    evidence: {ci_job: release.yml#build}
+
+  - id: release.homebrew
+    dim: release
+    desc: Published to the Homebrew tap on release
+    state: present
+    cadence: per-release
+    enforce: informational
+    tier: 2
+    evidence: {ci_job: release.yml#homebrew}
+
+  - id: release.player
+    dim: release
+    desc: Spyder player binary is built and uploaded with the release tarball
+    state: planned
+    cadence: per-release
+    enforce: informational
+    tier: 3
+    reason: >-
+      Player is an in-tree product (`make player`) but is not a release.yml
+      step and is not in the Homebrew tarball.
+    evidence: {absent: {ci_step: {workflow: release.yml, name: Build player}}}
+
+  - id: release.changelog
+    dim: release
+    desc: A maintained CHANGELOG records user-visible changes per release
+    state: planned
+    cadence: per-release
+    enforce: warning
+    tier: 3
+    reason: History lives in git + GitHub release notes; no curated CHANGELOG.md.
+    evidence: {absent: {file: {path: CHANGELOG.md}}}
+
+  # ============================ GOVERNANCE / META ========================
+  - id: governance.license
+    dim: governance
+    desc: Apache-2.0 LICENSE present
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: LICENSE, matches: 'Apache License'}}
+
+  - id: governance.readme
+    dim: governance
+    desc: README present and current
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: README.md}}
+
+  - id: governance.gitignore
+    dim: governance
+    desc: .gitignore covers bin/, agent state, Xcode userdata, go-ios scratch
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: .gitignore}}
+
+  - id: governance.squash-only
+    dim: governance
+    desc: Repo is squash-merge only, with delete-branch-on-merge
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 2
+    evidence: {gh_setting: {key: allow_merge_commit, equals: false}}
+
+  - id: governance.notice
+    dim: governance
+    desc: NOTICE attributes bundled go-ios and other third-party software
+    state: present
+    cadence: per-release
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: NOTICE}}
+
+  - id: governance.security-md
+    dim: governance
+    desc: SECURITY.md documents the vulnerability-disclosure process
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: Public repo without a published disclosure policy.
+    evidence: {absent: {file: {path: SECURITY.md}}}
+
+  - id: governance.codeowners
+    dim: governance
+    desc: CODEOWNERS file present
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: Single-owner repo; no CODEOWNERS.
+    evidence: {absent: {file: {path: .github/CODEOWNERS}}}
+
+  # ================================= BUILD ===============================
+  - id: build.makefile
+    dim: build
+    desc: Makefile `build` produces bin/spyder, bin/ios, and bin/spyder-killusbmuxd
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {make_target: build}
+
+  - id: build.go-version
+    dim: build
+    desc: Go language version pinned in go.mod (1.26.1)
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: go.mod, matches: '(?m)^go 1\.26'}}
+
+  - id: build.reproducible-lock
+    dim: build
+    desc: Committed go.sum makes the module graph reproducible
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: go.sum}}
+
+  - id: build.player
+    dim: build
+    desc: Makefile `player` builds the in-tree C++ stream glass
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {make_target: player}
+
+  # ============================ DOCUMENTATION ============================
+  - id: docs.readme
+    dim: docs
+    desc: Root README documents install, MCP app_exec, and the brew daemon
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: README.md}}
+
+  - id: docs.agents-guide
+    dim: docs
+    desc: agents-guide.md is the embedded consumer/agent install + verb guide
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: agents-guide.md}}
+
+  - id: docs.stability
+    dim: docs
+    desc: STABILITY.md catalogues the public surface
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: STABILITY.md}}
+
+  - id: docs.claude
+    dim: docs
+    desc: CLAUDE.md documents architecture, ownership, and the laptop test path
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: CLAUDE.md}}
+
+  - id: docs.ci
+    dim: docs
+    desc: Docs / godoc / markdown-link check in CI
+    state: planned
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: Docs are not built or link-checked in Actions; STABILITY.md has known drift (entropy audit ENT-003).
+    evidence: {absent: {ci_step: {workflow: release.yml, name: Docs}}}
+
+  # ============================== PERFORMANCE ===========================
+  - id: perf.benchmarks
+    dim: perf
+    desc: Go benchmark suite exists and is invocable
+    state: planned
+    cadence: per-release
+    enforce: informational
+    tier: 3
+    reason: No Benchmark functions and no make bench target.
+    evidence: {absent: {make_target: bench}}
+
+  # ============================== VCS / HISTORY =========================
+  - id: vcs.lfs
+    dim: vcs
+    desc: Player vendor static libraries are tracked via Git LFS
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {file: {path: .gitattributes, matches: 'filter=lfs'}}
+
+  - id: vcs.pre-commit-hook
+    dim: vcs
+    desc: Committed git hooks (scripts/hooks) gate locally before commit
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: No scripts/hooks; core.hooksPath is the default .git/hooks.
+    evidence: {absent: {file: {path: scripts/hooks/pre-commit}}}
+
+  # =================== AGENT-READINESS / ONBOARDING ====================
+  - id: agent.claude-md
+    dim: agent
+    desc: CLAUDE.md present (project conventions discoverable by agents)
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: CLAUDE.md}}
+
+  - id: agent.bullseye
+    dim: agent
+    desc: bullseye.yaml present (convergence targets discoverable)
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: bullseye.yaml}}
+
+  - id: agent.help-agent
+    dim: agent
+    desc: CLI exposes help-agent and embeds agents-guide.md
+    state: present
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    evidence: {file: {path: main.go, matches: 'help-agent'}}
+
+  - id: agent.agents-md
+    dim: agent
+    desc: AGENTS.md present (shared multi-tool instruction file)
+    state: planned
+    cadence: once-must-hold
+    enforce: warning
+    tier: 3
+    reason: Conventions live in CLAUDE.md + agents-guide.md; no AGENTS.md yet.
+    evidence: {absent: {file: {path: AGENTS.md}}}
