@@ -143,7 +143,7 @@ terminate_app(device="tiltbuggy-desktop", bundle_id="com.squz.tiltbuggy")
 ```
 
 Desktop targets support the launch/monitor surface (List, launch_app,
-terminate_app, is_running, app_pid, logs from captured stdout/stderr) plus the
+terminate_app, is_running, logs from captured stdout/stderr) plus the
 full app-channel. Device-only operations (screenshot via DTX, rotate, crashes,
 screen recording, install/uninstall, network shaping) return a clear
 "not supported on desktop" — use the app-channel equivalents (e.g.
@@ -210,7 +210,7 @@ spyder verb available as a builtin.
 | `script` | string | Inline Starlark source. Provide this **or** `script_path`. |
 | `script_path` | string | Durable library name (e.g. `skeleton`), `bundled:name`, or filesystem path to a `.star` file (🎯T108). |
 | `params` | object | Optional string map injected as the Starlark global `params`. |
-| `max_duration_ms` | number (optional) | Wall-clock cap in ms. Default 30 000; max 120 000. |
+| `max_duration_ms` | number (optional) | Wall-clock cap in ms. Default 30 000; max 600 000 (10 min). |
 
 **Result model:** an ordered list of emitted values returned as MCP content
 blocks. A value is emitted by `emit(x)` OR by being the **final top-level
@@ -249,9 +249,9 @@ level; variables, dict/list indexing, comparisons, and arithmetic work. No
 `while` and no recursion — by design.
 
 **Caps (liveness, to protect the agent's tool slot):** default 30 s
-wall-clock, max 120 s via `max_duration_ms`; plus a Starlark step budget. On
-breach, whatever was emitted so far is returned with an error note — never a
-hang.
+wall-clock, max 600 000 ms (10 min) via `max_duration_ms`; plus a Starlark
+step budget. On breach, whatever was emitted so far is returned with an
+error note — never a hang.
 
 **Errors:** a verb that fails aborts the script, reported as an error result
 citing the script position.
@@ -435,16 +435,22 @@ record_stop(id="<that id>", owner="me")
 
 ## Builtin reference
 
+This table is the Starlark/REST verb set from `Handler.toolHandlers`
+(`app_exec` is the MCP/REST entry point and is **not** a nested builtin).
+`health()`, `sleep`, `emit`, and `help()` are Starlark helpers, not REST
+verbs.
+
 All builtins accept a `device` parameter that resolves against the inventory
 (alias, raw UUID, or raw serial). The exception is `devices`, which lists
-everything it can see.
+everything it can see. Also `session_id`-addressed app-channel verbs, and
+zero-arg verbs such as `reservations` / `list_scripts`.
 
 Arguments below are shown in keyword-call form. A `?` suffix means optional.
 
 | Builtin | Purpose | Notes |
 |---|---|---|
 | `devices(platform?)` | List connected iOS + Android devices, annotated with inventory alias. iOS-17+ devices visible to USBMux but whose RSD tunnel hasn't settled yet appear with `tunnel_pending: true` (🎯T84) — they show up rather than disappearing during the settling window, but DTX-backed tools (screenshot, launch_app, …) may fail with a clear "tunnel not ready" error until the flag clears. USB-attached physical phones/tablets also carry `usb_speed` (IOKit negotiated Device Speed: `"480 Mb/s"`, `"5 Gb/s"`, `"10 Gb/s"`), `usb_ceiling` (highest speed observed for that serial), and `usb_anomaly` (true only when live < ceiling) (🎯T131 / 🎯T131.1). Wireless ADB, iOS Wi-Fi, simulators, emulators, and desktop omit those fields. | `platform` filter: `ios`, `android`, or `all` (default). |
-| `resolve(device)` | Symbolic name → structured `Entry` with all known IDs. | Unknown raw inputs are echoed back classified. |
+| `resolve(name?, selector?)` | Symbolic name → structured `Entry` with all known IDs. Exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`). | Unknown raw inputs are echoed back classified. With `selector`, returns the entry of the first matching live device. |
 | `device_state(device)` | Battery level, charging, thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). |
 | `screenshot(device, owner?, path?, inline?)` | PNG of the current screen. Default: saved under `~/.spyder/screenshots/` (or `path`), returning `{path, width, height, bytes}`; `inline=True` returns the image inline instead (🎯T114). | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
 | `list_apps(device)` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
@@ -459,7 +465,8 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `input_swipe(device, x1, y1, x2, y2, duration_ms?, owner?)` | **Capability:** OS pixel swipe. Same Android/iOS split as tap. | CLI: `spyder input-swipe`. |
 | `install_app(device, path)` | Install a .app/.ipa (iOS) or .apk (Android). Path must not contain `..` and must exist. | **Agents must use this tool (or `spyder install`), not shell out to `devicectl`/`adb`.** iOS: in-process go-ios `zipconduit` (works on iOS 16 lockdown and iOS 17+ RSD; CoreDevice's installapp capability is incomplete on some devices). Android: `adb install -r`, after best-effort settings that suppress Play Protect "Send app for a security check?" prompts on sideload (`verifier_verify_adb_installs=0`, `package_verifier_user_consent=-1`, `upload_apk_enable=0`). |
 | `uninstall_app(device, bundle_id)` | Remove an app by bundle id / package name. | iOS: go-ios `installation_proxy`; Android: `adb uninstall`. |
-| `deploy_app(device, path, bundle_id?, env?)` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid, replaced, session_id?, channel_port?}` (🎯T121): `replaced` reports whether the install overwrote a build already on the device; `session_id`/`channel_port` appear when the app completes the app-channel handshake within the post-launch wait — scripts can branch on the result without a second `app_channel_list` call. Optional `env` dict forwarded to the launch step — see "Launching with env" below. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. |
+| `deploy_app(device, path, bundle_id?, env?)` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid, replaced, session_id?, channel_port?}` (🎯T121): `replaced` reports whether the install overwrote a build already on the device; `session_id`/`channel_port` appear when the app completes the app-channel handshake within the post-launch wait — scripts can branch on the result without a second `app_channel_list` call. Optional `env` dict forwarded to the launch step — see "Launching with env" below. | `bundle_id` is derived from Info.plist (iOS) or `aapt dump badging` (Android) if not supplied. iOS install uses go-ios's `zipconduit`; launch + pid-verify use `appservice` + DVT and need the bundled tunnel. Fail-fast on install error; "not running" from terminate is ignored. Refuses the spyder stream player — use `launch_player`. |
+| `launch_player(device, server?, path?, owner?)` | Deploy/launch the spyder stream glass with `STREAM_ADDR` and server name injected (🎯T100.3). Returns `{device, platform, server, stream_addr, bundle_id, pid?, path?, variant?}`. | Picks the sole registered stream server when `server` is omitted; errors if zero or multiple. Optional `path` overrides the platform player artifact. Reservation-gated. CLI: `spyder launch-player`. |
 | `ensure_session(device, bundle_id?, path?, owner?, env?, timeout_ms?)` | One verb from device+bundle to a **ready app-channel session** (🎯T118): installs `path` if the bundle isn't on the device, launches with `SPYDER_APP_CHANNEL` wired, waits for the app's `hello`, and returns `{session_id, channel_port, pid, deployed, launched}`. Idempotent — a healthy existing session is returned untouched (`deployed=false, launched=false`) with no reservation needed. | Replaces the manual `deploy_app` → `launch_app` → `sleep` → `app_channel_list` dance. `bundle_id` optional when `path` is given (derived). Default handshake wait 15 s (`timeout_ms`, max 60 000). |
 | `reserve(device?, selector?, owner, ttl_seconds?, note?)` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
 | `release(device, owner)` | Free a reservation. | Non-owner releases conflict. Also stops any active recording owned by the releaser. Any applied network profile is cleared automatically. |
@@ -504,6 +511,10 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_sensor_status(session_id?, sensor?)` | Query `{suppressed, value?}`. | |
 | `app_state(session_id?, slice, select?)` | Query a named state slice (`scene`, `physics`, `hud`, …). Slices the app advertises in `hello` are valid. | `select` is an optional jq expression evaluated server-side. |
 | `wait_state(session_id? \| device+bundle_id?, slice, select?, timeout_ms?, poll_ms?)` | Poll `app_state` until the jq `select` is truthy; return that value (🎯T129). | Timeout error includes the last observed value. Prefer `select="select(.present and .active)"` so the object comes back. Replaces hand-rolled `for`+`sleep` waits. `assert_*` are unchanged. |
+| `app_tweak_list(session_id?)` | List the app's tweaks (name, current value, default, metadata) over the app-channel (🎯T91.2). | |
+| `app_tweak_get(session_id?, name)` | Get one tweak by name. | |
+| `app_tweak_set(session_id?, name, value)` | Set a tweak; the app applies it and persists via its tweak DB. | `value` is any JSON type the tweak accepts. |
+| `app_tweak_reset(session_id?, name?)` | Reset one tweak (by `name`) or all tweaks (`name` omitted) to defaults. | |
 | `state_query(session_id?, slice?, select?)` | **Read-only** session-state probe (🎯T122). Never mutates game state — use it instead of `place_active` or other game commands to learn what's active. With `slice` omitted the app returns its default session-state summary (ge convention: `mode`, `active_adm`, `current_index`, `placed_count`, `view` lon/lat, `paused`). | Observational; always succeeds regardless of who holds the device reservation. Also accepts `device`+`bundle_id` addressing. |
 | `app_save_state(session_id?)` | Serialize app state. Returns a base64-encoded blob; the app picks the schema. | |
 | `app_restore_state(session_id?, state_b64)` | Deserialize app state from a base64 blob. | |
@@ -527,8 +538,11 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `app_spawn(session_id?\|device+bundle_id, game?, owner?, env?, instance_id?)` | Start a game and return a **ready session**: factory fork (with `game=`, 🎯T92.1) or device launch of an installed bundle (no `game=`, 🎯T117). | Device path is reservation-gated (`owner=`); returns `already_running=true` with the existing session if one is live. See "Starting games" above. |
 | `app_acquire(session_id?\|device+bundle_id, game, owner?)` | Reserve a factory instance, spawning one if none is idle and capacity allows (🎯T92.1). | Release with `app_release`. |
 | `app_release(session_id)` | Release an acquired instance back to its factory pool. | GC'd after a linger window unless re-acquired. |
-| `is_running(device, bundle_id)` | Check whether an app is currently running. | |
-| `health()` | Live daemon / subprocess / device health snapshot as a dict. | Same source of truth as `spyder status` and `GET /api/v1/health`. Read-only; takes no args. |
+| `is_running(device, bundle_id)` | Check whether an app is currently running. | Returns `{state: "running"\|"not_running"\|"not_installed", pid?}`. Read-only. |
+| `device_setting(device, key, value?, restore?, get?, owner?)` | Allowlisted Android system setting (🎯T130). Key `refresh_rate` writes peak+min. `restore=true` deletes the pin. Unknown keys never reach adb. | iOS: same verb, fails closed `"not supported"`. CLI: `spyder device-setting`. |
+| `health()` | Live daemon / subprocess / device health snapshot as a dict. | Starlark-only helper (not a REST verb). Same source of truth as `spyder status` and `GET /api/v1/health`. Read-only; takes no args. |
+| `list_scripts()` | List durable host Starlark recipes (bundled + `~/.spyder/scripts`). | 🎯T108. CLI: `spyder list-scripts`. |
+| `run_script(path?, name?, params?, max_duration_ms?)` | Load and run a durable `.star` by library name, `bundled:name`, or filesystem path. Same engine as `app_exec`. | `max_duration_ms` default 30 000, max 600 000. CLI: `spyder run-script`. |
 | `record_start(device, owner?)` | Begin a screen recording (mp4). Returns immediately; recording runs in background. | iOS simulators only — physical devices return an immediate error. Observational; not gated by device reservation. Only one recording per device at a time. The `owner` you pass here is the one that must stop the recording. |
 | `record_stop(device, owner?)` | Stop the active recording and return the local mp4 path. | Owner must match the one that started the recording (not the device reservation). Waits for the recorder to flush. On Android, pulls the file from the device. |
 | `network(device, owner, profile?, clear?)` | Apply or clear network condition shaping. | Android emulators only — see gotchas below. |
@@ -537,7 +551,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `log_capture_get(session_id)` | Peek at buffered lines; clears the buffer. Capture continues. | |
 | `log_capture_stop(session_id)` | Stop and drain remaining lines. | |
 | `log_capture_list()` | List all active capture sessions. | Read-only. |
-| `crashes(device)` | Fetch recent crash reports from the device. | |
+| `crashes(device, since?, process?, bundle_id?, owner?)` | Fetch crash reports. iOS: go-ios `crashreport`. Android: tombstones + `logcat -b crash`. | `since` is RFC3339, a Go duration (`-15m`), or `launch` (requires `bundle_id`). `bundle_id` and `process` are mutually exclusive. Read-only. |
 
 ## Launching with env
 

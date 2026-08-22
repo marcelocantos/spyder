@@ -78,8 +78,10 @@ expect the release build.
 
 ## Architecture
 
-- **main.go** — single entrypoint. Subcommands: `serve` (HTTP MCP
-  server), `run` (test-wrapper), `version`.
+- **main.go** — single entrypoint. Subcommands: `serve` (HTTP MCP + REST
+  server), `run` (test-wrapper), `doctor`, `status`, `version`,
+  `help-agent`, plus device-tool CLI proxies that POST to the daemon
+  (`devices`, `screenshot`, `launch-player`, … — see the usage string).
 - **internal/daemon** — wires `github.com/mark3labs/mcp-go`'s
   `MCPServer` and `StreamableHTTPServer` with spyder's tool handlers.
   Spawns the bundled `ios` tunnel as a child process at startup;
@@ -91,12 +93,16 @@ expect the release build.
   caches the result, hands callers a populated DeviceEntry that
   go-ios's instruments / installationproxy / appservice / syslog
   packages expect.
-- **internal/mcp** — `Handler` + `Definitions()`. Dispatches tool calls.
-- **internal/device** — `Adapter` interface; `ios.go` and `android.go`
-  implementations. iOS uses go-ios as a Go module dependency
-  (`installationproxy`, `instruments`, `appservice`, `syslog`,
-  `crashreport`, `zipconduit`); Android shells out to `adb`.
-- **internal/inventory** — symbolic name resolution, JSON-backed.
+- **internal/mcp** — `Handler` + `Definitions()`. `Definitions()`
+  advertises a single MCP tool, `app_exec` (🎯T88). `toolHandlers()`
+  is the verb table (REST `POST /api/v1/<verb>` and Starlark builtins).
+- **internal/device** — `Adapter` interface; `ios.go`, `android.go`,
+  and `desktop.go` implementations. iOS uses go-ios as a Go module
+  dependency (`installationproxy`, `instruments`, `appservice`,
+  `syslog`, `crashreport`, `zipconduit`); Android shells out to `adb`;
+  desktop execs a local binary.
+- **internal/inventory** — symbolic name resolution, JSON-backed
+  (iOS / Android / desktop entries).
 - **internal/paths** — `~/.spyder/` path conventions.
 
 ## Device Inventory Format
@@ -123,8 +129,9 @@ JSON array at `~/.spyder/inventory.json`:
 - Apache 2.0, short-form SPDX headers on every .go file.
 - Go 1.26.1, `go.mod` at repo root (flat layout — no nested `go/` subdir).
 - `~/.spyder/` holds runtime state (inventory).
-- Tool names are unprefixed (`devices`, not `spyder_devices`); MCP clients
-  add the server-name prefix at their end.
+- MCP advertises `app_exec` only (clients see a server-prefixed name
+  such as `mcp__spyder__app_exec`). REST and Starlark use unprefixed
+  verb names from `toolHandlers()` (`devices`, not `spyder_devices`).
 
 ## Testing
 

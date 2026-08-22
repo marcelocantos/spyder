@@ -7,10 +7,12 @@ tracks the state of each piece relative to a future 1.0 lock-in.
 
 At 1.0, spyder commits to backwards compatibility for:
 
-- The **MCP tool surface** (names, input schemas, output shapes).
+- The **MCP tool surface** — the single advertised tool `app_exec`
+  (name, input schema, output shape). Per-verb names are **not** MCP
+  tools (🎯T88); they are REST paths and Starlark builtins.
 - The **CLI subcommand surface** (`spyder serve`, `spyder run`, `spyder
-  version`, `spyder help-agent`, plus the device-tool subcommands
-  listed below, flag names, exit codes).
+  doctor`, `spyder status`, `spyder version`, `spyder help-agent`, plus
+  the device-tool subcommands listed below, flag names, exit codes).
 - The **inventory file format** (`~/.spyder/inventory.json`).
 - The **HTTP MCP endpoint** (`/mcp`, port default, streamable-HTTP transport).
 - The **REST endpoint** (`/api/v1/<tool>` POST + JSON, same listener).
@@ -39,26 +41,47 @@ installation) runs in-process.
 
 ### MCP tools
 
+`Definitions()` advertises **only** `app_exec`. Callers that look for
+MCP tools named `devices`, `screenshot`, etc. will not find them on
+the wire.
+
 | Tool | Input schema | Output | Stability |
+|---|---|---|---|
+| `app_exec` | `{script?: string, script_path?: string, params?: object, max_duration_ms?: number}`. Exactly one of `script` or `script_path`. Default wall-clock 30 s; `max_duration_ms` capped at **600000** (10 min). | Ordered MCP content blocks from `emit()` and/or the final top-level expression. Screenshot verbs default to a filesystem-path dict (🎯T114); `inline=true` yields an image block. | Stable (🎯T88) |
+
+Starlark-only helpers (not REST, not in `toolHandlers`): `sleep`, `emit`,
+`health()`, `help()`, plus 🎯T108/T109 `assert_*` / `find_*`.
+
+### REST / Starlark verbs
+
+The runtime source of truth is `Handler.toolHandlers`. Every name below
+is `POST /api/v1/<name>` and a Starlark builtin inside `app_exec`
+(`app_exec` itself is a REST verb too, but is **not** nested as a
+builtin). `log_stream` is REST SSE only and is not in the verb table.
+
+| Verb | Input schema | Output | Stability |
 |---|---|---|---|
 | `devices` | `{platform?: "ios"\|"android"\|"all"}` (default `all`). | JSON array of `device.Info` (`uuid`, `name`, `platform`, `model`, `os`, `alias`, optional `tunnel_pending`, optional `usb_speed` / `usb_ceiling` / `usb_anomaly`). USB fields are omitempty (🎯T131 / 🎯T131.1): `usb_speed` is the IOKit Device Speed of a USB-attached physical phone/tablet (`"480 Mb/s"`, `"5 Gb/s"`, `"10 Gb/s"`); `usb_ceiling` is the highest speed observed for that serial; `usb_anomaly` is true only when live < ceiling. Wireless ADB, iOS Wi-Fi, simulators, emulators, and desktop omit them. When `platform=all` and an adapter errors, wraps as `{devices: [...], errors: [...]}`. | Stable |
 | `resolve` | `{name?: string, selector?: string}`. Exactly one of name (alias / raw UUID) or selector (JSON predicate, same grammar as `reserve`'s selector) required. | JSON-encoded `inventory.Entry` (`alias`, `platform`, `ios_uuid`, `ios_coredevice`, `android_serial`, `notes`). With selector, returns the entry of the first matching live device. | Needs review — passthrough shape for unknown IDs may evolve |
 | `device_state` | `{device: string}` (required; alias or raw UUID/serial). | JSON-encoded `device.State` (`battery_level?`, `charging?`, `thermal_state?`, `foreground_app?`, `storage_free_mb?`, `notes?`). | Needs review — pointer-typed optionals, field additions expected |
-| `screenshot` | `{device: string, owner?: string}` (device required; owner for reservation auth). | MCP image content block (base64 PNG, `image/png`). iOS 17+ devices route through go-ios's DVT `ScreenshotService` over the bundled userspace tunnel; spyder spawns the tunnel automatically as a child process. Pre-iOS-17 devices are not currently supported. Surfaces a clear error when the bundled `ios` binary couldn't be found or when the tunnel hasn't started. | Stable |
+| `screenshot` | `{device: string, owner?: string, path?: string, inline?: bool}` (device required; owner archives into the active run). | Default (🎯T114): JSON `{device, path, width, height, bytes}` — PNG written under `~/.spyder/screenshots` (or `path`). `inline=true` returns an MCP image content block (base64 PNG, `image/png`). iOS uses go-ios DVT `ScreenshotService` (iOS 17+ needs the bundled tunnel; iOS ≤16 uses lockdown and needs the Developer Disk Image mounted). Android uses `adb shell screencap`. Read-only; not reservation-gated. | Stable |
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
-| `launch_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
+| `launch_app` | `{device: string, bundle_id: string, owner?: string, env?: object}` (device and bundle_id required; owner for reservation auth). | JSON `{device, bundle_id, session_id?, channel_port?}` — session fields appear when the app completes the app-channel handshake (🎯T119). | Stable |
 | `is_running` | `{device: string, bundle_id: string}` (both required). | JSON `{state: "running"\|"not_running"\|"not_installed", pid?: number}`. Read-only; not subject to reservations. iOS uses go-ios's `appservice.ListProcesses` cross-referenced with `installation_proxy.BrowseAllApps` to map bundle id → .app folder → running pid; Android uses `adb shell pidof`. | Stable (🎯T38.1) |
 | `terminate_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required; owner for reservation auth). | Text confirmation. | Stable |
 | `install_app` | `{device: string, path: string, owner?: string}` (device and path required). Path must not contain `..` and must exist. | Text confirmation. | Stable |
 | `uninstall_app` | `{device: string, bundle_id: string, owner?: string}` (device and bundle_id required). | Text confirmation. | Stable |
-| `deploy_app` | `{device: string, path: string, bundle_id?: string, owner?: string}` (device and path required). `bundle_id` derived from Info.plist (iOS) or `aapt dump badging` (Android) if omitted. | JSON `{bundle_id: string, pid: number}`. | Stable |
+| `launch_player` | `{device: string, server?: string, path?: string, owner?: string}` (device required). | JSON `{device, platform, server, stream_addr, bundle_id, pid?, path?, variant?}`. Injects `STREAM_ADDR` / server name. Picks the sole registered stream server when `server` is omitted; errors if zero or multiple. | Stable (🎯T100.3) |
+| `deploy_app` | `{device: string, path: string, bundle_id?: string, owner?: string, env?: object}` (device and path required). `bundle_id` derived from Info.plist (iOS) or `aapt dump badging` (Android) if omitted. Refuses the spyder stream player — use `launch_player`. | JSON `{bundle_id: string, pid: number, replaced: bool, session_id?: string, channel_port?: number}` (🎯T121). | Stable |
 | `reserve` | `{device?: string, selector?: string, owner: string, ttl_seconds?: number, note?: string}`. Exactly one of device (literal pin) or selector (JSON predicate: platform, model_family?, os_min?, os_max?, orientation_capable?, tags?, attrs?) required. owner is always required. | JSON-encoded `reservations.Reservation` (device, owner, expires_at, note, created_at). | Needs review — selector grammar may evolve |
 | `release` | `{device: string, owner: string}`. | Text confirmation. Applied network profiles cleared automatically. | Stable |
 | `renew` | `{device: string, owner: string, ttl_seconds?: number}`. | JSON-encoded `reservations.Reservation` with refreshed expires_at. | Stable |
 | `reservations` | (no args). | JSON array of active `Reservation` records. | Stable |
+| `reservation_status` | `{device: string, owner?: string}` (device required). | JSON `{reserved, holder?, expires_at?, caller_holds, would_gate, gated_verbs, policy}`. Read-only; never gated itself. | Stable (🎯T116) |
 | `runs_list` | (no args). | JSON array of `runs.Run` records (id, device, owner, note, created_at, closed_at?, artefacts?), newest first. | Needs review — field additions expected as more artefact-producing tools land |
 | `runs_show` | `{run_id: string}`. | JSON-encoded `runs.Run` with full artefact list. | Needs review — same caveat as `runs_list` |
 | `rotate` | `{device: string, orientation: string, owner?: string}` (device and orientation required). Orientation: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. | Text confirmation. | Needs review — simulator/emulator-only; physical device error wording may evolve |
+| `crashes` | `{device: string, since?: RFC3339\|duration\|"launch", process?: string, bundle_id?: string, owner?: string}` (device required). `bundle_id` and `process` are mutually exclusive; `since=launch` requires `bundle_id`. | JSON array of crash reports. iOS: go-ios `crashreport`; Android: tombstones + `logcat -b crash`. Read-only. | Needs review |
 | `baseline_update` | `{suite, case, variant?, screenshot_path?, screenshot_base64?, manifest?}`. One of screenshot_path/base64 required. | Text confirmation. | Needs review — variant convention and manifest schema v1 may gain fields |
 | `diff` | `{suite, case, variant?, screenshot_path?, screenshot_base64?, manifest?, pixel_tolerance?, owner?, device?}`. | JSON-encoded `visualdiff.Report`. | Needs review — SSIM stubbed (NaN); VLM interface unimplemented; report shape expected to gain fields |
 | `baselines_list` | `{suite: string}`. | JSON array of `{case, variant, has_png, has_manifest}`. | Needs review |
@@ -75,6 +98,7 @@ installation) runs in-process.
 | `pool_list` | (no args). | JSON array of `pool.TemplateStatus` (`template`, `platform`, `available`, `running`, `reserved`, `instances[]`). Returns "pool not configured" error when `~/.spyder/pool.yaml` is absent. | Needs review |
 | `pool_warm` | `{template: string, count: number}`. | Text confirmation. | Needs review |
 | `pool_drain` | `{template: string}`. | Text confirmation. | Needs review |
+| `pool_gc` | (no args). | JSON list of deleted and skipped orphaned `spyder-pool-*` simulators/AVDs. Booted orphans are skipped. | Needs review |
 | `record_start` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with subprocess PID and output path. | Needs review — iOS simulator UDID must be passed directly; iOS physical devices return an immediate error. |
 | `record_stop` | `{device: string, owner?: string}` (device required; owner for reservation auth). | Text confirmation with the local mp4 path. | Needs review |
 | `network` | `{device: string, owner: string, profile?: string}` or `{device: string, owner: string, clear: true}`. Exactly one of profile or clear required. | Text confirmation. | Beta — Android emulator only; iOS and physical Android return clear errors. |
@@ -86,7 +110,44 @@ installation) runs in-process.
 | `input_swipe` | `{device, x1, y1, x2, y2, duration_ms?, owner?}`. | Same Android/iOS split as tap. | Stable (🎯T111/T112) |
 | `device_setting` | `{device, key, value?, restore?, get?, owner?}`. Allowlist: `refresh_rate` (Android peak+min). | Android: JSON `{device, platform, result}` with action set/restore/get and current values. Restore **deletes** the pin. Unknown keys rejected (no adb shell). iOS: `"not supported"`. | Stable (🎯T130 / 🎯T112) — platform-honest |
 | `wait_state` | `{session_id? \| device+bundle_id?, slice, select?, timeout_ms?, poll_ms?}`. | JSON `{slice, select, value, attempts, elapsed_ms}` where `value` is the jq result that became truthy. Timeout error includes **last observed** value. | Stable (🎯T129) |
-| `logs` | `{device: string, since?: RFC3339, until?: RFC3339, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); see *iOS log live-window contract* below. Field set and timestamp precision may evolve |
+| `logs` | `{device: string, since?: RFC3339\|duration\|"launch"\|"now", until?: RFC3339\|duration\|"now", bundle_id?: string, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). `bundle_id` and `process` are mutually exclusive. | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); see *iOS log live-window contract* below. Field set and timestamp precision may evolve |
+| `log_capture_start` | `{device: string, owner?, bundle_id?, process?, subsystem?, tag?, regex?, ttl_sec?, max_bytes?, max_lines?}`. | JSON `{session_id, started_at, expires_at}`. | Needs review (🎯T60) |
+| `log_capture_get` | `{session_id: string}`. | Buffered lines since start or last get; capture continues. | Needs review |
+| `log_capture_stop` | `{session_id: string}`. | Remaining lines; session is gone. | Needs review |
+| `log_capture_list` | (no args). | Metadata for every live capture session. | Needs review |
+| `app_channel_stop` | `{listener_id: string}`. | Text confirmation. Tears down the listener and its sessions. | Needs review |
+| `app_channel_list` | (no args). | JSON listeners + sessions (listener_id, device_id, bundle_id, port, owner, idle_since, sessions[]). | Needs review |
+| `app_ping` | `{session_id? \| device+bundle_id?}`. | App-seen timestamp. | Needs review |
+| `app_quit` | `{session_id? \| device+bundle_id?, timeout_ms?}`. | Clean-exit ack; falls back to `terminate_app` on timeout. | Needs review |
+| `app_flush` | `{session_id? \| device+bundle_id?}`. | Ack after draining pending app output. | Needs review |
+| `app_background` / `app_foreground` / `app_low_memory` | `{session_id? \| device+bundle_id?}`. | Text confirmation. | Needs review |
+| `app_pause` / `app_resume` | `{session_id? \| device+bundle_id?}`. | Text confirmation. | Needs review |
+| `app_step` | `{session_id? \| device+bundle_id?, frames?}`. | Advances N frames while paused (default 1). | Needs review |
+| `app_speed` | `{session_id? \| device+bundle_id?, multiplier: number}`. | Text confirmation. | Needs review |
+| `app_input` | `{session_id? \| device+bundle_id?, type: string, …}`. `type`: `finger_down` / `finger_up` / `finger_motion` / `key_down` / `key_up` / `accel`. | Text confirmation. | Needs review |
+| `app_sensor_suppress` / `app_sensor_set` / `app_sensor_unsuppress` / `app_sensor_status` | `{session_id? \| device+bundle_id?, sensor?: "accel", value?: [x,y,z]}`. `value` required for set. | Status or confirmation. Only `accel` today. | Needs review |
+| `ensure_session` | `{device: string, bundle_id?, path?, owner?, env?, timeout_ms?}`. | JSON `{session_id, channel_port, pid, deployed, launched}`. Idempotent if a healthy session exists. | Stable (🎯T118) |
+| `state_query` | `{session_id? \| device+bundle_id?, slice?, select?}`. | App session-state summary (or named slice); observational; not reservation-gated. | Stable (🎯T122) |
+| `app_state` | `{session_id? \| device+bundle_id?, slice: string, select?}`. | Named state slice (optionally jq-filtered). | Needs review |
+| `app_tweak_list` | `{session_id? \| device+bundle_id?}`. | Tweak catalogue (name, value, default, metadata). | Needs review (🎯T91.2) |
+| `app_tweak_get` | `{session_id? \| device+bundle_id?, name: string}`. | One tweak. | Needs review |
+| `app_tweak_set` | `{session_id? \| device+bundle_id?, name: string, value: any}`. | Confirmation after apply/persist. | Needs review |
+| `app_tweak_reset` | `{session_id? \| device+bundle_id?, name?}`. Omit `name` to reset all. | Confirmation. | Needs review |
+| `app_spawn` | `{session_id? \| device+bundle_id?, game?, owner?, env?, instance_id?}`. Factory path needs `game`; device path launches an installed bundle. | Ready session (`already_running?` on the device path). | Needs review (🎯T92.1 / 🎯T117) |
+| `app_acquire` | `{session_id? \| device+bundle_id?, game: string, owner?}`. | Reserved factory instance session. | Needs review (🎯T92.1) |
+| `app_release` | `{session_id: string}`. | Confirmation. | Needs review |
+| `games` | `{device?}`. | Catalog: desktop targets, factories, and (with `device`) installed mobile bundles. | Needs review (🎯T92 / 🎯T117) |
+| `app_save_state` | `{session_id? \| device+bundle_id?}`. | JSON `{state_b64, size}`. | Needs review |
+| `app_restore_state` | `{session_id? \| device+bundle_id?, state_b64: string}`. | Confirmation. | Needs review |
+| `app_screenshot` | `{session_id? \| device+bundle_id?, path?, inline?}`. | Default (🎯T114): JSON `{path, width, height, format, bytes}` under `~/.spyder/screenshots`. `inline=true` → MCP image block. | Stable |
+| `app_state_slices` | `{session_id? \| device+bundle_id?}`. | Slice catalogue from hello. | Needs review |
+| `app_state_describe` | `{session_id? \| device+bundle_id?, slice: string}`. | Types-only structural sketch of the slice. | Needs review |
+| `app_state_capture_start` | `{session_id? \| device+bundle_id?, slice: string, interval_ms?, select?}`. | `{capture_id}`. Default interval 100 ms, min 10. | Needs review |
+| `app_state_capture_get` | `{capture_id: string, select?}`. | Drained samples; capture continues. | Needs review |
+| `app_state_capture_stop` | `{capture_id: string}`. | Remaining samples; capture gone. | Needs review |
+| `app_state_capture_list` | `{session_id? \| device+bundle_id?}`. | Active captures with metadata. | Needs review |
+| `app_log_get` | `{session_id? \| device+bundle_id?, select?}`. | Structured log lines since last call. | Needs review |
+| `app_perf_get` | `{session_id? \| device+bundle_id?, select?}`. | Latest-only / push gauges (not the metrics ring). | Needs review |
 | `app_metrics_list` | `{session_id? \| device+bundle_id?, instance?}`. | JSON `{session_id, result}` where `result` is the app's metrics catalogue (ge: `{instance, series:[{name,kind},…]}` or multi-instance wrapper). | Stable (🎯T110) — requires appchannel session advertising `metrics_list` |
 | `app_metrics_arm` | `{session_id?…, series: string[] (required), capacity?: number, instance?}`. | JSON `{session_id, result}` with arm status (`armed`, `capacity`, `count`, `series`, `instance`). | Stable (🎯T110) |
 | `app_metrics_disarm` | `{session_id?…, instance?}`. | JSON `{session_id, result}` status after clear. | Stable (🎯T110) |
@@ -94,6 +155,9 @@ installation) runs in-process.
 | `app_metrics_dump` | `{session_id?…, instance?}`. | JSON `{session_id, result}` full retained-frame history (`frames`, `count`, `series`, …) — not latest-only gauges. | Stable (🎯T110) |
 | `app_methods` | `{session_id? \| device+bundle_id?, scope?: "all"\|"app"\|"engine"}`. | JSON `{session_id, app_name, app_version, scope, methods:[{name, kind, example_params?, doc?}]}` from hello. | Stable — discovery surface for engine + app-registered RPCs |
 | `app_call` | `{session_id?…, method: string (required), params?: object, timeout_ms?}`. | JSON `{session_id, method, result}` from the app's handler. | Stable — generic pass-through; method must appear in hello; not a per-game MCP tool |
+| `list_scripts` | (no args). | JSON list of durable host Starlark recipes (bundled + `~/.spyder/scripts`). | Stable (🎯T108) |
+| `run_script` | `{path?: string, name?: string, params?: object, max_duration_ms?: number}`. Same engine as `app_exec`. | Same content-block model as `app_exec`. `max_duration_ms` default 30000, max 600000. | Stable (🎯T108) |
+| `app_exec` | Same schema as the MCP tool. REST `POST /api/v1/app_exec`. Not a nested Starlark builtin. | Same as MCP `app_exec`. | Stable (🎯T88) |
 
 Error classification is part of the contract: `device not connected`, `app
 not installed`, `app not running`, the `ErrLocked` sentinel, and
@@ -151,6 +215,8 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |
 | `spyder help-agent` / `--help-agent` / `-help-agent` | Usage + embedded agents-guide.md. | Stable |
+| `spyder doctor [--fix] [--install-sudoers]` | Cross-check iOS device-stack diagnosis. `--fix` restarts usbmuxd via `spyder-killusbmuxd`. Can run without the daemon. | Stable (🎯T90 / 🎯T99) |
+| `spyder status [--json]` | HTTP client of a running daemon; prints the live health model. Does not start the daemon. | Stable (🎯T90) |
 | `spyder devices [--platform ios\|android\|all] [--json]` | REST proxy to `devices` tool. | Stable |
 | `spyder resolve (<name>\|--on PREDICATE) [--json]` | REST proxy to `resolve` tool. Positional `<name>` is treated as an alias / raw UUID. `--on PREDICATE` (or a positional that contains `=`) is parsed as a selector predicate, resolved against live devices via the daemon, and the matched inventory entry is returned. Inputs that are neither a known alias (per local inventory) nor a parseable predicate exit 15 (`ExitSelectorNotSupported`) — distinct from exit 1 for alias-known-but-resolution-failed. The CLI does the alias/predicate triage locally before round-tripping to the daemon, so unknown strings no longer get the synthetic Android-serial classification the underlying MCP `resolve` tool falls back to for legacy callers. | Stable (🎯T38.3) |
 | `spyder is-running <device> <bundle-id> [--json]` | REST proxy to `is_running`. Exits 0 (running, prints `running pid=<n>`), 20 (not installed), or 22 (installed but not running). `--json` emits the raw `{state, pid?}` body in addition to the exit code. | Stable (🎯T38.1) |
@@ -161,7 +227,8 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder terminate-app <device> <bundle-id> [--as OWNER]` | REST proxy to `terminate_app`. | Stable |
 | `spyder install <device> <path> [--as OWNER]` | REST proxy to `install_app`. | Stable |
 | `spyder uninstall <device> <bundle-id> [--as OWNER]` | REST proxy to `uninstall_app`. | Stable |
-| `spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]` | REST proxy to `deploy_app`. Derives bundle id from Info.plist (iOS) or `aapt` (Android) when `--bundle-id` is omitted. | Stable |
+| `spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]` | REST proxy to `deploy_app`. Derives bundle id from Info.plist (iOS) or `aapt` (Android) when `--bundle-id` is omitted. Refuses the stream player — use `launch-player`. | Stable |
+| `spyder launch-player <device> [--server NAME] [--path PATH] [--as OWNER]` | REST proxy to `launch_player`. | Stable (🎯T100.3) |
 | `spyder reserve (<device>\|--on PREDICATE\|--selector JSON\|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]` | REST proxy to `reserve`. Positional device = literal pin. `--on PREDICATE` = comma-separated key=value selector grammar (see "CLI selector grammar" below). `--selector` = JSON predicate. Shorthand `--platform`/`--model`/`--tag` flags build the selector inline. | Stable (positional, --on, --selector); Needs review (shorthand --platform/--model/--tag — may consolidate around --on) |
 | `spyder release <device> [--as OWNER]` | REST proxy to `release`. | Stable |
 | `spyder renew <device> [--as OWNER] [--ttl SECONDS]` | REST proxy to `renew`. | Stable |
@@ -170,6 +237,7 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder runs show <run-id> [--json]` | REST proxy to `runs_show`. | Needs review |
 | `spyder runs artefacts <run-id> [--json]` | REST proxy to `runs_show`; prints just the artefacts table. | Needs review |
 | `spyder rotate <device> --to <orientation> [--as OWNER]` | REST proxy to `rotate`. Orientation: `portrait`, `landscape-left`, `landscape-right`, `portrait-upside-down`. | Needs review |
+| `spyder crashes <device> [--since RFC3339\|-15m\|launch] [--bundle-id ID \| --process NAME] [--as OWNER] [--json]` | REST proxy to `crashes`. | Needs review |
 | `spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]` | REST proxy to `diff`. Exits 0 on pass, 1 on fail. | Needs review |
 | `spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]` | REST proxy to `baseline_update`. | Needs review |
 | `spyder sim list [--state STATE] [--json]` | REST proxy to `sim_list`. | Needs review |
@@ -184,7 +252,14 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder emu delete <name>` | REST proxy to `emu_delete`. | Needs review |
 | `spyder record <device> --start \| --stop [--as OWNER]` | REST proxy to `record_start` / `record_stop`. Starts or stops a screen recording on an iOS simulator or Android device. | Needs review |
 | `spyder net <device> [--profile NAME\|--clear] [--as OWNER]` | REST proxy to `network`. Requires exactly one of `--profile` or `--clear`. | Beta — Android emulator only. |
-| `spyder log <device> [--process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow] [--json]` | Without `--follow`: REST proxy to `logs` MCP tool (bounded JSON array). With `--follow`: SSE live stream via `POST /api/v1/log_stream`. | Needs review — iOS range quirks; live streaming is REST-only |
+| `spyder log <device> [--bundle-id ID \| --process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow \| --capture …] [--json]` | Without `--follow`: REST proxy to `logs` (bounded JSON array). With `--follow`: SSE live stream via `POST /api/v1/log_stream`. `--capture` / `--capture-get` / `--capture-stop` / `--capture-list` proxy `log_capture_*`. | Needs review — iOS range quirks; live streaming is REST-only |
+| `spyder perf-fps <device> --package PKG [--window-sec N] [--as OWNER] [--json]` | REST proxy to `perf_fps`. | Stable (🎯T111/T112) |
+| `spyder port-forward <device> start\|stop\|list …` | REST proxy to `port_forward_*`. | Stable (🎯T111/T112) |
+| `spyder input-tap <device> --x N --y N [--as OWNER]` | REST proxy to `input_tap`. Android only; iOS fails closed. | Stable (🎯T111/T112) |
+| `spyder input-swipe <device> --x1 N --y1 N --x2 N --y2 N [--duration-ms N] [--as OWNER]` | REST proxy to `input_swipe`. | Stable (🎯T111/T112) |
+| `spyder app-perf-get [--session-id ID] [--json]` | REST proxy to `app_perf_get`. | Stable (🎯T110) |
+| `spyder wait-state [--session-id ID \| --device D --bundle-id B] --slice S [--select JQ] [--timeout-ms N] [--poll-ms N] [--json]` | REST proxy to `wait_state`. | Stable (🎯T129) |
+| `spyder device-setting <device> set\|restore\|get --key refresh_rate [--value N] [--as OWNER] [--json]` | REST proxy to `device_setting`. | Stable (🎯T130) |
 | `spyder pool list [--json]` | REST proxy to `pool_list`. | Needs review |
 | `spyder pool warm <template> [--count N]` | REST proxy to `pool_warm`. `--count` defaults to 1. | Needs review |
 | `spyder pool drain <template>` | REST proxy to `pool_drain`. | Needs review |
@@ -193,8 +268,9 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
-(text tools) or write the first image content block to disk
-(`screenshot`). `--as OWNER` defaults to `filepath.Base(cwd)`.
+(text tools) or write a PNG to `--output` (`screenshot`; default
+`<device>-<ts>.png`). `--as OWNER` defaults to `filepath.Base(cwd)`.
+The CLI is a convenience subset of the verb table, not 1:1 with it.
 
 #### Universal flags (every device-tool subcommand)
 
@@ -296,6 +372,8 @@ enforced by `TestCLIHermeticity` and `TestCLINoStickyStateOutsideAllowList`.
   allowed for zero-arg tools.
 - Response: JSON-encoded `mcp.CallToolResult`
   (`{"content":[{"type":"text","text":"…"} | {"type":"image","data":"…","mimeType":"…"}], "isError":bool}`).
+  `screenshot` / `app_screenshot` default to a text JSON path dict
+  (🎯T114); `inline=true` is the image-block path.
 - Errors: `404` unknown tool; `405` non-POST; `400` bad JSON body.
   Tool-level errors (missing args, conflicts, etc.) return `200` with
   `isError:true` in the body — transport success, tool failure.
