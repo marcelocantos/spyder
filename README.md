@@ -79,7 +79,8 @@ screenshot:
 ```starlark
 deploy_app(device="iPad", path="/path/to/MyApp.app")
 sleep(500)
-app_screenshot()          # final expression → returned as an image block
+app_screenshot()          # default (🎯T114): {path, width, height, bytes} under ~/.spyder/screenshots
+# app_screenshot(inline=True)  # opt in to an inline MCP image block
 ```
 
 **Durable scripts (🎯T108):** store versionable recipes under
@@ -90,34 +91,28 @@ regress recipes and assert helpers are documented in
 [agents-guide.md](agents-guide.md#durable-host-starlark-library-t108).
 
 See [agents-guide.md](agents-guide.md#the-app_exec-entry-point) for the full
-model (emit/result semantics, frame-stepping, durable handles, caps). The
-verbs available as builtins:
+model (emit/result semantics, frame-stepping, durable handles, caps).
+`max_duration_ms` defaults to 30 s and is capped at 600 000 ms (10 min).
+`app_exec` is not itself a Starlark builtin (no nested scripting).
 
-| Verb | Purpose |
+The runtime verb table is `Handler.toolHandlers` — every name below is a
+Starlark builtin and a REST `POST /api/v1/<verb>` path. Call `help()` inside
+a script for the live list; [agents-guide.md](agents-guide.md#builtin-reference)
+has signatures.
+
+| Group | Verbs |
 |---|---|
-| `devices` | List connected iOS + Android devices, annotated with inventory alias. USB-attached physical phones/tablets include `usb_speed`, `usb_ceiling`, and `usb_anomaly` (live slower than the remembered ceiling). |
-| `resolve` | Symbolic name → structured entry with all known UUIDs. |
-| `device_state` | Battery, charging, thermal, foreground app. 2 s TTL cache. |
-| `screenshot` | PNG of the current screen. iOS via DVT; Android via `adb screencap`. |
-| `list_apps` | Installed third-party apps. |
-| `launch_app` | Foreground an arbitrary app by bundle id. |
-| `terminate_app` | Stop an app by bundle id. |
-| `rotate` | Rotate an iOS simulator or Android emulator to portrait, landscape-left, landscape-right, or portrait-upside-down. Physical devices return an error. |
-| `install_app` | Install a .app/.ipa (iOS) or .apk (Android) on a device. |
-| `uninstall_app` | Remove an app by bundle id / package name. |
-| `deploy_app` | Atomic deploy: terminate → install → launch → verify pid. Returns `{bundle_id, pid, replaced, session_id?, channel_port?}` — session fields appear when the app completes the app-channel handshake. |
-| `ensure_session` | One verb from device+bundle to a ready app-channel session: deploy if needed → launch → wait for handshake → `{session_id, ...}`. Idempotent when a healthy session exists. |
-| `state_query` | Read-only session-state probe over the app channel (mode/active/view). Never mutates game state; not reservation-gated. |
-| `reserve` / `release` / `renew` / `reservations` | Exclusive device holds for parallel dev sessions. Mutating tools are strict; read tools are unaffected. `reserve` accepts a literal `device` pin or a `selector` JSON predicate for fuzzy matching — see [agents-guide.md](agents-guide.md#fuzzy-reservation-selector). |
-| `runs_list` / `runs_show` | Inspect per-reservation artefact bundles under `~/.spyder/runs/`. |
-| `baseline_update` | Store a reference screenshot (and optional UI manifest) as a visual baseline. |
-| `diff` | Compare a candidate screenshot against the stored baseline. Returns pixel RMS error, manifest structural diff (added/removed/moved elements with bounding boxes), and a pass/fail verdict. |
-| `baselines_list` | List all stored baselines for a suite. |
-| `record_start` / `record_stop` | Start and stop a screen recording (mp4). iOS simulators via `xcrun simctl io recordVideo`; Android via `adb shell screenrecord`. **iOS physical devices are not supported** — use a simulator. |
-| `network` | Apply or clear network condition shaping. Android emulators only — see STABILITY.md for platform limits. |
-| `logs` | Fetch log lines between two timestamps. `since` / `until` accept either an RFC3339 absolute or a Go duration relative to now — `since=-2m`, `until=now`. `since=launch` is shorthand for "everything since spyder last called `launch_app` for `bundle_id`". Filter by app with `bundle_id` (resolved server-side to the iOS `CFBundleExecutable` / Android package name) or by raw `process` name; the two are mutually exclusive. Also: `subsystem` (iOS), `tag` (Android), `regex`. Read-only. |
-| `crashes` | Fetch crash reports from a device. iOS pulls .ips via go-ios `crashreport`; Android via `adb` tombstones + `logcat -b crash`. `since` accepts RFC3339 or a Go duration (`-15m`, `-1h`). Filter by app with `bundle_id` or by raw `process` name (mutually exclusive). Read-only. |
-| `pool_list` / `pool_warm` / `pool_drain` | Sim/emu pool management. Inspect tier counts, pre-boot instances, or drain idle instances. Requires `~/.spyder/pool.yaml` — see [agents-guide.md](agents-guide.md#simemu-pool). |
+| Device | `devices`, `resolve`, `device_state`, `screenshot`, `list_apps`, `launch_app`, `terminate_app`, `install_app`, `uninstall_app`, `deploy_app`, `launch_player`, `is_running` |
+| Reservations / runs | `reserve`, `release`, `renew`, `reservations`, `reservation_status`, `runs_list`, `runs_show` |
+| Observe | `rotate`, `crashes`, `logs`, `log_capture_start`, `log_capture_get`, `log_capture_stop`, `log_capture_list` |
+| Sim / emu | `sim_list`, `sim_create`, `sim_boot`, `sim_shutdown`, `sim_delete`, `emu_list`, `emu_create`, `emu_boot`, `emu_shutdown`, `emu_delete` |
+| Visual / record / net | `baseline_update`, `diff`, `baselines_list`, `record_start`, `record_stop`, `network` |
+| OS control | `perf_fps`, `port_forward_start`, `port_forward_stop`, `port_forward_list`, `input_tap`, `input_swipe`, `device_setting` |
+| App channel | `app_channel_stop`, `app_channel_list`, `app_ping`, `app_quit`, `app_flush`, `app_background`, `app_foreground`, `app_low_memory`, `app_pause`, `app_resume`, `app_step`, `app_speed`, `app_input`, `app_sensor_suppress`, `app_sensor_set`, `app_sensor_unsuppress`, `app_sensor_status`, `ensure_session`, `state_query`, `app_state`, `wait_state`, `app_tweak_list`, `app_tweak_get`, `app_tweak_set`, `app_tweak_reset`, `app_spawn`, `app_acquire`, `app_release`, `games`, `app_save_state`, `app_restore_state`, `app_screenshot`, `app_state_slices`, `app_state_describe`, `app_state_capture_start`, `app_state_capture_get`, `app_state_capture_stop`, `app_state_capture_list`, `app_log_get`, `app_perf_get`, `app_metrics_list`, `app_metrics_arm`, `app_metrics_disarm`, `app_metrics_status`, `app_metrics_dump`, `app_methods`, `app_call` |
+| Pool / scripts | `pool_list`, `pool_warm`, `pool_drain`, `pool_gc`, `list_scripts`, `run_script` |
+
+Starlark also adds non-verb helpers: `sleep`, `emit`, `health()`, `help()`,
+and the 🎯T108/T109 assert and hit-target helpers.
 
 ## REST API and live log streaming
 
@@ -136,8 +131,8 @@ curl -s -X POST http://127.0.0.1:3030/api/v1/reservations
 
 Responses are JSON-encoded `mcp.CallToolResult` objects
 (`{"content":[{"type":"text","text":"…"}], "isError":false}`).
-Image-bearing tools (`screenshot`) yield `type:"image"` with base64
-`data` + `mimeType`, identical to MCP.
+`screenshot` / `app_screenshot` default to a JSON path dict (🎯T114);
+pass `inline: true` for a `type:"image"` base64 block.
 
 For live log tailing, use the SSE endpoint:
 
@@ -161,8 +156,11 @@ These POST to the local daemon; set `SPYDER_DAEMON_URL` to override
 the default `http://127.0.0.1:3030`.
 
 ```bash
+spyder doctor                 # iOS device-stack diagnosis (no daemon required for --fix)
+spyder status --json          # live health model (daemon must be up)
 spyder devices --platform ios --json
 spyder screenshot iPad --output /tmp/ipad.png
+spyder launch-player iPad --server tiltbuggy
 spyder reserve iPad --ttl 600 --note "UI sweep"
 spyder reservations --json
 spyder release iPad
@@ -229,10 +227,12 @@ No Python, no system LaunchDaemon.
 ## Stream player
 
 `player/` builds `bin/player`, the **spyder player** — stream glass for
-headless game servers. It attaches to spyder's stream relay, presents
-the server's command stream (with H.264 fallback), and forwards touch,
-key, and accelerometer input back over the wire. iOS and Android app
-variants live under `player/ios/` and `player/android/`.
+headless game servers. The default transport is the command stream (SP2S);
+the player replays sokol ops on its local GPU. H.264 decode still works
+but is frozen in place — do not extend it. Touch, key, and accelerometer
+input go back over the wire. iOS and Android app variants live under
+`player/ios/` and `player/android/`. Use `launch_player` (not `deploy_app`)
+to put the player on a device.
 
 ```bash
 make player                     # bin/player (self-contained)
