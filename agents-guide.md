@@ -42,6 +42,9 @@ brew services start spyder
 # 3. Register with Claude Code (user-scope; HTTP transport).
 claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
 
+# 3b. Register with Grok Build (same HTTP endpoint).
+grok mcp add --transport http spyder http://localhost:3030/mcp
+
 # 4. Restart the agent session — MCP servers are loaded at session start.
 ```
 

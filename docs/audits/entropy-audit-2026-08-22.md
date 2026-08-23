@@ -420,8 +420,10 @@ Do not collapse this vector to a score.
 
 - **Priority:** P2
 - **Dimensions:** Local code quality; Documentation / governance
-- **Status:** observed fact
-- **Evidence:** `make fmt-check` exit 2. Files:
+- **Status:** closed (2026-08-23) — `gofmt -w` on the eight files and
+  `GOWORK=off` in the Makefile so `make fmt-check` / `make bullseye`
+  pass under the sibling `../go.work`. Evidence no longer reproduces.
+- **Evidence (historical):** `make fmt-check` exit 2. Files:
   `doctor.go`, `internal/appchannel/protocol.go`,
   `internal/device/ios_forward.go`, `internal/mcp/app_exec.go`,
   `internal/mcp/launch_player.go`,
