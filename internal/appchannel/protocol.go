@@ -281,10 +281,10 @@ func IsEngineMethod(name string) bool {
 
 // Hello is the first message an app sends on a new connection.
 type Hello struct {
-	AppName    string              `msgpack:"app_name"`
-	AppVersion string              `msgpack:"app_version"`
-	Methods    []MethodDescriptor  `msgpack:"methods"`          // methods the app handles
-	Pushes     []string            `msgpack:"pushes,omitempty"` // push categories the app emits
+	AppName    string             `msgpack:"app_name"`
+	AppVersion string             `msgpack:"app_version"`
+	Methods    []MethodDescriptor `msgpack:"methods"`          // methods the app handles
+	Pushes     []string           `msgpack:"pushes,omitempty"` // push categories the app emits
 	// Slices enumerates the named state slices the app makes
 	// available to `state_query`. Lets agents discover what a game
 	// exposes without prior knowledge. Bare strings and {name, example}
@@ -315,7 +315,7 @@ const (
 	MethodResume           = "resume"
 	MethodStep             = "step"
 	MethodSpeed            = "speed"
-	MethodInputInject = "input_inject"
+	MethodInputInject      = "input_inject"
 	// Sticky per-sensor suppress: one concern per method (not blanket session).
 	// suppress stays until unsuppress; set only updates the scripted sample.
 	MethodSensorSuppress   = "sensor_suppress"

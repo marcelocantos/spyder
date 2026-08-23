@@ -43,7 +43,7 @@ var (
 // recentLogLines holds recent usbmuxd/tunnel log lines for 🎯T99.4 classification.
 // Protected by logMu; bounded ring.
 var (
-	logMu         sync.Mutex
+	logMu          sync.Mutex
 	recentLogLines []string
 	maxRecentLogs  = 64
 )

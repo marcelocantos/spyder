@@ -89,10 +89,10 @@ func (h *Handler) handleLaunchPlayer(args map[string]any) (*mcpgo.CallToolResult
 	// Platform-correct stream inject keys (iOS Documents path uses STREAM_ADDR
 	// uppercase; Android Intent extras use stream_addr lowercase).
 	env := map[string]string{
-		"STREAM_ADDR":  streamAddr,
-		"SERVER_NAME":  serverName,
-		"stream_addr":  streamAddr,
-		"server_name":  serverName,
+		"STREAM_ADDR": streamAddr,
+		"SERVER_NAME": serverName,
+		"stream_addr": streamAddr,
+		"server_name": serverName,
 	}
 
 	// Prefer deploy when we have an artifact path; desktop may launch binary.

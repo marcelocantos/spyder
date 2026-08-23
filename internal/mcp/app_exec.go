@@ -43,7 +43,7 @@ const (
 	// Multi-step device recipes (cold boot, kill/relaunch, restore polls)
 	// routinely exceed 2m when Unity monopolises the main thread; the host
 	// budget is the only wall-clock gate now that hops wait for the pump.
-	maxExecDuration     = 10 * time.Minute
+	maxExecDuration = 10 * time.Minute
 	// maxSleepMillis caps a single sleep() so a script can't park on one
 	// call past the duration budget; sleep also stops at the deadline.
 	maxSleepMillis = int64(maxExecDuration / time.Millisecond)
