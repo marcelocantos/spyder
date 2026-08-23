@@ -25,7 +25,7 @@ type iosActiveForward struct {
 // iosForwardStore holds per-local-port listeners for an IOSAdapter.
 // Separate from the main adapter mutex so Accept loops never need a.mu.
 type iosForwardStore struct {
-	mu   sync.Mutex
+	mu      sync.Mutex
 	byLocal map[int]*iosActiveForward
 }
 

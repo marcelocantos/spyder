@@ -118,5 +118,3 @@ func TestLaunchPlayer_RealDesktopPath(t *testing.T) {
 		t.Logf("launch_player returned IsError (deploy may fail without display): %s", b)
 	}
 }
-
-

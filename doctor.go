@@ -126,16 +126,16 @@ xcrun devicectl's view and go-ios's usbmux view.
 
 // doctorReport is the result of one device-stack probe.
 type doctorReport struct {
-	DevicectlUDIDs []string           `json:"devicectl_udids"`
-	UsbmuxUDIDs    []string           `json:"usbmux_udids"`
+	DevicectlUDIDs []string            `json:"devicectl_udids"`
+	UsbmuxUDIDs    []string            `json:"usbmux_udids"`
 	SharedFinding  wedge.DoctorFinding `json:"shared_finding,omitempty"`
-	IOUSBIOSCount  int      `json:"iousb_ios_count"`
-	MissingFromMux []string `json:"missing_from_usbmux,omitempty"`
-	UsbmuxWedge    bool     `json:"usbmux_wedge"`
-	IosBinary      string   `json:"ios_binary"`
-	IosBinaryError string   `json:"ios_binary_error,omitempty"`
-	DevicectlError string   `json:"devicectl_error,omitempty"`
-	IOUSBError     string   `json:"iousb_error,omitempty"`
+	IOUSBIOSCount  int                 `json:"iousb_ios_count"`
+	MissingFromMux []string            `json:"missing_from_usbmux,omitempty"`
+	UsbmuxWedge    bool                `json:"usbmux_wedge"`
+	IosBinary      string              `json:"ios_binary"`
+	IosBinaryError string              `json:"ios_binary_error,omitempty"`
+	DevicectlError string              `json:"devicectl_error,omitempty"`
+	IOUSBError     string              `json:"iousb_error,omitempty"`
 }
 
 // probeDevices runs both `xcrun devicectl list devices` and `bin/ios

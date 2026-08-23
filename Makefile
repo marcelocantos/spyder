@@ -12,6 +12,11 @@ player:
 player-web:
 	$(MAKE) -C player web
 
+# Parent ../go.work (claudia/jevons) does not list this module; force
+# module mode so vet/test/build work from a sibling checkout.
+GOWORK ?= off
+export GOWORK
+
 bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum
 	go build -ldflags "-X main.version=dev" -o bin/spyder .
 

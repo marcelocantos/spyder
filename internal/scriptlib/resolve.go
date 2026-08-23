@@ -16,6 +16,7 @@ import (
 //   - bbox: [x,y,w,h] or {x,y,w|width,h|height} → centre (only when already in
 //     inject space; prefer center_norm/bbox_norm for pts-space targets)
 //   - cx/cy or x/y at top level
+//
 // Missing required geometry returns a clear slice-contract error (no guessing).
 func ResolveTarget(node map[string]any) (cx, cy float64, err error) {
 	if node == nil {
