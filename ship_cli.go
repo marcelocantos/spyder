@@ -22,8 +22,10 @@ func runSecret(args []string) {
 	switch args[0] {
 	case "status":
 		runSecretStatus(args[1:])
-	case "import", "mint", "missing":
-		fmt.Fprintf(os.Stderr, "secret %s: not implemented yet (see docs/ship-front-door.md / 🎯T133.2+)\n", args[0])
+	case "missing":
+		runSecretMissing(args[1:])
+	case "import", "mint":
+		fmt.Fprintf(os.Stderr, "secret %s: not implemented yet (see docs/ship-front-door.md / 🎯T133.3)\n", args[0])
 		os.Exit(2)
 	default:
 		fatalUsage("secret", fmt.Errorf("unknown subcommand %q — expected status|import|mint|missing", args[0]))
@@ -80,6 +82,7 @@ func runSecretStatus(args []string) {
 					kinds = append(kinds, k)
 				}
 			}
+			sort.Strings(kinds)
 			if len(kinds) == 0 {
 				fmt.Printf("studio %s: envelope empty (team %s)\n", s, st.TeamID)
 				continue
@@ -87,6 +90,50 @@ func runSecretStatus(args []string) {
 			fmt.Printf("studio %s: present=%v fingerprints=%v\n", s, kinds, st.Fingerprints)
 		}
 	}
+}
+
+func runSecretMissing(args []string) {
+	studio, forLane := "", ""
+	for len(args) > 0 {
+		switch args[0] {
+		case "--studio":
+			if len(args) < 2 {
+				fatalUsage("secret missing", fmt.Errorf("--studio requires squz|minicades"))
+			}
+			studio = args[1]
+			args = args[2:]
+		case "--for":
+			if len(args) < 2 {
+				fatalUsage("secret missing", fmt.Errorf("--for requires match|pilot|deliver|supply|firebase"))
+			}
+			forLane = args[1]
+			args = args[2:]
+		default:
+			fatalUsage("secret missing", fmt.Errorf("unknown flag %q", args[0]))
+		}
+	}
+	if studio == "" || forLane == "" {
+		fatalUsage("secret missing", fmt.Errorf("require --studio and --for"))
+	}
+	if err := ship.RequireSecretsAccess(); err != nil {
+		fmt.Fprintf(os.Stderr, "secret missing: %v\n", err)
+		os.Exit(1)
+	}
+	env, err := ship.LoadStudio(studio)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "secret missing: %v\n", err)
+		os.Exit(1)
+	}
+	missing, err := env.MissingKinds(ship.LaneFor(forLane))
+	if err != nil {
+		fatalUsage("secret missing", err)
+	}
+	if len(missing) == 0 {
+		fmt.Printf("ok: studio %s has kinds for %s\n", studio, forLane)
+		return
+	}
+	fmt.Printf("missing: %s\n", strings.Join(missing, ","))
+	os.Exit(20)
 }
 
 // runFastlane is the consumer front door (🎯T133.4). Stub until wrap lands;
