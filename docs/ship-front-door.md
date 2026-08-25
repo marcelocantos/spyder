@@ -10,10 +10,9 @@ Status: implemented in-tree (2026-08-25) under 🎯T133 — codesign principal,
 envelope, clipboard import with optional live ASC/Play verify,
 `secret mint --kind play-upload` (squz), `spyder fastlane` wrap with
 lane classes / confirm / dry-run, and `~/.spyder/ship-audit/` JSONL +
-reflection stubs. Residual: Homebrew bottle codesign in release CI
-(unsigned bottles correctly refuse secrets until signed). Consumer Make
-wiring is **not** in this repo (see §8 follow-ups: ge 🎯T183,
-MinicadesKit 🎯T12).
+reflection stubs. Residual: Homebrew bottle codesign tracked as 🎯T134 (unsigned bottles
+correctly refuse secrets until signed). Consumer Make wiring is **not**
+in this repo (see §8 follow-ups: ge 🎯T183, MinicadesKit 🎯T12).
 
 ## 1. Why this exists
 
