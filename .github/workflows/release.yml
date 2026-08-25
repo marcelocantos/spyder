@@ -39,12 +39,19 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+          # CGO required for studio SecItem* (🎯T133.1). Native macos
+          # runners have clang; cross-compile is not in this matrix.
+          CGO_ENABLED: '1'
         run: |
           VERSION="${GITHUB_REF_NAME}"
           mkdir -p dist
           go build -trimpath -ldflags "-s -w -X main.version=${VERSION}" \
             -o "dist/spyder" .
+          # Local/dev bottles are signed via `make sign` on a machine with
+          # a Development or Developer ID Application identity. GHA does
+          # not hold that cert yet — unsigned bottles refuse secret/
+          # fastlane unless SPYDER_ALLOW_UNSIGNED_SECRETS=1 (test-only).
+          # Track: wire Developer ID into release when the cert is in CI.
 
       - name: Build go-ios (bundled tunnel daemon)
         env:

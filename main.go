@@ -57,6 +57,8 @@ Commands:
   run           Run a command under an auto-acquired device reservation
   doctor        Diagnose iOS device-stack state (--fix to restart usbmuxd via the bundled helper)
   status        Print the daemon's live health model (--json for raw JSON)
+  secret        Studio secrets (status|import|mint|missing) — keychain principal; no daemon
+  fastlane      Exec fastlane with studio secrets injected into the child only
   version       Print version and exit
   help-agent    Print the usage above followed by the agent guide
 
@@ -140,6 +142,10 @@ func main() {
 		runDoctor(os.Args[2:])
 	case "status":
 		runStatus(os.Args[2:])
+	case "secret":
+		runSecret(os.Args[2:])
+	case "fastlane":
+		runFastlane(os.Args[2:])
 	case "help", "--help", "-help":
 		fmt.Print(usage)
 	case "help-agent", "--help-agent", "-help-agent":

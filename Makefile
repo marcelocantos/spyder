@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web
+.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web sign
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -17,8 +17,17 @@ player-web:
 GOWORK ?= off
 export GOWORK
 
+# Studio secrets (🎯T133) need Security.framework via cgo. Default on
+# darwin is CGO_ENABLED=1 when a cgo file is selected; force it so a
+# parent shell with CGO_ENABLED=0 cannot silently drop SecItem*.
 bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum
-	go build -ldflags "-X main.version=dev" -o bin/spyder .
+	CGO_ENABLED=1 go build -ldflags "-X main.version=dev" -o bin/spyder .
+
+# sign attaches a stable Development / Developer ID Application identity
+# and identifier com.marcelocantos.spyder so keychain ACLs do not churn
+# across rebuilds (🎯T133.1). Required before secret import / fastlane.
+sign: bin/spyder
+	@./scripts/codesign-spyder.sh bin/spyder
 
 # bin/spyder-killusbmuxd is a single-purpose helper for the doctor's
 # --fix path. It runs `killall usbmuxd` and exits. Built as a
@@ -46,10 +55,10 @@ bin/ios: go.mod go.sum
 	go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios
 
 test:
-	go test ./...
+	CGO_ENABLED=1 go test ./...
 
 vet:
-	go vet ./...
+	CGO_ENABLED=1 go vet ./...
 
 fmt-check:
 	@test -z "$$(gofmt -l .)" || (gofmt -l .; exit 1)
@@ -70,10 +79,10 @@ test-integration:
 bullseye:
 	@test -z "$$(gofmt -l .)" && echo "✓ fmt" || \
 	 (echo "✗ gofmt issues:"; gofmt -l .; exit 1)
-	@go vet ./... && echo "✓ vet"
-	@go build -ldflags "-X main.version=dev" -o bin/spyder . && echo "✓ build"
+	@CGO_ENABLED=1 go vet ./... && echo "✓ vet"
+	@CGO_ENABLED=1 go build -ldflags "-X main.version=dev" -o bin/spyder . && echo "✓ build"
 	@go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios && echo "✓ build ios"
-	@go test ./... 2>&1 | tail -20 && echo "✓ tests"
+	@CGO_ENABLED=1 go test ./... 2>&1 | tail -20 && echo "✓ tests"
 	@test -z "$$(git status --porcelain)" && echo "✓ clean" || \
 	 (echo "✗ dirty tree:"; git status --short; exit 1)
 
