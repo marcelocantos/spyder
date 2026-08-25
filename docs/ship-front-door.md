@@ -7,11 +7,11 @@ orchestrators: they decide *what* to build and *which* lane to run.
 They reach fastlane **through spyder**. Spyder does not reach them.
 
 Status: implemented in-tree (2026-08-25) under 🎯T133 — codesign principal,
-envelope, clipboard import, `secret mint --kind play-upload` (squz),
-`spyder fastlane` wrap with lane classes / confirm / dry-run, and
-`~/.spyder/ship-audit/` JSONL + reflection stubs. Residuals: live
-ASC/Play HTTP verify on import (shape checks always run; `--no-verify`
-skips live), Homebrew bottle codesign in release CI. Consumer Make
+envelope, clipboard import with optional live ASC/Play verify,
+`secret mint --kind play-upload` (squz), `spyder fastlane` wrap with
+lane classes / confirm / dry-run, and `~/.spyder/ship-audit/` JSONL +
+reflection stubs. Residual: Homebrew bottle codesign in release CI
+(unsigned bottles correctly refuse secrets until signed). Consumer Make
 wiring is **not** in this repo (see §8 follow-ups: ge 🎯T183,
 MinicadesKit 🎯T12).
 

@@ -234,7 +234,6 @@ func runSecretImport(args []string) {
 		fmt.Fprintf(os.Stderr, "secret import: %v\n", err)
 		os.Exit(1)
 	}
-	_ = noVerify // live verify lands with T133.3 verify path
 
 	pb := ship.DefaultPasteboard
 	absorb := func(text string) error {
@@ -269,6 +268,19 @@ func runSecretImport(args []string) {
 			present["match_password"] = true
 		}
 		fmt.Println()
+		if !noVerify {
+			env, err := ship.LoadStudio(studio)
+			if err != nil {
+				return err
+			}
+			if err := ship.ValidateEnvelopeShape(env); err != nil {
+				return fmt.Errorf("shape check: %w", err)
+			}
+			if err := ship.VerifyEnvelopeLive(env); err != nil {
+				return fmt.Errorf("live verify (pass --no-verify to skip): %w", err)
+			}
+			fmt.Println("verified against store (read-only)")
+		}
 		_ = ship.WriteAudit(&ship.AuditRecord{
 			Studio:         studio,
 			Action:         "secret_import",
