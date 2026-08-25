@@ -118,3 +118,14 @@ func TestListUnfilledReflections(t *testing.T) {
 		t.Fatalf("after fill: %v %v", got, err)
 	}
 }
+
+func TestScrubSecrets(t *testing.T) {
+	in := "ok\n-----BEGIN PRIVATE KEY-----\nMII\n-----END PRIVATE KEY-----\nMATCH_PASSWORD=sekret\npassword=x\n"
+	out := ScrubSecrets(in)
+	if strings.Contains(out, "MII") || strings.Contains(out, "sekret") || strings.Contains(out, "password=x") {
+		t.Fatalf("not scrubbed: %s", out)
+	}
+	if !strings.Contains(out, "[REDACTED PEM]") {
+		t.Fatal(out)
+	}
+}
