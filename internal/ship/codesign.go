@@ -25,6 +25,8 @@ type Signature struct {
 	Authority string
 	// TeamID is the Apple team id embedded in the signature, if any.
 	TeamID string
+	// CDHash is the codesign CDHash (audit fingerprint), if reported.
+	CDHash string
 	// AdHoc is true for `codesign -s -` style signatures.
 	AdHoc bool
 	// Path is the resolved executable that was inspected.

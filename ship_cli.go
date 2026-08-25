@@ -28,10 +28,67 @@ func runSecret(args []string) {
 	case "import":
 		runSecretImport(args[1:])
 	case "mint":
-		fmt.Fprintf(os.Stderr, "secret mint: not implemented yet (see docs/ship-front-door.md / 🎯T133.3)\n")
-		os.Exit(2)
+		runSecretMint(args[1:])
 	default:
 		fatalUsage("secret", fmt.Errorf("unknown subcommand %q — expected status|import|mint|missing", args[0]))
+	}
+}
+
+func runSecretMint(args []string) {
+	studio := ""
+	kind := ""
+	for len(args) > 0 {
+		switch args[0] {
+		case "--studio":
+			if len(args) < 2 {
+				fatalUsage("secret mint", fmt.Errorf("--studio requires squz|minicades"))
+			}
+			studio = args[1]
+			args = args[2:]
+		case "--kind":
+			if len(args) < 2 {
+				fatalUsage("secret mint", fmt.Errorf("--kind requires play-upload"))
+			}
+			kind = args[1]
+			args = args[2:]
+		default:
+			fatalUsage("secret mint", fmt.Errorf("unknown flag %q", args[0]))
+		}
+	}
+	if studio == "" || kind == "" {
+		fatalUsage("secret mint", fmt.Errorf("require --studio squz|minicades --kind play-upload"))
+	}
+	if err := ship.RequireSecretsAccess(); err != nil {
+		fmt.Fprintf(os.Stderr, "secret mint: %v\n", err)
+		os.Exit(1)
+	}
+	switch kind {
+	case "play-upload", ship.KindPlayUpload:
+		creds, err := ship.MintPlayUpload(studio)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "secret mint: %v\n", err)
+			os.Exit(1)
+		}
+		if err := ship.SaveMintedPlayUpload(studio, creds); err != nil {
+			fmt.Fprintf(os.Stderr, "secret mint: %v\n", err)
+			os.Exit(1)
+		}
+		st := (&ship.Envelope{Version: ship.EnvelopeVersion, PlayUpload: creds}).RedactedStatus(studio)
+		fmt.Printf("minted play_upload for %s alias=%s fingerprint=%s\n",
+			studio, creds.Alias, st.Fingerprints["play_upload_sha256"])
+		fmt.Println("password stored in keychain only — not printed")
+		_ = ship.WriteAudit(&ship.AuditRecord{
+			Studio:         studio,
+			Action:         "secret_mint",
+			Argv:           []string{"spyder", "secret", "mint", "--studio", studio, "--kind", "play-upload"},
+			ExitCode:       0,
+			SpyderVersion:  version,
+			SecretsPresent: map[string]bool{ship.KindPlayUpload: true},
+			Fingerprints:   st.Fingerprints,
+			CDHash:         ship.CDHashSelf(),
+		})
+	default:
+		fatalUsage("secret mint", fmt.Errorf("unsupported kind %q (want play-upload)", kind))
 	}
 }
 
@@ -186,25 +243,41 @@ func runSecretImport(args []string) {
 			return err
 		}
 		fmt.Printf("absorbed:")
+		present := map[string]bool{}
 		if d.ASCIssuerID != "" {
 			fmt.Printf(" asc.issuer_id")
+			present["asc.issuer_id"] = true
 		}
 		if d.ASCKeyID != "" {
 			fmt.Printf(" asc.key_id")
+			present["asc.key_id"] = true
 		}
 		if d.ASCP8 != "" {
 			fmt.Printf(" asc.p8")
+			present["asc.p8"] = true
 		}
 		if len(d.PlaySAJSON) > 0 {
 			fmt.Printf(" play_service_account(%s)", d.PlaySAEmail)
+			present["play_service_account"] = true
 		}
 		if len(d.FirebaseAdminJSON) > 0 {
 			fmt.Printf(" firebase_admin")
+			present["firebase_admin"] = true
 		}
 		if d.MatchPassword != "" {
 			fmt.Printf(" match_password")
+			present["match_password"] = true
 		}
 		fmt.Println()
+		_ = ship.WriteAudit(&ship.AuditRecord{
+			Studio:         studio,
+			Action:         "secret_import",
+			Argv:           []string{"spyder", "secret", "import", "--studio", studio},
+			ExitCode:       0,
+			SpyderVersion:  version,
+			SecretsPresent: present,
+			CDHash:         ship.CDHashSelf(),
+		})
 		return nil
 	}
 
@@ -245,13 +318,75 @@ func runSecretImport(args []string) {
 	}
 }
 
-// runFastlane is the consumer front door (🎯T133.4). Stub until wrap lands;
-// still enforces the codesign gate so unsigned binaries cannot rehearse.
+// runFastlane is the consumer front door (🎯T133.4/T133.5).
 func runFastlane(args []string) {
 	if err := ship.RequireSecretsAccess(); err != nil {
 		fmt.Fprintf(os.Stderr, "fastlane: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "fastlane: not implemented yet (see docs/ship-front-door.md / 🎯T133.4); args=%v\n", args)
-	os.Exit(2)
+	opts := ship.FastlaneOpts{}
+	i := 0
+	for i < len(args) {
+		switch args[i] {
+		case "--studio":
+			if i+1 >= len(args) {
+				fatalUsage("fastlane", fmt.Errorf("--studio requires squz|minicades"))
+			}
+			opts.Studio = args[i+1]
+			i += 2
+		case "--confirm":
+			opts.Confirm = true
+			i++
+		case "--dry-run":
+			opts.DryRun = true
+			i++
+		case "--":
+			i++
+			opts.Args = append(opts.Args, args[i:]...)
+			i = len(args)
+		default:
+			// Remaining tokens are forwarded to fastlane verbatim.
+			opts.Args = append(opts.Args, args[i:]...)
+			i = len(args)
+		}
+	}
+	if opts.Studio == "" {
+		if s := os.Getenv("STUDIO"); s != "" {
+			opts.Studio = s
+		} else {
+			fatalUsage("fastlane", fmt.Errorf("require --studio squz|minicades (or STUDIO in the environment)"))
+		}
+	}
+	if len(opts.Args) == 0 {
+		fatalUsage("fastlane", fmt.Errorf("missing fastlane action (e.g. spyder fastlane --studio squz pilot)"))
+	}
+	ship.SpyderVersion = version
+	code, err := ship.RunFastlane(opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fastlane: %v\n", err)
+		if code == 0 {
+			code = 2
+		}
+		os.Exit(code)
+	}
+	os.Exit(code)
+}
+
+func runShipAudit(args []string) {
+	_ = args
+	unfilled, err := ship.ListUnfilledReflections()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ship-audit: %v\n", err)
+		os.Exit(1)
+	}
+	root := ship.AuditRoot()
+	fmt.Printf("ship-audit root: %s\n", root)
+	if len(unfilled) == 0 {
+		fmt.Println("unfilled reflections: (none)")
+		return
+	}
+	fmt.Println("unfilled reflections:")
+	for _, p := range unfilled {
+		fmt.Printf("  %s\n", p)
+	}
 }

@@ -12,6 +12,7 @@ require (
 	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.50.0
+	software.sslmate.com/src/go-pkcs12 v0.2.0
 )
 
 require (
@@ -58,7 +59,6 @@ require (
 	modernc.org/libc v1.72.0 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	software.sslmate.com/src/go-pkcs12 v0.2.0 // indirect
 )
 
 // Patched go-ios fork. Track the `spyder-patches` branch in

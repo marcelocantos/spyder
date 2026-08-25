@@ -49,6 +49,8 @@ func inspectExe(path string) (Signature, error) {
 			if sig.Authority == "" {
 				sig.Authority = strings.TrimPrefix(line, "Authority=")
 			}
+		case strings.HasPrefix(line, "CDHash="):
+			sig.CDHash = strings.TrimPrefix(line, "CDHash=")
 		case line == "Signature=adhoc" || strings.Contains(line, "Signature=adhoc"):
 			sig.AdHoc = true
 		}

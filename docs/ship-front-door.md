@@ -6,9 +6,14 @@ fastlane. Build systems (ge Make, MinicadesKit / Unity) stay the
 orchestrators: they decide *what* to build and *which* lane to run.
 They reach fastlane **through spyder**. Spyder does not reach them.
 
-Status: design (2026-08-25). 🎯T133.1 in progress — `make sign`,
-SecItem keychain principal, unsigned refuse gate; envelope schema
-started (🎯T133.2). Import/fastlane wrap not yet implemented.
+Status: implemented in-tree (2026-08-25) under 🎯T133 — codesign principal,
+envelope, clipboard import, `secret mint --kind play-upload` (squz),
+`spyder fastlane` wrap with lane classes / confirm / dry-run, and
+`~/.spyder/ship-audit/` JSONL + reflection stubs. Residuals: live
+ASC/Play HTTP verify on import (shape checks always run; `--no-verify`
+skips live), Homebrew bottle codesign in release CI. Consumer Make
+wiring is **not** in this repo (see §8 follow-ups: ge 🎯T183,
+MinicadesKit 🎯T12).
 
 ## 1. Why this exists
 
@@ -295,17 +300,33 @@ A wrong `--studio` vs Matchfile `team_id` is a preflight error
 
 ## 8. Consumer contracts (not implemented in spyder)
 
+Spyder ships the CLI contract below. **ge** and **MinicadesKit** keep
+their Make / Unity orchestration and switch callers when ready.
+This section is the stable API those repos implement against — spyder
+does not vendor their Fastfiles or execute their recipes.
+
 ### 8.1 ge
 
 - Keep `make ship-alpha` / `ship-beta` / `ship-release`,
   worktrees, version MAX(rev-list, Transporter), `/ge:ship`.
 - Replace `bundle exec fastlane …` and required
-  `MATCH_PASSWORD` in the parent with `spyder fastlane …`.
+  `MATCH_PASSWORD` in the parent with:
+
+  ```bash
+  spyder fastlane --studio squz [--confirm] [--dry-run] -- <action> [args…]
+  # or: STUDIO=squz spyder fastlane [--confirm] -- <action> …
+  ```
+
+- Preflight: `spyder secret missing --studio squz --for match|pilot|deliver|supply|firebase`
 - Drop `MATCH_PASSWORD` from `~/.zshrc` onboarding.
 - Android: `make android-bundle` asks spyder to materialise
   the upload PKCS12 for Gradle (or `spyder fastlane` a supply
   lane after the AAB exists).
 - Fastfile stays in `ge/fastlane/`; spyder does not vendor it.
+
+**Follow-up (filed outside spyder):** ge 🎯T183 — “ship Make invokes
+`spyder fastlane` / `spyder secret missing`; parent env has no
+`MATCH_PASSWORD`.” Ledger: `squz/ge` bullseye.yaml.
 
 ### 8.2 MinicadesKit / Unity
 
@@ -313,12 +334,19 @@ A wrong `--studio` vs Matchfile `team_id` is a preflight error
   checks, `docs/releases.yaml`.
 - Signing passwords: stop reading `android-keystore` via
   `security` in Make. Call spyder to materialise the JKS for
-  the Unity child, then wipe.
+  the Unity child, then wipe (via `spyder fastlane` or a future
+  materialise helper that uses the same envelope).
 - Apple ship: either keep Automatic+altool **via**
   `spyder fastlane` / a spyder `altool` wrap that uses the
   ASC envelope, or adopt match + `minicades/certs` on team
   `R4D5JQEEE2`. Dev stays Automatic.
 - Do not move Unity executeMethod names into spyder.
+- Retire or stub `storectl` so it execs `spyder` (or delete after
+  callers switch). Do **not** keep `storectl serve`.
+
+**Follow-up (filed outside spyder):** MinicadesKit 🎯T12 — “Make /
+storectl callers use spyder secret + fastlane; no `/usr/bin/security`
+for studio secrets.” Ledger: `minicadesmobile/MinicadesKit` bullseye.yaml.
 
 ### 8.3 Agent
 
@@ -432,8 +460,8 @@ unfilled stub before another `prod_publish`. This is the
 improvement loop: recipes and lane-class rules get sharper
 only if every live run leaves a residue.
 
-Optional later: a `spyder ship-audit` command that tails
-the jsonl and lists unfilled reflections.
+Optional later: richer filtering. `spyder ship-audit` already lists
+unfilled reflection stubs under `~/.spyder/ship-audit/runs/`.
 
 ### 10.4 Telemetry (Firebase)
 
@@ -447,16 +475,18 @@ is opt-in and must not receive secret values or PEMs.
 ## 11. storectl
 
 `storectl` is the prototype of §5–§6 (cgo keychain, clipboard
-import, ASC/Play verify). Absorb it into spyder:
+import, ASC/Play verify). **Absorbed into spyder** (`internal/ship`):
 
 - One principal (codesigned spyder), not two
-- `storectl` in MinicadesKit becomes a stub that execs
-  `spyder` or is deleted after consumers switch
+- Clipboard detect/absorb → `spyder secret import`
+- SecItem* keychain → `spyder.studio` envelope (not `storectl` service)
 - `storectl serve` localhost proxy is **not** carried over
   (it is a secret-over-HTTP footgun). If something needs
-  an ASC JWT, `spyder secret token asc --studio …` prints
+  an ASC JWT, `spyder secret token asc --studio …` (future) prints
   a short-lived token to a tty, or writes it to a temp
   for a named child, same as fastlane wrap.
+- MinicadesKit should stub or delete `scripts/storectl` after
+  callers switch (consumer follow-up; not implemented here).
 
 ## 12. Phasing
 

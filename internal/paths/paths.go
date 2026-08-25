@@ -58,3 +58,10 @@ func ScreenshotsBase() string {
 func USBSpeedPath() string {
 	return filepath.Join(Base(), "usb-speed.json")
 }
+
+// ShipAuditBase returns the ship/fastlane audit root
+// (~/.spyder/ship-audit). JSONL, daily markdown, and run logs /
+// reflection stubs live here (🎯T133.6).
+func ShipAuditBase() string {
+	return filepath.Join(Base(), "ship-audit")
+}
