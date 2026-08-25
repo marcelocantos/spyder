@@ -6,7 +6,9 @@ fastlane. Build systems (ge Make, MinicadesKit / Unity) stay the
 orchestrators: they decide *what* to build and *which* lane to run.
 They reach fastlane **through spyder**. Spyder does not reach them.
 
-Status: design (2026-08-25). Not implemented.
+Status: design (2026-08-25). 🎯T133.1 in progress — `make sign`,
+SecItem keychain principal, unsigned refuse gate; envelope schema
+started (🎯T133.2). Import/fastlane wrap not yet implemented.
 
 ## 1. Why this exists
 
