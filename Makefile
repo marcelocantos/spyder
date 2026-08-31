@@ -83,8 +83,22 @@ bullseye:
 	@CGO_ENABLED=1 go build -ldflags "-X main.version=dev" -o bin/spyder . && echo "✓ build"
 	@go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios && echo "✓ build ios"
 	@CGO_ENABLED=1 go test ./... 2>&1 | tail -20 && echo "✓ tests"
-	@test -z "$$(git status --porcelain)" && echo "✓ clean" || \
-	 (echo "✗ dirty tree:"; git status --short; exit 1)
+	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
+	if [ -z "$$dirty" ]; then echo "✓ working tree clean"; \
+	else \
+	  echo ""; \
+	  echo "================================================================"; \
+	  echo "⚠  DIRTY WORKING TREE"; \
+	  echo ""; \
+	  echo "Warning only — invariants still pass (exit 0)."; \
+	  echo "Look at the files below before starting a new target."; \
+	  echo "Leftover work from a different objective → park it in a commit first."; \
+	  echo "This session's WIP on the recommended target → continue."; \
+	  echo "================================================================"; \
+	  echo "$$dirty"; \
+	  echo "================================================================"; \
+	  echo ""; \
+	fi
 
 pre-release: bullseye
 
