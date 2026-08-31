@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ type fakeApp struct {
 	t       *testing.T
 	addr    string
 	conn    net.Conn
+	writeMu sync.Mutex // dispatchLoop response + push() share conn
 	methods []string
 	// handlers map method name → handler. Each returns the result
 	// payload (will be MessagePack-encoded by PackParams) or an
@@ -65,7 +67,7 @@ func (a *fakeApp) dispatchLoop() {
 		if env.IsRequest() {
 			h, ok := a.handlers[env.Method]
 			if !ok {
-				_ = WriteFrame(a.conn, &Envelope{
+				a.writeFrame(&Envelope{
 					ID:    env.ID,
 					Error: &RPCError{Code: ErrCodeMethodNotFound, Message: "no handler for " + env.Method},
 				})
@@ -74,20 +76,28 @@ func (a *fakeApp) dispatchLoop() {
 			res, err := h(env.Params)
 			if err != nil {
 				if rerr, ok := err.(*RPCError); ok {
-					_ = WriteFrame(a.conn, &Envelope{ID: env.ID, Error: rerr})
+					a.writeFrame(&Envelope{ID: env.ID, Error: rerr})
 				} else {
-					_ = WriteFrame(a.conn, &Envelope{ID: env.ID, Error: &RPCError{Code: ErrCodeInternal, Message: err.Error()}})
+					a.writeFrame(&Envelope{ID: env.ID, Error: &RPCError{Code: ErrCodeInternal, Message: err.Error()}})
 				}
 				continue
 			}
 			raw, _ := PackParams(res)
-			_ = WriteFrame(a.conn, &Envelope{ID: env.ID, Result: raw})
+			a.writeFrame(&Envelope{ID: env.ID, Result: raw})
 		}
 	}
 }
 
+func (a *fakeApp) writeFrame(env *Envelope) {
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
+	_ = WriteFrame(a.conn, env)
+}
+
 func (a *fakeApp) push(method string, payload any) error {
 	raw, _ := PackParams(payload)
+	a.writeMu.Lock()
+	defer a.writeMu.Unlock()
 	return WriteFrame(a.conn, &Envelope{Method: method, Params: raw})
 }
 
