@@ -30,7 +30,7 @@ in principle, but `adb` itself is cross-platform; spyder doesn't add value
 to adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.33.0` — the iOS path runs entirely on the in-process
+Snapshot as of `v0.82.0` — the iOS path runs entirely on the in-process
 [go-ios](https://github.com/danielpaulus/go-ios) Go library, plus a
 bundled `ios` userspace tunnel daemon spawned as a spyder child process
 (🎯T56). The data path crosses no subprocess boundary: every iOS
@@ -265,6 +265,12 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder pool drain <template>` | REST proxy to `pool_drain`. | Needs review |
 | `spyder list-scripts [--json]` | REST proxy to `list_scripts` — durable host Starlark library (bundled + `~/.spyder/scripts`). 🎯T108. | Stable (🎯T108) |
 | `spyder run-script <name\|path> [k=v]... [--param k=v] [--max-duration-ms N] [--json]` | REST proxy to `run_script` / `app_exec(script_path=…)`. 🎯T108. | Stable (🎯T108) |
+| `spyder secret status --studio squz\|minicades` | Codesign principal + per-studio envelope status (no secret material). macOS only; unsigned binaries refuse unless `SPYDER_ALLOW_UNSIGNED_SECRETS=1` (test-only). | Beta (🎯T133) |
+| `spyder secret import --studio …` | Clipboard absorb into keychain; optional live ASC/Play verify. | Beta (🎯T133) |
+| `spyder secret mint --studio … --kind play-upload` | Mint Play upload PKCS12 into envelope. | Beta (🎯T133) |
+| `spyder secret missing --studio … --for match\|pilot\|deliver\|supply\|firebase` | Preflight missing secret kinds for a lane class. | Beta (🎯T133) |
+| `spyder fastlane [--studio …] [--confirm] [--dry-run] -- <action> [args…]` | Wraps `bundle exec fastlane` with secrets only in child env; lane-class gates + audit JSONL. | Beta (🎯T133) |
+| `spyder ship-audit` | Lists recent ship audit entries and unfilled reflection stubs under `~/.spyder/ship-audit/`. | Beta (🎯T133) |
 
 All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block

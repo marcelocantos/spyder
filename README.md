@@ -202,6 +202,24 @@ aliases to platform-specific UUIDs. Alias lookup is case-insensitive;
 unknown raw identifiers are classified by format and passed through. See
 the [agent guide](agents-guide.md#device-inventory) for the format.
 
+## Ship front door
+
+Spyder is the laptop front door for Squz / Minicades store shipping:
+studio secrets live in a macOS keychain envelope (never MCP/REST verbs),
+and `spyder fastlane` wraps fastlane with lane-class gates and a redacted
+audit trail. After `make build`, run `make sign` so keychain ACLs bind to
+a stable code signature.
+
+```bash
+spyder secret status --studio squz
+spyder secret import --studio squz          # clipboard absorb
+spyder secret missing --studio squz --for match
+spyder fastlane --studio squz -- pilot
+```
+
+See [docs/ship-front-door.md](docs/ship-front-door.md) and
+[agents-guide.md](agents-guide.md#ship-front-door) for the full contract.
+
 ## Build from source
 
 ```bash

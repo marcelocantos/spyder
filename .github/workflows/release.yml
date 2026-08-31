@@ -33,6 +33,8 @@ jobs:
           check-latest: true
 
       - name: Test
+        env:
+          CGO_ENABLED: '1'
         run: go test ./...
 
       - name: Build spyder

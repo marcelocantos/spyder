@@ -84,6 +84,30 @@ For agents that configure MCP servers via a JSON file rather than
 }
 ```
 
+## Ship front door
+
+Spyder owns studio secrets and fastlane wrapping for Squz / Minicades store
+shipping (🎯T133). Secrets never appear on MCP/REST — only CLI subcommands
+touch the keychain envelope.
+
+**macOS only.** The spyder binary must be code-signed (`make sign` after
+`make build`) so SecItem ACLs stay stable. Homebrew bottles from CI are
+unsigned until 🎯T134 lands; set `SPYDER_ALLOW_UNSIGNED_SECRETS=1` only for
+local test builds.
+
+```bash
+make build && make sign
+spyder secret status --studio squz
+spyder secret import --studio squz              # reads clipboard once
+spyder secret missing --studio squz --for match
+spyder fastlane --studio squz -- pilot
+spyder ship-audit
+```
+
+- No `spyder secret get` / `--print` — import and fastlane child env only.
+- Audit JSONL + reflection stubs: `~/.spyder/ship-audit/`.
+- Full contract: [docs/ship-front-door.md](docs/ship-front-door.md).
+
 ## Device inventory
 
 Spyder reads `~/.spyder/inventory.json` — a JSON array of `Entry` records that
