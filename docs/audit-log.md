@@ -575,3 +575,14 @@ maintenance activities. Append-only — newest entries at the bottom.
   `scripts/lib/` (explore / collect / regress / frame template / L1), and
   agents-guide promotion docs. Host-only — no in-app VM. T109 (L2 semantic UI)
   remains open. Published for darwin-arm64 (and any matrix legs in release.yml).
+
+## 2026-08-31 — /release v0.83.0
+
+- **Commit**: (filled at tag)
+- **Outcome**: Released v0.83.0. 🎯T103.1: a long `app_exec` (e.g. a
+  145s Stock Cars playtest) no longer posts `spyder: daemon stalled`
+  merely because wall-clock exceeded the 60s dispatch watchdog. The
+  engine beats on verb enter/exit, `sleep()` ticks, and app-channel
+  `noteProgress`; scripts do not inject heartbeats. A hung verb with no
+  inner progress still notifies. Stall window unchanged. STABILITY.md
+  catalogue snapshot bumped to v0.83.0. Published for darwin-arm64.

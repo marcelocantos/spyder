@@ -1478,6 +1478,12 @@ Entity kinds: `daemon`, `subprocess`, `device`. States include `healthy`,
 the notifier fires **once** per entity that reaches `needs_attention`,
 deduped and auto-cleared when it recovers.
 
+A long `app_exec` does not trip `spyder: daemon stalled` while the
+script is advancing. The engine beats the dispatch watchdog on verb
+enter/exit, `sleep()` ticks, and app-channel frames. Scripts do not
+call a heartbeat builtin. A single device verb that sits with no inner
+progress for more than 60s still notifies.
+
 ## Reservations
 
 For parallel dev sessions (e.g. one agent working on TiltBuggy while another
