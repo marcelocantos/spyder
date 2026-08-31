@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -29,6 +30,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
+	"github.com/marcelocantos/spyder/internal/listenaddr"
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
@@ -121,12 +123,25 @@ func Run(ctx context.Context, cfg Config) error {
 	// to ctx — exits on daemon shutdown.
 	go wedge.RunMonitor(ctx)
 
+	if listenaddr.IsLoopback(cfg.Addr) && mcpHandler != nil && mcpHandler.HasMobileInventory() {
+		slog.Warn("spyder is bound to loopback only while mobile devices are in inventory; LAN glasses and app-channel dial-backs cannot reach this daemon — set SPYDER_ADDR=:3030 or pass --addr :3030",
+			"addr", cfg.Addr)
+	}
+
+	ln, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("http listen %s: %w", cfg.Addr, err)
+	}
+	if perr := listenaddr.Save(paths.ListenAddrPath(), cfg.Addr); perr != nil {
+		slog.Warn("listen-addr persist failed", "path", paths.ListenAddrPath(), "error", perr)
+	}
+
 	slog.Info("spyder listening",
 		"addr", cfg.Addr, "mcp", "/mcp", "rest", rest.Prefix)
 
-	srv := &http.Server{Addr: cfg.Addr, Handler: httpHandler}
+	srv := &http.Server{Handler: httpHandler}
 	errCh := make(chan error, 1)
-	go func() { errCh <- srv.ListenAndServe() }()
+	go func() { errCh <- srv.Serve(ln) }()
 
 	select {
 	case <-ctx.Done():

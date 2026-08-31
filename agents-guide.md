@@ -2086,6 +2086,12 @@ terminate apps, and hold reservations on your devices. The default
 loopback bind is deliberate — external exposure is opt-in via
 `--addr` and should only be used on trusted networks.
 
+Bind precedence: `--addr`, then `SPYDER_ADDR`, then the last successful
+bind stored in `~/.spyder/listen-addr`, then loopback. A supervisor
+restart that forgets `SPYDER_ADDR` still comes back on the previous
+address (🎯T103). A loopback bind while iOS/Android devices are in
+inventory logs a warning — LAN glasses cannot reach 127.0.0.1.
+
 ### Brew-services environment (launchd)
 
 When spyder runs as a Homebrew service, launchd doesn't inherit your

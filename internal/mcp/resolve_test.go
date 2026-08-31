@@ -46,6 +46,18 @@ func newTestHandler(t *testing.T) *Handler {
 	return h
 }
 
+func TestHasMobileInventory(t *testing.T) {
+	h := newTestHandler(t)
+	if !h.HasMobileInventory() {
+		t.Fatal("test inventory has iOS+Android; HasMobileInventory should be true")
+	}
+	t.Setenv("HOME", t.TempDir())
+	empty := NewHandler()
+	if empty.HasMobileInventory() {
+		t.Fatal("empty inventory should not look mobile")
+	}
+}
+
 func TestResolveAdapter_InventoryIOS(t *testing.T) {
 	h := newTestHandler(t)
 	adp, platform, id, err := h.resolveAdapter("iPad")

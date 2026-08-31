@@ -29,6 +29,15 @@ func TestInventoryPath(t *testing.T) {
 	}
 }
 
+func TestListenAddrPath(t *testing.T) {
+	t.Setenv("HOME", "/custom/home")
+	got := ListenAddrPath()
+	want := filepath.Join("/custom/home", ".spyder", "listen-addr")
+	if got != want {
+		t.Errorf("ListenAddrPath() = %q; want %q", got, want)
+	}
+}
+
 func TestRunsBase(t *testing.T) {
 	t.Setenv("HOME", "/custom/home")
 	got := RunsBase()

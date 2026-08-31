@@ -9,6 +9,28 @@ import (
 	"time"
 )
 
+func TestParseServeAddr(t *testing.T) {
+	got, err := parseServeAddr(nil, "", "")
+	if err != nil || got != defaultAddr {
+		t.Fatalf("default: got %q err %v", got, err)
+	}
+	got, err = parseServeAddr(nil, "", ":3030")
+	if err != nil || got != ":3030" {
+		t.Fatalf("persisted: got %q err %v", got, err)
+	}
+	got, err = parseServeAddr(nil, ":4040", ":3030")
+	if err != nil || got != ":4040" {
+		t.Fatalf("env: got %q err %v", got, err)
+	}
+	got, err = parseServeAddr([]string{"--addr", ":5050"}, ":4040", ":3030")
+	if err != nil || got != ":5050" {
+		t.Fatalf("flag: got %q err %v", got, err)
+	}
+	if _, err := parseServeAddr([]string{"--addr"}, "", ""); err == nil {
+		t.Fatal("missing --addr value should error")
+	}
+}
+
 func TestParseRunArgs(t *testing.T) {
 	cases := []struct {
 		name    string

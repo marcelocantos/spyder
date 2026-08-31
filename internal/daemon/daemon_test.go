@@ -15,6 +15,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/listenaddr"
+	"github.com/marcelocantos/spyder/internal/paths"
 )
 
 // mcpTestServer wraps daemon.Build's mux in an httptest.Server; the
@@ -70,6 +73,31 @@ func postJSON(t *testing.T, url, session string, body any) (map[string]any, stri
 		t.Fatalf("unmarshal %q: %v", raw, err)
 	}
 	return out, resp.Header.Get("Mcp-Session-Id")
+}
+
+func TestRun_PersistsListenAddr(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- Run(ctx, Config{Addr: "127.0.0.1:0", Version: "test"})
+	}()
+	path := paths.ListenAddrPath()
+	deadline := time.Now().Add(8 * time.Second)
+	for time.Now().Before(deadline) {
+		if listenaddr.Load(path) == "127.0.0.1:0" {
+			cancel()
+			select {
+			case <-errCh:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Run did not return after cancel")
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("listen-addr not persisted at %s", path)
 }
 
 func TestBuild_InitializeRoundtrip(t *testing.T) {

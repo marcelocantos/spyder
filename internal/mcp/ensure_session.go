@@ -129,7 +129,7 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 				}
 			}
 			if !installed {
-				if ierr := adapter.InstallApp(id, vpath); ierr != nil {
+				if ierr := h.installOn(adapter, id, vpath); ierr != nil {
 					res, _ := toolErr("ensure_session: install %s on %s: %v", filepath.Base(vpath), dev, ierr)
 					return res
 				}

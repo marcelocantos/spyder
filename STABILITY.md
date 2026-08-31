@@ -210,7 +210,7 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | Invocation | Behaviour | Stability |
 |---|---|---|
 | `spyder` (no args) | Prints usage to stdout. | Stable |
-| `spyder serve [--addr :PORT]` | HTTP MCP server + bundled `ios tunnel start --userspace` subprocess. Blocks until SIGINT/SIGTERM. | Stable |
+| `spyder serve [--addr :PORT]` | HTTP MCP server + bundled `ios tunnel start --userspace` subprocess. Bind: `--addr` > `SPYDER_ADDR` > last `~/.spyder/listen-addr` > loopback default. Warns if loopback-only while mobile inventory exists (🎯T103). Blocks until SIGINT/SIGTERM. | Stable |
 | `spyder run [--device ALIAS\|-d ALIAS\|--on PREDICATE] [--as OWNER] [--timeout DURATION] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. `--on PREDICATE` resolves+reserves atomically via the daemon (closing the resolve→release→re-acquire race window). `--timeout DURATION` (e.g. `5m`) bounds the wrapped child invocation; on deadline, exits 30 (`ExitTimeout`) instead of forwarding the child's signal-induced exit. `--device` and `--on` are mutually exclusive. | Stable (🎯T38.4 + 🎯T38.5) |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |

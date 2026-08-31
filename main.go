@@ -27,6 +27,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/daemon"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/listenaddr"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
@@ -98,10 +99,12 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
 Serve:
   spyder serve [--addr :3030]
 
-  Default bind is 127.0.0.1:3030 (loopback). SPYDER_ADDR overrides the
-  default when --addr is absent; --addr always wins. The Homebrew
-  service sets SPYDER_ADDR=":3030" so LAN devices (stream glasses,
-  app-channel dial-backs) can reach the daemon.
+  Default bind is 127.0.0.1:3030 (loopback). Precedence: --addr, then
+  SPYDER_ADDR, then the last successful bind (~/.spyder/listen-addr),
+  then the loopback default. The Homebrew service sets SPYDER_ADDR=":3030"
+  so LAN devices (stream glasses, app-channel dial-backs) can reach the
+  daemon. A loopback bind while mobile devices are in inventory logs a
+  warning (🎯T103).
 
   Runs an MCP server over streamable HTTP. Register with Claude Code:
     claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
@@ -167,33 +170,34 @@ func main() {
 
 // runServe parses optional --addr and starts the HTTP MCP server.
 func runServe(args []string) {
-	cfg := daemon.Config{Addr: defaultAddr, Version: version}
-	// SPYDER_ADDR overrides the loopback default when --addr is absent —
-	// the deliberate opt-in for LAN exposure under process supervisors
-	// that can't pass flags per-host (the Homebrew service plist sets it
-	// so device glasses and app-channel dial-backs can reach the daemon).
-	// An explicit --addr still wins.
-	if env := os.Getenv("SPYDER_ADDR"); env != "" {
-		cfg.Addr = env
+	addr, err := parseServeAddr(args, os.Getenv("SPYDER_ADDR"), listenaddr.Load(paths.ListenAddrPath()))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
+	if err := daemon.Start(daemon.Config{Addr: addr, Version: version}); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// parseServeAddr resolves the HTTP bind: --addr, then env (SPYDER_ADDR),
+// then the last successful persist, then the loopback default (🎯T103).
+func parseServeAddr(args []string, env, persisted string) (string, error) {
+	explicit := ""
 	for len(args) > 0 {
 		switch args[0] {
 		case "--addr", "-a":
 			if len(args) < 2 {
-				fmt.Fprintln(os.Stderr, "serve: --addr requires a value")
-				os.Exit(2)
+				return "", errors.New("serve: --addr requires a value")
 			}
-			cfg.Addr = args[1]
+			explicit = args[1]
 			args = args[2:]
 		default:
-			fmt.Fprintf(os.Stderr, "serve: unknown flag %q\n", args[0])
-			os.Exit(2)
+			return "", fmt.Errorf("serve: unknown flag %q", args[0])
 		}
 	}
-	if err := daemon.Start(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
-		os.Exit(1)
-	}
+	return listenaddr.Resolve(explicit, env, persisted, defaultAddr), nil
 }
 
 // runArgs are the parsed CLI flags for `spyder run`.

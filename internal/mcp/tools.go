@@ -1640,7 +1640,7 @@ func (h *Handler) handleInstallApp(args map[string]any) (*mcpgo.CallToolResult, 
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	if err := adapter.InstallApp(id, path); err != nil {
+	if err := h.installOn(adapter, id, path); err != nil {
 		return toolErr("install_app on %s: %v", dev, err)
 	}
 	return toolText(fmt.Sprintf("installed %s on %s", filepath.Base(path), dev))
@@ -1794,7 +1794,7 @@ func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[str
 	}
 
 	// Step 2: install (fail fast on error).
-	if err := adapter.InstallApp(id, path); err != nil {
+	if err := h.installOn(adapter, id, path); err != nil {
 		return fail("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
 	}
 

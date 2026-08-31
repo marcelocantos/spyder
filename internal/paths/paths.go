@@ -59,6 +59,13 @@ func USBSpeedPath() string {
 	return filepath.Join(Base(), "usb-speed.json")
 }
 
+// ListenAddrPath returns the last successful serve bind
+// (~/.spyder/listen-addr). A supervisor restart without SPYDER_ADDR
+// or --addr reuses this so LAN glasses keep working (🎯T103).
+func ListenAddrPath() string {
+	return filepath.Join(Base(), "listen-addr")
+}
+
 // ShipAuditBase returns the ship/fastlane audit root
 // (~/.spyder/ship-audit). JSONL, daily markdown, and run logs /
 // reflection stubs live here (🎯T133.6).

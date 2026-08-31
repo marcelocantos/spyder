@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -259,6 +260,61 @@ func (h *Handler) beatDispatch() {
 		return
 	}
 	h.dispatchWatch.Beat()
+}
+
+// installProgressTick is how often a long InstallApp (adb / zipconduit)
+// beats the dispatch watchdog. Must stay well below DeadlineDeviceOp
+// so a cold emulator install is not mistaken for a wedge (🎯T103).
+var installProgressTick = 5 * time.Second
+
+// beatUntilReturned Beats immediately and then on installProgressTick
+// until the returned stop func runs. No-op when self-heal is off.
+func (h *Handler) beatUntilReturned() func() {
+	if h == nil || h.dispatchWatch == nil {
+		return func() {}
+	}
+	tick := installProgressTick
+	if tick <= 0 {
+		tick = 5 * time.Second
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	h.beatDispatch()
+	go func() {
+		t := time.NewTicker(tick)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				h.beatDispatch()
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
+}
+
+// installOn runs adapter.InstallApp while beating the dispatch watchdog.
+func (h *Handler) installOn(adapter device.Adapter, id, path string) error {
+	stop := h.beatUntilReturned()
+	defer stop()
+	return adapter.InstallApp(id, path)
+}
+
+// HasMobileInventory is true when inventory lists an iOS or Android
+// device. Used to warn on a loopback-only HTTP bind (🎯T103).
+func (h *Handler) HasMobileInventory() bool {
+	if h == nil || h.inventory == nil {
+		return false
+	}
+	for _, e := range h.inventory.Entries() {
+		switch strings.ToLower(e.Platform) {
+		case "ios", "android":
+			return true
+		}
+	}
+	return false
 }
 
 // persistSelfRestartEvidence writes a goroutine dump + wedge snapshot under

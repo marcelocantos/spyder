@@ -33,8 +33,9 @@ var (
 // toolDeadlineClass returns the wall-clock bound for a tool name.
 func toolDeadlineClass(name string) time.Duration {
 	switch name {
-	case "install_app", "deploy_app", "ensure_session":
-		// ensure_session may install on its deploy-if-needed path.
+	case "install_app", "deploy_app", "ensure_session", "launch_player":
+		// ensure_session / launch_player may install on the deploy path
+		// (🎯T103: a cold emulator adb install must fit under this class).
 		return DeadlineInstall
 	case "perf_fps":
 		// Explicit class: window_sec max 120 must fit under this bound.
@@ -60,8 +61,7 @@ func toolDeadlineClass(name string) time.Duration {
 		"app_screenshot", "app_input", "app_pause", "app_step",
 		"app_tweak_list", "app_tweak_get", "app_tweak_set", "app_tweak_reset",
 		"app_log_get", "app_spawn", "app_quit", "app_ping", "app_flush",
-		"app_background", "app_foreground", "app_state",
-		"launch_player":
+		"app_background", "app_foreground", "app_state":
 		return DeadlineDeviceOp
 	default:
 		return DeadlineDeviceOp

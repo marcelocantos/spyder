@@ -5,6 +5,8 @@ package mcp
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -127,6 +129,59 @@ func spyderNeedsAttention(h *Handler) bool {
 		}
 	}
 	return false
+}
+
+func TestLaunchPlayer_DeadlineCoversInstall(t *testing.T) {
+	if toolDeadlineClass("launch_player") != DeadlineInstall {
+		t.Fatalf("launch_player deadline %v want DeadlineInstall %v",
+			toolDeadlineClass("launch_player"), DeadlineInstall)
+	}
+}
+
+// TestDispatch_SlowInstallDoesNotStallWatchdog is the 🎯T103 shipped-path
+// oracle: an InstallApp longer than the stall window stays healthy because
+// installOn beats the watchdog. The stall timeout is not raised.
+func TestDispatch_SlowInstallDoesNotStallWatchdog(t *testing.T) {
+	save := installProgressTick
+	installProgressTick = 20 * time.Millisecond
+	t.Cleanup(func() { installProgressTick = save })
+
+	tmp := t.TempDir()
+	appPath := filepath.Join(tmp, "MyApp.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ios := &stubAdapter{installApp: func(id, path string) error {
+		time.Sleep(300 * time.Millisecond)
+		return nil
+	}}
+	h := newHandlerWithStubs(t, ios, nil)
+	h.EnableSelfHeal(80*time.Millisecond, time.Hour)
+	h.selfRestart = health.NewSelfRestartLimiterForTest(3, time.Hour, func(int) {
+		t.Error("self-restart must not fire for a slow install")
+	})
+
+	var stalled atomic.Bool
+	h.Health().Model().OnTransition(func(tr health.Transition) {
+		if tr.ID.Name == "spyder" && tr.To == health.NeedsAttention {
+			stalled.Store(true)
+		}
+	})
+
+	res, err := h.Dispatch(context.Background(), "install_app", map[string]any{
+		"device": "iPad",
+		"path":   appPath,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("install_app error: %s", resultErrorText(t, res))
+	}
+	if stalled.Load() {
+		t.Fatal("install beats should keep the watchdog healthy")
+	}
 }
 
 // TestDispatch_AppExecSleepDoesNotStallWatchdog is the 🎯T103.1 shipped-path
