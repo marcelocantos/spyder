@@ -30,7 +30,7 @@ in principle, but `adb` itself is cross-platform; spyder doesn't add value
 to adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.84.0` — the iOS path runs entirely on the in-process
+Snapshot as of `v0.85.0` — the iOS path runs entirely on the in-process
 [go-ios](https://github.com/danielpaulus/go-ios) Go library, plus a
 bundled `ios` userspace tunnel daemon spawned as a spyder child process
 (🎯T56). The data path crosses no subprocess boundary: every iOS
@@ -210,7 +210,7 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | Invocation | Behaviour | Stability |
 |---|---|---|
 | `spyder` (no args) | Prints usage to stdout. | Stable |
-| `spyder serve [--addr :PORT]` | HTTP MCP server + bundled `ios tunnel start --userspace` subprocess. Bind: `--addr` > `SPYDER_ADDR` > last `~/.spyder/listen-addr` > loopback default. Warns if loopback-only while mobile inventory exists (🎯T103). Blocks until SIGINT/SIGTERM. | Stable |
+| `spyder serve [--addr :PORT]` | HTTP MCP server + bundled `ios tunnel start --userspace` subprocess. Bind: `--addr` > `SPYDER_ADDR` > last `~/.spyder/listen-addr` > loopback default. Warns if loopback-only while mobile inventory exists (🎯T103). Blocks until SIGINT/SIGTERM. Optional `supervisor/install.sh` takes over `:3030` from `brew services` on machines that already run supervisord. | Stable |
 | `spyder run [--device ALIAS\|-d ALIAS\|--on PREDICATE] [--as OWNER] [--timeout DURATION] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. `--on PREDICATE` resolves+reserves atomically via the daemon (closing the resolve→release→re-acquire race window). `--timeout DURATION` (e.g. `5m`) bounds the wrapped child invocation; on deadline, exits 30 (`ExitTimeout`) instead of forwarding the child's signal-induced exit. `--device` and `--on` are mutually exclusive. | Stable (🎯T38.4 + 🎯T38.5) |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
 | `spyder help` / `--help` / `-help` | Prints usage. | Stable |

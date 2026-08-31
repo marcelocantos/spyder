@@ -598,3 +598,13 @@ maintenance activities. Append-only — newest entries at the bottom.
   the dispatch watchdog during a long adb/zipconduit install. Bare
   `spyder serve` is not required to self-reexec (T99.3). STABILITY.md
   catalogue snapshot bumped to v0.84.0. Published for darwin-arm64.
+
+## 2026-08-31 — /release v0.85.0
+
+- **Commit**: (filled at tag)
+- **Outcome**: Released v0.85.0. Optional supervisord takeover:
+  `supervisor/install.sh` evicts `brew services` / launchd and runs the
+  Homebrew Cellar `spyder serve` under supervisord (`autorestart=true`,
+  `SPYDER_ADDR=:3030`). Day-to-day MCP on the lab Mac is supervisor, not
+  brew services. Tree-built binaries stay off `:3030`. STABILITY.md
+  catalogue snapshot bumped to v0.85.0. Published for darwin-arm64.
