@@ -144,7 +144,7 @@ iOS/Android devices via go-ios + `adb`, the bundled tunnel daemon's
 RSD path, on-device DTX) can't be reproduced in
 any hosted CI runner. The only GitHub Actions workflow is
 `release.yml`, which builds + packages on tag push; there is no
-per-PR CI.
+hosted CI on ordinary pushes.
 
 Instead, the laptop is the test runner and `TEST-REPORT.json` at the
 repo root is the attestation:
@@ -159,22 +159,35 @@ repo root is the attestation:
 - The report is an attestation — *the engineer ran these tests, here
   are the per-tier outcomes*. Keeping it up to date relative to the
   code is the engineer's responsibility. There is no automated
-  freshness check (the previous SHA-based one was removed because it
-  fought squash-merge; a better mechanism is TBD).
+  freshness check (the previous SHA-based one was removed; a better
+  mechanism is TBD).
 - HIL tiers (`integration`, `device`) skip routinely; `overall:
   partial` is acceptable.
 
-When evaluating a PR's mergeability: `TEST-REPORT.json` should
-reflect a recent run with `overall ∈ {pass, partial}`. If it
-doesn't, the engineer hasn't done their job; reject on that basis.
+Before pushing to `master` or cutting a release: `TEST-REPORT.json`
+should reflect a recent run with `overall ∈ {pass, partial}`.
+Run `make bullseye` during development and `make pre-release` before
+tagging.
 
 ## Delivery
 
-Merged to master via squash PR. Squash-only merges configured on the repo.
+Land on `master` by direct push — no PR ceremony, no feature branch
+requirement. Long-lived topic branches are fine for WIP, but shipping is
+`git push origin master` (or `/push`, which skips PR creation here).
+
+Releases: tag on `master` → `release.yml` builds the darwin-arm64
+tarball and updates the Homebrew tap. Day-to-day MCP is Homebrew only
+(see **One daemon only** above).
 
 ## Gates
 
-Default (base) gates apply.
+profile: base
+override:
+  - pr-workflow: skip
+
+Direct push to `master` is the default delivery path. `/push` must not
+open a PR for this repo unless the user explicitly asks for one on a
+non-default branch.
 
 ## Plateau
 

@@ -1718,7 +1718,7 @@ daemon restart.
 - **iOS simulator returns "not yet implemented"** → correct and intentional.
   Link Conditioner is macOS-host-level (affects all traffic), not per-simulator.
   A per-simulator shaping solution would need private CoreSimulator APIs.
-  PRs welcome.
+  File a bullseye target if you want to pursue it.
 - **`lossy-<pct>` profile returns an error** → partially applied (speed/delay
   set correctly) but the adb emulator console has no packet-loss knob. Use
   a host-level traffic shaper for loss simulation on Android.

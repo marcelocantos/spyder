@@ -4,8 +4,9 @@
 # steady-state ("we maintain X"), the complement to bullseye's aspirational
 # targets ("achieve X").
 #
-# Tests run on the laptop (TEST-REPORT.json), not in per-PR CI. The only
+# Tests run on the laptop (TEST-REPORT.json), not in hosted push CI. The only
 # GitHub Actions workflow is tag-triggered release.yml (darwin-arm64).
+# Delivery is direct push to master (CLAUDE.md: pr-workflow skip).
 # Tiers are PER DIMENSION (schema v1): a dimension's held tier is the highest T
 # such that every item in it with tier <= T is satisfied. `floors` is the
 # per-dimension ratchet (below floor => DRIFT); `aspires` is the gap horizon;
@@ -16,12 +17,12 @@ schema_version: 1
 repo: spyder
 aspires: 3
 floors:            # per-dimension held-tier ratchet; below floor => DRIFT
-  correctness: 2   # make test + release.yml Test + TEST-REPORT.json; no PR CI
+  correctness: 2   # make test + release.yml Test + TEST-REPORT.json; no push CI
   security: 2      # go.sum + GitHub secret scanning; vuln/SAST scanners are T3
   quality: 2       # Makefile vet + fmt-check; not wired in Actions
   deps: 2          # committed go.sum; no Dependabot
   release: 2       # tag-triggered darwin-arm64 tarball + Homebrew tap
-  governance: 2    # Apache-2 LICENSE, README, .gitignore, NOTICE, squash-only
+  governance: 2    # Apache-2 LICENSE, README, .gitignore, NOTICE, direct-push
   build: 2         # Makefile build + go 1.26 pin + go.sum; player is in-tree
   docs: 2          # README + agents-guide.md + STABILITY.md; no docs-in-CI
   perf: 0          # no benchmark suite
@@ -81,17 +82,18 @@ items:
     tier: 2
     evidence: {file: {path: player/Makefile, matches: '(?m)^check-wire:'}}
 
-  - id: correctness.pr-ci
+  - id: correctness.push-ci
     dim: correctness
-    desc: Per-PR GitHub Actions test workflow
+    desc: Hosted GitHub Actions test workflow on ordinary pushes
     state: skipped
     cadence: continuous
     enforce: informational
     tier: 3
     reason: >-
       Hosted CI cannot exercise go-ios / adb / RSD. CLAUDE.md makes the laptop
-      the test runner; TEST-REPORT.json is the merge attestation. release.yml
-      is the only workflow and fires on published releases, not PRs.
+      the test runner; TEST-REPORT.json is the push/release attestation.
+      release.yml is the only workflow and fires on published releases, not
+      on push to master.
     evidence: {absent: {file: {path: .github/workflows/ci.yml}}}
 
   - id: correctness.windows
@@ -246,7 +248,7 @@ items:
     enforce: warning
     tier: 3
     reason: >-
-      fmt-check exists locally but is not a release.yml (or PR) step. Entropy
+      fmt-check exists locally but is not a release.yml step. Entropy
       audit 2026-08-22 found gofmt drift on HEAD.
     evidence: {absent: {ci_step: {workflow: release.yml, name: Format}}}
 
@@ -339,14 +341,27 @@ items:
     tier: 1
     evidence: {file: {path: .gitignore}}
 
-  - id: governance.squash-only
+  - id: governance.direct-push
     dim: governance
-    desc: Repo is squash-merge only, with delete-branch-on-merge
+    desc: CLAUDE.md declares pr-workflow skip — push master directly, no PR ceremony
     state: enforced
     cadence: once-must-hold
     enforce: blocking
     tier: 2
-    evidence: {gh_setting: {key: allow_merge_commit, equals: false}}
+    evidence: {file: {path: CLAUDE.md, matches: 'pr-workflow: skip'}}
+
+  - id: governance.squash-only
+    dim: governance
+    desc: Repo is squash-merge only, with delete-branch-on-merge
+    state: skipped
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: >-
+      Delivery is direct push to master (pr-workflow skip). GitHub may still
+      expose squash-merge settings from the prior PR era; they are not part
+      of the current workflow.
+    evidence: {file: {path: CLAUDE.md, matches: 'pr-workflow: skip'}}
 
   - id: governance.notice
     dim: governance
