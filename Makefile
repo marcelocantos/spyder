@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web sign
+.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web sign release-dist release-tap release
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -101,6 +101,19 @@ bullseye:
 	fi
 
 pre-release: bullseye
+
+# Local release (🎯T135). VERSION is required for package:
+#   VERSION=0.86.0 make release-dist
+#   VERSION=0.86.0 make release
+# release-tap may omit VERSION when dist/ already holds the tarball.
+release-dist:
+	./scripts/release-package.sh $(VERSION)
+
+release-tap:
+	./scripts/release-tap.sh $(VERSION)
+
+release: pre-release release-dist
+	./scripts/release-publish.sh $(VERSION)
 
 clean:
 	rm -rf bin/

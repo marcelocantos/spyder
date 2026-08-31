@@ -91,9 +91,9 @@ shipping (🎯T133). Secrets never appear on MCP/REST — only CLI subcommands
 touch the keychain envelope.
 
 **macOS only.** The spyder binary must be code-signed (`make sign` after
-`make build`) so SecItem ACLs stay stable. Homebrew bottles from CI are
-unsigned until 🎯T134 lands; set `SPYDER_ALLOW_UNSIGNED_SECRETS=1` only for
-local test builds.
+`make build`) so SecItem ACLs stay stable. Release bottles are signed by
+`scripts/release-package.sh` on the packaging Mac (🎯T134); set
+`SPYDER_ALLOW_UNSIGNED_SECRETS=1` only for local unsigned test builds.
 
 ```bash
 make build && make sign

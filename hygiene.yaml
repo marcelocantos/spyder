@@ -4,9 +4,9 @@
 # steady-state ("we maintain X"), the complement to bullseye's aspirational
 # targets ("achieve X").
 #
-# Tests run on the laptop (TEST-REPORT.json), not in hosted push CI. The only
-# GitHub Actions workflow is tag-triggered release.yml (darwin-arm64).
-# Delivery is direct push to master (CLAUDE.md: pr-workflow skip).
+# Tests run on the laptop (TEST-REPORT.json), not in hosted CI. Releases
+# are packaged locally (scripts/release-package.sh + tapper push). There is
+# no .github directory. Delivery is direct push to master (pr-workflow skip).
 # Tiers are PER DIMENSION (schema v1): a dimension's held tier is the highest T
 # such that every item in it with tier <= T is satisfied. `floors` is the
 # per-dimension ratchet (below floor => DRIFT); `aspires` is the gap horizon;
@@ -17,11 +17,11 @@ schema_version: 1
 repo: spyder
 aspires: 3
 floors:            # per-dimension held-tier ratchet; below floor => DRIFT
-  correctness: 2   # make test + release.yml Test + TEST-REPORT.json; no push CI
+  correctness: 2   # make test + TEST-REPORT.json; no hosted CI
   security: 2      # go.sum + GitHub secret scanning; vuln/SAST scanners are T3
-  quality: 2       # Makefile vet + fmt-check; not wired in Actions
+  quality: 2       # Makefile vet + fmt-check
   deps: 2          # committed go.sum; no Dependabot
-  release: 2       # tag-triggered darwin-arm64 tarball + Homebrew tap
+  release: 2       # local darwin-arm64 tarball + tapper Homebrew tap
   governance: 2    # Apache-2 LICENSE, README, .gitignore, NOTICE, direct-push
   build: 2         # Makefile build + go 1.26 pin + go.sum; player is in-tree
   docs: 2          # README + agents-guide.md + STABILITY.md; no docs-in-CI
@@ -48,12 +48,12 @@ items:
 
   - id: correctness.release-tests
     dim: correctness
-    desc: go test ./... runs on the darwin-arm64 release job (tag publish only)
+    desc: make release runs pre-release (fmt, vet, build, go test) before packaging
     state: enforced
     cadence: per-release
     enforce: blocking
     tier: 2
-    evidence: {ci_step: {workflow: release.yml, name: Test}}
+    evidence: {file: {path: Makefile, matches: '(?m)^release: pre-release'}}
 
   - id: correctness.test-report
     dim: correctness
@@ -92,8 +92,7 @@ items:
     reason: >-
       Hosted CI cannot exercise go-ios / adb / RSD. CLAUDE.md makes the laptop
       the test runner; TEST-REPORT.json is the push/release attestation.
-      release.yml is the only workflow and fires on published releases, not
-      on push to master.
+      There is no .github directory (🎯T135).
     evidence: {absent: {file: {path: .github/workflows/ci.yml}}}
 
   - id: correctness.windows
@@ -104,10 +103,10 @@ items:
     enforce: informational
     tier: 3
     reason: >-
-      release.yml is darwin-arm64 only (macOS-specific device tooling). Linux
-      and Windows builds are explicitly out of scope in that workflow's comment.
+      tapper.yaml is darwin-arm64 only (macOS-specific device tooling). Linux
+      and Windows builds are out of scope.
     evidence:
-      {absent: {file: {path: .github/workflows/release.yml, matches: 'windows-latest'}}}
+      {absent: {file: {path: tapper.yaml, matches: 'linux_amd64: true'}}}
 
   - id: correctness.fuzzing
     dim: correctness
@@ -161,13 +160,13 @@ items:
 
   - id: security.actions-perms
     dim: security
-    desc: "release.yml declares an explicit permissions block (contents: write)"
-    state: present
+    desc: GitHub Actions token permissions scoped to least privilege
+    state: skipped
     cadence: once-must-hold
     enforce: warning
     tier: 2
-    evidence:
-      {file: {path: .github/workflows/release.yml, matches: '(?m)^permissions:'}}
+    reason: No GitHub Actions workflows remain (🎯T135); GITHUB_TOKEN permissions are N/A.
+    evidence: {absent: {file: {path: .github/workflows/release.yml}}}
 
   - id: security.gitleaks
     dim: security
@@ -199,7 +198,7 @@ items:
     enforce: warning
     tier: 3
     reason: No CodeQL workflow; go vet is the local static check (Makefile).
-    evidence: {absent: {ci_job: "release.yml#codeql"}}
+    evidence: {absent: {file: {path: .github/workflows}}}
 
   - id: security.signed-releases
     dim: security
@@ -208,8 +207,10 @@ items:
     cadence: per-release
     enforce: informational
     tier: 3
-    reason: release.yml uploads a tarball via `gh release upload`; no signing step.
-    evidence: {absent: {ci_step: {workflow: release.yml, name: Sign}}}
+    reason: >-
+      Release tarballs are codesigned locally (scripts/codesign-spyder.sh) but
+      not attested with cosign/sigstore.
+    evidence: {absent: {file: {path: scripts/release-package.sh, matches: 'cosign'}}}
 
   # ============================== CODE QUALITY ============================
   - id: quality.vet
@@ -242,15 +243,13 @@ items:
 
   - id: quality.ci-format
     dim: quality
-    desc: gofmt-clean is enforced in GitHub Actions
+    desc: gofmt-clean is enforced by a hosted workflow
     state: planned
     cadence: continuous
     enforce: warning
     tier: 3
-    reason: >-
-      fmt-check exists locally but is not a release.yml step. Entropy
-      audit 2026-08-22 found gofmt drift on HEAD.
-    evidence: {absent: {ci_step: {workflow: release.yml, name: Format}}}
+    reason: fmt-check exists locally (make bullseye) but is not a hosted CI job. There is no .github.
+    evidence: {absent: {file: {path: .github/workflows}}}
 
   # =========================== DEPENDENCY HEALTH ==========================
   - id: deps.lockfile
@@ -275,21 +274,21 @@ items:
   # ========================== RELEASE & VERSIONING =======================
   - id: release.ci-built
     dim: release
-    desc: Release tarball (spyder + ios + spyder-killusbmuxd) is built by CI
+    desc: Release tarball (spyder + ios + spyder-killusbmuxd) is built locally by scripts/release-package.sh
     state: present
     cadence: per-release
     enforce: warning
     tier: 2
-    evidence: {ci_job: release.yml#build}
+    evidence: {make_target: release-dist}
 
   - id: release.homebrew
     dim: release
-    desc: Published to the Homebrew tap on release
+    desc: Published to the Homebrew tap on release via tapper
     state: present
     cadence: per-release
     enforce: informational
     tier: 2
-    evidence: {ci_job: release.yml#homebrew}
+    evidence: {file: {path: tapper.yaml}}
 
   - id: release.player
     dim: release
@@ -299,9 +298,9 @@ items:
     enforce: informational
     tier: 3
     reason: >-
-      Player is an in-tree product (`make player`) but is not a release.yml
-      step and is not in the Homebrew tarball.
-    evidence: {absent: {ci_step: {workflow: release.yml, name: Build player}}}
+      Player is an in-tree product (`make player`) but is not in
+      scripts/release-package.sh and is not in the Homebrew tarball.
+    evidence: {absent: {file: {path: scripts/release-package.sh, matches: 'bin/player'}}}
 
   - id: release.changelog
     dim: release
@@ -349,6 +348,15 @@ items:
     enforce: blocking
     tier: 2
     evidence: {file: {path: CLAUDE.md, matches: 'pr-workflow: skip'}}
+
+  - id: governance.no-gha
+    dim: governance
+    desc: No .github directory — releases are local (tapper), not hosted workflows
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 2
+    evidence: {absent: {file: {path: .github}}}
 
   - id: governance.squash-only
     dim: governance
@@ -473,8 +481,8 @@ items:
     cadence: continuous
     enforce: informational
     tier: 3
-    reason: Docs are not built or link-checked in Actions; STABILITY.md has known drift (entropy audit ENT-003).
-    evidence: {absent: {ci_step: {workflow: release.yml, name: Docs}}}
+    reason: Docs are not built or link-checked in a hosted job; STABILITY.md has known drift (entropy audit ENT-003).
+    evidence: {absent: {file: {path: .github/workflows}}}
 
   # ============================== PERFORMANCE ===========================
   - id: perf.benchmarks

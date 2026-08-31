@@ -144,10 +144,8 @@ go test ./...
 
 **Tests run on the laptop, not in CI.** spyder's value surface (real
 iOS/Android devices via go-ios + `adb`, the bundled tunnel daemon's
-RSD path, on-device DTX) can't be reproduced in
-any hosted CI runner. The only GitHub Actions workflow is
-`release.yml`, which builds + packages on tag push; there is no
-hosted CI on ordinary pushes.
+RSD path, on-device DTX) can't be reproduced in any hosted CI runner.
+There is no hosted CI.
 
 Instead, the laptop is the test runner and `TEST-REPORT.json` at the
 repo root is the attestation:
@@ -178,9 +176,13 @@ Land on `master` by direct push — no PR ceremony, no feature branch
 requirement. Long-lived topic branches are fine for WIP, but shipping is
 `git push origin master` (or `/push`, which skips PR creation here).
 
-Releases: tag on `master` → `release.yml` builds the darwin-arm64
-tarball and updates the Homebrew tap. Day-to-day MCP is Homebrew only
-(see **One daemon only** above).
+Releases are local (vellum/tapper shape): `VERSION=0.N.0 make release`
+runs `pre-release`, packages the darwin-arm64 tarball (codesigned
+spyder + bundled ios + spyder-killusbmuxd), `gh release create`s it,
+and `tapper push`es the Homebrew formula. After `brew upgrade spyder`,
+restart with `supervisorctl restart spyder` — not `brew services
+restart`. Day-to-day MCP is the Homebrew Cellar binary under
+supervisord (see **One daemon only** above).
 
 ## Gates
 
