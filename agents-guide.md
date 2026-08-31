@@ -1481,8 +1481,10 @@ deduped and auto-cleared when it recovers.
 A long `app_exec` does not trip `spyder: daemon stalled` while the
 script is advancing. The engine beats the dispatch watchdog on verb
 enter/exit, `sleep()` ticks, and app-channel frames. Scripts do not
-call a heartbeat builtin. A single device verb that sits with no inner
-progress for more than 60s still notifies.
+call a heartbeat builtin. `install_app` / `deploy_app` / `launch_player`
+also beat while `InstallApp` runs (cold emulator installs use the 5
+minute install deadline). A non-install device verb that sits with no
+inner progress for more than 60s still notifies.
 
 ## Reservations
 

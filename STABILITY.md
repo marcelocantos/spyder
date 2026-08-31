@@ -30,7 +30,7 @@ in principle, but `adb` itself is cross-platform; spyder doesn't add value
 to adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.83.0` — the iOS path runs entirely on the in-process
+Snapshot as of `v0.84.0` — the iOS path runs entirely on the in-process
 [go-ios](https://github.com/danielpaulus/go-ios) Go library, plus a
 bundled `ios` userspace tunnel daemon spawned as a spyder child process
 (🎯T56). The data path crosses no subprocess boundary: every iOS
@@ -596,4 +596,4 @@ builds. **Stable.**
 | SIGQUIT → `~/.spyder/goroutine-*.txt` | Full goroutine dump without process exit (🎯T99.5). | **Stable** |
 | Tool-class dispatch deadlines | Fast read ≤15s, device op ≤60s, install ≤5m (tunable); structured timeout + session invalidate (🎯T99.1). | **Stable** |
 
-In-flight tool calls are tracked for diagnosis (`Handler.InFlightOps`); wedge snapshots continue under `~/.spyder/wedge-snapshots/`. The dispatch watchdog (60s no-progress) beats from `app_exec` verb enter/exit, `sleep()` ticks, and app-channel frames (🎯T103.1) — a long script is not `needs_attention` while it is advancing. Scripts do not inject heartbeats.
+In-flight tool calls are tracked for diagnosis (`Handler.InFlightOps`); wedge snapshots continue under `~/.spyder/wedge-snapshots/`. The dispatch watchdog (60s no-progress) beats from `app_exec` verb enter/exit, `sleep()` ticks, app-channel frames (🎯T103.1), and `InstallApp` (🎯T103) — a long script or cold install is not `needs_attention` while it is advancing. Scripts do not inject heartbeats. `launch_player` uses the install deadline class (5m).

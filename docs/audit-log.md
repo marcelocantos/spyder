@@ -586,3 +586,15 @@ maintenance activities. Append-only — newest entries at the bottom.
   `noteProgress`; scripts do not inject heartbeats. A hung verb with no
   inner progress still notifies. Stall window unchanged. STABILITY.md
   catalogue snapshot bumped to v0.83.0. Published for darwin-arm64.
+
+## 2026-08-31 — /release v0.84.0
+
+- **Commit**: (filled at tag)
+- **Outcome**: Released v0.84.0. 🎯T103: persist last successful HTTP bind
+  to `~/.spyder/listen-addr` and reuse it when `--addr` and `SPYDER_ADDR`
+  are absent, so a supervisor restart does not fall back to loopback.
+  Warn if bound to loopback while iOS/Android devices are in inventory.
+  `launch_player` uses the 5-minute install deadline; `InstallApp` beats
+  the dispatch watchdog during a long adb/zipconduit install. Bare
+  `spyder serve` is not required to self-reexec (T99.3). STABILITY.md
+  catalogue snapshot bumped to v0.84.0. Published for darwin-arm64.
