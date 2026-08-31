@@ -246,6 +246,19 @@ func (h *Handler) EnableSelfHeal(watchdogTimeout, restartGrace time.Duration) {
 	// Drive Check on a short interval so stalls surface without waiting for
 	// the next dispatch.
 	go h.dispatchWatch.Run(context.Background(), minDuration(watchdogTimeout/4, 5*time.Second))
+	if h.appChannel != nil {
+		h.appChannel.SetOnProgress(h.beatDispatch)
+	}
+}
+
+// beatDispatch records dispatch-watchdog progress. No-op when self-heal
+// is not enabled. Called from app_exec (verb/sleep) and app-channel
+// session progress (🎯T103.1).
+func (h *Handler) beatDispatch() {
+	if h == nil || h.dispatchWatch == nil {
+		return
+	}
+	h.dispatchWatch.Beat()
 }
 
 // persistSelfRestartEvidence writes a goroutine dump + wedge snapshot under

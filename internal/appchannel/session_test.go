@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -262,6 +263,15 @@ func TestCallTimeout(t *testing.T) {
 
 // Progress heartbeats keep a Call alive across a total duration longer
 // than the idle budget — the framework waits while something is happening.
+func TestNoteProgressInvokesHook(t *testing.T) {
+	var n atomic.Int32
+	s := &Session{onProgress: func() { n.Add(1) }}
+	s.noteProgress()
+	if n.Load() != 1 {
+		t.Fatalf("onProgress calls = %d want 1", n.Load())
+	}
+}
+
 func TestCallWaitsWhileProgressBeats(t *testing.T) {
 	_, l := startManagerAndListener(t)
 	app := newFakeApp(t, fmt.Sprintf("127.0.0.1:%d", l.Port), []string{"slow"})

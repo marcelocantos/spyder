@@ -47,13 +47,24 @@ const (
 	// maxSleepMillis caps a single sleep() so a script can't park on one
 	// call past the duration budget; sleep also stops at the deadline.
 	maxSleepMillis = int64(maxExecDuration / time.Millisecond)
+	// defaultExecProgressTick is how often sleep() (and tests that
+	// override execProgressTick) report progress to the dispatch
+	// watchdog. Must stay well below DeadlineDeviceOp so a sleeping
+	// script is not mistaken for a wedged handler (🎯T103.1).
+	defaultExecProgressTick = 5 * time.Second
 )
+
+// execProgressTick is the production sleep/progress cadence. Tests
+// shorten it so a sub-second watchdog can still observe beats.
+var execProgressTick = defaultExecProgressTick
 
 // execLimits are the liveness caps applied to one app_exec run. They exist
 // to protect the agent's tool slot, not the (disposable test) devices.
 type execLimits struct {
-	MaxSteps    uint64
-	MaxDuration time.Duration
+	MaxSteps     uint64
+	MaxDuration  time.Duration
+	Progress     func()        // dispatch-watchdog Beat; nil in most tests
+	ProgressTick time.Duration // sleep beat period; 0 uses execProgressTick
 }
 
 // handleAppExec is the MCP entry point. It does NOT hold h.mu: builtins
@@ -84,7 +95,12 @@ func (h *Handler) handleAppExec(args map[string]any) (*mcpgo.CallToolResult, err
 	defer cancel()
 	// h.Health() is always non-nil (NewHandler seeds a default supervisor),
 	// so the health() builtin can read the live unified report in-process.
-	return runExec(ctx, script, verbs, h.Health().Model(), h.HealthReport, execLimits{MaxSteps: defaultExecSteps, MaxDuration: dur}, params)
+	return runExec(ctx, script, verbs, h.Health().Model(), h.HealthReport, execLimits{
+		MaxSteps:     defaultExecSteps,
+		MaxDuration:  dur,
+		Progress:     h.beatDispatch,
+		ProgressTick: execProgressTick,
+	}, params)
 }
 
 // resolveExecSource loads inline script or durable script_path + params.
@@ -126,7 +142,13 @@ func resolveExecSource(args map[string]any) (script string, params map[string]st
 // reportFn supplies the full health report for health() (entities + doctor + in-flight).
 // params is always exposed as the Starlark global `params` (empty dict if nil).
 func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *health.Model, reportFn func() HealthReport, lim execLimits, params map[string]string) (*mcpgo.CallToolResult, error) {
-	st := &execState{ctx: ctx, health: hm, reportFn: reportFn}
+	st := &execState{
+		ctx:          ctx,
+		health:       hm,
+		reportFn:     reportFn,
+		progress:     lim.Progress,
+		progressTick: lim.ProgressTick,
+	}
 
 	predeclared := st.builtins(verbs, params)
 	prog, err := compileExec(script, predeclared)
@@ -164,10 +186,29 @@ func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *
 
 // execState accumulates the ordered output buffer across one run.
 type execState struct {
-	ctx      context.Context
-	out      []starlark.Value
-	health   *health.Model       // live health model (entities)
-	reportFn func() HealthReport // full report for health() (T99.5/T99.6)
+	ctx          context.Context
+	out          []starlark.Value
+	health       *health.Model       // live health model (entities)
+	reportFn     func() HealthReport // full report for health() (T99.5/T99.6)
+	progress     func()
+	progressTick time.Duration
+}
+
+func (st *execState) beat() {
+	if st == nil || st.progress == nil {
+		return
+	}
+	st.progress()
+}
+
+func (st *execState) progressPeriod() time.Duration {
+	if st != nil && st.progressTick > 0 {
+		return st.progressTick
+	}
+	if execProgressTick > 0 {
+		return execProgressTick
+	}
+	return defaultExecProgressTick
 }
 
 // builtins constructs the predeclared environment: one bridge builtin per
@@ -231,7 +272,9 @@ func (st *execState) verbBuiltin(name string, fn toolFunc) *starlark.Builtin {
 			}
 			argMap[key] = gv
 		}
+		st.beat()
 		res, err := fn(argMap)
+		st.beat()
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
 		}
@@ -324,14 +367,29 @@ func (st *execState) sleep(_ *starlark.Thread, _ *starlark.Builtin, args starlar
 	if ms > maxSleepMillis {
 		ms = maxSleepMillis
 	}
-	t := time.NewTimer(time.Duration(ms) * time.Millisecond)
-	defer t.Stop()
-	select {
-	case <-t.C:
-		return starlark.None, nil
-	case <-st.ctx.Done():
-		return nil, fmt.Errorf("sleep: %w", st.ctx.Err())
+	// A requested wait is script progress — the interpreter is not
+	// wedged. Tick the watchdog so a multi-minute playtest sleep does
+	// not post "daemon stalled" (🎯T103.1).
+	remaining := time.Duration(ms) * time.Millisecond
+	tick := st.progressPeriod()
+	st.beat()
+	for remaining > 0 {
+		chunk := min(remaining, tick)
+		timer := time.NewTimer(chunk)
+		select {
+		case <-timer.C:
+			remaining -= chunk
+			if remaining > 0 {
+				st.beat()
+			}
+		case <-st.ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, fmt.Errorf("sleep: %w", st.ctx.Err())
+		}
 	}
+	return starlark.None, nil
 }
 
 // content renders the ordered output buffer to MCP content blocks.

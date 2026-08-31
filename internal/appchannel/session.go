@@ -122,6 +122,10 @@ type Session struct {
 	// a response arrives or lastProgress goes idle for too long.
 	lastProgress atomic.Int64 // unix nano
 
+	// onProgress is an optional host hook (dispatch watchdog Beat)
+	// copied from Manager at accept time. Invoked from noteProgress.
+	onProgress func()
+
 	// State captures: per-session table of background pollers that
 	// sample state_query{slice} on a fixed interval. Each captureID
 	// is unique within a session.
@@ -259,6 +263,9 @@ func (s *Session) Call(ctx context.Context, method string, params any, timeout t
 // noteProgress records that the peer is still advancing.
 func (s *Session) noteProgress() {
 	s.lastProgress.Store(time.Now().UnixNano())
+	if s.onProgress != nil {
+		s.onProgress()
+	}
 }
 
 // Notify sends a push (no id, no response expected).
@@ -520,6 +527,9 @@ type Manager struct {
 	endedOrder []string
 
 	closeFn func()
+
+	// onProgress is copied onto each accepted Session (🎯T103.1).
+	onProgress func()
 }
 
 // NewManager returns a Manager with the GC sweeper running.
@@ -533,6 +543,28 @@ func NewManager() *Manager {
 	m.closeFn = cancel
 	go m.sweep(ctx)
 	return m
+}
+
+// SetOnProgress installs a hook invoked from Session.noteProgress on
+// every accepted session created after this call. Used by spyder's
+// dispatch watchdog so an in-flight app_call with peer heartbeats is
+// not mistaken for a wedged handler (🎯T103.1).
+func (m *Manager) SetOnProgress(fn func()) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.onProgress = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) progressHook() func() {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.onProgress
 }
 
 // StartParams configures a new listener.
@@ -739,6 +771,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 		done:          make(chan struct{}),
 		pending:       map[uint64]*pending{},
 		stateCaptures: map[string]*StateCapture{},
+		onProgress:    l.mgr.progressHook(),
 	}
 
 	if err := s.handshake(); err != nil {

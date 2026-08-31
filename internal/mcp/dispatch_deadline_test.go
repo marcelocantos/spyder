@@ -129,6 +129,43 @@ func spyderNeedsAttention(h *Handler) bool {
 	return false
 }
 
+// TestDispatch_AppExecSleepDoesNotStallWatchdog is the 🎯T103.1 shipped-path
+// oracle: a script that only sleep()s longer than the stall window stays
+// healthy because sleep ticks Beat the watchdog. The stall timeout is not
+// raised.
+func TestDispatch_AppExecSleepDoesNotStallWatchdog(t *testing.T) {
+	save := execProgressTick
+	execProgressTick = 20 * time.Millisecond
+	t.Cleanup(func() { execProgressTick = save })
+
+	h := NewHandler()
+	h.EnableSelfHeal(80*time.Millisecond, time.Hour)
+	h.selfRestart = health.NewSelfRestartLimiterForTest(3, time.Hour, func(int) {
+		t.Error("self-restart must not fire for a sleeping script")
+	})
+
+	var stalled atomic.Bool
+	h.Health().Model().OnTransition(func(tr health.Transition) {
+		if tr.ID.Name == "spyder" && tr.To == health.NeedsAttention {
+			stalled.Store(true)
+		}
+	})
+
+	res, err := h.Dispatch(context.Background(), "app_exec", map[string]any{
+		"script":          "sleep(300)",
+		"max_duration_ms": float64(2000),
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if res == nil || res.IsError {
+		t.Fatalf("app_exec error: %s", resultErrorText(t, res))
+	}
+	if stalled.Load() {
+		t.Fatal("sleep ticks should beat the watchdog; got needs_attention")
+	}
+}
+
 // TestDispatch_InFlightOpsListsActiveCall covers 🎯T99.5 op registry.
 func TestDispatch_InFlightOpsListsActiveCall(t *testing.T) {
 	save := DeadlineDeviceOp
