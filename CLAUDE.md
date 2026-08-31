@@ -54,27 +54,30 @@ claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
 
 ### One daemon only — do not double-serve
 
-Production/day-to-day MCP is **Homebrew only**:
+On this Mac, day-to-day MCP is **supervisord** running the Homebrew
+Cellar binary (not `brew services`). Launchd and supervisord must not
+both own `:3030`.
 
 ```bash
-brew services start spyder    # or: restart / stop
-spyder version                # e.g. v0.72.0
-# MCP initialize → serverInfo.version must match
+./supervisor/install.sh       # once: stop brew services, start under supervisord
+supervisorctl status spyder
+spyder version                # e.g. v0.84.0 — MCP initialize must match
 ```
 
 **Never** run `bin/spyder serve` (or any tree-built binary) on `:3030`
-while `brew services` spyder is running. Two processes can both bind
-(IPv4 brew vs IPv6/`*` local), clients flip between them, and you get
-mismatched versions (`v0.x` vs `dev`).
+while the supervised daemon is running. Two processes can both bind
+(IPv4 vs IPv6/`*`), clients flip between them, and you get mismatched
+versions (`v0.x` vs `dev`).
 
 | Goal | Do this |
 |------|---------|
-| Normal agent / MCP work | `brew services start spyder` — leave it alone |
-| Test unreleased tree code | `brew services stop spyder`, then `bin/spyder serve` **or** keep brew and use `bin/spyder serve --addr :3131` (never `:3030`) |
-| Sanity check | `lsof -nP -iTCP:3030 -sTCP:LISTEN` — exactly **one** spyder, Cellar path |
+| Normal agent / MCP work | `supervisorctl start spyder` — leave it alone. `brew services stop spyder` must stay stopped |
+| After `brew upgrade spyder` | `brew services stop spyder` (stay unloaded), then `supervisorctl restart spyder` — **not** `brew services restart` |
+| Test unreleased tree code | keep supervisor on `:3030`; `bin/spyder serve --addr :3131` |
+| Sanity check | `lsof -nP -iTCP:3030 -sTCP:LISTEN` — exactly **one** spyder, Cellar path; `supervisorctl status spyder` is RUNNING |
 
-After any local serve experiment, stop it and restore brew if MCP clients
-expect the release build.
+After any local serve experiment, stop the tree binary. Do not `brew
+services start spyder` — that reloads launchd and fights supervisord.
 
 ## Architecture
 
