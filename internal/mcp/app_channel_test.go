@@ -641,8 +641,16 @@ func TestAppChannel_FullMethodSweep(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	r := dispatchJSON(t, h, "app_perf_get", map[string]any{"session_id": sessionID})
-	body := resultText(t, &r)
+	// Perf push is async like logs; retry app_perf_get until samples land.
+	var body string
+	for time.Now().Before(deadline) {
+		r := dispatchJSON(t, h, "app_perf_get", map[string]any{"session_id": sessionID})
+		body = resultText(t, &r)
+		if strings.Contains(body, "frame_ms") {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if !strings.Contains(body, "frame_ms") {
 		t.Errorf("perf_get body missing frame_ms: %s", body)
 	}
