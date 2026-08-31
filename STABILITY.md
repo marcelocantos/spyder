@@ -30,7 +30,7 @@ in principle, but `adb` itself is cross-platform; spyder doesn't add value
 to adb-only workflows on Linux. Release artefacts are darwin-arm64 only;
 Homebrew tap formula targets darwin-arm64 only. (🎯T45)
 
-Snapshot as of `v0.85.0` — the iOS path runs entirely on the in-process
+Snapshot as of `v0.86.0` — the iOS path runs entirely on the in-process
 [go-ios](https://github.com/danielpaulus/go-ios) Go library, plus a
 bundled `ios` userspace tunnel daemon spawned as a spyder child process
 (🎯T56). The data path crosses no subprocess boundary: every iOS

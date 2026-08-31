@@ -608,3 +608,11 @@ maintenance activities. Append-only — newest entries at the bottom.
   `SPYDER_ADDR=:3030`). Day-to-day MCP on the lab Mac is supervisor, not
   brew services. Tree-built binaries stay off `:3030`. STABILITY.md
   catalogue snapshot bumped to v0.85.0. Published for darwin-arm64.
+
+## 2026-08-31 — /release v0.86.0
+
+- **Commit**: (filled at tag)
+- **Outcome**: Released v0.86.0. 🎯T135: drop `.github`; bottles are
+  packaged on this Mac (`scripts/release-package.sh`) and published
+  with `tapper push`. No hosted Actions workflow. STABILITY.md
+  catalogue snapshot bumped to v0.86.0. Published for darwin-arm64.
