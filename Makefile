@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web sign release-dist release-tap release
+.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web sign release-dist release-tap release gate hooks
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -62,6 +62,23 @@ vet:
 
 fmt-check:
 	@test -z "$$(gofmt -l .)" || (gofmt -l .; exit 1)
+
+# gate is the fast tier that scripts/hooks/pre-push runs before every push
+# to master. spyder has no hosted CI (dropped 2026-08-31 by design), so the
+# hook is the entire enforcement point — keep gate honest and keep it quick.
+#
+# The slower attestation stays where it was: `make test-report` runs every
+# tier (go-unit + the SPYDER_LIVE_UDID-gated live tier) and writes
+# TEST-REPORT.json before a release. It is not a pre-push step; the live
+# tier needs a paired device.
+gate: vet fmt-check test
+
+# Point git at the tracked hooks. scripts/hooks/ carries git-lfs's
+# post-checkout, post-commit and post-merge unchanged — core.hooksPath makes
+# git read that directory *instead of* .git/hooks, so omitting them would
+# silently stop LFS smudging pointers and uploading objects.
+hooks:
+	git config core.hooksPath scripts/hooks
 
 # test-report runs every tier on a clean-tree HEAD and writes
 # TEST-REPORT.json. The report is committed (amended into the code commit
