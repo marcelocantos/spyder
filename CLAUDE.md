@@ -170,11 +170,35 @@ should reflect a recent run with `overall ∈ {pass, partial}`.
 Run `make bullseye` during development and `make pre-release` before
 tagging.
 
+`make gate` (`vet fmt-check test`) is the fast tier the pre-push hook
+runs; `make test-report` remains the release-time attestation.
+
 ## Delivery
 
 Land on `master` by direct push — no PR ceremony, no feature branch
 requirement. Long-lived topic branches are fine for WIP, but shipping is
 `git push origin master` (or `/push`, which skips PR creation here).
+
+**The pre-push hook is the entire gate.** There is no hosted CI and none
+is coming back (Actions were dropped 2026-08-31 by design — see
+*Testing* above for why a hosted runner cannot exercise spyder's value
+surface). `scripts/hooks/pre-push` runs `make gate` and refuses the push
+on a non-zero exit; it executes the oracle rather than reading a claim
+that tests passed. Wire it once per checkout:
+
+```sh
+make hooks    # git config core.hooksPath scripts/hooks
+```
+
+`core.hooksPath` makes git read `scripts/hooks/` *instead of*
+`.git/hooks/`, so the tracked directory must be complete. spyder is a
+Git LFS repo (`player/vendor/**/*.a`), and git-lfs's `post-checkout`,
+`post-commit` and `post-merge` are committed there unchanged for that
+reason — without them LFS silently stops smudging pointers into real
+files. The pre-push hook ends by chaining `git lfs pre-push` on the ref
+list git handed it, so objects still upload.
+
+`--no-verify` is the owner's emergency bypass. Agents must not pass it.
 
 Releases are local (vellum/tapper shape): `VERSION=0.N.0 make release`
 runs `pre-release`, packages the darwin-arm64 tarball (codesigned
@@ -190,8 +214,9 @@ profile: base
 override:
   - pr-workflow: skip
 
-Direct push to `master` is the default delivery path. `/push` must not
-open a PR for this repo unless the user explicitly asks for one on a
+Direct push to `master` is the default delivery path, gated locally by
+`scripts/hooks/pre-push` → `make gate`, not by CI. `/push` must not open
+a PR for this repo unless the user explicitly asks for one on a
 non-default branch.
 
 ## Plateau
