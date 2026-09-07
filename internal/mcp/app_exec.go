@@ -17,11 +17,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/scriptlib"
+
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"go.starlark.net/starlark"
 	"go.starlark.net/syntax"
@@ -662,13 +664,27 @@ func contentText(content []mcpgo.Content) string {
 	return b.String()
 }
 
+// durationHuman renders a budget the way the tool description reads it, so the
+// agent-visible ceiling can only ever be the constant the server enforces.
+func durationHuman(d time.Duration) string {
+	if d >= time.Minute && d%time.Minute == 0 {
+		return strconv.FormatInt(int64(d/time.Minute), 10) + " min"
+	}
+	return strconv.FormatInt(int64(d/time.Second), 10) + "s"
+}
+
+// durationMillis renders a budget in the units max_duration_ms takes.
+func durationMillis(d time.Duration) string {
+	return strconv.FormatInt(int64(d/time.Millisecond), 10)
+}
+
 // appExecDefinition is the MCP tool schema for app_exec. The description
 // teaches the surface because, as app_exec becomes the sole entry point
 // (🎯T88), there are no per-verb schemas to discover (full reference lives
 // in agents-guide.md; call help() from a script for the verb list).
 func appExecDefinition() mcpgo.Tool {
 	return mcpgo.NewTool("app_exec",
-		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)`, `emit(value)`, `health()`, `help()` (bare = verb list; `help(\"topic\")` = focused guide with recipes — topics: app, capture, deploy, device, reservations, scripts, stream), durable scripts via `script_path` / `run_script` / `list_scripts` (🎯T108), and assert/L1 helpers (`assert_trajectory`, `assert_drag_follow`, `assert_settle`, `resolve_target`, `find_by_label`, `find_hit_target`). Global `params` dict carries script_path parameters.\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result. Deterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot`. Caps: wall-clock timeout (default 30s, max 120s) and a step budget."),
+		mcpgo.WithDescription("Run a Starlark script server-side with spyder's verbs as builtins — the way to drive ordered, timed, looping device action in ONE call without per-action agent round-trips (so transient UI states don't vanish between a tap and its screenshot).\n\nBuiltins: every spyder verb is a function called by keyword, e.g. `app_screenshot(session_id=\"s1\")`, `app_input(session_id=\"s1\", events=[...])`, `screenshot(device=\"iPad\")`, `app_pause(session_id=\"s1\")`, `app_step(session_id=\"s1\", frames=1)`. Plus `sleep(ms)`, `emit(value)`, `health()`, `help()` (bare = verb list; `help(\"topic\")` = focused guide with recipes — topics: app, capture, deploy, device, reservations, scripts, stream), durable scripts via `script_path` / `run_script` / `list_scripts` (🎯T108), and assert/L1 helpers (`assert_trajectory`, `assert_drag_follow`, `assert_settle`, `resolve_target`, `find_by_label`, `find_hit_target`). Global `params` dict carries script_path parameters.\n\nResult model: a bare top-level expression OR `emit(x)` appends to the ordered result. Deterministic capture: `app_pause` → `app_input` → `app_step(frames=1)` → `app_screenshot`. Caps: wall-clock timeout (default "+durationHuman(defaultExecDuration)+", max "+durationHuman(maxExecDuration)+") and a step budget."),
 		mcpgo.WithString("script",
 			mcpgo.Description("Inline Starlark source. Provide this OR script_path."),
 		),
@@ -679,7 +695,7 @@ func appExecDefinition() mcpgo.Tool {
 			mcpgo.Description("Optional string map injected as the Starlark global `params` for durable scripts."),
 		),
 		mcpgo.WithNumber("max_duration_ms",
-			mcpgo.Description("Wall-clock budget for the whole script in milliseconds (default 30000, capped at 600000)."),
+			mcpgo.Description("Wall-clock budget for the whole script in milliseconds (default "+durationMillis(defaultExecDuration)+", capped at "+durationMillis(maxExecDuration)+")."),
 		),
 	)
 }
