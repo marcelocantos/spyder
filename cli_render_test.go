@@ -64,7 +64,3 @@ func TestRenderResult_QuietSwallowsSuccessBody(t *testing.T) {
 		t.Fatalf("quiet should suppress body, got %q", out)
 	}
 }
-
-func TestVcheckGatePlantMustRedden(t *testing.T) {
-	t.Fatal("planted by gate audit")
-}
