@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web sign release-dist release-tap release
+.PHONY: bullseye pre-release build test test-report check-test-report test-integration vet fmt-check clean player player-web sign release-dist release-tap release
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -70,6 +70,11 @@ fmt-check:
 test-report:
 	@./scripts/test-report.sh
 
+# The attestation is only worth reading if it postdates the code. This is
+# the freshness gate test-report.sh's own header says nothing enforces.
+check-test-report:
+	@./scripts/check-test-report-fresh.sh
+
 # test-integration is reserved for HIL / integration tests that
 # require real devices or external services. Currently a no-op stub —
 # HIL coverage runs through the SPYDER_LIVE_UDID-gated _Live tests.
@@ -83,6 +88,7 @@ bullseye:
 	@CGO_ENABLED=1 go build -ldflags "-X main.version=dev" -o bin/spyder . && echo "✓ build"
 	@go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios && echo "✓ build ios"
 	@CGO_ENABLED=1 go test ./... 2>&1 | tail -20 && echo "✓ tests"
+	@./scripts/check-test-report-fresh.sh
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
 	if [ -z "$$dirty" ]; then echo "✓ working tree clean"; \
 	else \
