@@ -505,15 +505,32 @@ items:
     tier: 2
     evidence: {file: {path: .gitattributes, matches: 'filter=lfs'}}
 
-  - id: vcs.pre-commit-hook
+  - id: vcs.pre-push-hook
     dim: vcs
-    desc: Committed git hooks (scripts/hooks) gate locally before commit
-    state: planned
-    cadence: once-must-hold
-    enforce: informational
+    desc: A committed pre-push hook (scripts/hooks/pre-push) runs the gate
+    state: enforced
+    cadence: continuous
+    enforce: blocking
     tier: 3
-    reason: No scripts/hooks; core.hooksPath is the default .git/hooks.
-    evidence: {absent: {file: {path: scripts/hooks/pre-commit}}}
+    evidence: {file: {path: scripts/hooks/pre-push}}
+
+  - id: vcs.hooks-wired
+    dim: vcs
+    desc: "`make hooks` points core.hooksPath at the committed hook directory"
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 3
+    evidence: {make_target: hooks}
+
+  - id: vcs.hooks-self-check
+    dim: vcs
+    desc: The gate refuses to pass locally when core.hooksPath is not wired
+    state: enforced
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    evidence: {file: {path: Makefile, matches: "core\\.hooksPath"}}
 
   # =================== AGENT-READINESS / ONBOARDING ====================
   - id: agent.claude-md
