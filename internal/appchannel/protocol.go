@@ -290,6 +290,10 @@ type Hello struct {
 	// exposes without prior knowledge. Bare strings and {name, example}
 	// maps both decode cleanly (see SliceDescriptor).
 	Slices []SliceDescriptor `msgpack:"slices,omitempty"`
+	// Token is the per-listener pairing secret minted into
+	// SPYDER_APP_CHANNEL_TOKEN. Required on non-loopback binds
+	// (Fable F2); omitempty so loopback Hello stays token-free.
+	Token string `msgpack:"token,omitempty"`
 }
 
 // HelloAck is spyder's response.

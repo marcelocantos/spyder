@@ -117,7 +117,8 @@ func sessionInfoFrom(s *appchannel.Session) sessionInfo {
 //  1. session_id (explicit; backwards-compatible)
 //  2. (device, bundle_id) — looks up the keyed listener and picks
 //     its unique live session
-//  3. unique-live-session fallback (when only one is connected)
+//  3. unique-live-session fallback, only when that session arrived
+//     on a keyed launch listener (Fable F2: fail-closed for orphans)
 //
 // The keyed listener is Touch()ed whenever it's involved in
 // resolution, so an active agent loop keeps the 24h idle timer
@@ -168,10 +169,11 @@ func (h *Handler) requireSession(args map[string]any) (*appchannel.Session, *mcp
 
 	sessions := h.appChannel.Sessions()
 	if len(sessions) == 1 {
-		if sessions[0].Listener() != nil {
-			sessions[0].Listener().Touch()
+		s := sessions[0]
+		if l := s.Listener(); l != nil && l.Key != (appchannel.AppKey{}) {
+			l.Touch()
+			return s, nil
 		}
-		return sessions[0], nil
 	}
 	res, _ := toolErr("session_id (or device+bundle_id) is required (have %d active sessions)", len(sessions))
 	return nil, res

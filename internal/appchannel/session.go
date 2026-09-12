@@ -6,6 +6,7 @@ package appchannel
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -478,6 +479,19 @@ func (s *Session) handshake() error {
 		return fmt.Errorf("appchannel: bad hello: %w", err)
 	}
 
+	if s.listener != nil && s.listener.PairingToken != "" {
+		if subtle.ConstantTimeCompare([]byte(hello.Token), []byte(s.listener.PairingToken)) != 1 {
+			_ = s.writeEnvelope(&Envelope{
+				ID: env.ID,
+				Error: &RPCError{
+					Code:    ErrCodeInvalidRequest,
+					Message: "pairing token required",
+				},
+			})
+			return fmt.Errorf("appchannel: pairing token rejected")
+		}
+	}
+
 	// Accept every method the app advertised (engine + app-registered).
 	// Agents discover the surface via app_methods and invoke via app_call
 	// (or the fixed app_* tools for known engine methods).
@@ -530,6 +544,40 @@ type Manager struct {
 
 	// onProgress is copied onto each accepted Session (🎯T103.1).
 	onProgress func()
+
+	// listenHost is the default bind host for new listeners.
+	// Empty means 127.0.0.1 (Fable F2). SetListenHost overrides.
+	listenHost string
+}
+
+// DefaultListenHost is the bind host when the manager has not been
+// told otherwise. Loopback so a loopback HTTP daemon does not
+// publish an unpaired LAN control plane.
+const DefaultListenHost = "127.0.0.1"
+
+// SetListenHost sets the default bind host for listeners created
+// after this call. "0.0.0.0" (or any non-loopback) mints a pairing
+// token on each listener.
+func (m *Manager) SetListenHost(host string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.listenHost = host
+	m.mu.Unlock()
+}
+
+// ListenHost returns the default bind host (DefaultListenHost when unset).
+func (m *Manager) ListenHost() string {
+	if m == nil {
+		return DefaultListenHost
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listenHost == "" {
+		return DefaultListenHost
+	}
+	return m.listenHost
 }
 
 // NewManager returns a Manager with the GC sweeper running.
@@ -571,6 +619,9 @@ func (m *Manager) progressHook() func() {
 type StartParams struct {
 	Owner string
 	Key   AppKey // when non-zero, the listener is registered under this key
+	// ListenHost overrides the manager default bind host. Empty uses
+	// Manager.ListenHost() (127.0.0.1 unless SetListenHost was called).
+	ListenHost string
 }
 
 // Listener is the sentinel returned by GetOrCreateListener; the
@@ -587,9 +638,26 @@ type Listener struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 
+	// PairingToken is the secret required in Hello on non-loopback
+	// binds. Empty on loopback listeners (Fable F2).
+	PairingToken string
+
 	mu          sync.Mutex
 	sessions    []*Session // sessions accepted on this listener
 	lastTouched time.Time
+}
+
+// BoundIP is the address the listener was bound to. Used by tests
+// and by launch-path code that must distinguish loopback from LAN.
+func (l *Listener) BoundIP() net.IP {
+	if l == nil || l.listener == nil {
+		return nil
+	}
+	addr, ok := l.listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return nil
+	}
+	return addr.IP
 }
 
 // GetOrCreateListener returns the keyed listener for `key`, creating
@@ -599,31 +667,41 @@ type Listener struct {
 // port. The listener is reaped by the sweeper after
 // `KeyedListenerIdleTTL` with no live session and no Touch.
 func (m *Manager) GetOrCreateListener(key AppKey) (*Listener, error) {
-	if key.DeviceID == "" || key.BundleID == "" {
+	return m.getOrCreateListener(StartParams{Key: key})
+}
+
+// GetOrCreateListenerOn is GetOrCreateListener with an explicit bind
+// host. Empty listenHost uses the manager default.
+func (m *Manager) GetOrCreateListenerOn(key AppKey, listenHost string) (*Listener, error) {
+	return m.getOrCreateListener(StartParams{Key: key, ListenHost: listenHost})
+}
+
+func (m *Manager) getOrCreateListener(p StartParams) (*Listener, error) {
+	if p.Key.DeviceID == "" || p.Key.BundleID == "" {
 		return nil, fmt.Errorf("appchannel: GetOrCreateListener: key.DeviceID and key.BundleID are required")
 	}
 	m.mu.Lock()
-	if l, ok := m.keyed[key]; ok {
+	if l, ok := m.keyed[p.Key]; ok {
 		m.mu.Unlock()
 		l.Touch()
 		return l, nil
 	}
 	m.mu.Unlock()
 
-	l, err := m.startListener(StartParams{Key: key})
+	l, err := m.startListener(p)
 	if err != nil {
 		return nil, err
 	}
 	// Race-resolve: another caller may have created concurrently.
 	m.mu.Lock()
-	if existing, ok := m.keyed[key]; ok {
+	if existing, ok := m.keyed[p.Key]; ok {
 		m.mu.Unlock()
 		// We lost the race; tear down the duplicate.
 		l.Stop()
 		existing.Touch()
 		return existing, nil
 	}
-	m.keyed[key] = l
+	m.keyed[p.Key] = l
 	m.mu.Unlock()
 	l.Touch()
 	return l, nil
@@ -658,32 +736,65 @@ func (m *Manager) Start(p StartParams) (*Listener, error) {
 // startListener binds a port and starts the accept loop. Internal —
 // public callers go through GetOrCreateListener or Start.
 func (m *Manager) startListener(p StartParams) (*Listener, error) {
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	host := p.ListenHost
+	if host == "" {
+		host = m.ListenHost()
+	}
+	ln, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
 	if err != nil {
-		return nil, fmt.Errorf("appchannel: listen: %w", err)
+		return nil, fmt.Errorf("appchannel: listen %s: %w", host, err)
 	}
 	id, err := newID()
 	if err != nil {
 		_ = ln.Close()
 		return nil, err
 	}
+	token := ""
+	if !isLoopbackListenHost(host) {
+		token, err = newPairingToken()
+		if err != nil {
+			_ = ln.Close()
+			return nil, err
+		}
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	l := &Listener{
-		ID:          id,
-		Port:        ln.Addr().(*net.TCPAddr).Port,
-		Owner:       p.Owner,
-		Key:         p.Key,
-		mgr:         m,
-		listener:    ln,
-		cancel:      cancel,
-		done:        make(chan struct{}),
-		lastTouched: time.Now(),
+		ID:           id,
+		Port:         ln.Addr().(*net.TCPAddr).Port,
+		Owner:        p.Owner,
+		Key:          p.Key,
+		mgr:          m,
+		listener:     ln,
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		PairingToken: token,
+		lastTouched:  time.Now(),
 	}
 	go l.acceptLoop(ctx)
 	slog.Info("appchannel: listener started",
 		"listener_id", id, "port", l.Port, "owner", p.Owner,
-		"device_id", p.Key.DeviceID, "bundle_id", p.Key.BundleID)
+		"device_id", p.Key.DeviceID, "bundle_id", p.Key.BundleID,
+		"bind", host, "pairing", token != "")
 	return l, nil
+}
+
+func isLoopbackListenHost(host string) bool {
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "*" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func newPairingToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // Touch updates the listener's last-activity timestamp; the idle reaper

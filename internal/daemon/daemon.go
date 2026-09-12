@@ -255,6 +255,11 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 
 	logCapMgr := logcapture.NewManager()
 	appChanMgr := appchannel.NewManager()
+	if !listenaddr.IsLoopback(cfg.Addr) {
+		// HTTP is LAN-reachable: app-channel follows that bind class
+		// and mints a pairing token on every listener (Fable F2).
+		appChanMgr.SetListenHost("0.0.0.0")
+	}
 	appchannel.SetSpyderVersion(cfg.Version)
 
 	handlerOpts := []spydermcp.HandlerOption{

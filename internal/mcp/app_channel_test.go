@@ -623,26 +623,28 @@ func TestAppChannel_FullMethodSweep(t *testing.T) {
 	}
 	client.pushPerf(map[string]float64{"frame_ms": 16.6, "alloc": 1024})
 
-	// Drain logs.
+	// Drain logs. Each DrainLogs empties the buffer, so accumulate
+	// across polls rather than requiring a single 3-line snapshot.
+	gotLogs := 0
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		s, _ := h.appChannel.GetSession(sessionID)
 		if s == nil {
 			t.Fatal("session vanished")
 		}
-		s.HelloInfo() // touch
 		logs, _ := s.DrainLogs()
-		if len(logs) == 3 {
+		gotLogs += len(logs)
+		if gotLogs >= 3 {
 			break
-		}
-		// Re-stuff the buffer to keep polling.
-		for _, lg := range logs {
-			_ = lg // discard, we'll re-poll
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	if gotLogs < 3 {
+		t.Fatalf("drained %d logs; want 3", gotLogs)
+	}
 	// Perf push is async like logs; retry app_perf_get until samples land.
 	var body string
+	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		r := dispatchJSON(t, h, "app_perf_get", map[string]any{"session_id": sessionID})
 		body = resultText(t, &r)

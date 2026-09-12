@@ -53,6 +53,7 @@ func dialSmokeFromEnv(env map[string]string, methods []string) {
 			AppName:    "smoke",
 			AppVersion: "1.0",
 			Methods:    appchannel.MethodDescriptors(methods...),
+			Token:      env["SPYDER_APP_CHANNEL_TOKEN"],
 		})
 		if err := appchannel.WriteFrame(conn, &appchannel.Envelope{ID: 1, Method: appchannel.MethodHello, Params: raw}); err != nil {
 			_ = conn.Close()

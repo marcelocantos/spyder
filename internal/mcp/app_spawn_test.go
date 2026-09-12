@@ -82,7 +82,11 @@ func launchingStub(t *testing.T, appName string) *stubAdapter {
 			if err != nil {
 				return fmt.Errorf("bad port in %q: %w", addr, err)
 			}
-			go dialHelloQuiet(t, port, appchannel.Hello{AppName: appName, AppVersion: "1.0"})
+			go dialHelloQuiet(t, port, appchannel.Hello{
+				AppName:    appName,
+				AppVersion: "1.0",
+				Token:      env["SPYDER_APP_CHANNEL_TOKEN"],
+			})
 			return nil
 		},
 	}

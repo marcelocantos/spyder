@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"image/png"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -585,7 +586,11 @@ func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID,
 	if err != nil {
 		return nil, fmt.Errorf("appchannel: %w", err)
 	}
-	l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID})
+	listenHost := ""
+	if appChannelNeedsWildcard(host) {
+		listenHost = "0.0.0.0"
+	}
+	l, err := h.appChannel.GetOrCreateListenerOn(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID}, listenHost)
 	if err != nil {
 		return nil, fmt.Errorf("appchannel: %w", err)
 	}
@@ -593,7 +598,21 @@ func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID,
 		env = map[string]string{}
 	}
 	env["SPYDER_APP_CHANNEL"] = fmt.Sprintf("%s:%d", host, l.Port)
+	if l.PairingToken != "" {
+		env["SPYDER_APP_CHANNEL_TOKEN"] = l.PairingToken
+	}
 	return env, nil
+}
+
+// appChannelNeedsWildcard is true when the dial host the app will
+// use is a LAN address (physical iOS/Android). Simulator, emulator
+// (10.0.2.2), and desktop stay on the loopback bind.
+func appChannelNeedsWildcard(dialHost string) bool {
+	if dialHost == "" || dialHost == "localhost" || dialHost == "10.0.2.2" {
+		return false
+	}
+	ip := net.ParseIP(dialHost)
+	return ip == nil || !ip.IsLoopback()
 }
 
 // isRunningResult is the structured response of the is_running tool.
