@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"net"
 	"strconv"
 	"strings"
 	"testing"
@@ -71,4 +72,35 @@ func TestEnsureAppChannelEnv_PhysicalDeviceBindsWildcardAndMintsToken(t *testing
 	if got["SPYDER_APP_CHANNEL_TOKEN"] != l.PairingToken {
 		t.Errorf("SPYDER_APP_CHANNEL_TOKEN = %q; want %q", got["SPYDER_APP_CHANNEL_TOKEN"], l.PairingToken)
 	}
+
+	// T128 residue: physical iOS/Android still bind 0.0.0.0 (usbmux has
+	// no reverse path; smoke docs keep LAN dial-back). The security
+	// floor is loopback-or-token-required — a wildcard bind without a
+	// pairing token is the Fable F2 hole. Hello without the minted
+	// token must not become a Session; Hello with it must.
+	conn, err := net.Dial("tcp", "127.0.0.1:"+strconv.Itoa(l.Port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	helloParams, _ := appchannel.PackParams(appchannel.Hello{AppName: "intruder", AppVersion: "1"})
+	if err := appchannel.WriteFrame(conn, &appchannel.Envelope{ID: 1, Method: appchannel.MethodHello, Params: helloParams}); err != nil {
+		t.Fatalf("write hello: %v", err)
+	}
+	ack, err := appchannel.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("read ack: %v", err)
+	}
+	if ack.Error == nil {
+		t.Fatal("physical wildcard Hello without pairing token must be rejected")
+	}
+
+	client := dialSmokeHello(t, l.Port, appchannel.Hello{
+		AppName:    "paired",
+		AppVersion: "1",
+		Token:      got["SPYDER_APP_CHANNEL_TOKEN"],
+		Methods:    appchannel.MethodDescriptors(appchannel.MethodPing),
+	})
+	defer client.close()
+	_ = waitForAppSession(t, h)
 }
