@@ -6,9 +6,9 @@ package hostwifi
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
 
+	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/wedge"
 )
@@ -23,30 +23,28 @@ var HealthEntityID = health.ID{Kind: health.KindHost, Name: "wifi"}
 
 // Deps are injectable seams for production and tests.
 type Deps struct {
-	ReadStatus       func() (Status, error)
-	GatewayReachable func() bool
-	UsbWedged        func() (bool, error)
-	DeviceStress     func() DeviceStress
-	Confirm          func(ctx context.Context, message string) (bool, error)
-	Bounce           func(ctx context.Context, device string) error
-	Health           *health.Model
+	ReadStatus    func() (Status, error)
+	AppChannel    func() appchannel.ConnectivityReport
+	UsbWedged     func() (bool, error)
+	Confirm       func(ctx context.Context, message string) (bool, error)
+	Bounce        func(ctx context.Context, device string) error
+	Health        *health.Model
 }
 
-// ProductionDeps wires macOS probes and optional health-model updates.
-func ProductionDeps(iosBinary string, lanWorkflow bool, hm *health.Model) Deps {
+// ProductionDeps wires macOS probes and app-channel staleness checks.
+func ProductionDeps(
+	mgr *appchannel.Manager,
+	launches func() map[appchannel.AppKey]time.Time,
+	hm *health.Model,
+) Deps {
 	return Deps{
-		ReadStatus:       ReadStatus,
-		GatewayReachable: GatewayReachable,
+		ReadStatus: ReadStatus,
+		AppChannel: func() appchannel.ConnectivityReport {
+			return appchannel.ProbeConnectivity(mgr, launches(), time.Now())
+		},
 		UsbWedged: func() (bool, error) {
 			wedged, _, _, err := wedge.IsWedged()
 			return wedged, err
-		},
-		DeviceStress: func() DeviceStress {
-			tunnelFails := 0
-			if hm != nil {
-				tunnelFails = countTunnelFailures(hm)
-			}
-			return ProbeDeviceStress(iosBinary, lanWorkflow, tunnelFails)
 		},
 		Confirm: ConfirmBounce,
 		Bounce:  Bounce,
@@ -55,27 +53,27 @@ func ProductionDeps(iosBinary string, lanWorkflow bool, hm *health.Model) Deps {
 }
 
 type episodeState struct {
-	inEpisode     bool
-	attempted     bool
-	declined      bool
+	inEpisode      bool
+	attempted      bool
+	declined       bool
 	consecutiveBad int
 }
 
-// RunMonitor polls host Wi-Fi and device stress signals until ctx is
-// cancelled. When a solid Wi-Fi hypothesis forms, it prompts once per
-// episode for confirmation before bouncing Wi-Fi.
+// RunMonitor polls app-channel reachability until ctx is cancelled. When
+// devices appear unable to dial back (or fail ping on a live session) and
+// Wi-Fi is associated, it prompts once per episode for confirmation before
+// bouncing Wi-Fi.
 func RunMonitor(ctx context.Context, deps Deps) {
 	if deps.ReadStatus == nil {
 		deps.ReadStatus = ReadStatus
 	}
-	if deps.GatewayReachable == nil {
-		deps.GatewayReachable = GatewayReachable
+	if deps.AppChannel == nil {
+		deps.AppChannel = func() appchannel.ConnectivityReport {
+			return appchannel.ConnectivityReport{}
+		}
 	}
 	if deps.UsbWedged == nil {
 		deps.UsbWedged = func() (bool, error) { return false, nil }
-	}
-	if deps.DeviceStress == nil {
-		deps.DeviceStress = func() DeviceStress { return DeviceStress{} }
 	}
 	if deps.Confirm == nil {
 		deps.Confirm = ConfirmBounce
@@ -119,8 +117,8 @@ func reconcile(ctx context.Context, deps Deps, st *episodeState, source string) 
 		slog.Debug("hostwifi: usbmux wedge check failed", "error", werr)
 	}
 
-	partial := wifi.Connected && !deps.GatewayReachable() && !usbWedge &&
-		deviceStressPresent(deps.DeviceStress())
+	channel := deps.AppChannel()
+	partial := wifi.Connected && !usbWedge && channel.StressPresent()
 	if partial {
 		st.consecutiveBad++
 	} else {
@@ -129,10 +127,9 @@ func reconcile(ctx context.Context, deps Deps, st *episodeState, source string) 
 
 	h := Evaluate(HypothesisInput{
 		Wifi:           wifi,
-		GatewayOK:      deps.GatewayReachable(),
+		AppChannel:     channel,
 		UsbWedge:       usbWedge,
-		DeviceStress:   deps.DeviceStress(),
-		ConsecutiveBad: st.consecutiveBad - 1, // Evaluate expects prior count
+		ConsecutiveBad: st.consecutiveBad - 1,
 	})
 
 	updateHealth(deps, h, st)
@@ -152,17 +149,15 @@ func reconcile(ctx context.Context, deps Deps, st *episodeState, source string) 
 
 	newEpisode := !st.inEpisode
 	st.inEpisode = true
-	slog.Warn("hostwifi: zombie Wi-Fi hypothesis",
+	slog.Warn("hostwifi: app-channel + Wi-Fi hypothesis",
 		"source", source, "detail", h.Detail, "new_episode", newEpisode)
 
 	if st.declined {
-		slog.Info("hostwifi: user declined this episode; not re-prompting",
-			"source", source)
+		slog.Info("hostwifi: user declined this episode; not re-prompting", "source", source)
 		return
 	}
 	if st.attempted {
-		slog.Info("hostwifi: bounce already attempted this episode",
-			"source", source)
+		slog.Info("hostwifi: bounce already attempted this episode", "source", source)
 		return
 	}
 
@@ -191,10 +186,9 @@ func reconcile(ctx context.Context, deps Deps, st *episodeState, source string) 
 		return
 	}
 
-	// Post-bounce probe: give the interface a moment to re-associate.
 	time.Sleep(bounceSettleDelay)
-	if deps.GatewayReachable() {
-		slog.Info("hostwifi: bounce restored gateway reachability", "source", source)
+	if !deps.AppChannel().StressPresent() {
+		slog.Info("hostwifi: bounce restored app-channel reachability", "source", source)
 		if deps.Health != nil {
 			deps.Health.RecoverySucceeded(HealthEntityID)
 		}
@@ -203,9 +197,9 @@ func reconcile(ctx context.Context, deps Deps, st *episodeState, source string) 
 		return
 	}
 
-	slog.Warn("hostwifi: bounce completed but gateway still unreachable", "source", source)
+	slog.Warn("hostwifi: bounce completed but app-channel still stale", "source", source)
 	if deps.Health != nil {
-		deps.Health.RecoveryFailed(HealthEntityID, "gateway still unreachable after bounce")
+		deps.Health.RecoveryFailed(HealthEntityID, "app-channel still stale after bounce")
 	}
 }
 
@@ -244,23 +238,4 @@ func markAttention(deps Deps, detail string) {
 	if deps.Health != nil {
 		deps.Health.MarkNeedsAttention(HealthEntityID, detail)
 	}
-}
-
-func countTunnelFailures(hm *health.Model) int {
-	n := 0
-	for _, e := range hm.Snapshot().Entities {
-		if e.Kind != health.KindDevice {
-			continue
-		}
-		if e.State != health.Degraded && e.State != health.Recovering && e.State != health.NeedsAttention {
-			continue
-		}
-		for _, obs := range e.Evidence {
-			if !obs.OK && strings.Contains(strings.ToLower(obs.Detail), "tunnel") {
-				n++
-				break
-			}
-		}
-	}
-	return n
 }

@@ -3,14 +3,16 @@
 
 package hostwifi
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/marcelocantos/spyder/internal/appchannel"
+)
 
 func TestEvaluate_SolidHypothesis(t *testing.T) {
 	in := HypothesisInput{
-		Wifi:           Status{Device: "en0", PowerOn: true, SSID: "Home", Connected: true},
-		GatewayOK:      false,
-		UsbWedge:       false,
-		DeviceStress:   DeviceStress{LocalNetworkDevices: 1},
+		Wifi:           Status{Device: "en0", Connected: true, SSID: "Home"},
+		AppChannel:     appchannel.ConnectivityReport{PingFailures: 1},
 		ConsecutiveBad: 1,
 	}
 	h := Evaluate(in)
@@ -25,8 +27,7 @@ func TestEvaluate_SolidHypothesis(t *testing.T) {
 func TestEvaluate_RequiresPersistence(t *testing.T) {
 	in := HypothesisInput{
 		Wifi:           Status{Connected: true, SSID: "Home"},
-		GatewayOK:      false,
-		DeviceStress:   DeviceStress{LANWorkflow: true},
+		AppChannel:     appchannel.ConnectivityReport{MissingDialBacks: 1},
 		ConsecutiveBad: 0,
 	}
 	if Evaluate(in).Solid {
@@ -37,9 +38,8 @@ func TestEvaluate_RequiresPersistence(t *testing.T) {
 func TestEvaluate_ExcludesUsbWedge(t *testing.T) {
 	in := HypothesisInput{
 		Wifi:           Status{Connected: true, SSID: "Home"},
-		GatewayOK:      false,
+		AppChannel:     appchannel.ConnectivityReport{PingFailures: 1},
 		UsbWedge:       true,
-		DeviceStress:   DeviceStress{LANWorkflow: true},
 		ConsecutiveBad: 2,
 	}
 	if Evaluate(in).Solid {
@@ -47,14 +47,13 @@ func TestEvaluate_ExcludesUsbWedge(t *testing.T) {
 	}
 }
 
-func TestEvaluate_GatewayOK(t *testing.T) {
+func TestEvaluate_HealthyAppChannel(t *testing.T) {
 	in := HypothesisInput{
 		Wifi:           Status{Connected: true, SSID: "Home"},
-		GatewayOK:      true,
-		DeviceStress:   DeviceStress{LANWorkflow: true},
+		AppChannel:     appchannel.ConnectivityReport{},
 		ConsecutiveBad: 2,
 	}
 	if Evaluate(in).Solid {
-		t.Fatal("reachable gateway should not trigger")
+		t.Fatal("healthy app-channel should not trigger")
 	}
 }

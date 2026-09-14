@@ -124,12 +124,15 @@ func Run(ctx context.Context, cfg Config) error {
 	// to ctx — exits on daemon shutdown.
 	go wedge.RunMonitor(ctx)
 
-	// Host Wi-Fi monitor. Detects zombie Wi-Fi (associated but gateway
-	// unreachable) correlated with device/LAN stress and, after user
-	// confirmation, bounces Wi-Fi via networksetup.
-	if mcpHandler != nil {
-		lanWorkflow := mcpHandler.HasMobileInventory() && !listenaddr.IsLoopback(cfg.Addr)
-		deps := hostwifi.ProductionDeps(resolveIOSTunnelBinary(), lanWorkflow, mcpHandler.Health().Model())
+	// Host Wi-Fi monitor. Uses app-channel staleness (missing dial-back or
+	// ping failure on live sessions) as the primary signal — OS self-dials
+	// can succeed while devices still cannot reach the host over Wi-Fi.
+	if mcpHandler != nil && mcpHandler.HasMobileInventory() {
+		deps := hostwifi.ProductionDeps(
+			appChanMgr,
+			mcpHandler.LaunchTimesSnapshot,
+			mcpHandler.Health().Model(),
+		)
 		go hostwifi.RunMonitor(ctx, deps)
 	}
 

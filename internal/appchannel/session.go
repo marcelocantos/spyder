@@ -260,6 +260,16 @@ func (s *Session) Call(ctx context.Context, method string, params any, timeout t
 	}
 }
 
+// LastProgressAt returns when the session last saw peer activity (response,
+// push, or progress beat). Before the first activity, StartedAt is returned.
+func (s *Session) LastProgressAt() time.Time {
+	nanos := s.lastProgress.Load()
+	if nanos == 0 {
+		return s.StartedAt
+	}
+	return time.Unix(0, nanos)
+}
+
 // noteProgress records that the peer is still advancing.
 func (s *Session) noteProgress() {
 	s.lastProgress.Store(time.Now().UnixNano())

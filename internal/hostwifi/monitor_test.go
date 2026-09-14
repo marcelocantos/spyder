@@ -7,23 +7,28 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/appchannel"
 )
 
 func TestReconcile_SingleBouncePerEpisode(t *testing.T) {
 	wifi := Status{Device: "en0", Connected: true, SSID: "Home"}
+	stale := appchannel.ConnectivityReport{PingFailures: 1}
+	healthy := appchannel.ConnectivityReport{}
+	report := stale
 	var confirms, bounces int
 
 	deps := Deps{
-		ReadStatus:       func() (Status, error) { return wifi, nil },
-		GatewayReachable: func() bool { return false },
-		UsbWedged:        func() (bool, error) { return false, nil },
-		DeviceStress:     func() DeviceStress { return DeviceStress{LANWorkflow: true} },
+		ReadStatus: func() (Status, error) { return wifi, nil },
+		AppChannel: func() appchannel.ConnectivityReport { return report },
+		UsbWedged:  func() (bool, error) { return false, nil },
 		Confirm: func(_ context.Context, _ string) (bool, error) {
 			confirms++
 			return true, nil
 		},
 		Bounce: func(_ context.Context, _ string) error {
 			bounces++
+			report = healthy
 			return nil
 		},
 	}
@@ -31,19 +36,16 @@ func TestReconcile_SingleBouncePerEpisode(t *testing.T) {
 	ctx := context.Background()
 	var st episodeState
 
-	// First cycle: persistence gate — no confirm yet.
 	reconcile(ctx, deps, &st, "t1")
 	if confirms != 0 || bounces != 0 {
 		t.Fatalf("cycle1 confirms=%d bounces=%d; want 0/0", confirms, bounces)
 	}
 
-	// Second cycle: solid hypothesis → confirm + bounce once.
 	reconcile(ctx, deps, &st, "t2")
 	if confirms != 1 || bounces != 1 {
 		t.Fatalf("cycle2 confirms=%d bounces=%d; want 1/1", confirms, bounces)
 	}
 
-	// Same episode: no second bounce.
 	reconcile(ctx, deps, &st, "t3")
 	if confirms != 1 || bounces != 1 {
 		t.Fatalf("cycle3 confirms=%d bounces=%d; want still 1/1", confirms, bounces)
@@ -52,11 +54,14 @@ func TestReconcile_SingleBouncePerEpisode(t *testing.T) {
 
 func TestReconcile_UserDecline(t *testing.T) {
 	deps := Deps{
-		ReadStatus:       func() (Status, error) { return Status{Device: "en0", Connected: true, SSID: "X"}, nil },
-		GatewayReachable: func() bool { return false },
-		UsbWedged:        func() (bool, error) { return false, nil },
-		DeviceStress:     func() DeviceStress { return DeviceStress{LANWorkflow: true} },
-		Confirm:          func(_ context.Context, _ string) (bool, error) { return false, nil },
+		ReadStatus: func() (Status, error) {
+			return Status{Device: "en0", Connected: true, SSID: "X"}, nil
+		},
+		AppChannel: func() appchannel.ConnectivityReport {
+			return appchannel.ConnectivityReport{MissingDialBacks: 1}
+		},
+		UsbWedged: func() (bool, error) { return false, nil },
+		Confirm:   func(_ context.Context, _ string) (bool, error) { return false, nil },
 		Bounce: func(_ context.Context, _ string) error {
 			t.Fatal("bounce should not run when user declines")
 			return nil
@@ -77,10 +82,9 @@ func TestRunMonitor_ExitsOnContextCancel(t *testing.T) {
 	t.Cleanup(func() { pollInterval = save })
 
 	deps := Deps{
-		ReadStatus:       func() (Status, error) { return Status{}, errNoWifi{} },
-		GatewayReachable: func() bool { return true },
-		UsbWedged:        func() (bool, error) { return false, nil },
-		DeviceStress:     func() DeviceStress { return DeviceStress{} },
+		ReadStatus: func() (Status, error) { return Status{}, errNoWifi{} },
+		AppChannel: func() appchannel.ConnectivityReport { return appchannel.ConnectivityReport{} },
+		UsbWedged:  func() (bool, error) { return false, nil },
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
