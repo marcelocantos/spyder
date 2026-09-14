@@ -223,6 +223,17 @@ func buildMessage(snap EntitySnapshot) (title, message string) {
 			)
 		}
 
+	case KindHost:
+		title = "spyder: host Wi-Fi needs attention"
+		if detail != "" {
+			message = fmt.Sprintf(
+				"Mac Wi-Fi may be blocking device connectivity — %s",
+				detail,
+			)
+		} else {
+			message = "Mac Wi-Fi may be blocking device connectivity — try bouncing Wi-Fi manually."
+		}
+
 	case KindDaemon:
 		title = "spyder: daemon stalled"
 		if detail != "" {

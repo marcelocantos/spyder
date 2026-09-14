@@ -28,6 +28,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/dashboard"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/health"
+	"github.com/marcelocantos/spyder/internal/hostwifi"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
 	"github.com/marcelocantos/spyder/internal/listenaddr"
@@ -122,6 +123,15 @@ func Run(ctx context.Context, cfg Config) error {
 	// snapshot and attempts `sudo spyder-killusbmuxd`. Cleanly tied
 	// to ctx — exits on daemon shutdown.
 	go wedge.RunMonitor(ctx)
+
+	// Host Wi-Fi monitor. Detects zombie Wi-Fi (associated but gateway
+	// unreachable) correlated with device/LAN stress and, after user
+	// confirmation, bounces Wi-Fi via networksetup.
+	if mcpHandler != nil {
+		lanWorkflow := mcpHandler.HasMobileInventory() && !listenaddr.IsLoopback(cfg.Addr)
+		deps := hostwifi.ProductionDeps(resolveIOSTunnelBinary(), lanWorkflow, mcpHandler.Health().Model())
+		go hostwifi.RunMonitor(ctx, deps)
+	}
 
 	if listenaddr.IsLoopback(cfg.Addr) && mcpHandler != nil && mcpHandler.HasMobileInventory() {
 		slog.Warn("spyder is bound to loopback only while mobile devices are in inventory; LAN glasses and app-channel dial-backs cannot reach this daemon — set SPYDER_ADDR=:3030 or pass --addr :3030",

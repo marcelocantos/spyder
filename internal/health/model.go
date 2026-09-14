@@ -22,6 +22,7 @@ const (
 	KindDaemon     Kind = "daemon"
 	KindSubprocess Kind = "subprocess"
 	KindDevice     Kind = "device"
+	KindHost       Kind = "host" // macOS host-side resources (Wi-Fi, …)
 )
 
 // State is the health state of a monitored entity as determined by the
