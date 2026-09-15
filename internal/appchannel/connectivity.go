@@ -11,10 +11,10 @@ import (
 
 // Connectivity tunables. Vars so tests can shorten them.
 var (
-	ConnectivityPingSilence        = 90 * time.Second
-	ConnectivityMissingDialBack    = 2 * time.Minute
-	ConnectivityLaunchWindow       = 15 * time.Minute
-	ConnectivityPingTimeout        = 2 * time.Second
+	ConnectivityPingSilence     = 90 * time.Second
+	ConnectivityMissingDialBack = 2 * time.Minute
+	ConnectivityLaunchWindow    = 15 * time.Minute
+	ConnectivityPingTimeout     = 2 * time.Second
 )
 
 // ConnectivityReport counts app-channel paths that look unreachable from

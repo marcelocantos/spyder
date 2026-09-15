@@ -23,12 +23,12 @@ var HealthEntityID = health.ID{Kind: health.KindHost, Name: "wifi"}
 
 // Deps are injectable seams for production and tests.
 type Deps struct {
-	ReadStatus    func() (Status, error)
-	AppChannel    func() appchannel.ConnectivityReport
-	UsbWedged     func() (bool, error)
-	Confirm       func(ctx context.Context, message string) (bool, error)
-	Bounce        func(ctx context.Context, device string) error
-	Health        *health.Model
+	ReadStatus func() (Status, error)
+	AppChannel func() appchannel.ConnectivityReport
+	UsbWedged  func() (bool, error)
+	Confirm    func(ctx context.Context, message string) (bool, error)
+	Bounce     func(ctx context.Context, device string) error
+	Health     *health.Model
 }
 
 // ProductionDeps wires macOS probes and app-channel staleness checks.
