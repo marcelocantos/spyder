@@ -28,7 +28,10 @@ func TestDashboard_BatteryTabMarkup(t *testing.T) {
 		`batt-wrap`,
 		`batt-label`,
 		`battBolt`,
+		`battBolts`,
+		`battDrop`,
 		`battCell`,
+		`battChargeKind`,
 		`#battery`,
 		`battery_history`,
 	} {

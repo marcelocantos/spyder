@@ -46,6 +46,26 @@ func TestCollect_SkipsDesktopAndNilBattery(t *testing.T) {
 	}
 }
 
+func TestCollect_ClonesBatteryDetails(t *testing.T) {
+	level := 40
+	charging := true
+	st := device.State{
+		BatteryLevel: &level,
+		Charging:     &charging,
+		Battery:      map[string]any{"current now": 203, "USB powered": true},
+	}
+	got := Collect(time.Now(), []device.Info{{UUID: "a", Platform: "android"}}, func(string) (device.State, error) {
+		return st, nil
+	})
+	if len(got) != 1 || got[0].Details["current now"] != 203 {
+		t.Fatalf("details = %+v", got[0].Details)
+	}
+	st.Battery["current now"] = 999
+	if got[0].Details["current now"] != 203 {
+		t.Error("Collect aliased Battery details map")
+	}
+}
+
 func TestCollect_CopiesPointers(t *testing.T) {
 	level := 10
 	infos := []device.Info{{UUID: "a", Platform: "ios"}}

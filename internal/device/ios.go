@@ -22,6 +22,7 @@ import (
 	goios_ios "github.com/danielpaulus/go-ios/ios"
 	"github.com/danielpaulus/go-ios/ios/appservice"
 	"github.com/danielpaulus/go-ios/ios/crashreport"
+	"github.com/danielpaulus/go-ios/ios/diagnostics"
 	"github.com/danielpaulus/go-ios/ios/house_arrest"
 	"github.com/danielpaulus/go-ios/ios/installationproxy"
 	"github.com/danielpaulus/go-ios/ios/instruments"
@@ -654,6 +655,39 @@ func (a *IOSAdapter) State(id string) (State, error) {
 		state.BatteryLevel = &level
 		charging := batt.BatteryIsCharging
 		state.Charging = &charging
+		extra := map[string]any{
+			"BatteryCurrentCapacity": batt.BatteryCurrentCapacity,
+			"BatteryIsCharging":      batt.BatteryIsCharging,
+			"ExternalChargeCapable":  batt.ExternalChargeCapable,
+			"ExternalConnected":      batt.ExternalConnected,
+			"FullyCharged":           batt.FullyCharged,
+			"GasGaugeCapability":     batt.GasGaugeCapability,
+			"HasBattery":             batt.HasBattery,
+		}
+		if diag, derr := diagnostics.New(dev); derr != nil {
+			state.Notes = append(state.Notes, fmt.Sprintf("battery ioregistry unavailable: %v", derr))
+		} else {
+			ioreg, ierr := diag.Battery()
+			_ = diag.Close()
+			if ierr != nil {
+				state.Notes = append(state.Notes, fmt.Sprintf("battery ioregistry unavailable: %v", ierr))
+			} else {
+				extra["InstantAmperage"] = ioreg.InstantAmperage
+				extra["Temperature"] = ioreg.Temperature
+				extra["Voltage"] = ioreg.Voltage
+				extra["IsCharging"] = ioreg.IsCharging
+				extra["CurrentCapacity"] = ioreg.CurrentCapacity
+				extra["DesignCapacity"] = ioreg.DesignCapacity
+				extra["NominalChargeCapacity"] = ioreg.NominalChargeCapacity
+				extra["AbsoluteCapacity"] = ioreg.AbsoluteCapacity
+				extra["AppleRawCurrentCapacity"] = ioreg.AppleRawCurrentCapacity
+				extra["AppleRawMaxCapacity"] = ioreg.AppleRawMaxCapacity
+				extra["CycleCount"] = ioreg.CycleCount
+				extra["AtCriticalLevel"] = ioreg.AtCriticalLevel
+				extra["AtWarnLevel"] = ioreg.AtWarnLevel
+			}
+		}
+		state.Battery = extra
 	}
 
 	state.Notes = append(state.Notes,

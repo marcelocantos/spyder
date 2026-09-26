@@ -9,6 +9,7 @@ package battery
 
 import (
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/device"
@@ -23,12 +24,13 @@ const (
 
 // Sample is one battery observation for one device.
 type Sample struct {
-	TS           time.Time `json:"ts"`
-	DeviceID     string    `json:"device_id"`
-	Alias        string    `json:"alias,omitempty"`
-	Platform     string    `json:"platform,omitempty"`
-	BatteryLevel *int      `json:"battery_level,omitempty"` // 0..100
-	Charging     *bool     `json:"charging,omitempty"`
+	TS           time.Time      `json:"ts"`
+	DeviceID     string         `json:"device_id"`
+	Alias        string         `json:"alias,omitempty"`
+	Platform     string         `json:"platform,omitempty"`
+	BatteryLevel *int           `json:"battery_level,omitempty"` // 0..100
+	Charging     *bool          `json:"charging,omitempty"`
+	Details      map[string]any `json:"details,omitempty"`
 }
 
 // Collect reads State for each connected mobile device and returns
@@ -67,6 +69,9 @@ func Collect(now time.Time, infos []device.Info, state func(id string) (device.S
 		if st.Charging != nil {
 			c := *st.Charging
 			sm.Charging = &c
+		}
+		if len(st.Battery) > 0 {
+			sm.Details = maps.Clone(st.Battery)
 		}
 		out = append(out, sm)
 	}

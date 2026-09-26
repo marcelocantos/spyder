@@ -125,11 +125,14 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 	}
 	if battErr != nil {
 		state.Notes = append(state.Notes, fmt.Sprintf("battery data unavailable: %s", truncate(string(battStderr), 160)))
-	} else if level, charging, err := parseAndroidBattery(battOut); err != nil {
+	} else if parsed, err := parseAndroidBattery(battOut); err != nil {
 		state.Notes = append(state.Notes, fmt.Sprintf("battery parse error: %v", err))
 	} else {
-		state.BatteryLevel = &level
-		state.Charging = &charging
+		state.BatteryLevel = &parsed.Level
+		state.Charging = &parsed.Charging
+		if len(parsed.Extra) > 0 {
+			state.Battery = parsed.Extra
+		}
 	}
 
 	if fg, err := androidForegroundApp(id); err != nil {
@@ -147,33 +150,64 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 	return state, nil
 }
 
-// parseAndroidBattery extracts level and charging status from
-// `dumpsys battery` output. Charging is true when any of AC/USB/
-// Wireless/Dock is powered.
-func parseAndroidBattery(data []byte) (level int, charging bool, err error) {
+// androidBattery is the parsed `dumpsys battery` snapshot.
+type androidBattery struct {
+	Level    int
+	Charging bool
+	Extra    map[string]any
+}
+
+// parseAndroidBattery extracts level, charging, and every other
+// key:value line from `dumpsys battery`. Charging is true when any of
+// AC/USB/Wireless/Dock is powered. Extra keeps vendor keys as-is.
+func parseAndroidBattery(data []byte) (androidBattery, error) {
+	out := androidBattery{Extra: map[string]any{}}
 	levelFound := false
 	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
-		if k, v, ok := strings.Cut(line, ":"); ok {
-			k = strings.TrimSpace(k)
-			v = strings.TrimSpace(v)
-			switch k {
-			case "level":
-				if n, err := strconv.Atoi(v); err == nil {
-					level = n
-					levelFound = true
-				}
-			case "AC powered", "USB powered", "Wireless powered", "Dock powered":
-				if v == "true" {
-					charging = true
-				}
+		k, v, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k == "" || v == "" {
+			continue
+		}
+		parsed := parseBatteryScalar(v)
+		out.Extra[k] = parsed
+		switch k {
+		case "level":
+			if n, ok := parsed.(int); ok {
+				out.Level = n
+				levelFound = true
+			}
+		case "AC powered", "USB powered", "Wireless powered", "Dock powered":
+			if parsed == true {
+				out.Charging = true
 			}
 		}
 	}
 	if !levelFound {
-		return 0, false, errors.New("no 'level' field in dumpsys battery output")
+		return androidBattery{}, errors.New("no 'level' field in dumpsys battery output")
 	}
-	return level, charging, nil
+	return out, nil
+}
+
+func parseBatteryScalar(v string) any {
+	switch v {
+	case "true":
+		return true
+	case "false":
+		return false
+	}
+	if n, err := strconv.Atoi(v); err == nil {
+		return n
+	}
+	if f, err := strconv.ParseFloat(v, 64); err == nil {
+		return f
+	}
+	return v
 }
 
 // androidForegroundApp returns the foreground activity's package id

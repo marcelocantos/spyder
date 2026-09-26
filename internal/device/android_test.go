@@ -20,14 +20,14 @@ func TestParseAndroidBattery(t *testing.T) {
   voltage: 4322
   temperature: 352
 `)
-	level, charging, err := parseAndroidBattery(out)
+	got, err := parseAndroidBattery(out)
 	if err != nil {
 		t.Fatalf("parseAndroidBattery err = %v", err)
 	}
-	if level != 87 {
-		t.Errorf("level = %d; want 87", level)
+	if got.Level != 87 {
+		t.Errorf("level = %d; want 87", got.Level)
 	}
-	if !charging {
+	if !got.Charging {
 		t.Error("charging = false; want true (USB powered = true)")
 	}
 
@@ -38,11 +38,11 @@ func TestParseAndroidBattery(t *testing.T) {
   Dock powered: false
   level: 100
 `)
-	_, charging, err = parseAndroidBattery(out2)
+	got, err = parseAndroidBattery(out2)
 	if err != nil {
 		t.Fatalf("parseAndroidBattery(unplugged) err = %v", err)
 	}
-	if charging {
+	if got.Charging {
 		t.Error("charging = true on fully-unplugged; want false")
 	}
 
@@ -50,18 +50,51 @@ func TestParseAndroidBattery(t *testing.T) {
 	out3 := []byte(`  Wireless powered: true
   level: 50
 `)
-	_, charging, err = parseAndroidBattery(out3)
+	got, err = parseAndroidBattery(out3)
 	if err != nil {
 		t.Fatalf("parseAndroidBattery(wireless) err = %v", err)
 	}
-	if !charging {
+	if !got.Charging {
 		t.Error("charging = false on wireless-powered; want true")
 	}
 
 	// No level field → error.
-	_, _, err = parseAndroidBattery([]byte(`AC powered: true`))
-	if err == nil {
+	if _, err = parseAndroidBattery([]byte(`AC powered: true`)); err == nil {
 		t.Error("parseAndroidBattery without level returned nil; want error")
+	}
+}
+
+func TestParseAndroidBattery_GreedyDump(t *testing.T) {
+	out := []byte(`Current Battery Service state:
+  AC powered: false
+  USB powered: true
+  Max charging current: 1500000
+  current now: 203
+  voltage: 3769
+  temperature: 282
+  Charge counter: 467640
+  Adaptive Fast Charging Settings: true
+  quick charging: 0
+  level: 12
+`)
+	got, err := parseAndroidBattery(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Level != 12 || !got.Charging {
+		t.Fatalf("level/charging = %d %v", got.Level, got.Charging)
+	}
+	if got.Extra["current now"] != 203 {
+		t.Errorf("current now = %v", got.Extra["current now"])
+	}
+	if got.Extra["Max charging current"] != 1500000 {
+		t.Errorf("Max charging current = %v", got.Extra["Max charging current"])
+	}
+	if got.Extra["Adaptive Fast Charging Settings"] != true {
+		t.Errorf("Adaptive Fast Charging Settings = %v", got.Extra["Adaptive Fast Charging Settings"])
+	}
+	if got.Extra["USB powered"] != true {
+		t.Errorf("USB powered = %v", got.Extra["USB powered"])
 	}
 }
 

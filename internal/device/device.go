@@ -79,6 +79,10 @@ type State struct {
 	ForegroundApp string   `json:"foreground_app,omitempty"`
 	StorageFreeMB int64    `json:"storage_free_mb,omitempty"`
 	Notes         []string `json:"notes,omitempty"` // degradation messages for unavailable fields
+	// Battery is a greedy dump of platform-native battery keys
+	// (Android dumpsys names, iOS lockdown / IORegistry names).
+	// Stored as-is for later trend analysis (🎯T137).
+	Battery map[string]any `json:"battery,omitempty"`
 }
 
 // AppInfo summarises an installed third-party application.
