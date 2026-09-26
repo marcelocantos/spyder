@@ -30,6 +30,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/selector"
 	"github.com/marcelocantos/spyder/internal/usbspeed"
+	"github.com/marcelocantos/spyder/internal/verify"
 )
 
 // appliedNetwork tracks a network profile applied to a device by a
@@ -121,6 +122,9 @@ type Handler struct {
 	// batteryStore holds fleet charge history (🎯T137). Nil until
 	// SetBatteryStore or StartBatterySampler opens ~/.spyder/battery/.
 	batteryStore *battery.Store
+
+	// verifyHub is the daemon-wide verification DAG scheduler (🎯T138).
+	verifyHub *verify.Hub
 }
 
 // launchKey indexes launchTimes. The device dimension is the
@@ -795,6 +799,11 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"app_exec":     h.handleAppExec,
 		"list_scripts": h.handleListScripts,
 		"run_script":   h.handleRunScript,
+		// --- verification workflows (🎯T138) ---
+		"verify":        h.handleVerify,
+		"verify_status": h.handleVerifyStatus,
+		"verify_answer": h.handleVerifyAnswer,
+		"verify_abort":  h.handleVerifyAbort,
 	}
 }
 
@@ -816,7 +825,8 @@ func Definitions() []mcpgo.Tool {
 func legacyDefinitions() []mcpgo.Tool {
 	defs := append(allBaseDefinitions(), visualDefinitions()...)
 	defs = append(defs, logCaptureDefinitions()...)
-	return append(defs, appChannelDefinitions()...)
+	defs = append(defs, appChannelDefinitions()...)
+	return append(defs, verifyDefinitions()...)
 }
 
 // allBaseDefinitions returns the core (non-visual) tool definitions.

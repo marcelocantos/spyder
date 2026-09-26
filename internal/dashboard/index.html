@@ -3,10 +3,11 @@
   Copyright 2026 Marcelo Cantos
   SPDX-License-Identifier: Apache-2.0
 
-  spyder dashboard (🎯T91.5 / 🎯T137) — a single UI over the app-channel
-  control surface (info/tweaks/logs/state/screenshot) plus fleet battery
-  history. Talks only to spyder's REST layer (POST /api/v1/<tool>);
-  vanilla JS, no build step, embedded and served by the daemon.
+  spyder dashboard (🎯T91.5 / 🎯T137 / 🎯T138) — a single UI over the
+  app-channel control surface (info/tweaks/logs/state/screenshot), fleet
+  battery history, and verification workflows. Talks only to spyder's
+  REST layer (POST /api/v1/<tool>); vanilla JS, no build step, embedded
+  and served by the daemon.
 -->
 <html lang="en">
 <head>
@@ -96,6 +97,25 @@
   #batt-chart .series.hi { stroke-width: 3.25; }
   #batt-chart .leader { fill: none; stroke-width: 1; opacity: 0.5; }
   #batt-chart .batt-label { cursor: default; font-size: 12px; }
+  details.group { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; }
+  details.group > summary { cursor: pointer; font-weight: 600; color: var(--fg); }
+  details.group.done > summary { color: var(--accent2); }
+  .group-body { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+  .vstep { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
+  .vmark { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: #3a4258; flex: none; }
+  .vstep.running .vmark { background: var(--accent); }
+  .vstep.ok .vmark, .vstep.skipped .vmark { background: var(--accent2); }
+  .vstep.failed .vmark, .vstep.aborted .vmark { background: var(--err); }
+  .vstep.waiting_human .vmark { background: var(--warn); }
+  .vstep .vid { color: var(--dim); font-size: 11px; font-family: var(--mono); }
+  #verify-shot { width: 100%; max-height: 280px; object-fit: contain; background: #000; border-radius: 8px; border: 1px solid var(--line); }
+  #verify-log { height: 180px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px;
+                background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  .gate-sheet { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-top: 12px; }
+  .gate-sheet h3 { margin: 0 0 8px; }
+  .gate-choice { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 12px; min-height: 44px; }
+  #verify-gate-comment { width: 100%; min-height: 64px; background: var(--panel); border: 1px solid var(--line);
+                         color: var(--fg); border-radius: 6px; padding: 8px; font: inherit; }
   @media (max-width: 720px) {
     body { flex-direction: column; height: auto; min-height: 100vh; }
     .sidebar { width: 100%; flex: none; max-height: 180px; }
@@ -117,6 +137,7 @@
       <div class="tab" data-tab="state">State</div>
       <div class="tab" data-tab="stream">Stream</div>
       <div class="tab" data-tab="battery">Battery</div>
+      <div class="tab" data-tab="verify">Verify</div>
     </div>
     <div class="content">
       <div id="none" class="empty">Select a connected app on the left.</div>
@@ -175,6 +196,38 @@
         </div>
         <div class="batt-wrap">
           <svg id="batt-chart" viewBox="0 0 800 420" preserveAspectRatio="none" role="img" aria-label="Battery charge over time"></svg>
+        </div>
+      </div>
+
+      <div id="tab-verify" class="tabpane hidden">
+        <div class="row">
+          <h2 style="margin:0">Verify</h2>
+          <button class="sm" id="verify-refresh">Refresh</button>
+          <span class="muted" id="verify-stat">no run</span>
+        </div>
+        <div class="row" style="align-items:flex-start">
+          <div style="flex:1;min-width:220px">
+            <h2>Steps</h2>
+            <div id="verify-timeline" class="empty">No verification run.</div>
+          </div>
+          <div style="flex:1;min-width:220px">
+            <h2>Live</h2>
+            <p id="verify-shot-empty" class="muted">No screenshot yet.</p>
+            <img id="verify-shot" alt="Latest screenshot from the run" class="hidden">
+            <h2>Log</h2>
+            <div id="verify-log"></div>
+            <div id="verify-gate" class="gate-sheet hidden" role="dialog" aria-labelledby="verify-gate-prompt">
+              <h3 id="verify-gate-prompt"></h3>
+              <p class="muted" id="verify-gate-meta"></p>
+              <p class="muted" id="verify-gate-hint"></p>
+              <div id="verify-gate-choices"></div>
+              <label id="verify-gate-comment-wrap" class="hidden">Comment
+                <textarea id="verify-gate-comment"></textarea>
+              </label>
+              <p id="verify-gate-error" class="muted"></p>
+              <button class="sm" id="verify-abort" type="button">Abort the run</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -272,19 +325,22 @@ function selectApp(id) {
 
 // ---- tabs -----------------------------------------------------------------
 function showTab(tab, force) {
-  if (tab !== "stream" && tab !== "battery" && !sel) return;
+  if (tab !== "stream" && tab !== "battery" && tab !== "verify" && !sel) return;
   curTab = tab;
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("sel", t.dataset.tab === tab);
   for (const p of document.querySelectorAll(".tabpane")) p.classList.add("hidden");
   $("tab-" + tab).classList.remove("hidden");
   $("none").classList.add("hidden");
   const shot = document.querySelector(".shotpanel");
-  if (shot) shot.classList.toggle("hidden", tab === "battery");
+  if (shot) shot.classList.toggle("hidden", tab === "battery" || tab === "verify");
   stopLogPoll();
   stopBattPoll();
+  stopVerifyPoll();
   if (tab === "battery") {
     if (location.hash !== "#battery") history.replaceState(null, "", "#battery");
-  } else if (location.hash === "#battery") {
+  } else if (tab === "verify") {
+    if (location.hash !== "#verify") history.replaceState(null, "", "#verify");
+  } else if (location.hash === "#battery" || location.hash === "#verify") {
     history.replaceState(null, "", location.pathname + location.search);
   }
   if (tab === "tweaks") loadTweaks();
@@ -292,6 +348,7 @@ function showTab(tab, force) {
   else if (tab === "state") loadSlices();
   else if (tab === "stream") loadStreamServers();
   else if (tab === "battery") startBattPoll(true);
+  else if (tab === "verify") startVerifyPoll(true);
 }
 for (const t of document.querySelectorAll(".tab")) t.onclick = () => showTab(t.dataset.tab);
 
@@ -830,11 +887,173 @@ for (const el of $("batt-windows").children) {
 }
 $("batt-refresh").onclick = () => loadBattery(true);
 
+let verifyTimer = null;
+let verifyLogLen = 0;
+function stopVerifyPoll() { if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; } }
+function startVerifyPoll(immediate) {
+  stopVerifyPoll();
+  const tick = () => loadVerify();
+  if (immediate) tick();
+  verifyTimer = setInterval(tick, 1000);
+}
+async function loadVerify() {
+  let snap;
+  try { snap = await callTool("verify_status", {}); }
+  catch (e) { $("verify-stat").textContent = "offline"; return; }
+  const runs = snap.runs || [];
+  const gate = snap.gate || null;
+  const run = pickVerifyRun(runs, gate);
+  if (!run) {
+    $("verify-stat").textContent = "no run";
+    $("verify-timeline").innerHTML = '<div class="empty">No verification run.</div>';
+    $("verify-gate").classList.add("hidden");
+    return;
+  }
+  $("verify-stat").textContent = (run.workflow || "workflow") + " · " + (run.status || "");
+  renderVerifyTimeline(run);
+  const lines = run.log || [];
+  if (lines.length !== verifyLogLen) {
+    $("verify-log").textContent = lines.join("\n");
+    $("verify-log").scrollTop = $("verify-log").scrollHeight;
+    verifyLogLen = lines.length;
+  }
+  if (run.screenshot) {
+    $("verify-shot").src = run.screenshot;
+    $("verify-shot").classList.remove("hidden");
+    $("verify-shot-empty").classList.add("hidden");
+  }
+  renderVerifyGate(gate);
+}
+function pickVerifyRun(runs, gate) {
+  if (gate && gate.run_id) {
+    const hit = runs.find(r => r.run_id === gate.run_id);
+    if (hit) return hit;
+  }
+  const live = runs.find(r => r.status === "running");
+  return live || runs[runs.length - 1] || null;
+}
+function renderVerifyTimeline(run) {
+  const host = $("verify-timeline");
+  host.innerHTML = "";
+  const groups = new Map();
+  for (const g of (run.groups || [])) {
+    const details = document.createElement("details");
+    details.className = "group";
+    details.open = true;
+    details.dataset.groupId = g.id;
+    const summary = document.createElement("summary");
+    summary.textContent = g.label || g.id;
+    const body = document.createElement("div");
+    body.className = "group-body";
+    details.append(summary, body);
+    groups.set(g.id, { id: g.id, parent: g.parent || "", el: details, summary, body, label: g.label || g.id });
+  }
+  for (const rec of groups.values()) {
+    const parent = rec.parent && groups.get(rec.parent);
+    (parent ? parent.body : host).append(rec.el);
+  }
+  const stepEls = [];
+  for (const s of (run.steps || [])) {
+    const item = document.createElement("div");
+    item.className = "vstep " + (s.status || "pending");
+    item.dataset.stepId = s.id;
+    item.dataset.groupId = s.group || "";
+    const mark = document.createElement("span");
+    mark.className = "vmark";
+    const text = document.createElement("div");
+    text.innerHTML = `<div>${esc(s.label || s.id)}</div><div class="vid">${esc(s.id)}${s.choice_id ? " · choice=" + esc(s.choice_id) : ""}</div>`;
+    item.append(mark, text);
+    const g = s.group && groups.get(s.group);
+    (g ? g.body : host).append(item);
+    stepEls.push(item);
+  }
+  for (const rec of groups.values()) {
+    const ids = new Set([rec.id]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const other of groups.values()) {
+        if (other.parent && ids.has(other.parent) && !ids.has(other.id)) {
+          ids.add(other.id); grew = true;
+        }
+      }
+    }
+    const kids = stepEls.filter(el => ids.has(el.dataset.groupId || ""));
+    const done = kids.length > 0 && kids.every(el => el.classList.contains("ok") || el.classList.contains("skipped"));
+    const active = kids.some(el => el.classList.contains("running") || el.classList.contains("waiting_human"));
+    rec.el.classList.toggle("done", done);
+    rec.el.open = active || !done;
+    const ok = kids.filter(el => el.classList.contains("ok") || el.classList.contains("skipped")).length;
+    rec.summary.textContent = rec.label + (kids.length ? `  ${ok}/${kids.length}` : "");
+  }
+}
+function renderVerifyGate(gate) {
+  const box = $("verify-gate");
+  if (!gate) { box.classList.add("hidden"); return; }
+  box.classList.remove("hidden");
+  $("verify-gate-prompt").textContent = gate.prompt || "Check the device";
+  const meta = [];
+  if (gate.workflow) meta.push("workflow " + gate.workflow);
+  if (gate.device) meta.push("device " + gate.device);
+  if (gate.step_id) meta.push(gate.step_id);
+  $("verify-gate-meta").textContent = meta.join(" · ");
+  $("verify-gate-hint").textContent = gate.hint || "";
+  const needs = gate.allow_comment || (gate.choices || []).some(c => c.comment === "required");
+  $("verify-gate-comment-wrap").classList.toggle("hidden", !needs);
+  const choices = $("verify-gate-choices");
+  choices.innerHTML = "";
+  for (const c of (gate.choices || [])) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "gate-choice";
+    b.textContent = c.label || c.id;
+    b.onclick = () => answerVerifyGate(gate, c);
+    choices.appendChild(b);
+  }
+  if (gate.screenshot && !$("verify-shot").src) {
+    $("verify-shot").src = gate.screenshot;
+    $("verify-shot").classList.remove("hidden");
+    $("verify-shot-empty").classList.add("hidden");
+  }
+}
+async function answerVerifyGate(gate, choice) {
+  const required = choice.comment === "required";
+  const text = $("verify-gate-comment").value.trim();
+  if (required && !text) {
+    $("verify-gate-error").textContent = "A comment is required for this answer.";
+    return;
+  }
+  $("verify-gate-error").textContent = "";
+  try {
+    await callTool("verify_answer", {
+      run_id: gate.run_id, gate_id: gate.step_id, choice_id: choice.id, comment: text
+    });
+    toast("answered " + choice.id);
+    loadVerify();
+  } catch (e) {
+    $("verify-gate-error").textContent = e.message;
+  }
+}
+$("verify-refresh").onclick = () => loadVerify();
+$("verify-abort").onclick = async () => {
+  const snap = await callTool("verify_status", {}).catch(() => null);
+  const gate = snap && snap.gate;
+  const run = pickVerifyRun((snap && snap.runs) || [], gate);
+  if (!run) return;
+  try {
+    await callTool("verify_abort", {run_id: run.run_id, reason: "aborted from the dashboard"});
+    toast("aborted");
+    loadVerify();
+  } catch (e) { toast(e.message, true); }
+};
+
 refreshApps();
 setInterval(refreshApps, 5000);
-if (location.hash === "#battery") showTab("battery");
+if (location.hash === "#verify") showTab("verify");
+else if (location.hash === "#battery") showTab("battery");
 window.addEventListener("hashchange", () => {
-  if (location.hash === "#battery") showTab("battery");
+  if (location.hash === "#verify") showTab("verify");
+  else if (location.hash === "#battery") showTab("battery");
 });
 </script>
 </body>

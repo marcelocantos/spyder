@@ -206,6 +206,29 @@ record_start(device="iPad", owner="me")
 
 # rotate a sim/emu before capturing
 rotate(device="<sim-udid>", orientation="landscape-left")`,
+
+	"verify": `verify — product-neutral DAG workflows (🎯T138)
+
+Run a workflow YAML on the daemon-wide scheduler. Step kinds are
+shell, spyder_script (in-process app_exec), and human_gate. Device
+names, deploys, prompts, and scripts live only in the workflow file.
+Nested groups are dashboard collapse only. At most one human_gate is
+in flight anywhere on the daemon. Pass records live at
+<cwd>/verify-runs/resume/<workflow>.json — delete the file to rerun.
+Dashboard: /dashboard#verify.
+
+recipes:
+# check a workflow file
+verify(workflow_path="workflows/smoke.yaml", validate_only=True)
+
+# run and wait (CLI: spyder verify workflows/smoke.yaml)
+emit(verify(workflow_path="workflows/smoke.yaml", cwd=".", wait=True))
+
+# start, then answer the owner gate from another call
+r = verify(workflow_path="workflows/smoke.yaml", wait=False)
+emit(r)
+emit(verify_status())
+verify_answer(run_id=r["run_id"], gate_id="look", choice_id="pass")`,
 }
 
 // helpTopicNames returns the sorted topic list for discovery and errors.

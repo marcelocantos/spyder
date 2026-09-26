@@ -27,6 +27,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/selector"
+	"github.com/marcelocantos/spyder/internal/verify"
 )
 
 // daemonURLEnv overrides the REST base URL for `spyder <tool>`
@@ -88,6 +89,9 @@ func init() {
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 		{"list-scripts", "spyder list-scripts [--json]", runListScripts},
 		{"run-script", "spyder run-script <name|path> [--param k=v]... [--max-duration-ms N] [--json]", runRunScript},
+		{"verify", "spyder verify <workflow.yaml> [--set k=v] [--device NAME] [--answer GATE=CHOICE] [--cwd DIR] [--validate] [--json]", runVerify},
+		{"verify-answer", "spyder verify-answer --run ID --gate ID --choice ID [--comment TEXT]", runVerifyAnswer},
+		{"verify-status", "spyder verify-status [--json]", runVerifyStatus},
 	}
 }
 
@@ -1834,6 +1838,147 @@ func runRunScript(args []string) {
 		a["max_duration_ms"] = n
 	}
 	dispatchAndExit(ctx, "run_script", a, pf.bools["--json"], false)
+}
+
+func runVerify(args []string) {
+	pf, ctx, cancel := setupCommand("verify", args,
+		[]string{"--set", "--device", "--answer", "--comment", "--cwd"},
+		[]string{"--json", "--validate", "--allow-waive"},
+		clitimeout.DefaultRun)
+	defer cancel()
+	if len(pf.positional) != 1 {
+		fatalUsage("verify", fmt.Errorf("expected <workflow.yaml>"))
+	}
+	path := pf.positional[0]
+	if !filepath.IsAbs(path) {
+		abs, err := filepath.Abs(path)
+		if err != nil {
+			cliexit.Errorf(cliexit.ExitGeneric, "verify: %v", err)
+		}
+		path = abs
+	}
+	if pf.bools["--validate"] {
+		wf, err := verify.LoadFile(path)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(verify.ExitError)
+		}
+		fmt.Printf("ok %s\n", wf.Name)
+		os.Exit(verify.ExitPassed)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		cliexit.Errorf(cliexit.ExitGeneric, "verify: %v", err)
+	}
+	cwd := pf.flags["--cwd"]
+	if cwd == "" {
+		cwd, err = os.Getwd()
+		if err != nil {
+			cliexit.Errorf(cliexit.ExitGeneric, "verify: cwd: %v", err)
+		}
+	} else if !filepath.IsAbs(cwd) {
+		cwd, err = filepath.Abs(cwd)
+		if err != nil {
+			cliexit.Errorf(cliexit.ExitGeneric, "verify: cwd: %v", err)
+		}
+	}
+	params := map[string]any{}
+	for _, item := range pf.repeats["--set"] {
+		k, v, ok := strings.Cut(item, "=")
+		if !ok || k == "" {
+			fatalUsage("verify", fmt.Errorf("--set expects KEY=VALUE, got %q", item))
+		}
+		params[k] = v
+	}
+	if d := pf.flags["--device"]; d != "" {
+		params["device"] = d
+	}
+	answers := map[string]any{}
+	comments := map[string]string{}
+	for _, item := range pf.repeats["--comment"] {
+		k, v, ok := strings.Cut(item, "=")
+		if !ok || k == "" {
+			fatalUsage("verify", fmt.Errorf("--comment expects GATE=TEXT, got %q", item))
+		}
+		comments[k] = v
+	}
+	for _, item := range pf.repeats["--answer"] {
+		k, v, ok := strings.Cut(item, "=")
+		if !ok || k == "" {
+			fatalUsage("verify", fmt.Errorf("--answer expects GATE=CHOICE, got %q", item))
+		}
+		answers[k] = map[string]any{"choice_id": v, "comment": comments[k]}
+	}
+	a := map[string]any{
+		"workflow":      string(raw),
+		"workflow_path": path,
+		"cwd":           cwd,
+		"wait":          true,
+		"allow_waive":   pf.bools["--allow-waive"],
+	}
+	if len(params) > 0 {
+		a["params"] = params
+	}
+	if len(answers) > 0 {
+		a["answers"] = answers
+	}
+	res, postErr := postTool(ctx, "verify", a)
+	if postErr != nil {
+		cliexit.Errorf(daemonExitCode(postErr), "spyder verify: %v", postErr)
+	}
+	if res.IsError {
+		fmt.Fprintln(os.Stderr, res.allText())
+		os.Exit(verify.ExitError)
+	}
+	if pf.bools["--json"] {
+		fmt.Println(res.firstText())
+		var body struct {
+			ExitCode int `json:"exit_code"`
+		}
+		_ = json.Unmarshal([]byte(res.firstText()), &body)
+		os.Exit(body.ExitCode)
+	}
+	var body struct {
+		ExitCode    int    `json:"exit_code"`
+		StatusBlock string `json:"status_block"`
+		Status      string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(res.firstText()), &body); err != nil {
+		fmt.Println(res.firstText())
+		os.Exit(verify.ExitError)
+	}
+	if body.StatusBlock != "" {
+		fmt.Println(body.StatusBlock)
+	} else {
+		fmt.Println(res.firstText())
+	}
+	os.Exit(body.ExitCode)
+}
+
+func runVerifyAnswer(args []string) {
+	pf, ctx, cancel := setupCommand("verify-answer", args,
+		[]string{"--run", "--gate", "--choice", "--comment"},
+		[]string{"--json"},
+		clitimeout.DefaultRead)
+	defer cancel()
+	if pf.flags["--run"] == "" || pf.flags["--gate"] == "" || pf.flags["--choice"] == "" {
+		fatalUsage("verify-answer", fmt.Errorf("--run, --gate, and --choice are required"))
+	}
+	a := map[string]any{
+		"run_id":    pf.flags["--run"],
+		"gate_id":   pf.flags["--gate"],
+		"choice_id": pf.flags["--choice"],
+	}
+	if c := pf.flags["--comment"]; c != "" {
+		a["comment"] = c
+	}
+	dispatchAndExit(ctx, "verify_answer", a, pf.bools["--json"], false)
+}
+
+func runVerifyStatus(args []string) {
+	pf, ctx, cancel := setupCommand("verify-status", args, nil, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	dispatchAndExit(ctx, "verify_status", map[string]any{}, pf.bools["--json"], false)
 }
 
 func runPoolWarm(args []string) {

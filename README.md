@@ -110,6 +110,7 @@ has signatures.
 | OS control | `perf_fps`, `port_forward_start`, `port_forward_stop`, `port_forward_list`, `input_tap`, `input_swipe`, `device_setting` |
 | App channel | `app_channel_stop`, `app_channel_list`, `app_ping`, `app_quit`, `app_flush`, `app_background`, `app_foreground`, `app_low_memory`, `app_pause`, `app_resume`, `app_step`, `app_speed`, `app_input`, `app_sensor_suppress`, `app_sensor_set`, `app_sensor_unsuppress`, `app_sensor_status`, `ensure_session`, `state_query`, `app_state`, `wait_state`, `app_tweak_list`, `app_tweak_get`, `app_tweak_set`, `app_tweak_reset`, `app_spawn`, `app_acquire`, `app_release`, `games`, `app_save_state`, `app_restore_state`, `app_screenshot`, `app_state_slices`, `app_state_describe`, `app_state_capture_start`, `app_state_capture_get`, `app_state_capture_stop`, `app_state_capture_list`, `app_log_get`, `app_perf_get`, `app_metrics_list`, `app_metrics_arm`, `app_metrics_disarm`, `app_metrics_status`, `app_metrics_dump`, `app_methods`, `app_call` |
 | Pool / scripts | `pool_list`, `pool_warm`, `pool_drain`, `pool_gc`, `list_scripts`, `run_script` |
+| Verify | `verify`, `verify_status`, `verify_answer`, `verify_abort` |
 
 Starlark also adds non-verb helpers: `sleep`, `emit`, `health()`, `help()`,
 and the 🎯T108/T109 assert and hit-target helpers.

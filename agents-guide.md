@@ -483,6 +483,10 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `resolve(name?, selector?)` | Symbolic name → structured `Entry` with all known IDs. Exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`). | Unknown raw inputs are echoed back classified. With `selector`, returns the entry of the first matching live device. |
 | `device_state(device)` | Battery level, charging, extra native battery keys (`battery` map), thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). iOS extras come from lockdown + diagnostics IORegistry (`InstantAmperage`, capacities, cycle count). Android extras are the full `dumpsys battery` key set. |
 | `battery_history(since?, until?, device?, bucket_s?, sample?)` | Fleet charge history the daemon records every minute for connected iOS/Android devices (🎯T137). Returns `{since, until, bucket_s?, samples, latest}`. Each sample may include `details` (greedy native dump). | Default window `-24h`..now. `sample=True` takes a live tick first. Dashboard: `/dashboard#battery`. Desktop hosts are not sampled. |
+| `verify(workflow?, workflow_path?, cwd?, params?, answers?, wait?, validate_only?, allow_waive?)` | Run a product-neutral verification workflow YAML on the daemon-wide DAG scheduler (🎯T138). Step kinds: `shell`, `spyder_script` (in-process `app_exec`), `human_gate`. | `wait=True` (default) blocks until the run ends and returns `{status, exit_code, status_block, …}`. Pass records: `<cwd>/verify-runs/resume/<workflow>.json` — delete to rerun. Dashboard: `/dashboard#verify`. CLI: `spyder verify`. |
+| `verify_status()` | Snapshot of verification runs plus the single in-flight owner gate. | Read-only. |
+| `verify_answer(run_id, gate_id, choice_id, comment?)` | Answer the in-flight `human_gate`. | Same path the dashboard gate buttons use. |
+| `verify_abort(run_id, reason?)` | Abort a verification run. | |
 | `screenshot(device, owner?, path?, inline?)` | PNG of the current screen. Default: saved under `~/.spyder/screenshots/` (or `path`), returning `{path, width, height, bytes}`; `inline=True` returns the image inline instead (🎯T114). | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
 | `list_apps(device)` | Installed third-party apps. iOS returns bundle ID + name + version; Android returns bundle ID only. | |
 | `launch_app(device, bundle_id, env?)` | Foreground an arbitrary app by bundle id. Returns `{device, bundle_id, session_id?, channel_port?}` — the session fields appear when the app completes the app-channel handshake within the post-launch wait (🎯T119), so you don't need a follow-up `app_channel_list`. Optional `env` dict injects environment variables into the launched process — see "Launching with env" below. | iOS-17+ uses go-ios's `appservice.LaunchApp` (CoreDevice/RemoteXPC, needs tunnel); iOS ≤16 uses `instruments.ProcessControl` (DTX-over-lockdown, no tunnel, needs DDI mounted). Path selection automatic per device. Android uses `adb monkey -c LAUNCHER` (no env) or `am start --es KEY VALUE` (with env). |
@@ -1490,6 +1494,36 @@ also beat while `InstallApp` runs (cold emulator installs use the 5
 minute install deadline). A non-install device verb that sits with no
 inner progress for more than 60s still notifies.
 
+## Verification workflows (🎯T138)
+
+`spyder verify path/to/workflow.yaml` runs a product-neutral DAG on the
+daemon. The engine does not name a product: device names, deploys, prompts,
+and scripts live only in the workflow file.
+
+Step kinds:
+
+- `shell` — host command (`command` via `/bin/sh -c`, or `argv`)
+- `spyder_script` — in-process `app_exec` (`script` path + optional `params`)
+- `human_gate` — structured owner question (dashboard `/dashboard#verify`)
+
+Scheduling is a leaf-level frontier on a daemon-wide pool. Nested `groups`
+(`parent:`) collapse in the dashboard when every descendant is ok/skipped;
+they do not schedule. Several `spyder verify` invocations share `device:` /
+`mutex:` keys and a single in-flight `human_gate`. Command steps on other
+graphs keep running.
+
+Progress is a pass record at `<cwd>/verify-runs/resume/<workflow>.json`. A
+pass keeps the file; the next run skips passed steps and restages the
+`spyder_script` a failed gate requires. Delete the file to rerun. When a
+run ends, stdout prints a `STATUS` / `END STATUS` block (overall result,
+per-step status with durations, `choice=` on owner gates). Exit 0 plus that
+block is the result; a `passed` run is passed.
+
+```bash
+spyder verify workflows/smoke.yaml --answer look=pass
+spyder verify workflows/smoke.yaml --validate
+```
+
 ## Reservations
 
 For parallel dev sessions (e.g. one agent working on TiltBuggy while another
@@ -1805,6 +1839,8 @@ spyder emu delete Pixel6_API34
 spyder log iPad --since -2m --json               # last two minutes
 spyder log iPad --since 2026-04-19T00:00:00Z --json
 spyder log iPad --follow --process MyApp         # live SSE tail
+spyder verify workflows/smoke.yaml --answer look=pass
+spyder verify-status --json
 ```
 
 `--as OWNER` defaults to `filepath.Base(cwd)` (same convention as
