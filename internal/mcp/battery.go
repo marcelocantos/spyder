@@ -130,8 +130,21 @@ func (h *Handler) handleBatteryHistory(args map[string]any) (*mcpgo.CallToolResu
 	if result.Latest == nil {
 		result.Latest = []battery.Sample{}
 	}
+	h.applyBatteryDisplayNames(samples)
+	h.applyBatteryDisplayNames(result.Latest)
 	result.Samples = samples
 	return toolJSON(result)
+}
+
+func (h *Handler) applyBatteryDisplayNames(samples []battery.Sample) {
+	if h == nil || h.inventory == nil {
+		return
+	}
+	for i := range samples {
+		if name := h.inventory.DisplayName(samples[i].DeviceID); name != "" {
+			samples[i].Alias = name
+		}
+	}
 }
 
 func (h *Handler) sampleBatteriesOnce() {
@@ -172,7 +185,7 @@ func (h *Handler) listMobileDevices() ([]device.Info, error) {
 	}
 	if inv != nil {
 		for i := range devices {
-			if a := inv.AliasFor(devices[i].UUID); a != "" {
+			if a := inv.DisplayName(devices[i].UUID); a != "" {
 				devices[i].Alias = a
 			}
 		}

@@ -29,7 +29,11 @@ var standardUUID = regexp.MustCompile(`^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f
 
 // Entry records a known device with its platform-specific identifiers.
 type Entry struct {
-	Alias         string `json:"alias"`
+	Alias string `json:"alias"`
+	// Short is an optional compact label for dense UI (the battery
+	// chart). Alias remains the canonical identifier for tools and
+	// scripts.
+	Short         string `json:"short,omitempty"`
 	Platform      string `json:"platform"`                 // "ios" or "android"
 	IOSUUID       string `json:"ios_uuid,omitempty"`       // go-ios / xctrace
 	IOSCoreDevice string `json:"ios_coredevice,omitempty"` // devicectl
@@ -102,16 +106,38 @@ func ClassifyRaw(raw string) Entry {
 
 // AliasFor returns the alias registered for a UUID, or "" if unknown.
 func (s *Store) AliasFor(uuid string) string {
+	if e, ok := s.entryByUUID(uuid); ok {
+		return e.Alias
+	}
+	return ""
+}
+
+// DisplayName returns Short if set, otherwise Alias, or "" if unknown.
+func (s *Store) DisplayName(uuid string) string {
+	if e, ok := s.entryByUUID(uuid); ok {
+		return e.DisplayName()
+	}
+	return ""
+}
+
+// DisplayName is Short if set, otherwise Alias.
+func (e Entry) DisplayName() string {
+	if s := strings.TrimSpace(e.Short); s != "" {
+		return s
+	}
+	return e.Alias
+}
+
+func (s *Store) entryByUUID(uuid string) (Entry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loadLocked()
-
 	for _, e := range s.entries {
 		if e.IOSUUID == uuid || e.IOSCoreDevice == uuid || e.AndroidSerial == uuid {
-			return e.Alias
+			return e, true
 		}
 	}
-	return ""
+	return Entry{}, false
 }
 
 // Entries returns a snapshot of all inventory entries. Used by the

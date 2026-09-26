@@ -97,6 +97,35 @@ func TestAliasFor(t *testing.T) {
 	}
 }
 
+func TestDisplayName_PrefersShort(t *testing.T) {
+	const inv = `[
+	  {
+	    "alias": "Minicades Test iPhone",
+	    "short": "Minicades",
+	    "platform": "ios",
+	    "ios_uuid": "00008110-0014182E0AC2801E"
+	  },
+	  {
+	    "alias": "iPad",
+	    "platform": "ios",
+	    "ios_uuid": "00008103-001122334455667A"
+	  }
+	]`
+	s := withInventory(t, inv)
+	if got := s.DisplayName("00008110-0014182E0AC2801E"); got != "Minicades" {
+		t.Errorf("DisplayName(short set) = %q; want Minicades", got)
+	}
+	if got := s.AliasFor("00008110-0014182E0AC2801E"); got != "Minicades Test iPhone" {
+		t.Errorf("AliasFor must stay the canonical alias; got %q", got)
+	}
+	if got := s.DisplayName("00008103-001122334455667A"); got != "iPad" {
+		t.Errorf("DisplayName(no short) = %q; want iPad", got)
+	}
+	if got := s.DisplayName("unknown"); got != "" {
+		t.Errorf("DisplayName(unknown) = %q; want empty", got)
+	}
+}
+
 func TestMissingInventory_IsEmpty(t *testing.T) {
 	// Don't write any inventory file — Lookup must return no error.
 	s := withInventory(t, "")

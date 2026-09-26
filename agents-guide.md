@@ -117,6 +117,7 @@ map symbolic aliases to platform-specific identifiers:
 [
   {
     "alias": "iPad",
+    "short": "iPad",
     "platform": "ios",
     "ios_uuid": "00008103-001122334455667A",
     "ios_coredevice": "00000000-0000-0000-0000-000000000001",
@@ -125,6 +126,8 @@ map symbolic aliases to platform-specific identifiers:
 ]
 ```
 
+- `short` — optional compact label for dense UI (battery chart). `alias`
+  remains the canonical identifier for tools and scripts.
 - `ios_uuid` — hardware UDID (from `ios list` or
   `xcrun xctrace list devices`).
 - `ios_coredevice` — CoreDevice UUID from `devicectl list devices`.

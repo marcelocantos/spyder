@@ -118,6 +118,7 @@ JSON array at `~/.spyder/inventory.json`:
 [
   {
     "alias": "iPad",
+    "short": "iPad",
     "platform": "ios",
     "ios_uuid": "00008103-001122334455667A",
     "ios_coredevice": "00000000-0000-0000-0000-000000000001",

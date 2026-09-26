@@ -5,6 +5,8 @@ package mcp
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -111,6 +113,48 @@ func TestHandleBatteryHistory_SampleTicksLiveDevices(t *testing.T) {
 	}
 	if body.Samples[0].BatteryLevel == nil || *body.Samples[0].BatteryLevel != 73 {
 		t.Errorf("level = %v", body.Samples[0].BatteryLevel)
+	}
+}
+
+func TestHandleBatteryHistory_OverlaysShortName(t *testing.T) {
+	h := newTestHandler(t)
+	inv := `[
+	  {
+	    "alias": "Minicades Test iPhone",
+	    "short": "Minicades",
+	    "platform": "ios",
+	    "ios_uuid": "00008110-0014182E0AC2801E"
+	  }
+	]`
+	if err := os.WriteFile(filepath.Join(os.Getenv("HOME"), ".spyder", "inventory.json"), []byte(inv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := battery.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.SetBatteryStore(st)
+	l := 40
+	mustAppend(t, st, battery.Sample{
+		TS:           time.Now().UTC().Add(-time.Minute),
+		DeviceID:     "00008110-0014182E0AC2801E",
+		Alias:        "Minicades Test iPhone",
+		Platform:     "ios",
+		BatteryLevel: &l,
+	})
+	r := dispatchJSON(t, h, "battery_history", map[string]any{"since": "-1h"})
+	if r.IsError {
+		t.Fatalf("%s", resultText(t, &r))
+	}
+	var body batteryHistoryResult
+	if err := json.Unmarshal([]byte(resultText(t, &r)), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Samples) != 1 || body.Samples[0].Alias != "Minicades" {
+		t.Fatalf("short overlay: %+v", body.Samples)
+	}
+	if len(body.Latest) != 1 || body.Latest[0].Alias != "Minicades" {
+		t.Fatalf("latest short overlay: %+v", body.Latest)
 	}
 }
 
