@@ -72,3 +72,9 @@ func ListenAddrPath() string {
 func ShipAuditBase() string {
 	return filepath.Join(Base(), "ship-audit")
 }
+
+// BatteryDir returns the fleet battery-history store
+// (~/.spyder/battery). Daily JSONL files live here (🎯T137).
+func BatteryDir() string {
+	return filepath.Join(Base(), "battery")
+}

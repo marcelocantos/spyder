@@ -67,6 +67,10 @@ resolve(name="iPad")
 # battery / thermal / foreground app
 device_state(device="iPad")
 
+# fleet charge history (daemon samples connected devices every minute)
+emit(battery_history(since="-6h"))
+emit(battery_history(device="iPad", since="-24h", bucket_s=300))
+
 # OS screenshot (works even if someone else holds the device)
 emit(screenshot(device="iPad"))
 

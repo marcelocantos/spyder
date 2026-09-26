@@ -47,7 +47,7 @@ func toolDeadlineClass(name string) time.Duration {
 		// ceiling maxExecDuration). FastRead (15s) was killing multi-step
 		// device recipes that correctly request 60–120s budgets.
 		return maxExecDuration + 5*time.Second
-	case "devices", "resolve", "device_state", "list_apps", "is_running",
+	case "devices", "resolve", "device_state", "battery_history", "list_apps", "is_running",
 		"reservations", "runs_list", "runs_show", "runs_artefacts",
 		"app_channel_list", "health":
 		return DeadlineFastRead

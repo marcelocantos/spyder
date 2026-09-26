@@ -3,10 +3,10 @@
   Copyright 2026 Marcelo Cantos
   SPDX-License-Identifier: Apache-2.0
 
-  spyder dashboard (🎯T91.5) — a single UI over the app-channel control
-  surface (info/tweaks/logs/state/screenshot). Talks only to spyder's REST
-  layer (POST /api/v1/<tool>); vanilla JS, no build step, embedded
-  and served by the daemon.
+  spyder dashboard (🎯T91.5 / 🎯T137) — a single UI over the app-channel
+  control surface (info/tweaks/logs/state/screenshot) plus fleet battery
+  history. Talks only to spyder's REST layer (POST /api/v1/<tool>);
+  vanilla JS, no build step, embedded and served by the daemon.
 -->
 <html lang="en">
 <head>
@@ -88,6 +88,33 @@
   .toast.err { border-color: var(--err); color: var(--err); }
   .muted { color: var(--dim); }
   label.tog { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 12px; }
+  .batt-cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .batt-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+               padding: 10px 14px; min-width: 148px; flex: 0 0 auto; }
+  .batt-card .alias { font-weight: 600; }
+  .batt-card .pct { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; }
+  .batt-card .pct.low { color: var(--err); }
+  .batt-card .pct.chg { color: var(--accent2); }
+  .batt-card .meta { color: var(--dim); font-size: 11px; }
+  .batt-legend { display: flex; gap: 10px 16px; flex-wrap: wrap; margin: 10px 0 0; color: var(--dim); font-size: 12px; align-items: center; }
+  .batt-key { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+  .batt-key.off { opacity: 0.35; }
+  .batt-key:hover { color: var(--fg); }
+  .batt-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor;
+              box-sizing: border-box; flex: 0 0 10px; background: var(--bg); }
+  .batt-dot.solid { background: currentColor; }
+  .batt-caption { font-size: 11px; color: var(--dim); margin-top: 6px; }
+  #batt-chart { width: 100%; height: 340px; background: var(--panel); border: 1px solid var(--line);
+                border-radius: 8px; display: block; }
+  #batt-chart .series { fill: none; stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }
+  #batt-chart .series.dim { opacity: 0.18; }
+  #batt-chart .series.hi { stroke-width: 3.25; }
+  @media (max-width: 720px) {
+    body { flex-direction: column; height: auto; min-height: 100vh; }
+    .sidebar { width: 100%; flex: none; max-height: 180px; }
+    .shotpanel { width: 100%; flex: none; }
+    #batt-chart { height: 240px; }
+  }
 </style>
 </head>
 <body>
@@ -102,6 +129,7 @@
       <div class="tab" data-tab="logs">Logs</div>
       <div class="tab" data-tab="state">State</div>
       <div class="tab" data-tab="stream">Stream</div>
+      <div class="tab" data-tab="battery">Battery</div>
     </div>
     <div class="content">
       <div id="none" class="empty">Select a connected app on the left.</div>
@@ -145,6 +173,24 @@
           style="max-width:100%;border:1px solid var(--line);border-radius:8px;background:#000;outline:none"></canvas>
         <div class="muted" style="margin-top:6px;font-size:11px">Click the canvas and hold Shift + drag to drive (tiltbuggy).</div>
       </div>
+
+      <div id="tab-battery" class="tabpane hidden">
+        <div class="row">
+          <h2 style="margin:0">Battery</h2>
+          <div class="slices" id="batt-windows">
+            <div class="slice sel" data-win="1h">1h</div>
+            <div class="slice" data-win="6h">6h</div>
+            <div class="slice" data-win="24h">24h</div>
+            <div class="slice" data-win="7d">7d</div>
+          </div>
+          <button class="sm" id="batt-refresh">Refresh</button>
+          <span class="muted" id="batt-stat"></span>
+        </div>
+        <div class="batt-cards" id="batt-cards"></div>
+        <svg id="batt-chart" viewBox="0 0 800 340" preserveAspectRatio="none" role="img" aria-label="Battery charge over time"></svg>
+        <div class="batt-legend" id="batt-legend"></div>
+        <div class="batt-caption" id="batt-caption">Line is charge over time. Circle is the latest sample — filled while charging, hollow on battery.</div>
+      </div>
     </div>
   </div>
 
@@ -169,7 +215,11 @@ let sel = null;         // selected session_id
 let curTab = "tweaks";
 let logTimer = null, logDropped = 0;
 let shotTimer = null, shotBusy = false;
+let battTimer = null, battWin = "1h";
+const battHidden = {};  // device_id -> true when legend-toggled off
+let battFocus = null;
 const shots = {};       // session_id -> {url, w, h, at} last screenshot (shared by thumb + panel)
+const BATT_PALETTE = ["#5ac8fa","#ff7b72","#7ee787","#d2a8ff","#ffa657","#79c0ff","#e3b341","#f778ba","#56d4dd","#ffa198"];
 
 function toast(msg, isErr) {
   const t = $("toast");
@@ -237,17 +287,26 @@ function selectApp(id) {
 
 // ---- tabs -----------------------------------------------------------------
 function showTab(tab, force) {
-  if (tab !== "stream" && !sel) return; // stream is server-based, not app-based
+  if (tab !== "stream" && tab !== "battery" && !sel) return;
   curTab = tab;
   for (const t of document.querySelectorAll(".tab")) t.classList.toggle("sel", t.dataset.tab === tab);
   for (const p of document.querySelectorAll(".tabpane")) p.classList.add("hidden");
   $("tab-" + tab).classList.remove("hidden");
   $("none").classList.add("hidden");
+  const shot = document.querySelector(".shotpanel");
+  if (shot) shot.classList.toggle("hidden", tab === "battery");
   stopLogPoll();
+  stopBattPoll();
+  if (tab === "battery") {
+    if (location.hash !== "#battery") history.replaceState(null, "", "#battery");
+  } else if (location.hash === "#battery") {
+    history.replaceState(null, "", location.pathname + location.search);
+  }
   if (tab === "tweaks") loadTweaks();
   else if (tab === "logs") startLogPoll();
   else if (tab === "state") loadSlices();
   else if (tab === "stream") loadStreamServers();
+  else if (tab === "battery") startBattPoll(true);
 }
 for (const t of document.querySelectorAll(".tab")) t.onclick = () => showTab(t.dataset.tab);
 
@@ -550,8 +609,178 @@ function installStreamInput(canvas) {
 $("stream-connect").onclick = connectStream;
 $("stream-stop").onclick = () => { stopStream(); $("stream-stat").textContent = "stopped"; };
 
+// ---- battery fleet (🎯T137) -----------------------------------------------
+const BATT_WIN = {
+  "1h":  { since: "-1h",   bucket: 0 },
+  "6h":  { since: "-6h",   bucket: 0 },
+  "24h": { since: "-24h",  bucket: 300 },
+  "7d":  { since: "-168h", bucket: 900 },
+};
+function stopBattPoll() { if (battTimer) { clearInterval(battTimer); battTimer = null; } }
+function startBattPoll(sampleNow) {
+  loadBattery(!!sampleNow);
+  stopBattPoll();
+  battTimer = setInterval(() => { if (curTab === "battery") loadBattery(false); }, 30000);
+}
+async function loadBattery(sampleNow) {
+  const spec = BATT_WIN[battWin] || BATT_WIN["6h"];
+  $("batt-stat").textContent = sampleNow ? "sampling…" : "loading…";
+  let body;
+  try {
+    const args = { since: spec.since };
+    if (spec.bucket) args.bucket_s = spec.bucket;
+    if (sampleNow) args.sample = true;
+    body = await callTool("battery_history", args);
+  } catch (e) {
+    $("batt-stat").textContent = e.message;
+    toast(e.message, true);
+    return;
+  }
+  const samples = body.samples || [];
+  const latest = body.latest || [];
+  renderBattCards(latest);
+  renderBattChart(samples, body.since, body.until, spec.bucket || 60);
+  const nDev = latest.length;
+  $("batt-stat").textContent = nDev
+    ? (nDev + " device" + (nDev === 1 ? "" : "s") + " · " + samples.length + " samples")
+    : "No samples yet. The daemon records charge every minute while devices are connected.";
+}
+function battLabel(s) { return s.alias || s.device_id || "?"; }
+function battColor(id) {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 33 + id.charCodeAt(i)) >>> 0;
+  return BATT_PALETTE[h % BATT_PALETTE.length];
+}
+function renderBattCards(latest) {
+  const box = $("batt-cards");
+  box.innerHTML = "";
+  if (!latest.length) {
+    box.innerHTML = '<div class="muted">No connected-device charge samples in this window.</div>';
+    return;
+  }
+  for (const s of latest) {
+    const pct = s.battery_level;
+    const chg = !!s.charging;
+    const el = document.createElement("div");
+    el.className = "batt-card";
+    const klass = (pct != null && pct < 20) ? "low" : (chg ? "chg" : "");
+    const when = s.ts ? new Date(s.ts).toLocaleTimeString() : "";
+    el.innerHTML = `<div class="alias">${esc(battLabel(s))}</div>
+      <div class="pct ${klass}">${pct == null ? "—" : pct + "%"}</div>
+      <div class="meta">${chg ? "charging" : "on battery"} · ${esc(s.platform || "")} · ${when}</div>`;
+    box.appendChild(el);
+  }
+}
+function battSplitGaps(pts, bucketS) {
+  const deltas = [];
+  for (let i = 1; i < pts.length; i++) deltas.push(Date.parse(pts[i].ts) - Date.parse(pts[i - 1].ts));
+  deltas.sort((a, b) => a - b);
+  const median = deltas.length ? deltas[Math.floor(deltas.length / 2)] : 1000 * (bucketS || 60);
+  const gapMs = 2.5 * Math.max(median, 1000 * (bucketS || 60));
+  const segs = [[]];
+  for (const p of pts) {
+    const cur = segs[segs.length - 1];
+    if (cur.length && Date.parse(p.ts) - Date.parse(cur[cur.length - 1].ts) > gapMs) segs.push([]);
+    segs[segs.length - 1].push(p);
+  }
+  return segs.filter(s => s.length);
+}
+function battApplyFocus() {
+  const svg = $("batt-chart");
+  for (const el of svg.querySelectorAll("[data-series]")) {
+    const id = el.getAttribute("data-series");
+    el.classList.toggle("dim", !!(battFocus && battFocus !== id));
+    el.classList.toggle("hi", battFocus === id);
+  }
+}
+function renderBattChart(samples, sinceISO, untilISO, bucketS) {
+  const svg = $("batt-chart");
+  const W = Math.max(svg.clientWidth || 800, 480), H = 340;
+  const pad = { l: 44, r: 18, t: 16, b: 32 };
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+  const t0 = sinceISO ? Date.parse(sinceISO) : Date.now() - 6 * 3600 * 1000;
+  const t1 = untilISO ? Date.parse(untilISO) : Date.now();
+  const span = Math.max(t1 - t0, 1);
+  const x = (ts) => pad.l + (Date.parse(ts) - t0) / span * iw;
+  const y = (pct) => pad.t + (1 - pct / 100) * ih;
+  const byDev = {};
+  for (const s of samples) {
+    if (s.battery_level == null || !s.ts) continue;
+    const id = s.device_id || battLabel(s);
+    (byDev[id] || (byDev[id] = { id, label: battLabel(s), pts: [] })).pts.push(s);
+  }
+  const series = Object.values(byDev).sort((a, b) => a.label.localeCompare(b.label));
+  const grid = [0, 25, 50, 75, 100];
+  let g = "";
+  for (const p of grid) {
+    const yy = y(p).toFixed(1);
+    g += `<line x1="${pad.l}" y1="${yy}" x2="${W - pad.r}" y2="${yy}" stroke="var(--line)" />`;
+    g += `<text x="${pad.l - 6}" y="${(+yy + 4).toFixed(1)}" text-anchor="end" fill="var(--dim)" font-size="11">${p}%</text>`;
+  }
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i++) {
+    const ts = t0 + span * i / ticks;
+    const xx = (pad.l + iw * i / ticks).toFixed(1);
+    const lab = new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    g += `<text x="${xx}" y="${H - 10}" text-anchor="middle" fill="var(--dim)" font-size="11">${lab}</text>`;
+  }
+  for (const s of series) {
+    if (battHidden[s.id]) continue;
+    const color = battColor(s.id);
+    const pts = s.pts.slice().sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    const last = pts[pts.length - 1];
+    for (const seg of battSplitGaps(pts, bucketS)) {
+      if (seg.length === 1) {
+        if (seg[0] === last) continue;
+        const p = seg[0];
+        g += `<circle class="series" data-series="${esc(s.id)}" cx="${x(p.ts).toFixed(1)}" cy="${y(p.battery_level).toFixed(1)}" r="3" fill="none" stroke="${color}" />`;
+        continue;
+      }
+      const d = seg.map(p => `${x(p.ts).toFixed(1)},${y(p.battery_level).toFixed(1)}`).join(" ");
+      g += `<polyline class="series" data-series="${esc(s.id)}" stroke="${color}" points="${d}" />`;
+    }
+    if (last) {
+      const fill = last.charging ? color : "var(--bg)";
+      g += `<circle data-series="${esc(s.id)}" cx="${x(last.ts).toFixed(1)}" cy="${y(last.battery_level).toFixed(1)}" r="5" fill="${fill}" stroke="${color}" stroke-width="2" />`;
+    }
+  }
+  svg.innerHTML = g;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  battApplyFocus();
+
+  const legend = $("batt-legend");
+  legend.innerHTML = "";
+  for (const s of series) {
+    const color = battColor(s.id);
+    const pts = s.pts.slice().sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    const last = pts[pts.length - 1];
+    const chg = !!(last && last.charging);
+    const pct = last && last.battery_level != null ? last.battery_level + "%" : "—";
+    const key = document.createElement("div");
+    key.className = "batt-key" + (battHidden[s.id] ? " off" : "");
+    key.style.color = color;
+    key.innerHTML = `<span class="batt-dot${chg ? " solid" : ""}"></span><span>${esc(s.label)} ${pct}</span>`;
+    key.onmouseenter = () => { battFocus = s.id; battApplyFocus(); };
+    key.onmouseleave = () => { battFocus = null; battApplyFocus(); };
+    key.onclick = () => { battHidden[s.id] = !battHidden[s.id]; renderBattChart(samples, sinceISO, untilISO, bucketS); };
+    legend.appendChild(key);
+  }
+}
+for (const el of $("batt-windows").children) {
+  el.onclick = () => {
+    battWin = el.dataset.win;
+    for (const x of $("batt-windows").children) x.classList.toggle("sel", x === el);
+    loadBattery(false);
+  };
+}
+$("batt-refresh").onclick = () => loadBattery(true);
+
 refreshApps();
 setInterval(refreshApps, 5000);
+if (location.hash === "#battery") showTab("battery");
+window.addEventListener("hashchange", () => {
+  if (location.hash === "#battery") showTab("battery");
+});
 </script>
 </body>
 </html>

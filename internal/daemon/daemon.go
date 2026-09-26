@@ -102,6 +102,10 @@ func Run(ctx context.Context, cfg Config) error {
 	// model and start the background probes that populate it (🎯T90).
 	if mcpHandler != nil {
 		startHealthWiring(ctx, mcpHandler.Health(), tunnelSup != nil)
+		// 🎯T137: persist battery_level/charging for every connected
+		// iOS/Android device. First tick is immediate so /dashboard#battery
+		// is not empty for a full interval after serve.
+		go mcpHandler.StartBatterySampler(ctx)
 		// 🎯T99.3: ProgressWatchdog on entity "spyder" (timeout = device-op
 		// deadline) + rate-limited self-restart after grace; dumps before exit.
 		mcpHandler.EnableSelfHeal(0, 5*time.Second) // 0 → DeadlineDeviceOp

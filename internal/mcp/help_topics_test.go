@@ -76,6 +76,17 @@ func TestExec_HelpBareListsTopics(t *testing.T) {
 	}
 }
 
+func TestExec_HelpDeviceTopicMentionsBatteryHistory(t *testing.T) {
+	res := runScript(t, `help("device")`, stubVerbs(), defaultLim())
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", texts(res))
+	}
+	got := texts(res)[0]
+	if !strings.Contains(got, "battery_history") {
+		t.Errorf("help(\"device\") missing battery_history:\n%s", got)
+	}
+}
+
 // 🎯T116: the reservations topic states the gating policy.
 func TestExec_HelpReservationsTopicStatesPolicy(t *testing.T) {
 	res := runScript(t, `help("reservations")`, stubVerbs(), defaultLim())

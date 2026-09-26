@@ -19,6 +19,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
+	"github.com/marcelocantos/spyder/internal/battery"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/inventory"
@@ -116,6 +117,10 @@ type Handler struct {
 	// usbCeilings remembers the highest USB speed per serial (🎯T131.1).
 	// Nil until first devices() call, then opened from paths.USBSpeedPath().
 	usbCeilings *usbspeed.Store
+
+	// batteryStore holds fleet charge history (🎯T137). Nil until
+	// SetBatteryStore or StartBatterySampler opens ~/.spyder/battery/.
+	batteryStore *battery.Store
 }
 
 // launchKey indexes launchTimes. The device dimension is the
@@ -209,6 +214,16 @@ func WithHealth(s *health.Supervisor) HandlerOption {
 // attach the notifier; the health() builtin and /api/v1/health read its
 // model.
 func (h *Handler) Health() *health.Supervisor { return h.health }
+
+// SetBatteryStore injects the fleet battery history store (🎯T137).
+func (h *Handler) SetBatteryStore(s *battery.Store) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	h.batteryStore = s
+	h.mu.Unlock()
+}
 
 // SetStreamRelay wires the streamrelay catalogue for launch_player (🎯T100.3).
 func (h *Handler) SetStreamRelay(r StreamServers, listenPort int) {
@@ -662,21 +677,22 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 // the definitions use.
 func (h *Handler) toolHandlers() map[string]toolFunc {
 	return map[string]toolFunc{
-		"devices":       h.handleDevices,
-		"resolve":       h.handleResolve,
-		"device_state":  h.handleDeviceState,
-		"screenshot":    h.handleScreenshot,
-		"list_apps":     h.handleListApps,
-		"launch_app":    h.handleLaunchApp,
-		"terminate_app": h.handleTerminateApp,
-		"install_app":   h.handleInstallApp,
-		"uninstall_app": h.handleUninstallApp,
-		"deploy_app":    h.handleDeployApp,
-		"launch_player": h.handleLaunchPlayer,
-		"reserve":       h.handleReserve,
-		"release":       h.handleRelease,
-		"renew":         h.handleRenew,
-		"reservations":  h.handleReservations,
+		"devices":         h.handleDevices,
+		"resolve":         h.handleResolve,
+		"device_state":    h.handleDeviceState,
+		"battery_history": h.handleBatteryHistory,
+		"screenshot":      h.handleScreenshot,
+		"list_apps":       h.handleListApps,
+		"launch_app":      h.handleLaunchApp,
+		"terminate_app":   h.handleTerminateApp,
+		"install_app":     h.handleInstallApp,
+		"uninstall_app":   h.handleUninstallApp,
+		"deploy_app":      h.handleDeployApp,
+		"launch_player":   h.handleLaunchPlayer,
+		"reserve":         h.handleReserve,
+		"release":         h.handleRelease,
+		"renew":           h.handleRenew,
+		"reservations":    h.handleReservations,
 		// --- reservation observability (🎯T116) ---
 		"reservation_status": h.handleReservationStatus,
 		"runs_list":          h.handleRunsList,
@@ -828,6 +844,25 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
+			),
+		),
+
+		mcpgo.NewTool("battery_history",
+			mcpgo.WithDescription("Fleet battery charge history for connected iOS/Android devices (🎯T137). The daemon samples every minute into ~/.spyder/battery/. Read-only; not subject to reservations. Returns {since, until, bucket_s?, samples, latest}."),
+			mcpgo.WithString("since",
+				mcpgo.Description("Lower bound: Go duration (e.g. -6h) or RFC3339. Default -24h."),
+			),
+			mcpgo.WithString("until",
+				mcpgo.Description("Upper bound: Go duration or RFC3339. Default now."),
+			),
+			mcpgo.WithString("device",
+				mcpgo.Description("Optional alias or UUID; omit for the whole fleet."),
+			),
+			mcpgo.WithNumber("bucket_s",
+				mcpgo.Description("Optional downsample bucket in seconds; 0 (default) returns raw samples."),
+			),
+			mcpgo.WithBoolean("sample",
+				mcpgo.Description("When true, take a live tick of currently connected devices before reading history."),
 			),
 		),
 

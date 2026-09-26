@@ -38,6 +38,15 @@ func TestListenAddrPath(t *testing.T) {
 	}
 }
 
+func TestBatteryDir(t *testing.T) {
+	t.Setenv("HOME", "/custom/home")
+	got := BatteryDir()
+	want := filepath.Join("/custom/home", ".spyder", "battery")
+	if got != want {
+		t.Errorf("BatteryDir() = %q; want %q", got, want)
+	}
+}
+
 func TestRunsBase(t *testing.T) {
 	t.Setenv("HOME", "/custom/home")
 	got := RunsBase()

@@ -68,6 +68,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   devices       List connected devices (--platform ios|android|all, --json)
   resolve       Resolve a device alias to platform identifiers
   device-state  Report battery, thermal, foreground app
+  battery-history  Fleet battery charge history (--since, --device, --json)
   screenshot    Capture a PNG to a file (--output FILE, --as OWNER)
   list-apps     List installed third-party apps
   launch-app    Launch an app by bundle id (--as OWNER)

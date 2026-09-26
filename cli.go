@@ -54,6 +54,7 @@ func init() {
 		{"devices", "spyder devices [--platform ios|android|all] [--json]", runDevices},
 		{"resolve", "spyder resolve (<name>|--on PREDICATE) [--json]", runResolve},
 		{"device-state", "spyder device-state <device> [--json]", runDeviceState},
+		{"battery-history", "spyder battery-history [--since -24h] [--until now] [--device ALIAS] [--bucket-s N] [--sample] [--json]", runBatteryHistory},
 		{"screenshot", "spyder screenshot <device> [--output FILE] [--as OWNER]", runScreenshot},
 		{"list-apps", "spyder list-apps <device> [--json]", runListApps},
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
@@ -625,6 +626,34 @@ func runDeviceState(args []string) {
 	dispatchAndExit(ctx, "device_state",
 		map[string]any{"device": pf.positional[0]},
 		pf.bools["--json"], false)
+}
+
+func runBatteryHistory(args []string) {
+	pf, ctx, cancel := setupCommand("battery-history", args,
+		[]string{"--since", "--until", "--device", "--bucket-s"},
+		[]string{"--json", "--sample"}, clitimeout.DefaultRead)
+	defer cancel()
+	a := map[string]any{}
+	if s := pf.flags["--since"]; s != "" {
+		a["since"] = s
+	}
+	if u := pf.flags["--until"]; u != "" {
+		a["until"] = u
+	}
+	if d := pf.flags["--device"]; d != "" {
+		a["device"] = d
+	}
+	if b := pf.flags["--bucket-s"]; b != "" {
+		n, err := strconv.ParseInt(b, 10, 64)
+		if err != nil {
+			fatalUsage("battery-history", fmt.Errorf("--bucket-s: %v", err))
+		}
+		a["bucket_s"] = n
+	}
+	if pf.bools["--sample"] {
+		a["sample"] = true
+	}
+	dispatchAndExit(ctx, "battery_history", a, pf.bools["--json"], false)
 }
 
 func runScreenshot(args []string) {
