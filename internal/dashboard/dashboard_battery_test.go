@@ -25,9 +25,9 @@ func TestDashboard_BatteryTabMarkup(t *testing.T) {
 		`data-tab="battery"`,
 		`id="tab-battery"`,
 		`id="batt-chart"`,
-		`id="batt-cards"`,
-		`id="batt-legend"`,
-		`batt-dot`,
+		`batt-label`,
+		`battBolt`,
+		`battCell`,
 		`#battery`,
 		`battery_history`,
 	} {

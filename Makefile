@@ -20,7 +20,7 @@ export GOWORK
 # Studio secrets (🎯T133) need Security.framework via cgo. Default on
 # darwin is CGO_ENABLED=1 when a cgo file is selected; force it so a
 # parent shell with CGO_ENABLED=0 cannot silently drop SecItem*.
-bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum
+bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum internal/dashboard/index.html
 	CGO_ENABLED=1 go build -ldflags "-X main.version=dev" -o bin/spyder .
 
 # sign attaches a stable Development / Developer ID Application identity

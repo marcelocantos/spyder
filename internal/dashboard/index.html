@@ -88,32 +88,18 @@
   .toast.err { border-color: var(--err); color: var(--err); }
   .muted { color: var(--dim); }
   label.tog { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 12px; }
-  .batt-cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
-  .batt-card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-               padding: 10px 14px; min-width: 148px; flex: 0 0 auto; }
-  .batt-card .alias { font-weight: 600; }
-  .batt-card .pct { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; line-height: 1.2; }
-  .batt-card .pct.low { color: var(--err); }
-  .batt-card .pct.chg { color: var(--accent2); }
-  .batt-card .meta { color: var(--dim); font-size: 11px; }
-  .batt-legend { display: flex; gap: 10px 16px; flex-wrap: wrap; margin: 10px 0 0; color: var(--dim); font-size: 12px; align-items: center; }
-  .batt-key { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
-  .batt-key.off { opacity: 0.35; }
-  .batt-key:hover { color: var(--fg); }
-  .batt-dot { width: 10px; height: 10px; border-radius: 50%; border: 2px solid currentColor;
-              box-sizing: border-box; flex: 0 0 10px; background: var(--bg); }
-  .batt-dot.solid { background: currentColor; }
-  .batt-caption { font-size: 11px; color: var(--dim); margin-top: 6px; }
-  #batt-chart { width: 100%; height: 340px; background: var(--panel); border: 1px solid var(--line);
+  #batt-chart { width: 100%; height: 420px; background: var(--panel); border: 1px solid var(--line);
                 border-radius: 8px; display: block; }
   #batt-chart .series { fill: none; stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }
-  #batt-chart .series.dim { opacity: 0.18; }
+  #batt-chart .series.dim, #batt-chart .leader.dim, #batt-chart .batt-label.dim { opacity: 0.18; }
   #batt-chart .series.hi { stroke-width: 3.25; }
+  #batt-chart .leader { fill: none; stroke-width: 1; }
+  #batt-chart .batt-label { cursor: default; font-size: 12px; }
   @media (max-width: 720px) {
     body { flex-direction: column; height: auto; min-height: 100vh; }
     .sidebar { width: 100%; flex: none; max-height: 180px; }
     .shotpanel { width: 100%; flex: none; }
-    #batt-chart { height: 240px; }
+    #batt-chart { height: 280px; }
   }
 </style>
 </head>
@@ -186,10 +172,7 @@
           <button class="sm" id="batt-refresh">Refresh</button>
           <span class="muted" id="batt-stat"></span>
         </div>
-        <div class="batt-cards" id="batt-cards"></div>
-        <svg id="batt-chart" viewBox="0 0 800 340" preserveAspectRatio="none" role="img" aria-label="Battery charge over time"></svg>
-        <div class="batt-legend" id="batt-legend"></div>
-        <div class="batt-caption" id="batt-caption">Line is charge over time. Circle is the latest sample — filled while charging, hollow on battery.</div>
+        <svg id="batt-chart" viewBox="0 0 800 420" preserveAspectRatio="none" role="img" aria-label="Battery charge over time"></svg>
       </div>
     </div>
   </div>
@@ -216,7 +199,6 @@ let curTab = "tweaks";
 let logTimer = null, logDropped = 0;
 let shotTimer = null, shotBusy = false;
 let battTimer = null, battWin = "1h";
-const battHidden = {};  // device_id -> true when legend-toggled off
 let battFocus = null;
 const shots = {};       // session_id -> {url, w, h, at} last screenshot (shared by thumb + panel)
 const BATT_PALETTE = ["#5ac8fa","#ff7b72","#7ee787","#d2a8ff","#ffa657","#79c0ff","#e3b341","#f778ba","#56d4dd","#ffa198"];
@@ -638,7 +620,6 @@ async function loadBattery(sampleNow) {
   }
   const samples = body.samples || [];
   const latest = body.latest || [];
-  renderBattCards(latest);
   renderBattChart(samples, body.since, body.until, spec.bucket || 60);
   const nDev = latest.length;
   $("batt-stat").textContent = nDev
@@ -650,26 +631,6 @@ function battColor(id) {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 33 + id.charCodeAt(i)) >>> 0;
   return BATT_PALETTE[h % BATT_PALETTE.length];
-}
-function renderBattCards(latest) {
-  const box = $("batt-cards");
-  box.innerHTML = "";
-  if (!latest.length) {
-    box.innerHTML = '<div class="muted">No connected-device charge samples in this window.</div>';
-    return;
-  }
-  for (const s of latest) {
-    const pct = s.battery_level;
-    const chg = !!s.charging;
-    const el = document.createElement("div");
-    el.className = "batt-card";
-    const klass = (pct != null && pct < 20) ? "low" : (chg ? "chg" : "");
-    const when = s.ts ? new Date(s.ts).toLocaleTimeString() : "";
-    el.innerHTML = `<div class="alias">${esc(battLabel(s))}</div>
-      <div class="pct ${klass}">${pct == null ? "—" : pct + "%"}</div>
-      <div class="meta">${chg ? "charging" : "on battery"} · ${esc(s.platform || "")} · ${when}</div>`;
-    box.appendChild(el);
-  }
 }
 function battSplitGaps(pts, bucketS) {
   const deltas = [];
@@ -693,10 +654,44 @@ function battApplyFocus() {
     el.classList.toggle("hi", battFocus === id);
   }
 }
+function battSpreadYs(desired, minY, maxY, gap) {
+  const items = desired.map((y, i) => ({ i, y })).sort((a, b) => a.y - b.y);
+  const ys = items.map(it => it.y);
+  for (let i = 1; i < ys.length; i++) {
+    if (ys[i] < ys[i - 1] + gap) ys[i] = ys[i - 1] + gap;
+  }
+  if (ys.length && ys[ys.length - 1] > maxY) {
+    ys[ys.length - 1] = maxY;
+    for (let i = ys.length - 2; i >= 0; i--) {
+      if (ys[i] > ys[i + 1] - gap) ys[i] = ys[i + 1] - gap;
+    }
+  }
+  if (ys.length && ys[0] < minY) {
+    ys[0] = minY;
+    for (let i = 1; i < ys.length; i++) {
+      if (ys[i] < ys[i - 1] + gap) ys[i] = ys[i - 1] + gap;
+    }
+  }
+  const out = new Array(desired.length);
+  items.forEach((it, k) => { out[it.i] = ys[k]; });
+  return out;
+}
+function battBolt(x, y, color) {
+  const p = "M7.1 0.4 1.2 8.2h3.7L3.3 15.6 10.8 7.1H6.9L7.1 0.4z";
+  return `<g transform="translate(${x},${y})" fill="${color}"><path d="${p}" transform="scale(0.85)"/></g>`;
+}
+function battCell(x, y, color) {
+  return `<g transform="translate(${x},${y})" fill="${color}" stroke="${color}">
+    <rect x="3.6" y="0.2" width="4.2" height="1.8" rx="0.4" stroke="none"/>
+    <rect x="2.2" y="2" width="7" height="12.6" rx="1.3" fill="none" stroke-width="1.15"/>
+    <rect x="3.7" y="3.6" width="4" height="9.4" rx="0.5" stroke="none"/>
+  </g>`;
+}
 function renderBattChart(samples, sinceISO, untilISO, bucketS) {
   const svg = $("batt-chart");
-  const W = Math.max(svg.clientWidth || 800, 480), H = 340;
-  const pad = { l: 44, r: 18, t: 16, b: 32 };
+  const W = Math.max(svg.clientWidth || 800, 480);
+  const H = Math.max(svg.clientHeight || 420, 260);
+  const pad = { l: 44, r: 210, t: 16, b: 32 };
   const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
   const t0 = sinceISO ? Date.parse(sinceISO) : Date.now() - 6 * 3600 * 1000;
   const t1 = untilISO ? Date.parse(untilISO) : Date.now();
@@ -709,12 +704,15 @@ function renderBattChart(samples, sinceISO, untilISO, bucketS) {
     const id = s.device_id || battLabel(s);
     (byDev[id] || (byDev[id] = { id, label: battLabel(s), pts: [] })).pts.push(s);
   }
-  const series = Object.values(byDev).sort((a, b) => a.label.localeCompare(b.label));
+  const series = Object.values(byDev).map(s => {
+    const pts = s.pts.slice().sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
+    return { ...s, pts, last: pts[pts.length - 1] };
+  }).filter(s => s.last);
   const grid = [0, 25, 50, 75, 100];
   let g = "";
   for (const p of grid) {
     const yy = y(p).toFixed(1);
-    g += `<line x1="${pad.l}" y1="${yy}" x2="${W - pad.r}" y2="${yy}" stroke="var(--line)" />`;
+    g += `<line x1="${pad.l}" y1="${yy}" x2="${pad.l + iw}" y2="${yy}" stroke="var(--line)" />`;
     g += `<text x="${pad.l - 6}" y="${(+yy + 4).toFixed(1)}" text-anchor="end" fill="var(--dim)" font-size="11">${p}%</text>`;
   }
   const ticks = 4;
@@ -724,47 +722,53 @@ function renderBattChart(samples, sinceISO, untilISO, bucketS) {
     const lab = new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     g += `<text x="${xx}" y="${H - 10}" text-anchor="middle" fill="var(--dim)" font-size="11">${lab}</text>`;
   }
+  const desired = series.map(s => y(s.last.battery_level));
+  const labelYs = battSpreadYs(desired, pad.t + 6, pad.t + ih - 6, 18);
+  const labelX = pad.l + iw + 22;
+  const elbowX = pad.l + iw + 10;
+
   for (const s of series) {
-    if (battHidden[s.id]) continue;
     const color = battColor(s.id);
-    const pts = s.pts.slice().sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
-    const last = pts[pts.length - 1];
-    for (const seg of battSplitGaps(pts, bucketS)) {
+    const last = s.last;
+    for (const seg of battSplitGaps(s.pts, bucketS)) {
       if (seg.length === 1) {
         if (seg[0] === last) continue;
         const p = seg[0];
-        g += `<circle class="series" data-series="${esc(s.id)}" cx="${x(p.ts).toFixed(1)}" cy="${y(p.battery_level).toFixed(1)}" r="3" fill="none" stroke="${color}" />`;
+        g += `<circle class="series" data-series="${esc(s.id)}" cx="${x(p.ts).toFixed(1)}" cy="${y(p.battery_level).toFixed(1)}" r="1.5" fill="none" stroke="${color}" />`;
         continue;
       }
       const d = seg.map(p => `${x(p.ts).toFixed(1)},${y(p.battery_level).toFixed(1)}`).join(" ");
       g += `<polyline class="series" data-series="${esc(s.id)}" stroke="${color}" points="${d}" />`;
     }
-    if (last) {
-      const fill = last.charging ? color : "var(--bg)";
-      g += `<circle data-series="${esc(s.id)}" cx="${x(last.ts).toFixed(1)}" cy="${y(last.battery_level).toFixed(1)}" r="5" fill="${fill}" stroke="${color}" stroke-width="2" />`;
-    }
+    const cx = x(last.ts), cy = y(last.battery_level);
+    const fill = last.charging ? color : "var(--bg)";
+    g += `<circle data-series="${esc(s.id)}" cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="2.5" fill="${fill}" stroke="${color}" stroke-width="1.25" />`;
   }
+  series.forEach((s, i) => {
+    const color = battColor(s.id);
+    const last = s.last;
+    const cx = x(last.ts), cy = y(last.battery_level);
+    const ly = labelYs[i];
+    const pct = last.battery_level != null ? last.battery_level + "%" : "—";
+    g += `<path class="leader" data-series="${esc(s.id)}" stroke="${color}" d="M ${(cx + 3.5).toFixed(1)} ${cy.toFixed(1)} L ${elbowX} ${ly.toFixed(1)} L ${(labelX - 2).toFixed(1)} ${ly.toFixed(1)}" />`;
+    const icon = last.charging
+      ? battBolt(labelX, ly - 8, color)
+      : battCell(labelX, ly - 8, color);
+    g += `<g class="batt-label" data-series="${esc(s.id)}">${icon}
+      <text x="${labelX + 14}" y="${(ly + 4).toFixed(1)}" fill="${color}" font-size="12">
+        <tspan font-weight="600">${esc(s.label)}</tspan>
+        <tspan dx="6" font-variant-numeric="tabular-nums">${pct}</tspan>
+      </text>
+    </g>`;
+  });
   svg.innerHTML = g;
   svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  battApplyFocus();
-
-  const legend = $("batt-legend");
-  legend.innerHTML = "";
-  for (const s of series) {
-    const color = battColor(s.id);
-    const pts = s.pts.slice().sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
-    const last = pts[pts.length - 1];
-    const chg = !!(last && last.charging);
-    const pct = last && last.battery_level != null ? last.battery_level + "%" : "—";
-    const key = document.createElement("div");
-    key.className = "batt-key" + (battHidden[s.id] ? " off" : "");
-    key.style.color = color;
-    key.innerHTML = `<span class="batt-dot${chg ? " solid" : ""}"></span><span>${esc(s.label)} ${pct}</span>`;
-    key.onmouseenter = () => { battFocus = s.id; battApplyFocus(); };
-    key.onmouseleave = () => { battFocus = null; battApplyFocus(); };
-    key.onclick = () => { battHidden[s.id] = !battHidden[s.id]; renderBattChart(samples, sinceISO, untilISO, bucketS); };
-    legend.appendChild(key);
+  for (const el of svg.querySelectorAll("[data-series]")) {
+    const id = el.getAttribute("data-series");
+    el.onmouseenter = () => { battFocus = id; battApplyFocus(); };
+    el.onmouseleave = () => { battFocus = null; battApplyFocus(); };
   }
+  battApplyFocus();
 }
 for (const el of $("batt-windows").children) {
   el.onclick = () => {
