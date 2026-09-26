@@ -37,6 +37,23 @@ type touchInjector interface {
 	InjectSwipe(id string, x1, y1, x2, y2, durationMs int) error
 }
 
+type keyInjector interface {
+	InjectKeyEvent(id string, keyCode int) error
+}
+
+type notificationShadeController interface {
+	ExpandNotificationShade(id string) error
+	CollapseNotificationShade(id string) error
+	DisplaySize(id string) (int, int, error)
+}
+
+// androidKeyCodes maps friendly names to Android KEYCODE_* values.
+var androidKeyCodes = map[string]int{
+	"home":   3,
+	"back":   4,
+	"recent": 187, // APP_SWITCH
+}
+
 // requireOSControlCap authorizes and resolves a device for the shared OS
 // control surface (Android + iOS). Desktop is rejected.
 func (h *Handler) requireOSControlCap(dev, owner string) (device.Adapter, string, string, *mcpgo.CallToolResult) {
@@ -308,6 +325,122 @@ func (h *Handler) handleInputSwipe(args map[string]any) (*mcpgo.CallToolResult, 
 		"y2":          y2,
 		"duration_ms": durationMs,
 		"injected":    true,
+	})
+}
+
+// handleInputKey sends an Android KEYCODE (home, back, recent). iOS fail-closed.
+func (h *Handler) handleInputKey(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+	keyName, err := requireString(args, "key")
+	if err != nil {
+		return nil, err
+	}
+	code, ok := androidKeyCodes[keyName]
+	if !ok {
+		return toolErr("input_key: unknown key %q — use home, back, or recent", keyName)
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	if errRes != nil {
+		return errRes, nil
+	}
+	inj, ok := adapter.(keyInjector)
+	if !ok {
+		return toolErr("input_key: not supported on %s (Android only)", platform)
+	}
+	if err := inj.InjectKeyEvent(id, code); err != nil {
+		return toolErr("input_key: %v", err)
+	}
+	return toolJSON(map[string]any{"device": dev, "platform": platform, "key": keyName, "keycode": code, "injected": true})
+}
+
+// handleNotificationShade expands or collapses the Android notification shade.
+func (h *Handler) handleNotificationShade(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+	action := optString(args, "action")
+	if action == "" {
+		action = "expand"
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	if errRes != nil {
+		return errRes, nil
+	}
+	ctrl, ok := adapter.(notificationShadeController)
+	if !ok {
+		return toolErr("notification_shade: not supported on %s (Android only)", platform)
+	}
+	switch action {
+	case "expand":
+		if err := ctrl.ExpandNotificationShade(id); err != nil {
+			return toolErr("notification_shade: %v", err)
+		}
+	case "collapse":
+		if err := ctrl.CollapseNotificationShade(id); err != nil {
+			return toolErr("notification_shade: %v", err)
+		}
+	default:
+		return toolErr("notification_shade: action must be expand or collapse")
+	}
+	return toolJSON(map[string]any{"device": dev, "platform": platform, "action": action})
+}
+
+// handleNotificationTapFirst expands the shade and taps the first notification
+// row (heuristic — hybrid smoke when UI tree automation is unavailable).
+func (h *Handler) handleNotificationTapFirst(args map[string]any) (*mcpgo.CallToolResult, error) {
+	dev, err := requireString(args, "device")
+	if err != nil {
+		return nil, err
+	}
+	owner := optString(args, "owner")
+	yFrac := 0.15
+	if v, ok := args["y_fraction"].(float64); ok && v > 0 && v < 1 {
+		yFrac = v
+	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	if errRes != nil {
+		return errRes, nil
+	}
+	ctrl, ok := adapter.(notificationShadeController)
+	if !ok {
+		return toolErr("notification_tap_first: not supported on %s (Android only)", platform)
+	}
+	inj, ok := adapter.(touchInjector)
+	if !ok {
+		return toolErr("notification_tap_first: adapter has no touch inject")
+	}
+	if err := ctrl.ExpandNotificationShade(id); err != nil {
+		return toolErr("notification_tap_first: %v", err)
+	}
+	w, hgt, err := ctrl.DisplaySize(id)
+	if err != nil {
+		return toolErr("notification_tap_first: %v", err)
+	}
+	x := w / 2
+	y := int(float64(hgt) * yFrac)
+	if err := inj.InjectTap(id, x, y); err != nil {
+		return toolErr("notification_tap_first: %v", err)
+	}
+	return toolJSON(map[string]any{
+		"device": dev, "platform": platform, "x": x, "y": y, "width": w, "height": hgt,
 	})
 }
 

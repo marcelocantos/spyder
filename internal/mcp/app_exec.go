@@ -220,6 +220,7 @@ func (st *execState) builtins(verbs map[string]toolFunc, params map[string]strin
 	}
 	g["emit"] = starlark.NewBuiltin("emit", st.emit)
 	g["sleep"] = starlark.NewBuiltin("sleep", st.sleep)
+	g["fail"] = starlark.NewBuiltin("fail", builtinFail)
 	g["help"] = starlark.NewBuiltin("help", helpBuiltin(verbs))
 	g["health"] = starlark.NewBuiltin("health", st.healthBuiltin)
 	g["assert_trajectory"] = starlark.NewBuiltin("assert_trajectory", builtinAssertTrajectory)
@@ -354,6 +355,15 @@ func (st *execState) emit(_ *starlark.Thread, _ *starlark.Builtin, args starlark
 	return starlark.None, nil
 }
 
+// builtinFail aborts the script with a message (hybrid smoke assertions).
+func builtinFail(_ *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var msg string
+	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "msg", &msg); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("fail: %s", msg)
+}
+
 // sleep pauses the script for ms milliseconds, clamped to the run's
 // remaining wall-clock budget and interruptible by cancellation.
 func (st *execState) sleep(_ *starlark.Thread, _ *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
@@ -413,13 +423,13 @@ func helpBuiltin(verbs map[string]toolFunc) func(*starlark.Thread, *starlark.Bui
 	}
 	sort.Strings(names)
 	text := "verbs: " + strings.Join(names, ", ") +
-		"\ncontrol: emit(value), sleep(ms), health(), params (dict)\n" +
+		"\ncontrol: emit(value), sleep(ms), fail(msg), health(), params (dict)\n" +
 		"t108: assert_trajectory, assert_drag_follow, assert_settle, resolve_target, find_by_label; " +
 		"t109: find_hit_target(nodes=…, id|role|key=…); " +
 		"list_scripts(), run_script(path=...)\n" +
 		"call verbs by keyword, e.g. app_screenshot(session_id=\"...\"); " +
 		"a bare expression or emit() adds to the result.\n" +
-		"app_call(method=..., params={...}): the RPC body key is params (args is rejected). " +
+		"app_call / app_calls_batch(method=..., params={...}): RPC body key is params (args rejected). " +
 		"screenshot verbs save to a file and return {path, width, height} by default; pass inline=True for the image.\n" +
 		"topics: help(\"<topic>\") for a focused guide with recipes — " + helpTopicList() + "\n" +
 		"reservations gate device-state-mutating verbs only (observational verbs always succeed) — help(\"reservations\")."

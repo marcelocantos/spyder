@@ -40,7 +40,7 @@ func toolDeadlineClass(name string) time.Duration {
 	case "perf_fps":
 		// Explicit class: window_sec max 120 must fit under this bound.
 		return DeadlinePerfFPS
-	case "wait_state":
+	case "wait_state", "wait_app_session":
 		return DeadlineWaitState
 	case "app_exec", "run_script", "list_scripts":
 		// Outer dispatch must not undercut max_duration_ms (default 30s,
@@ -54,6 +54,7 @@ func toolDeadlineClass(name string) time.Duration {
 	case "screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",
 		"port_forward_start", "port_forward_stop", "input_tap", "input_swipe",
+		"input_key", "notification_shade", "notification_tap_first",
 		"crashes", "logs", "log_stream", "baseline_update", "diff",
 		"reserve", "release", "renew",
 		"sim_list", "sim_create", "sim_boot", "sim_shutdown", "sim_erase",

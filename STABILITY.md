@@ -155,6 +155,11 @@ builtin). `log_stream` is REST SSE only and is not in the verb table.
 | `app_metrics_dump` | `{session_id?…, instance?}`. | JSON `{session_id, result}` full retained-frame history (`frames`, `count`, `series`, …) — not latest-only gauges. | Stable (🎯T110) |
 | `app_methods` | `{session_id? \| device+bundle_id?, scope?: "all"\|"app"\|"engine"}`. | JSON `{session_id, app_name, app_version, scope, methods:[{name, kind, example_params?, doc?}]}` from hello. | Stable — discovery surface for engine + app-registered RPCs |
 | `app_call` | `{session_id?…, method: string (required), params?: object, timeout_ms?}`. | JSON `{session_id, method, result}` from the app's handler. | Stable — generic pass-through; method must appear in hello; not a per-game MCP tool |
+| `app_calls_batch` | `{session_id?…, calls: [{method, params?, timeout_ms?}], stop_on_error?: bool}`. Max 32 calls. | JSON `{session_id, results: [{method, result}|{method, error}]}`. | Needs review — hybrid device smoke |
+| `wait_app_session` | `{device, bundle_id, timeout_ms?, poll_ms?}`. | JSON `{session_id, listener_id, port, …}` when connected. | Needs review — hybrid device smoke |
+| `input_key` | `{device, key: home\|back\|recent, owner?}`. | Android keyevent inject. | Needs review — hybrid device smoke |
+| `notification_shade` | `{device, action?: expand\|collapse, owner?}`. | Android status bar. | Needs review |
+| `notification_tap_first` | `{device, y_fraction?, owner?}`. | Heuristic first-notification tap. | Needs review |
 | `list_scripts` | (no args). | JSON list of durable host Starlark recipes (bundled + `~/.spyder/scripts`). | Stable (🎯T108) |
 | `run_script` | `{path?: string, name?: string, params?: object, max_duration_ms?: number}`. Same engine as `app_exec`. | Same content-block model as `app_exec`. `max_duration_ms` default 30000, max 600000. | Stable (🎯T108) |
 | `app_exec` | Same schema as the MCP tool. REST `POST /api/v1/app_exec`. Not a nested Starlark builtin. | Same as MCP `app_exec`. | Stable (🎯T88) |
