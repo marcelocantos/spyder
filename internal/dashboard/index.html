@@ -88,8 +88,9 @@
   .toast.err { border-color: var(--err); color: var(--err); }
   .muted { color: var(--dim); }
   label.tog { display: inline-flex; align-items: center; gap: 4px; color: var(--dim); font-size: 12px; }
+  .batt-wrap { width: 100%; overflow: hidden; }
   #batt-chart { width: 100%; height: 420px; background: var(--panel); border: 1px solid var(--line);
-                border-radius: 8px; display: block; }
+                border-radius: 8px; display: block; overflow: hidden; }
   #batt-chart .series { fill: none; stroke-width: 2.25; stroke-linejoin: round; stroke-linecap: round; }
   #batt-chart .series.dim, #batt-chart .leader.dim, #batt-chart .batt-label.dim { opacity: 0.18; }
   #batt-chart .series.hi { stroke-width: 3.25; }
@@ -172,7 +173,9 @@
           <button class="sm" id="batt-refresh">Refresh</button>
           <span class="muted" id="batt-stat"></span>
         </div>
-        <svg id="batt-chart" viewBox="0 0 800 420" preserveAspectRatio="none" role="img" aria-label="Battery charge over time"></svg>
+        <div class="batt-wrap">
+          <svg id="batt-chart" viewBox="0 0 800 420" preserveAspectRatio="none" role="img" aria-label="Battery charge over time"></svg>
+        </div>
       </div>
     </div>
   </div>
@@ -593,10 +596,10 @@ $("stream-stop").onclick = () => { stopStream(); $("stream-stat").textContent = 
 
 // ---- battery fleet (🎯T137) -----------------------------------------------
 const BATT_WIN = {
-  "1h":  { since: "-1h",   bucket: 0 },
-  "6h":  { since: "-6h",   bucket: 0 },
-  "24h": { since: "-24h",  bucket: 300 },
-  "7d":  { since: "-168h", bucket: 900 },
+  "1h":  { since: "-1h",   bucket: 0,   ms: 3600 * 1000 },
+  "6h":  { since: "-6h",   bucket: 0,   ms: 6 * 3600 * 1000 },
+  "24h": { since: "-24h",  bucket: 300, ms: 24 * 3600 * 1000 },
+  "7d":  { since: "-168h", bucket: 900, ms: 168 * 3600 * 1000 },
 };
 function stopBattPoll() { if (battTimer) { clearInterval(battTimer); battTimer = null; } }
 function startBattPoll(sampleNow) {
@@ -620,7 +623,7 @@ async function loadBattery(sampleNow) {
   }
   const samples = body.samples || [];
   const latest = body.latest || [];
-  renderBattChart(samples, body.since, body.until, spec.bucket || 60);
+  renderBattChart(samples, spec.ms, spec.bucket || 60);
   const nDev = latest.length;
   $("batt-stat").textContent = nDev
     ? (nDev + " device" + (nDev === 1 ? "" : "s") + " · " + samples.length + " samples")
@@ -687,17 +690,16 @@ function battCell(x, y, color) {
     <rect x="3.7" y="3.6" width="4" height="9.4" rx="0.5" stroke="none"/>
   </g>`;
 }
-function renderBattChart(samples, sinceISO, untilISO, bucketS) {
+function renderBattChart(samples, winMs, bucketS) {
   const svg = $("batt-chart");
-  const W = Math.max(svg.clientWidth || 800, 480);
-  const H = Math.max(svg.clientHeight || 420, 260);
+  const box = svg.parentElement;
+  const W = Math.max(Math.floor(box && box.clientWidth || svg.clientWidth || 800), 480);
+  const H = Math.max(Math.floor(box && box.clientHeight || svg.clientHeight || 420), 260);
+  svg.setAttribute("width", W);
+  svg.setAttribute("height", H);
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
   const pad = { l: 44, r: 210, t: 16, b: 32 };
   const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
-  const t0 = sinceISO ? Date.parse(sinceISO) : Date.now() - 6 * 3600 * 1000;
-  const t1 = untilISO ? Date.parse(untilISO) : Date.now();
-  const span = Math.max(t1 - t0, 1);
-  const x = (ts) => pad.l + (Date.parse(ts) - t0) / span * iw;
-  const y = (pct) => pad.t + (1 - pct / 100) * ih;
   const byDev = {};
   for (const s of samples) {
     if (s.battery_level == null || !s.ts) continue;
@@ -708,6 +710,16 @@ function renderBattChart(samples, sinceISO, untilISO, bucketS) {
     const pts = s.pts.slice().sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts));
     return { ...s, pts, last: pts[pts.length - 1] };
   }).filter(s => s.last);
+  let t1 = 0;
+  for (const s of series) {
+    const ts = Date.parse(s.last.ts);
+    if (ts > t1) t1 = ts;
+  }
+  if (!t1) t1 = Date.now();
+  const span = Math.max(winMs || 3600 * 1000, 1);
+  const t0 = t1 - span;
+  const x = (ts) => pad.l + (Date.parse(ts) - t0) / span * iw;
+  const y = (pct) => pad.t + (1 - pct / 100) * ih;
   const grid = [0, 25, 50, 75, 100];
   let g = "";
   for (const p of grid) {
