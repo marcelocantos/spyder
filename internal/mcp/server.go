@@ -124,6 +124,7 @@ type Handler struct {
 	batteryStore *battery.Store
 
 	// verifyHub is the daemon-wide verification DAG scheduler (🎯T138).
+	verifyMu  sync.Mutex
 	verifyHub *verify.Hub
 }
 

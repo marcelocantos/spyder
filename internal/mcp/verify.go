@@ -19,8 +19,8 @@ import (
 // VerifyHub returns the daemon-wide verification scheduler, creating it
 // on first use. spyder_script steps call app_exec in-process.
 func (h *Handler) VerifyHub() *verify.Hub {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	h.verifyMu.Lock()
+	defer h.verifyMu.Unlock()
 	if h.verifyHub == nil {
 		h.verifyHub = verify.NewHub(verify.HubArgs{
 			Script: h.execVerifyScript,

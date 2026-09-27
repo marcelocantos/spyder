@@ -117,6 +117,12 @@ steps:
 	if runID == "" {
 		t.Fatalf("verify start: %v", started)
 	}
+	t.Cleanup(func() {
+		_ = h.VerifyHub().Abort(runID, "test done")
+		if r := h.VerifyHub().RunByID(runID); r != nil {
+			r.Wait()
+		}
+	})
 
 	var gate map[string]any
 	for i := 0; i < 50; i++ {
@@ -207,6 +213,12 @@ steps:
 	if runID == "" {
 		t.Fatalf("verify start: %v", started)
 	}
+	t.Cleanup(func() {
+		_ = h.VerifyHub().Abort(runID, "test done")
+		if r := h.VerifyHub().RunByID(runID); r != nil {
+			r.Wait()
+		}
+	})
 
 	var runShot, gateShot string
 	deadline := time.Now().Add(3 * time.Second)

@@ -11,6 +11,26 @@ import (
 	"time"
 )
 
+func TestVerifyStatusAvailableDuringDeviceOperation(t *testing.T) {
+	h := NewHandler()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := h.handleVerifyStatus(nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("verify_status blocked behind a device operation")
+	}
+}
+
 func TestVerify_RESTAnswerPathAndResume(t *testing.T) {
 	h := NewHandler()
 	cwd := t.TempDir()
