@@ -4,7 +4,12 @@
 package verify
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -428,5 +433,79 @@ func TestPackageHasNoProductNames(t *testing.T) {
 				t.Errorf("%s names product %q", name, w)
 			}
 		}
+	}
+}
+
+func TestShotWrittenToArtifactsAppearsOnStatus(t *testing.T) {
+	cwd := t.TempDir()
+	seed := writeSeedPNG(t, filepath.Join(cwd, "seed.png"))
+	hub := NewHub(HubArgs{})
+	wf := loadWF(t, `
+name: shot-sample
+steps:
+  - id: snap
+    type: shell
+    command: cp seed.png "$SPYDER_VERIFY_ARTIFACT_DIR/screenshots/live.png"
+  - id: ask
+    type: human_gate
+    requires: ["snap"]
+    prompt: Look
+    choices:
+      - id: pass
+        label: Yes
+`)
+	run, err := hub.Start(context.Background(), StartArgs{Workflow: wf, Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var view RunView
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		view = run.view()
+		if view.Screenshot != "" && view.Gate != nil && view.Gate.StepID == "ask" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if view.Gate == nil || view.Gate.StepID != "ask" {
+		t.Fatalf("gate never opened; status=%s shot=%q", view.Status, view.Screenshot)
+	}
+	assertShotURI(t, view.Screenshot, seed)
+	assertShotURI(t, view.Gate.Screenshot, seed)
+	if err := hub.Answer(run.ID, "ask", Answer{ChoiceID: "pass"}); err != nil {
+		t.Fatal(err)
+	}
+	if res := run.Wait(); res.ExitCode != 0 {
+		t.Fatalf("exit %d %s", res.ExitCode, res.FailedReason)
+	}
+}
+
+func writeSeedPNG(t *testing.T, path string) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 3))
+	img.Set(0, 0, color.RGBA{R: 0x11, G: 0x22, B: 0x33, A: 0xff})
+	img.Set(1, 2, color.RGBA{R: 0xaa, G: 0xbb, B: 0xcc, A: 0xff})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func assertShotURI(t *testing.T, uri string, seed []byte) {
+	t.Helper()
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(uri, prefix) {
+		t.Fatalf("screenshot %q is not a png data URI", uri)
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(uri, prefix))
+	if err != nil {
+		t.Fatalf("decode screenshot: %v", err)
+	}
+	if !bytes.Equal(raw, seed) {
+		t.Fatalf("screenshot bytes (%d) do not match the PNG the shell wrote (%d)", len(raw), len(seed))
 	}
 }

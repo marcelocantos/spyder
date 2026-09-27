@@ -5,8 +5,14 @@ package dashboard_test
 
 import (
 	"bytes"
+	"encoding/base64"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -38,6 +44,8 @@ func TestDashboard_VerifyTabMarkup(t *testing.T) {
 		`verify_answer`,
 		`details.group`,
 		`gate-sheet`,
+		`id="verify-shot"`,
+		`run.screenshot || (gate && gate.screenshot)`,
 	} {
 		if !bytes.Contains(body, []byte(want)) {
 			t.Errorf("dashboard HTML missing %q", want)
@@ -147,6 +155,100 @@ steps:
 func fmtString(v any) string {
 	s, _ := v.(string)
 	return s
+}
+
+func TestDashboard_VerifyScreenshotOnStatus(t *testing.T) {
+	h := spydermcp.NewHandler()
+	mux := http.NewServeMux()
+	mux.Handle(rest.Prefix, rest.NewHandler(h))
+	mux.Handle(dashboard.Path, dashboard.NewHandler())
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	cwd := t.TempDir()
+	seed := writeDashPNG(t, filepath.Join(cwd, "seed.png"))
+	wf := `
+name: shot-dash
+steps:
+  - id: snap
+    type: shell
+    command: cp seed.png "$SPYDER_VERIFY_ARTIFACT_DIR/screenshots/live.png"
+  - id: ask
+    type: human_gate
+    requires: ["snap"]
+    prompt: Look
+    choices:
+      - id: pass
+        label: Yes
+`
+	started := postTool(t, srv.URL, "verify", map[string]any{
+		"workflow": wf, "cwd": cwd, "wait": false,
+	})
+	runID, _ := started["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("verify start: %v", started)
+	}
+
+	var runShot, gateShot string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		snap := postTool(t, srv.URL, "verify_status", nil)
+		gate, _ := snap["gate"].(map[string]any)
+		if gate != nil && gate["step_id"] == "ask" {
+			gateShot = fmtString(gate["screenshot"])
+		}
+		for _, item := range asSlice(snap["runs"]) {
+			rm, _ := item.(map[string]any)
+			if rm["run_id"] == runID {
+				runShot = fmtString(rm["screenshot"])
+			}
+		}
+		if runShot != "" && gateShot != "" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if runShot == "" || gateShot == "" {
+		t.Fatalf("verify_status missing screenshot run=%q gate=%q", runShot, gateShot)
+	}
+	assertDashShot(t, runShot, seed)
+	assertDashShot(t, gateShot, seed)
+
+	ans := postTool(t, srv.URL, "verify_answer", map[string]any{
+		"run_id": runID, "gate_id": "ask", "choice_id": "pass",
+	})
+	if ans["ok"] != true {
+		t.Fatalf("verify_answer: %v", ans)
+	}
+}
+
+func writeDashPNG(t *testing.T, path string) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 2, 3))
+	img.Set(0, 0, color.RGBA{R: 0x44, G: 0x55, B: 0x66, A: 0xff})
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func assertDashShot(t *testing.T, uri string, seed []byte) {
+	t.Helper()
+	const prefix = "data:image/png;base64,"
+	if !strings.HasPrefix(uri, prefix) {
+		t.Fatalf("screenshot %q is not a png data URI (raw paths are not browser-displayable)", uri)
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(uri, prefix))
+	if err != nil {
+		t.Fatalf("decode screenshot: %v", err)
+	}
+	if !bytes.Equal(raw, seed) {
+		t.Fatalf("screenshot bytes do not match the PNG the shell wrote")
+	}
 }
 
 func TestDashboard_PathIsDashboardNotSidecar(t *testing.T) {

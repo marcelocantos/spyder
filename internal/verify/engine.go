@@ -5,9 +5,11 @@ package verify
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -43,6 +45,7 @@ type Run struct {
 	exitCode    int
 	statusBlock string
 	screenshot  string
+	shotKey     string // last encoded path+mod+size, to skip unchanged files
 	done        chan struct{}
 	result      Result
 }
@@ -260,7 +263,8 @@ type stepOutcome struct {
 
 func (r *Run) drive() {
 	defer close(r.done)
-	_ = os.MkdirAll(filepath.Join(r.reportDir, "artifacts", "screenshots"), 0o755)
+	_ = os.MkdirAll(r.shotsDir(), 0o755)
+	go r.watchShots()
 
 	prior := LoadRecord(r.cwd, r.wf.Name)
 	retry := map[string]bool{}
@@ -471,6 +475,7 @@ func (r *Run) commandStep(step Step) stepOutcome {
 	for attempt := 1; attempt <= attempts; attempt++ {
 		started = time.Now()
 		last = r.execStep(step)
+		r.scanShots()
 		dur := time.Since(started).Milliseconds()
 		st := StepFailed
 		if last.Code == 0 {
@@ -507,10 +512,11 @@ func (r *Run) commandStep(step Step) stepOutcome {
 
 func (r *Run) execStep(step Step) ExecResult {
 	env := map[string]string{
-		"SPYDER_VERIFY_REPORT_DIR": r.reportDir,
+		"SPYDER_VERIFY_REPORT_DIR":   r.reportDir,
 		"SPYDER_VERIFY_ARTIFACT_DIR": filepath.Join(r.reportDir, "artifacts"),
-		"SPYDER_VERIFY_WORKFLOW":   r.wf.Name,
-		"SPYDER_VERIFY_STEP_ID":    step.ID,
+		"SPYDER_VERIFY_WORKFLOW":     r.wf.Name,
+		"SPYDER_VERIFY_STEP_ID":      step.ID,
+		"SPYDER_RUN_DIR":             r.shotsDir(),
 	}
 	for k, v := range step.Env {
 		env[k] = v
@@ -650,9 +656,95 @@ func (r *Run) rememberPass(id string) {
 }
 
 func (r *Run) latestShot() string {
+	r.scanShots()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.screenshot
+}
+
+const maxShotBytes = 8 << 20 // 8 MiB; live phone frames stay well under this
+
+func (r *Run) shotsDir() string {
+	return filepath.Join(r.reportDir, "artifacts", "screenshots")
+}
+
+func (r *Run) watchShots() {
+	ticker := time.NewTicker(400 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.ctx.Done():
+			r.scanShots()
+			return
+		case <-ticker.C:
+			r.scanShots()
+		}
+	}
+}
+
+func (r *Run) scanShots() {
+	dir := r.shotsDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var best string
+	var bestMod time.Time
+	var bestSize int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(e.Name()))
+		if ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".webp" {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(bestMod) || best == "" {
+			best = filepath.Join(dir, e.Name())
+			bestMod = info.ModTime()
+			bestSize = info.Size()
+		}
+	}
+	if best == "" {
+		return
+	}
+	key := fmt.Sprintf("%s:%d:%d", best, bestMod.UnixNano(), bestSize)
+	r.mu.Lock()
+	same := r.shotKey == key
+	r.mu.Unlock()
+	if same {
+		return
+	}
+	uri := encodeShot(best)
+	if uri == "" {
+		return
+	}
+	r.mu.Lock()
+	r.shotKey = key
+	r.screenshot = uri
+	if r.gate != nil {
+		r.gate.Screenshot = uri
+	}
+	r.mu.Unlock()
+}
+
+func encodeShot(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil || len(b) == 0 || int64(len(b)) > maxShotBytes {
+		return ""
+	}
+	mime := "image/png"
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".jpg", ".jpeg":
+		mime = "image/jpeg"
+	case ".webp":
+		mime = "image/webp"
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b)
 }
 
 func (r *Run) finish(status string, code int, reason, stepID string) {

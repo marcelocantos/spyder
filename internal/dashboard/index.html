@@ -917,8 +917,9 @@ async function loadVerify() {
     $("verify-log").scrollTop = $("verify-log").scrollHeight;
     verifyLogLen = lines.length;
   }
-  if (run.screenshot) {
-    $("verify-shot").src = run.screenshot;
+  const shot = run.screenshot || (gate && gate.screenshot);
+  if (shot) {
+    $("verify-shot").src = shot;
     $("verify-shot").classList.remove("hidden");
     $("verify-shot-empty").classList.add("hidden");
   }
@@ -1009,11 +1010,6 @@ function renderVerifyGate(gate) {
     b.textContent = c.label || c.id;
     b.onclick = () => answerVerifyGate(gate, c);
     choices.appendChild(b);
-  }
-  if (gate.screenshot && !$("verify-shot").src) {
-    $("verify-shot").src = gate.screenshot;
-    $("verify-shot").classList.remove("hidden");
-    $("verify-shot-empty").classList.add("hidden");
   }
 }
 async function answerVerifyGate(gate, choice) {
