@@ -7,6 +7,7 @@
 package verify
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/marcelocantos/claudia"
 	"gopkg.in/yaml.v3"
 )
 
@@ -22,6 +24,7 @@ import (
 const (
 	KindShell        = "shell"
 	KindSpyderScript = "spyder_script"
+	KindModel        = "model"
 	KindHumanGate    = "human_gate"
 )
 
@@ -35,6 +38,7 @@ var (
 	stepKinds = map[string]bool{
 		KindShell:        true,
 		KindSpyderScript: true,
+		KindModel:        true,
 		KindHumanGate:    true,
 	}
 	outcomes = map[string]bool{
@@ -82,28 +86,31 @@ type Group struct {
 
 // Step is one leaf in the DAG.
 type Step struct {
-	ID           string
-	Type         string
-	Label        string
-	Requires     []string
-	Next         string
-	Group        string
-	Mutex        string
-	Device       string
-	Env          map[string]string
-	TimeoutSec   *float64
-	Retry        *Retry
-	OnFail       string
-	Command      string
-	Argv         []string
-	Expect       map[string]any
-	Script       string
-	Params       map[string]string
-	Prompt       string
-	Hint         string
-	Choices      []Choice
-	AllowComment bool
-	AlwaysRun    bool
+	ID            string
+	Type          string
+	Label         string
+	Requires      []string
+	Next          string
+	Group         string
+	Mutex         string
+	Device        string
+	Env           map[string]string
+	TimeoutSec    *float64
+	Retry         *Retry
+	OnFail        string
+	Command       string
+	Argv          []string
+	Expect        map[string]any
+	Script        string
+	ModelSpec     json.RawMessage
+	CaptureScreen bool
+	Accept        string
+	Params        map[string]string
+	Prompt        string
+	Hint          string
+	Choices       []Choice
+	AllowComment  bool
+	AlwaysRun     bool
 }
 
 // Retry is optional command-step retry.
@@ -513,6 +520,55 @@ func parseStep(index int, m map[string]any) (Step, []string) {
 				}
 			}
 		}
+	case KindModel:
+		prompt, ok := asString(m["prompt"])
+		if !ok || strings.TrimSpace(prompt) == "" {
+			errs = append(errs, id+": model requires prompt")
+		} else {
+			step.Prompt = prompt
+		}
+		model, ok := m["model"].(map[string]any)
+		if !ok {
+			errs = append(errs, id+": model requires a Claudia model predicates mapping")
+		} else if raw, err := json.Marshal(model); err != nil {
+			errs = append(errs, id+": invalid model predicates: "+err.Error())
+		} else {
+			allowed := map[string]bool{"mode": true, "purpose": true, "skill": true, "quality": true, "model": true, "effort": true, "prefer_plan": true, "background": true, "prefer_provider": true, "exclude_providers": true, "require_usage": true, "thresholds": true}
+			for key := range model {
+				if !allowed[key] {
+					errs = append(errs, id+": unknown Claudia model predicate "+key)
+				}
+			}
+			if strings.Contains(string(raw), "${") {
+				errs = append(errs, id+": model predicates cannot contain workflow parameters")
+			}
+			pred, decodeErr := claudia.DecodePredicatesWire(raw)
+			if decodeErr != nil {
+				errs = append(errs, id+": invalid Claudia model predicates: "+decodeErr.Error())
+			} else if pred.Mode != "" && pred.Mode != claudia.CapabilityTask {
+				errs = append(errs, id+": model mode must be task")
+			}
+			step.ModelSpec = raw
+		}
+		if v, exists := m["capture_screen"]; exists {
+			b, ok := v.(bool)
+			if !ok {
+				errs = append(errs, id+": capture_screen must be a boolean")
+			} else {
+				step.CaptureScreen = b
+			}
+		}
+		if step.CaptureScreen && step.Device == "" {
+			errs = append(errs, id+": capture_screen requires device")
+		}
+		if v, exists := m["accept"]; exists {
+			s, ok := asString(v)
+			if !ok || strings.TrimSpace(s) == "" {
+				errs = append(errs, id+": accept must be a non-empty string")
+			} else {
+				step.Accept = s
+			}
+		}
 	case KindHumanGate:
 		errs = append(errs, validateGate(id, m, &step)...)
 	}
@@ -706,6 +762,7 @@ func collectMissing(v any, params map[string]string, missing map[string]bool) {
 		collectMissing(t.Argv, params, missing)
 		collectMissing(t.Script, params, missing)
 		collectMissing(t.Prompt, params, missing)
+		collectMissing(t.Accept, params, missing)
 		collectMissing(t.Hint, params, missing)
 		collectMissing(t.Label, params, missing)
 		collectMissing(t.Device, params, missing)
@@ -745,6 +802,7 @@ func Substitute(wf *Workflow, params map[string]string) *Workflow {
 			s.Argv = subStringList(s.Argv, params)
 			s.Script = subString(s.Script, params)
 			s.Prompt = subString(s.Prompt, params)
+			s.Accept = subString(s.Accept, params)
 			s.Hint = subString(s.Hint, params)
 			s.Device = subString(s.Device, params)
 			s.Mutex = subString(s.Mutex, params)

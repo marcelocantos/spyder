@@ -96,7 +96,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   wait-state    Poll an app-channel slice until a jq select is truthy
   device-setting Set/restore/get allowlisted Android settings (iOS: not supported)
   log           Fetch or tail device logs (--follow for live SSE stream)
-  verify        Run a verification workflow YAML (shell / spyder_script / human_gate)
+  verify        Run a verification workflow YAML (shell / spyder_script / model / human_gate)
   verify-status Snapshot of in-flight verification runs
   verify-answer Answer the in-flight human_gate on a run
 

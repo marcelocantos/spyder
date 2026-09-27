@@ -24,6 +24,7 @@ func (h *Handler) VerifyHub() *verify.Hub {
 	if h.verifyHub == nil {
 		h.verifyHub = verify.NewHub(verify.HubArgs{
 			Script: h.execVerifyScript,
+			Model:  h.execVerifyModel,
 		})
 	}
 	return h.verifyHub

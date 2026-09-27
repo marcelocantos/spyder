@@ -47,6 +47,130 @@ func runWF(t *testing.T, hub *Hub, yaml string, cwd string, answers map[string]A
 	return run.Wait()
 }
 
+func TestModelRejectionBlocksOwnerGateAndRunsCleanup(t *testing.T) {
+	var cleaned atomic.Int32
+	hub := NewHub(HubArgs{
+		Model: func(_ context.Context, req StepRequest) ExecResult {
+			if req.Step.Prompt != "Review the current state" || req.Step.Accept != "PASS" {
+				t.Fatalf("model step was not parsed: %+v", req.Step)
+			}
+			return ExecResult{Code: 1, Output: "model response did not match accept: FAIL"}
+		},
+		Shell: func(_ context.Context, req StepRequest) ExecResult {
+			if req.Step.ID == "stop_app" {
+				cleaned.Add(1)
+			}
+			return ExecResult{}
+		},
+	})
+	result := runWF(t, hub, `
+name: model-review
+steps:
+  - id: review
+    type: model
+    prompt: Review the current state
+    model:
+      purpose: analysis
+      quality: standard
+    accept: PASS
+  - id: owner
+    type: human_gate
+    requires: [review]
+    prompt: Is it right?
+    choices:
+      - id: pass
+        label: Yes
+cleanup:
+  - id: stop_app
+    type: shell
+    argv: [/usr/bin/true]
+`, "", nil)
+	if result.Status != StatusInvestigate || cleaned.Load() != 1 {
+		t.Fatalf("status=%s cleanup=%d", result.Status, cleaned.Load())
+	}
+	for _, step := range result.Steps {
+		if step.StepID == "owner" && step.Status == StepOK {
+			t.Fatalf("owner gate opened after model rejection: %+v", result.Steps)
+		}
+	}
+}
+
+func TestFinishedRunLeavesMemoryWithDefinitionAndEventsOnDisk(t *testing.T) {
+	hub := NewHub(HubArgs{})
+	cwd := t.TempDir()
+	wf := loadWF(t, `
+name: persisted-run
+params:
+  device: iPad
+steps:
+  - id: check
+    type: shell
+    label: Check ${device}
+    argv: [/usr/bin/true]
+`)
+	run, err := hub.Start(context.Background(), StartArgs{Workflow: wf, Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := run.Wait()
+	if result.Status != StatusPassed {
+		t.Fatalf("run status: %s reason=%s block=%s", result.Status, result.FailedReason, result.StatusBlock)
+	}
+	if got := hub.Snapshot().Runs; len(got) != 0 {
+		t.Fatalf("completed run remains in memory: %+v", got)
+	}
+	for filename, want := range map[string]string{
+		"report.json":   `"status": "passed"`,
+		"workflow.yaml": "name: persisted-run",
+		"params.json":   `"device": "iPad"`,
+		"events.log":    "passed persisted-run",
+	} {
+		data, err := os.ReadFile(filepath.Join(result.ReportDir, filename))
+		if err != nil || !strings.Contains(string(data), want) {
+			t.Fatalf("%s: err=%v content=%q", filename, err, data)
+		}
+	}
+}
+
+func TestRunPreservesDefinitionBeforeCompletion(t *testing.T) {
+	hub := NewHub(HubArgs{})
+	cwd := t.TempDir()
+	original := []byte("name: original\nparams:\n  device: iPad\nsteps:\n  - id: owner\n    type: human_gate\n    prompt: Check ${device}\n    choices:\n      - id: pass\n        label: Pass\n")
+	source := filepath.Join(cwd, "source.yaml")
+	if err := os.WriteFile(source, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wf, err := LoadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run, err := hub.Start(context.Background(), StartArgs{Workflow: wf, WorkflowPath: source, Cwd: cwd})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(source, []byte("name: changed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(run.reportDir, "workflow.yaml"))
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("saved workflow: err=%v content=%q", err, got)
+	}
+	params, err := os.ReadFile(filepath.Join(run.reportDir, "params.json"))
+	if err != nil || !strings.Contains(string(params), `"device": "iPad"`) {
+		t.Fatalf("saved parameters: err=%v content=%q", err, params)
+	}
+	if _, err := os.Stat(filepath.Join(run.reportDir, "report.json")); !os.IsNotExist(err) {
+		t.Fatalf("final report exists before owner answered: %v", err)
+	}
+	if err := hub.Abort(run.ID, "test complete"); err != nil {
+		t.Fatal(err)
+	}
+	result := run.Wait()
+	if _, err := os.Stat(filepath.Join(result.ReportDir, "report.json")); err != nil {
+		t.Fatalf("final report missing after abort: %v", err)
+	}
+}
+
 func TestCleanupRunsOnPassFailureAndAbort(t *testing.T) {
 	for _, tc := range []struct {
 		name       string

@@ -36,6 +36,7 @@ type Run struct {
 	stepDur      map[string]int64
 	records      []StepRecord
 	logs         []string
+	logErr       error
 	gate         *GateView
 	answerCh     chan Answer
 	failedID     string
@@ -100,6 +101,20 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 		r.stepStatus[s.ID] = StepPending
 	}
 	return r
+}
+
+func (r *Run) persistDefinition() error {
+	if err := os.MkdirAll(r.reportDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(r.reportDir, "workflow.yaml"), r.wf.Raw, 0o644); err != nil {
+		return err
+	}
+	params, err := json.MarshalIndent(r.params, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(r.reportDir, "params.json"), append(params, '\n'), 0o644)
 }
 
 // Wait blocks until the run ends.
@@ -222,6 +237,21 @@ func (r *Run) poke() {
 
 func (r *Run) emit(stepID, line string) {
 	r.mu.Lock()
+	if r.logErr == nil {
+		if err := os.MkdirAll(r.reportDir, 0o755); err != nil {
+			r.logErr = err
+		} else if file, err := os.OpenFile(filepath.Join(r.reportDir, "events.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err != nil {
+			r.logErr = err
+		} else {
+			_, writeErr := fmt.Fprintln(file, line)
+			closeErr := file.Close()
+			if writeErr != nil {
+				r.logErr = writeErr
+			} else if closeErr != nil {
+				r.logErr = closeErr
+			}
+		}
+	}
 	if len(r.logs) > 400 {
 		r.logs = r.logs[len(r.logs)-300:]
 	}
@@ -328,6 +358,7 @@ type stepOutcome struct {
 func (r *Run) drive() {
 	defer close(r.done)
 	defer r.cancel()
+	defer r.hub.forgetRun(r.ID)
 	_ = os.MkdirAll(r.shotsDir(), 0o755)
 	go r.watchShots()
 	go r.watchIdle()
@@ -571,6 +602,9 @@ func (r *Run) commandStep(step Step) stepOutcome {
 			r.emit(step.ID, fmt.Sprintf("retry %s  %d/%d in %s", step.ID, attempt+1, attempts, backoff))
 			r.hub.sleep(backoff)
 		} else {
+			if step.Type == KindModel && last.Output != "" {
+				r.emit(step.ID, last.Output)
+			}
 			r.record(rec)
 			r.setStatus(step.ID, StepFailed, dur)
 		}
@@ -611,6 +645,12 @@ func (r *Run) execStep(step Step) ExecResult {
 			return ExecResult{Code: 1, Output: "spyder_script: no in-process executor"}
 		}
 		return r.hub.script(ctx, req)
+	}
+	if step.Type == KindModel {
+		if r.hub.model == nil {
+			return ExecResult{Code: 1, Output: "model: no in-process executor"}
+		}
+		return r.hub.model(ctx, req)
 	}
 	return r.hub.shell(ctx, req)
 }
@@ -897,6 +937,13 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 		}
 	}
 	r.mu.Lock()
+	logErr := r.logErr
+	r.mu.Unlock()
+	if logErr != nil {
+		status, code = StatusFailed, ExitError
+		reason = "event log: " + logErr.Error()
+	}
+	r.mu.Lock()
 	r.status = status
 	r.exitCode = code
 	if status != StatusPassed {
@@ -941,14 +988,10 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 		Steps:        append([]StepRecord{}, r.records...),
 	}
 	r.mu.Unlock()
-	reportErr := os.MkdirAll(r.reportDir, 0o755)
+	data, reportErr := json.MarshalIndent(r.result, "", "  ")
 	if reportErr == nil {
-		var data []byte
-		data, reportErr = json.MarshalIndent(r.result, "", "  ")
-		if reportErr == nil {
-			data = append(data, '\n')
-			reportErr = os.WriteFile(filepath.Join(r.reportDir, "report.json"), data, 0o644)
-		}
+		data = append(data, '\n')
+		reportErr = os.WriteFile(filepath.Join(r.reportDir, "report.json"), data, 0o644)
 	}
 	if reportErr != nil {
 		status = StatusFailed

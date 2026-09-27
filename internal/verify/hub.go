@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
@@ -21,6 +22,7 @@ type Hub struct {
 	runs   map[string]*Run
 	shell  StepRunner
 	script StepRunner
+	model  StepRunner
 	sleep  func(time.Duration)
 	now    func() time.Time
 
@@ -33,6 +35,7 @@ type HubArgs struct {
 	MaxWorkers int
 	Shell      StepRunner
 	Script     StepRunner
+	Model      StepRunner
 	Sleep      func(time.Duration)
 	Now        func() time.Time
 }
@@ -56,6 +59,7 @@ func NewHub(args HubArgs) *Hub {
 		runs:   map[string]*Run{},
 		shell:  shell,
 		script: args.Script,
+		model:  args.Model,
 		sleep:  sleep,
 		now:    now,
 		live:   map[chan struct{}]struct{}{},
@@ -101,6 +105,10 @@ func (h *Hub) Start(ctx context.Context, args StartArgs) (*Run, error) {
 		AllowWaive: args.AllowWaive,
 		Ctx:        ctx,
 	})
+	if err := run.persistDefinition(); err != nil {
+		run.cancel()
+		return nil, fmt.Errorf("save verify definition: %w", err)
+	}
 	h.mu.Lock()
 	h.runs[run.ID] = run
 	h.mu.Unlock()
@@ -132,7 +140,7 @@ func (h *Hub) Abort(runID, reason string) error {
 	return nil
 }
 
-// Snapshot is the dashboard/REST view of every run plus the single in-flight gate.
+// Snapshot is the dashboard/REST view of active runs plus the single in-flight gate.
 func (h *Hub) Snapshot() Snapshot {
 	h.mu.Lock()
 	runs := make([]*Run, 0, len(h.runs))
@@ -150,7 +158,22 @@ func (h *Hub) Snapshot() Snapshot {
 			out.Gate = &g
 		}
 	}
+	sort.Slice(out.Runs, func(i, j int) bool {
+		if (out.Runs[i].Status == "running") != (out.Runs[j].Status == "running") {
+			return out.Runs[i].Status == "running"
+		}
+		return out.Runs[i].ReportDir < out.Runs[j].ReportDir
+	})
 	return out
+}
+
+// forgetRun removes a completed run from memory. The caller retains its Run
+// pointer for Wait; the report, screenshots, and log remain on disk.
+func (h *Hub) forgetRun(id string) {
+	h.mu.Lock()
+	delete(h.runs, id)
+	h.mu.Unlock()
+	h.notify()
 }
 
 // RunByID returns a live run or nil.

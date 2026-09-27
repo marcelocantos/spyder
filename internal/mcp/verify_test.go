@@ -131,6 +131,11 @@ steps:
 	if runA == "" || runB == "" {
 		t.Fatalf("missing run ids A=%v B=%v", a, b)
 	}
+	runARef := h.VerifyHub().RunByID(runA)
+	runBRef := h.VerifyHub().RunByID(runB)
+	if runARef == nil || runBRef == nil {
+		t.Fatal("active runs missing from hub")
+	}
 
 	deadline := time.Now().Add(3 * time.Second)
 	var sawBWork bool
@@ -193,23 +198,15 @@ steps:
 		t.Fatal("B gate never became the in-flight gate")
 	}
 
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		snap := dispatchJSONMap(t, h, "verify_status", map[string]any{})
-		done := 0
-		runs, _ := snap["runs"].([]any)
-		for _, item := range runs {
-			rm := item.(map[string]any)
-			if rm["status"] == "passed" {
-				done++
-			}
-		}
-		if done == 2 {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
+	if ra, rb := runARef.Wait(), runBRef.Wait(); ra.Status != "passed" || rb.Status != "passed" {
+		t.Fatalf("runs did not both pass: A=%s B=%s", ra.Status, rb.Status)
 	}
-	t.Fatal("runs did not both pass")
+	if snap := dispatchJSONMap(t, h, "verify_status", map[string]any{}); snap["runs"] != nil {
+		runs, _ := snap["runs"].([]any)
+		if len(runs) != 0 {
+			t.Fatalf("completed runs remain in active snapshot: %v", runs)
+		}
+	}
 }
 
 func TestVerify_SpyderScriptViaAppExec(t *testing.T) {

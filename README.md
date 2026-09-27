@@ -189,17 +189,46 @@ The daemon serves a browser cockpit at
 - `#verify` — live DAG workflow progress, logs, screenshots, and owner
   gates for `spyder verify`
 
-The Verify tab shows screenshots captured by workflow steps. It pauses app
-thumbnail and preview capture while an owner inspects the device.
+The Verify tab shows every active workflow together, with each run's steps,
+screenshots, log, and owner gate. Finished runs disappear from this live view.
+It pauses app thumbnail and preview capture while an owner inspects the device.
 
 Deep-link with the hash; no second HTTP server.
 
 `spyder verify path/to/workflow.yaml` runs a product-neutral step graph
-(`shell`, `spyder_script`, `human_gate`). Progress is a pass record at
+(`shell`, `spyder_script`, `model`, `human_gate`). Progress is a pass record at
 `<cwd>/verify-runs/resume/<workflow>.json` — delete it to rerun. A
 closing `STATUS` / `END STATUS` block is the result; exit 0 is a pass.
 Workflows can declare `cleanup` commands for device teardown on every exit;
 an idle run stops after five minutes without progress by default.
+Each run saves the exact original `workflow.yaml` and resolved `params.json`
+before execution starts, then streams `events.log` and screenshots into the
+same directory. It saves `report.json` on completion. The
+agent can share that directory for later review without keeping old runs in
+the daemon's memory.
+
+`model` steps run a Claudia-selected one-shot task. Their `model` mapping
+uses Claudia's model predicates fields (`purpose`, `quality`,
+`prefer_provider`, `exclude_providers`, and so on). `capture_screen: true`
+captures the named `device` immediately before the task and requires the
+selected Claude model to read that image. `accept` requires an exact final
+response; a mismatch stops dependent owner gates and runs cleanup. For
+example:
+
+```yaml
+- id: check_screen
+  type: model
+  device: iPad
+  timeout_sec: 90
+  capture_screen: true
+  model:
+    purpose: analysis
+    quality: standard
+    prefer_provider: claude
+    exclude_providers: [grok, codex, cursor, bedrock, ollama]
+  prompt: Return exactly PASS if this is the Vehicles screen; otherwise explain why.
+  accept: PASS
+```
 
 `--as OWNER` flags default to `filepath.Base(cwd)` so project-rooted
 shells get a sensible reservation identity without ceremony.

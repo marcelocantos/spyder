@@ -118,19 +118,26 @@
   .vstep.failed .vmark, .vstep.aborted .vmark { background: var(--err); }
   .vstep.waiting_human .vmark { background: var(--warn); }
   .vstep .vid { color: var(--dim); font-size: 11px; font-family: var(--mono); }
-  #verify-shot { width: 100%; max-height: 280px; object-fit: contain; background: #000; border-radius: 8px; border: 1px solid var(--line); }
-  #verify-log { height: 180px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px;
+  .verify-runs { display: flex; flex-direction: column; gap: 16px; }
+  .verify-run { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 16px; }
+  .verify-run-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .verify-run-head h3 { margin: 0; font-size: 16px; }
+  .verify-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
+  .verify-grid > div { min-width: 0; }
+  .verify-shot { width: 100%; max-height: 280px; object-fit: contain; background: #000; border-radius: 8px; border: 1px solid var(--line); }
+  .verify-log { height: 180px; overflow: auto; white-space: pre-wrap; font-family: var(--mono); font-size: 12px;
                 background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
   .gate-sheet { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-top: 12px; }
   .gate-sheet h3 { margin: 0 0 8px; }
   .gate-choice { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 12px; min-height: 44px; }
-  #verify-gate-comment { width: 100%; min-height: 64px; background: var(--panel); border: 1px solid var(--line);
+  .verify-gate-comment { width: 100%; min-height: 64px; background: var(--panel); border: 1px solid var(--line);
                          color: var(--fg); border-radius: 6px; padding: 8px; font: inherit; }
   @media (max-width: 720px) {
     body { flex-direction: column; height: auto; min-height: 100vh; }
     .sidebar { width: 100%; flex: none; max-height: 180px; }
     .shotpanel { width: 100%; flex: none; }
     #batt-chart { height: 280px; }
+    .verify-grid { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -214,30 +221,7 @@
           <h2 style="margin:0">Verify</h2>
           <span class="muted" id="verify-stat">connecting…</span>
         </div>
-        <div class="row" style="align-items:flex-start">
-          <div style="flex:1;min-width:220px">
-            <h2>Steps</h2>
-            <div id="verify-timeline" class="empty">No verification run.</div>
-          </div>
-          <div style="flex:1;min-width:220px">
-            <h2>Live</h2>
-            <p id="verify-shot-empty" class="muted">No screenshot yet.</p>
-            <img id="verify-shot" alt="Latest screenshot from the run" class="hidden">
-            <h2>Log</h2>
-            <div id="verify-log"></div>
-            <div id="verify-gate" class="gate-sheet hidden" role="dialog" aria-labelledby="verify-gate-prompt">
-              <h3 id="verify-gate-prompt"></h3>
-              <p class="muted" id="verify-gate-meta"></p>
-              <p class="muted" id="verify-gate-hint"></p>
-              <div id="verify-gate-choices"></div>
-              <label id="verify-gate-comment-wrap" class="hidden">Comment
-                <textarea id="verify-gate-comment"></textarea>
-              </label>
-              <p id="verify-gate-error" class="muted"></p>
-              <button class="sm" id="verify-abort" type="button">Abort the run</button>
-            </div>
-          </div>
-        </div>
+        <div id="verify-runs" class="verify-runs"><div class="empty">No verification run.</div></div>
       </div>
     </div>
   </div>
@@ -899,7 +883,7 @@ for (const el of $("batt-windows").children) {
 }
 $("batt-refresh").onclick = () => loadBattery(true);
 
-let verifyLogLen = 0;
+const verifyCards = new Map();
 let verifySeen = null;
 let verifyWS = null;
 function blinkVerifyBadge() {
@@ -911,7 +895,6 @@ function blinkVerifyBadge() {
 }
 function applyVerifySnapshot(snap) {
   const runs = snap.runs || [];
-  const gate = snap.gate || null;
   const running = runs.filter(r => r.status === "running");
   const badge = $("verify-badge");
   badge.textContent = String(running.length);
@@ -925,28 +908,75 @@ function applyVerifySnapshot(snap) {
     }
   }
   verifySeen = new Set(runs.map(r => r.run_id).filter(Boolean));
-  const run = pickVerifyRun(runs, gate);
-  if (!run) {
-    $("verify-stat").textContent = "no run";
-    $("verify-timeline").innerHTML = '<div class="empty">No verification run.</div>';
-    renderVerifyGate(null);
+  const shown = running;
+  const host = $("verify-runs");
+  $("verify-stat").textContent = running.length ? `${running.length} active` : "no active runs";
+  const wanted = new Set(shown.map(r => r.run_id));
+  for (const [id, card] of verifyCards) {
+    if (!wanted.has(id)) {
+      card.el.remove();
+      verifyCards.delete(id);
+    }
+  }
+  if (!shown.length) {
+    host.innerHTML = '<div class="empty">No active verification runs.</div>';
     return;
   }
-  $("verify-stat").textContent = (run.workflow || "workflow") + " · " + (run.status || "");
-  renderVerifyTimeline(run);
-  const lines = run.log || [];
-  if (lines.length !== verifyLogLen) {
-    $("verify-log").textContent = lines.join("\n");
-    $("verify-log").scrollTop = $("verify-log").scrollHeight;
-    verifyLogLen = lines.length;
+  for (const [index, run] of shown.entries()) {
+    let card = verifyCards.get(run.run_id);
+    if (!card) {
+      if (!verifyCards.size) host.innerHTML = "";
+      card = createVerifyCard();
+      verifyCards.set(run.run_id, card);
+    }
+    if (host.children[index] !== card.el) host.insertBefore(card.el, host.children[index] || null);
+    card.title.textContent = run.workflow || "workflow";
+    card.status.textContent = run.status || "";
+    card.device.textContent = run.device ? `device ${run.device}` : "";
+    renderVerifyTimeline(run, card.timeline);
+    const lines = run.log || [];
+    if (lines.length !== card.logLength) {
+      card.log.textContent = lines.join("\n");
+      card.log.scrollTop = card.log.scrollHeight;
+      card.logLength = lines.length;
+    }
+    const gate = run.gate || null;
+    const shot = run.screenshot || (gate && gate.screenshot);
+    if (shot && shot !== card.shot.src) card.shot.src = shot;
+    card.shot.classList.toggle("hidden", !shot);
+    card.shotEmpty.classList.toggle("hidden", !!shot);
+    renderVerifyGate(gate, card);
   }
-  const shot = run.screenshot || (gate && gate.screenshot);
-  if (shot) {
-    $("verify-shot").src = shot;
-    $("verify-shot").classList.remove("hidden");
-    $("verify-shot-empty").classList.add("hidden");
-  }
-  renderVerifyGate(gate);
+}
+function createVerifyCard() {
+  const el = document.createElement("section");
+  el.className = "verify-run";
+  el.innerHTML = `<div class="verify-run-head"><h3 data-v="title"></h3><span data-v="status" class="muted"></span><span data-v="device" class="muted"></span></div>
+    <div class="verify-grid"><div><h2>Steps</h2><div data-v="timeline"></div></div>
+    <div><h2>Live</h2><p data-v="shot-empty" class="muted">No screenshot yet.</p>
+    <img data-v="shot" class="verify-shot hidden" alt="Latest screenshot from this run">
+    <h2>Log</h2><div data-v="log" class="verify-log"></div>
+    <div data-v="gate" class="gate-sheet hidden" role="dialog" aria-label="Owner verification question">
+      <h3 data-v="gate-prompt"></h3><p data-v="gate-meta" class="muted"></p>
+      <p data-v="gate-hint" class="muted"></p><div data-v="gate-choices"></div>
+      <label data-v="comment-wrap" class="hidden">Comment<textarea data-v="comment" class="verify-gate-comment"></textarea></label>
+      <p data-v="gate-error" class="muted"></p><button data-v="abort" class="sm" type="button">Abort the run</button>
+    </div></div></div>`;
+  const get = name => el.querySelector(`[data-v="${name}"]`);
+  const card = {el, title: get("title"), status: get("status"), device: get("device"),
+    timeline: get("timeline"), shotEmpty: get("shot-empty"), shot: get("shot"),
+    log: get("log"), logLength: -1, gate: get("gate"), gatePrompt: get("gate-prompt"),
+    gateMeta: get("gate-meta"), gateHint: get("gate-hint"), choices: get("gate-choices"),
+    commentWrap: get("comment-wrap"), comment: get("comment"), error: get("gate-error"),
+    gateKey: "", currentGate: null};
+  get("abort").onclick = async () => {
+    if (!card.currentGate) return;
+    try {
+      await callTool("verify_abort", {run_id: card.currentGate.run_id, reason: "aborted from the dashboard"});
+      toast("aborted");
+    } catch (e) { toast(e.message, true); }
+  };
+  return card;
 }
 function startVerifyWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -963,16 +993,7 @@ function startVerifyWS() {
     }
   };
 }
-function pickVerifyRun(runs, gate) {
-  if (gate && gate.run_id) {
-    const hit = runs.find(r => r.run_id === gate.run_id);
-    if (hit) return hit;
-  }
-  const live = runs.find(r => r.status === "running");
-  return live || runs[runs.length - 1] || null;
-}
-function renderVerifyTimeline(run) {
-  const host = $("verify-timeline");
+function renderVerifyTimeline(run, host) {
   host.innerHTML = "";
   const groups = new Map();
   for (const g of (run.groups || [])) {
@@ -1026,56 +1047,57 @@ function renderVerifyTimeline(run) {
     rec.summary.textContent = rec.label + (kids.length ? `  ${ok}/${kids.length}` : "");
   }
 }
-function renderVerifyGate(gate) {
-  const box = $("verify-gate");
-  if (!gate) { box.classList.add("hidden"); box.dataset.runId = ""; return; }
-  box.classList.remove("hidden");
-  box.dataset.runId = gate.run_id || "";
-  $("verify-gate-prompt").textContent = gate.prompt || "Check the device";
+function renderVerifyGate(gate, card) {
+  if (!gate) {
+    card.gate.classList.add("hidden");
+    card.gateKey = "";
+    card.currentGate = null;
+    card.comment.value = "";
+    return;
+  }
+  card.gate.classList.remove("hidden");
+  card.currentGate = gate;
+  const key = `${gate.run_id}:${gate.step_id}`;
+  if (key === card.gateKey) return;
+  card.gateKey = key;
+  card.comment.value = "";
+  card.error.textContent = "";
+  card.gatePrompt.textContent = gate.prompt || "Check the device";
   const meta = [];
   if (gate.workflow) meta.push("workflow " + gate.workflow);
   if (gate.device) meta.push("device " + gate.device);
   if (gate.step_id) meta.push(gate.step_id);
-  $("verify-gate-meta").textContent = meta.join(" · ");
-  $("verify-gate-hint").textContent = gate.hint || "";
+  card.gateMeta.textContent = meta.join(" · ");
+  card.gateHint.textContent = gate.hint || "";
   const needs = gate.allow_comment || (gate.choices || []).some(c => c.comment === "required");
-  $("verify-gate-comment-wrap").classList.toggle("hidden", !needs);
-  const choices = $("verify-gate-choices");
-  choices.innerHTML = "";
+  card.commentWrap.classList.toggle("hidden", !needs);
+  card.choices.innerHTML = "";
   for (const c of (gate.choices || [])) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "gate-choice";
     b.textContent = c.label || c.id;
-    b.onclick = () => answerVerifyGate(gate, c);
-    choices.appendChild(b);
+    b.onclick = () => answerVerifyGate(gate, c, card);
+    card.choices.appendChild(b);
   }
 }
-async function answerVerifyGate(gate, choice) {
+async function answerVerifyGate(gate, choice, card) {
   const required = choice.comment === "required";
-  const text = $("verify-gate-comment").value.trim();
+  const text = card.comment.value.trim();
   if (required && !text) {
-    $("verify-gate-error").textContent = "A comment is required for this answer.";
+    card.error.textContent = "A comment is required for this answer.";
     return;
   }
-  $("verify-gate-error").textContent = "";
+  card.error.textContent = "";
   try {
     await callTool("verify_answer", {
       run_id: gate.run_id, gate_id: gate.step_id, choice_id: choice.id, comment: text
     });
     toast("answered " + choice.id);
   } catch (e) {
-    $("verify-gate-error").textContent = e.message;
+    card.error.textContent = e.message;
   }
 }
-$("verify-abort").onclick = async () => {
-  const runID = $("verify-gate").dataset.runId;
-  if (!runID) return;
-  try {
-    await callTool("verify_abort", {run_id: runID, reason: "aborted from the dashboard"});
-    toast("aborted");
-  } catch (e) { toast(e.message, true); }
-};
 
 refreshApps();
 setInterval(refreshApps, 5000);
