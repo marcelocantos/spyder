@@ -320,7 +320,7 @@ async function refreshApps() {
       <div class="badge">${tweakable ? "tweaks • " : ""}${(s.methods||[]).length} methods</div></div>`;
     el.onclick = () => selectApp(s.session_id);
     box.appendChild(el);
-    if ((s.methods || []).includes("screenshot_app") && shouldThumb(s.session_id)) grabScreenshot(s.session_id, true);
+    if (curTab !== "verify" && (s.methods || []).includes("screenshot_app") && shouldThumb(s.session_id)) grabScreenshot(s.session_id, true);
   }
 }
 
@@ -329,7 +329,6 @@ function selectApp(id) {
   refreshApps();
   $("none").classList.add("hidden");
   showTab(curTab, true);
-  startShotPoll();
 }
 
 // ---- tabs -----------------------------------------------------------------
@@ -344,6 +343,8 @@ function showTab(tab, force) {
   if (shot) shot.classList.toggle("hidden", tab === "battery" || tab === "verify");
   stopLogPoll();
   stopBattPoll();
+  if (tab === "verify") stopShotPoll();
+  else if (sel) startShotPoll();
   if (tab === "battery") {
     if (location.hash !== "#battery") history.replaceState(null, "", "#battery");
   } else if (tab === "verify") {
@@ -460,6 +461,9 @@ function shouldThumb(id) {
   return !c || (Date.now() - c.at) > 8000; // refresh sidebar thumbs at most ~8s
 }
 async function grabScreenshot(id, isThumb) {
+  // Verify's owner gates use workflow-captured physical screenshots. An app
+  // screenshot here can disturb the game while the owner is inspecting it.
+  if (curTab === "verify") return;
   try {
     // inline: the dashboard renders the frame as a data: URL, so it
     // needs the image bytes, not the daemon-side saved-file path that
@@ -490,6 +494,7 @@ function paintPanel(id) {
 }
 function startShotPoll() {
   stopShotPoll();
+  if (curTab === "verify") return;
   paintPanel(sel);
   const tick = async () => {
     if (!sel || shotBusy || !$("shot-auto").checked) return;
