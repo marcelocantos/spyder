@@ -47,6 +47,8 @@ type Run struct {
 	statusBlock  string
 	screenshot   string
 	shotKey      string // last encoded path+mod+size, to skip unchanged files
+	lastProgress time.Time
+	idleExpired  bool
 	done         chan struct{}
 	result       Result
 }
@@ -70,25 +72,26 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	report := filepath.Join(opts.Cwd, "verify-runs", stamp+"-"+shortID())
 	r := &Run{
-		ID:         shortID(),
-		hub:        h,
-		wf:         wf,
-		path:       opts.Path,
-		cwd:        opts.Cwd,
-		params:     opts.Params,
-		answers:    opts.Answers,
-		allowW:     opts.AllowWaive,
-		ctx:        ctx,
-		cancel:     cancel,
-		okIDs:      map[string]bool{},
-		skipIDs:    map[string]bool{},
-		passed:     map[string]bool{},
-		stepStatus: map[string]string{},
-		stepDur:    map[string]int64{},
-		answerCh:   make(chan Answer, 1),
-		reportDir:  report,
-		status:     "running",
-		done:       make(chan struct{}),
+		ID:           shortID(),
+		hub:          h,
+		wf:           wf,
+		path:         opts.Path,
+		cwd:          opts.Cwd,
+		params:       opts.Params,
+		answers:      opts.Answers,
+		allowW:       opts.AllowWaive,
+		ctx:          ctx,
+		cancel:       cancel,
+		okIDs:        map[string]bool{},
+		skipIDs:      map[string]bool{},
+		passed:       map[string]bool{},
+		stepStatus:   map[string]string{},
+		stepDur:      map[string]int64{},
+		answerCh:     make(chan Answer, 1),
+		reportDir:    report,
+		status:       "running",
+		lastProgress: time.Now(),
+		done:         make(chan struct{}),
 	}
 	if r.answers == nil {
 		r.answers = map[string]Answer{}
@@ -165,14 +168,14 @@ type StepView struct {
 func (r *Run) view() RunView {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	steps := make([]StepView, 0, len(r.wf.Steps))
+	steps := make([]StepView, 0, len(r.wf.Steps)+len(r.wf.Cleanup))
 	choice := map[string]string{}
 	for _, rec := range r.records {
 		if rec.ChoiceID != "" {
 			choice[rec.StepID] = rec.ChoiceID
 		}
 	}
-	for _, s := range r.wf.Steps {
+	for _, s := range append(append([]Step{}, r.wf.Steps...), r.wf.Cleanup...) {
 		st := r.stepStatus[s.ID]
 		if st == "" {
 			st = StepPending
@@ -223,6 +226,7 @@ func (r *Run) emit(stepID, line string) {
 		r.logs = r.logs[len(r.logs)-300:]
 	}
 	r.logs = append(r.logs, line)
+	r.lastProgress = time.Now()
 	r.mu.Unlock()
 	_ = stepID
 	r.poke()
@@ -231,6 +235,7 @@ func (r *Run) emit(stepID, line string) {
 func (r *Run) setStatus(id, status string, dur int64) {
 	r.mu.Lock()
 	r.stepStatus[id] = status
+	r.lastProgress = time.Now()
 	if dur > 0 {
 		r.stepDur[id] = dur
 	}
@@ -240,6 +245,9 @@ func (r *Run) setStatus(id, status string, dur int64) {
 
 func (r *Run) abort(reason string) {
 	r.mu.Lock()
+	if reason == "" {
+		reason = "aborted by user"
+	}
 	if r.failedReason == "" {
 		r.failedReason = reason
 	}
@@ -247,6 +255,50 @@ func (r *Run) abort(reason string) {
 	r.cancel()
 	r.hub.pool.broadcast()
 	r.poke()
+}
+
+func (r *Run) stopOutcome() (string, int, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	reason := r.failedReason
+	if reason == "" {
+		reason = "aborted by user"
+	}
+	if r.idleExpired {
+		return StatusInvestigate, ExitInvestigate, reason
+	}
+	return StatusAborted, ExitAborted, reason
+}
+
+func (r *Run) watchIdle() {
+	idle := time.Duration(r.wf.IdleTimeoutSec * float64(time.Second))
+	tick := idle / 10
+	if tick < 10*time.Millisecond {
+		tick = 10 * time.Millisecond
+	}
+	if tick > time.Second {
+		tick = time.Second
+	}
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-ticker.C:
+			r.mu.Lock()
+			elapsed := time.Since(r.lastProgress)
+			if elapsed >= idle && r.ctx.Err() == nil {
+				r.idleExpired = true
+			}
+			expired := r.idleExpired
+			r.mu.Unlock()
+			if expired {
+				r.abort(fmt.Sprintf("no progress for %s", idle))
+				return
+			}
+		}
+	}
 }
 
 func (r *Run) submitAnswer(gateID string, ans Answer) error {
@@ -278,6 +330,7 @@ func (r *Run) drive() {
 	defer r.cancel()
 	_ = os.MkdirAll(r.shotsDir(), 0o755)
 	go r.watchShots()
+	go r.watchIdle()
 
 	prior := LoadRecord(r.cwd, r.wf.Name)
 	retry := map[string]bool{}
@@ -315,6 +368,18 @@ func (r *Run) drive() {
 	}
 	results := make(chan finished, defaultMaxWorkers)
 	inflight := 0
+	finishRun := func(status string, code int, reason, stepID string) {
+		r.cancel()
+		for inflight > 0 {
+			<-results
+			inflight--
+		}
+		r.finish(status, code, reason, stepID)
+	}
+	stopRun := func() {
+		status, code, reason := r.stopOutcome()
+		finishRun(status, code, reason, r.currentFailed())
+	}
 
 	r.emit("", "run "+r.wf.Name+" ("+r.ID+")")
 	if r.path != "" {
@@ -324,7 +389,7 @@ func (r *Run) drive() {
 
 	for len(remaining) > 0 || inflight > 0 {
 		if r.ctx.Err() != nil {
-			r.finish(StatusAborted, ExitAborted, "aborted by user", r.currentFailed())
+			stopRun()
 			return
 		}
 
@@ -393,12 +458,12 @@ func (r *Run) drive() {
 						blocked = append(blocked, s.ID)
 					}
 				}
-				r.finish(StatusFailed, ExitError, "requires not satisfied: "+join(blocked), blocked[0])
+				finishRun(StatusFailed, ExitError, "requires not satisfied: "+join(blocked), blocked[0])
 				return
 			}
 			select {
 			case <-r.ctx.Done():
-				r.finish(StatusAborted, ExitAborted, "aborted by user", r.currentFailed())
+				stopRun()
 				return
 			case <-time.After(20 * time.Millisecond):
 			}
@@ -428,7 +493,7 @@ func (r *Run) drive() {
 			select {
 			case got = <-results:
 			case <-r.ctx.Done():
-				r.finish(StatusAborted, ExitAborted, "aborted by user", r.currentFailed())
+				stopRun()
 				return
 			case <-time.After(20 * time.Millisecond):
 				continue
@@ -437,29 +502,24 @@ func (r *Run) drive() {
 			select {
 			case got = <-results:
 			case <-r.ctx.Done():
-				r.finish(StatusAborted, ExitAborted, "aborted by user", r.currentFailed())
+				stopRun()
 				return
 			}
 		}
 		inflight--
+		if r.ctx.Err() != nil {
+			stopRun()
+			return
+		}
 		if got.out.status != "ok" {
-			r.cancel()
-			deadline := time.Now().Add(5 * time.Second)
-			for inflight > 0 && time.Now().Before(deadline) {
-				select {
-				case <-results:
-					inflight--
-				case <-time.After(50 * time.Millisecond):
-				}
-			}
-			r.finish(got.out.status, got.out.code, got.out.reason, got.id)
+			finishRun(got.out.status, got.out.code, got.out.reason, got.id)
 			return
 		}
 		r.okIDs[got.id] = true
 		r.rememberPass(got.id)
 	}
 
-	r.finish(StatusPassed, ExitPassed, "", "")
+	finishRun(StatusPassed, ExitPassed, "", "")
 }
 
 func (r *Run) currentFailed() string {
@@ -763,7 +823,79 @@ func encodeShot(path string) string {
 	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(b)
 }
 
+// runCleanup uses fresh contexts because failure and abort cancel the run
+// context. Every cleanup command is attempted, even if an earlier one fails.
+func (r *Run) runCleanup() (string, string) {
+	var firstID string
+	var failures []string
+	for _, step := range r.wf.Cleanup {
+		r.setStatus(step.ID, StepRunning, 0)
+		r.emit(step.ID, "--> "+step.ID+"  cleanup")
+		timeout := 30 * time.Second
+		if step.TimeoutSec != nil {
+			timeout = time.Duration(*step.TimeoutSec * float64(time.Second))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		env := map[string]string{
+			"SPYDER_VERIFY_REPORT_DIR": r.reportDir,
+			"SPYDER_VERIFY_WORKFLOW":   r.wf.Name,
+			"SPYDER_VERIFY_STEP_ID":    step.ID,
+		}
+		for k, v := range step.Env {
+			env[k] = v
+		}
+		started := time.Now()
+		keys := resourceKeys(step)
+		acquired := false
+		for !acquired && ctx.Err() == nil {
+			acquired = r.hub.pool.tryStart(r.ID, keys)
+			if !acquired {
+				select {
+				case <-ctx.Done():
+				case <-time.After(20 * time.Millisecond):
+				}
+			}
+		}
+		out := ExecResult{Code: 124, TimedOut: true}
+		if acquired {
+			out = r.hub.shell(ctx, StepRequest{
+				Step: step, Cwd: r.cwd, Env: env, Timeout: timeout,
+				Emit: func(line string) { r.emit(step.ID, line) },
+			})
+			r.hub.pool.finish(r.ID, keys)
+		}
+		cancel()
+		dur := time.Since(started).Milliseconds()
+		stepStatus := StepOK
+		if out.Code != 0 {
+			stepStatus = StepFailed
+			if firstID == "" {
+				firstID = step.ID
+			}
+			failures = append(failures, fmt.Sprintf("%s exit %d", step.ID, out.Code))
+		}
+		r.record(StepRecord{StepID: step.ID, Status: stepStatus, DurationMS: dur, Type: KindShell, Label: step.Label})
+		r.setStatus(step.ID, stepStatus, dur)
+		r.emit(step.ID, fmt.Sprintf("%s %s  %dms", stepStatus, step.ID, dur))
+	}
+	if len(failures) > 0 {
+		return firstID, "cleanup: " + strings.Join(failures, ", ")
+	}
+	return "", ""
+}
+
 func (r *Run) finish(status string, code int, reason, stepID string) {
+	r.cancel()
+	cleanupID, cleanupReason := r.runCleanup()
+	if cleanupID != "" {
+		if status == StatusPassed {
+			status, code, stepID, reason = StatusInvestigate, ExitInvestigate, cleanupID, cleanupReason
+		} else if reason == "" {
+			reason = cleanupReason
+		} else {
+			reason += "; " + cleanupReason
+		}
+	}
 	r.mu.Lock()
 	r.status = status
 	r.exitCode = code

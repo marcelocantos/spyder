@@ -198,6 +198,8 @@ Deep-link with the hash; no second HTTP server.
 (`shell`, `spyder_script`, `human_gate`). Progress is a pass record at
 `<cwd>/verify-runs/resume/<workflow>.json` — delete it to rerun. A
 closing `STATUS` / `END STATUS` block is the result; exit 0 is a pass.
+Workflows can declare `cleanup` commands for device teardown on every exit;
+an idle run stops after five minutes without progress by default.
 
 `--as OWNER` flags default to `filepath.Base(cwd)` so project-rooted
 shells get a sensible reservation identity without ceremony.

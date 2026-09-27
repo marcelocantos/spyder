@@ -45,7 +45,7 @@ func (h *Handler) execVerifyScript(ctx context.Context, req verify.StepRequest) 
 	if req.Timeout > 0 {
 		args["max_duration_ms"] = float64(req.Timeout / time.Millisecond)
 	}
-	res, err := h.handleAppExec(args)
+	res, err := h.handleAppExecContext(ctx, args)
 	if err != nil {
 		return verify.ExecResult{Code: 1, Output: err.Error()}
 	}

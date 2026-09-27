@@ -76,6 +76,10 @@ type execLimits struct {
 // name, bundled:name, or filesystem path). Optional `params` map is injected
 // as the Starlark global `params`.
 func (h *Handler) handleAppExec(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleAppExecContext(context.Background(), args)
+}
+
+func (h *Handler) handleAppExecContext(parent context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	script, params, err := resolveExecSource(args)
 	if err != nil {
 		return toolErr("%v", err)
@@ -91,7 +95,7 @@ func (h *Handler) handleAppExec(args map[string]any) (*mcpgo.CallToolResult, err
 	delete(verbs, "app_exec")
 	// run_script/list_scripts re-enter via handleRunScript; keep them.
 
-	ctx, cancel := context.WithTimeout(context.Background(), dur)
+	ctx, cancel := context.WithTimeout(parent, dur)
 	defer cancel()
 	// h.Health() is always non-nil (NewHandler seeds a default supervisor),
 	// so the health() builtin can read the live unified report in-process.
@@ -159,6 +163,8 @@ func runExec(ctx context.Context, script string, verbs map[string]toolFunc, hm *
 
 	thread := &starlark.Thread{Name: "app_exec"}
 	thread.SetMaxExecutionSteps(lim.MaxSteps)
+	stopCancel := context.AfterFunc(ctx, func() { thread.Cancel("context cancelled") })
+	defer stopCancel()
 
 	// Wall-clock guard: cancel the interpreter if it overruns. Stopped as
 	// soon as Init returns so the timer never fires on the fast path.

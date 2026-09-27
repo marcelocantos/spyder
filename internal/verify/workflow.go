@@ -8,6 +8,7 @@ package verify
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"regexp"
 	"sort"
@@ -61,8 +62,16 @@ type Workflow struct {
 	Params            map[string]string
 	Groups            []Group
 	Steps             []Step
+	Cleanup           []Step
+	IdleTimeoutSec    float64
 	Raw               []byte
 }
+
+const (
+	defaultIdleTimeoutSec    = 300
+	maximumIdleTimeoutSec    = 86400
+	defaultCleanupTimeoutSec = 30
+)
 
 // Group is dashboard collapse only — it does not schedule.
 type Group struct {
@@ -141,7 +150,7 @@ func Load(raw []byte) (*Workflow, error) {
 
 func parseWorkflow(m map[string]any) (*Workflow, []string) {
 	var errs []string
-	wf := &Workflow{Params: map[string]string{}}
+	wf := &Workflow{Params: map[string]string{}, IdleTimeoutSec: defaultIdleTimeoutSec}
 
 	name, ok := asString(m["name"])
 	if !ok || strings.TrimSpace(name) == "" {
@@ -178,6 +187,14 @@ func parseWorkflow(m map[string]any) (*Workflow, []string) {
 			}
 		}
 	}
+	if v, exists := m["idle_timeout_sec"]; exists && v != nil {
+		n, ok := asNumber(v)
+		if !ok || n <= 0 || n > maximumIdleTimeoutSec || math.IsNaN(n) || math.IsInf(n, 0) {
+			errs = append(errs, "idle_timeout_sec must be a positive number no greater than 86400")
+		} else {
+			wf.IdleTimeoutSec = n
+		}
+	}
 
 	groupIDs, groups, gErrs := parseGroups(m["groups"])
 	errs = append(errs, gErrs...)
@@ -207,14 +224,51 @@ func parseWorkflow(m map[string]any) (*Workflow, []string) {
 		ids[step.ID] = true
 		wf.Steps = append(wf.Steps, step)
 	}
+	graphIDs := make(map[string]bool, len(ids))
+	for id := range ids {
+		graphIDs[id] = true
+	}
+	if rawCleanup, exists := m["cleanup"]; exists && rawCleanup != nil {
+		list, ok := rawCleanup.([]any)
+		if !ok || len(list) == 0 {
+			errs = append(errs, "cleanup must be a non-empty list")
+		} else {
+			for i, item := range list {
+				sm, ok := item.(map[string]any)
+				if !ok {
+					errs = append(errs, fmt.Sprintf("cleanup[%d] must be a mapping", i))
+					continue
+				}
+				step, stepErrs := parseStep(i, sm)
+				errs = append(errs, stepErrs...)
+				if step.ID == "" {
+					continue
+				}
+				if ids[step.ID] {
+					errs = append(errs, "duplicate step id "+step.ID)
+				}
+				ids[step.ID] = true
+				if step.Type != KindShell || len(step.Requires) > 0 || step.Next != "" || step.Retry != nil || step.AlwaysRun {
+					errs = append(errs, step.ID+": cleanup must be a shell command without graph dependencies or retry")
+				}
+				if step.TimeoutSec == nil {
+					seconds := float64(defaultCleanupTimeoutSec)
+					step.TimeoutSec = &seconds
+				} else if *step.TimeoutSec <= 0 {
+					errs = append(errs, step.ID+": cleanup timeout_sec must be positive")
+				}
+				wf.Cleanup = append(wf.Cleanup, step)
+			}
+		}
+	}
 
 	for _, step := range wf.Steps {
 		for _, req := range step.Requires {
-			if !ids[req] {
+			if !graphIDs[req] {
 				errs = append(errs, step.ID+": requires unknown step "+req)
 			}
 		}
-		if step.Next != "" && !ids[step.Next] {
+		if step.Next != "" && !graphIDs[step.Next] {
 			errs = append(errs, step.ID+": next unknown step "+step.Next)
 		}
 		if step.Group != "" {
@@ -226,7 +280,7 @@ func parseWorkflow(m map[string]any) (*Workflow, []string) {
 			continue
 		}
 		for _, c := range step.Choices {
-			if c.Next != "" && !ids[c.Next] {
+			if c.Next != "" && !graphIDs[c.Next] {
 				errs = append(errs, fmt.Sprintf("%s: choice %s next unknown step %s", step.ID, c.ID, c.Next))
 			}
 		}
@@ -613,6 +667,7 @@ func CheckPlaceholders(wf *Workflow, params map[string]string) []string {
 	var errs []string
 	missing := map[string]bool{}
 	collectMissing(wf.Steps, params, missing)
+	collectMissing(wf.Cleanup, params, missing)
 	collectMissing(wf.SuggestedCommands, params, missing)
 	collectMissing(wf.Groups, params, missing)
 	names := make([]string, 0, len(missing))
@@ -682,24 +737,29 @@ func Substitute(wf *Workflow, params map[string]string) *Workflow {
 		g.Label = subString(g.Label, params)
 		out.Groups[i] = g
 	}
-	out.Steps = make([]Step, len(wf.Steps))
-	for i, s := range wf.Steps {
-		s.Label = subString(s.Label, params)
-		s.Command = subString(s.Command, params)
-		s.Argv = subStringList(s.Argv, params)
-		s.Script = subString(s.Script, params)
-		s.Prompt = subString(s.Prompt, params)
-		s.Hint = subString(s.Hint, params)
-		s.Device = subString(s.Device, params)
-		s.Mutex = subString(s.Mutex, params)
-		s.Env = subStringMap(s.Env, params)
-		s.Params = subStringMap(s.Params, params)
-		s.Choices = append([]Choice{}, s.Choices...)
-		for j := range s.Choices {
-			s.Choices[j].Label = subString(s.Choices[j].Label, params)
+	subSteps := func(steps []Step) []Step {
+		out := make([]Step, len(steps))
+		for i, s := range steps {
+			s.Label = subString(s.Label, params)
+			s.Command = subString(s.Command, params)
+			s.Argv = subStringList(s.Argv, params)
+			s.Script = subString(s.Script, params)
+			s.Prompt = subString(s.Prompt, params)
+			s.Hint = subString(s.Hint, params)
+			s.Device = subString(s.Device, params)
+			s.Mutex = subString(s.Mutex, params)
+			s.Env = subStringMap(s.Env, params)
+			s.Params = subStringMap(s.Params, params)
+			s.Choices = append([]Choice{}, s.Choices...)
+			for j := range s.Choices {
+				s.Choices[j].Label = subString(s.Choices[j].Label, params)
+			}
+			out[i] = s
 		}
-		out.Steps[i] = s
+		return out
 	}
+	out.Steps = subSteps(wf.Steps)
+	out.Cleanup = subSteps(wf.Cleanup)
 	return &out
 }
 

@@ -89,9 +89,10 @@ if [[ "$SKIP_BREW" == false ]]; then
 	echo "release-publish: brew upgrade …" >&2
 	brew update
 	brew upgrade marcelocantos/tap/spyder 2>/dev/null || brew install marcelocantos/tap/spyder
-	got="$(spyder --version 2>/dev/null || true)"
+	installed_spyder="$(brew --prefix marcelocantos/tap/spyder)/bin/spyder"
+	got="$("$installed_spyder" --version 2>/dev/null || true)"
 	if [[ "$got" != "$TAG" && "$got" != "$VERSION" ]]; then
-		echo "release-publish: expected spyder --version ${TAG}, got ${got:-<missing>}" >&2
+		echo "release-publish: expected ${installed_spyder} --version ${TAG}, got ${got:-<missing>}" >&2
 		exit 1
 	fi
 	echo "release-publish: brew is ${got}; restart the daemon with supervisorctl restart spyder (not brew services)" >&2

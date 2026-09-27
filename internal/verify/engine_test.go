@@ -47,6 +47,185 @@ func runWF(t *testing.T, hub *Hub, yaml string, cwd string, answers map[string]A
 	return run.Wait()
 }
 
+func TestCleanupRunsOnPassFailureAndAbort(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		mainCode   int
+		wantStatus string
+	}{
+		{name: "pass", wantStatus: StatusPassed},
+		{name: "failure", mainCode: 1, wantStatus: StatusInvestigate},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var cleaned atomic.Int32
+			hub := NewHub(HubArgs{Shell: func(_ context.Context, req StepRequest) ExecResult {
+				if req.Step.ID == "cleanup_app" {
+					cleaned.Add(1)
+					return ExecResult{}
+				}
+				return ExecResult{Code: tc.mainCode}
+			}})
+			res := runWF(t, hub, `
+name: cleanup-test
+steps:
+  - id: main
+    type: shell
+    argv: ["/bin/true"]
+cleanup:
+  - id: cleanup_app
+    type: shell
+    argv: ["/bin/true"]
+`, "", nil)
+			if res.Status != tc.wantStatus || cleaned.Load() != 1 {
+				t.Fatalf("status=%s cleanup calls=%d", res.Status, cleaned.Load())
+			}
+			if len(res.Steps) < 2 || res.Steps[len(res.Steps)-1].StepID != "cleanup_app" {
+				t.Fatalf("cleanup missing from result: %+v", res.Steps)
+			}
+		})
+	}
+
+	started := make(chan struct{})
+	var cleaned atomic.Int32
+	hub := NewHub(HubArgs{Shell: func(ctx context.Context, req StepRequest) ExecResult {
+		if req.Step.ID == "cleanup_app" {
+			cleaned.Add(1)
+			return ExecResult{}
+		}
+		close(started)
+		<-ctx.Done()
+		return ExecResult{Code: 124, TimedOut: true}
+	}})
+	wf := loadWF(t, `
+name: abort-cleanup
+steps:
+  - id: main
+    type: shell
+    argv: ["/bin/true"]
+cleanup:
+  - id: cleanup_app
+    type: shell
+    argv: ["/bin/true"]
+`)
+	run, err := hub.Start(context.Background(), StartArgs{Workflow: wf, Cwd: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	if err := hub.Abort(run.ID, "owner stopped run"); err != nil {
+		t.Fatal(err)
+	}
+	res := run.Wait()
+	if res.Status != StatusAborted || cleaned.Load() != 1 || !strings.Contains(res.FailedReason, "owner stopped run") {
+		t.Fatalf("status=%s reason=%q cleanup calls=%d", res.Status, res.FailedReason, cleaned.Load())
+	}
+}
+
+func TestIdleTimeoutStopsWaitingGateAndRunsCleanup(t *testing.T) {
+	var cleaned atomic.Int32
+	hub := NewHub(HubArgs{Shell: func(_ context.Context, req StepRequest) ExecResult {
+		if req.Step.ID == "cleanup_app" {
+			cleaned.Add(1)
+		}
+		return ExecResult{}
+	}})
+	res := runWF(t, hub, `
+name: idle-gate
+idle_timeout_sec: 0.05
+steps:
+  - id: ask
+    type: human_gate
+    prompt: Look
+    choices:
+      - id: pass
+        label: Yes
+cleanup:
+  - id: cleanup_app
+    type: shell
+    argv: ["/bin/true"]
+`, "", nil)
+	if res.Status != StatusInvestigate || cleaned.Load() != 1 || !strings.Contains(res.FailedReason, "no progress") {
+		t.Fatalf("status=%s reason=%q cleanup calls=%d", res.Status, res.FailedReason, cleaned.Load())
+	}
+}
+
+func TestIdleTimeoutStopsSilentCommandAndRunsCleanup(t *testing.T) {
+	var cleaned atomic.Int32
+	hub := NewHub(HubArgs{Shell: func(ctx context.Context, req StepRequest) ExecResult {
+		if req.Step.ID == "cleanup_app" {
+			cleaned.Add(1)
+			return ExecResult{}
+		}
+		<-ctx.Done()
+		return ExecResult{Code: 124, TimedOut: true}
+	}})
+	res := runWF(t, hub, `
+name: idle-command
+idle_timeout_sec: 0.05
+steps:
+  - id: main
+    type: shell
+    argv: ["/bin/true"]
+cleanup:
+  - id: cleanup_app
+    type: shell
+    argv: ["/bin/true"]
+`, "", nil)
+	if res.Status != StatusInvestigate || cleaned.Load() != 1 || !strings.Contains(res.FailedReason, "no progress") {
+		t.Fatalf("status=%s reason=%q cleanup calls=%d", res.Status, res.FailedReason, cleaned.Load())
+	}
+}
+
+func TestCommandOutputKeepsIdleRunAlive(t *testing.T) {
+	hub := NewHub(HubArgs{Shell: func(_ context.Context, req StepRequest) ExecResult {
+		if req.Step.ID == "main" {
+			for i := 0; i < 8; i++ {
+				time.Sleep(40 * time.Millisecond)
+				req.Emit("working")
+			}
+		}
+		return ExecResult{}
+	}})
+	res := runWF(t, hub, `
+name: active-command
+idle_timeout_sec: 0.2
+steps:
+  - id: main
+    type: shell
+    argv: ["/bin/true"]
+cleanup:
+  - id: cleanup_app
+    type: shell
+    argv: ["/bin/true"]
+`, "", nil)
+	if res.Status != StatusPassed {
+		t.Fatalf("status=%s reason=%q", res.Status, res.FailedReason)
+	}
+}
+
+func TestCleanupFailureCannotPass(t *testing.T) {
+	hub := NewHub(HubArgs{Shell: func(_ context.Context, req StepRequest) ExecResult {
+		if req.Step.ID == "cleanup_app" {
+			return ExecResult{Code: 7}
+		}
+		return ExecResult{}
+	}})
+	res := runWF(t, hub, `
+name: cleanup-failure
+steps:
+  - id: main
+    type: shell
+    argv: ["/bin/true"]
+cleanup:
+  - id: cleanup_app
+    type: shell
+    argv: ["/bin/false"]
+`, "", nil)
+	if res.Status != StatusInvestigate || res.FailedStepID != "cleanup_app" || !strings.Contains(res.FailedReason, "cleanup_app exit 7") {
+		t.Fatalf("status=%s step=%s reason=%q", res.Status, res.FailedStepID, res.FailedReason)
+	}
+}
+
 func TestValidate_UnknownGroup(t *testing.T) {
 	_, err := Load([]byte(`
 name: sample
@@ -61,6 +240,24 @@ steps:
 `))
 	if err == nil || !strings.Contains(err.Error(), "unknown group") {
 		t.Fatalf("want unknown group, got %v", err)
+	}
+}
+
+func TestValidate_CleanupIsOutsideStepGraph(t *testing.T) {
+	_, err := Load([]byte(`
+name: sample
+steps:
+  - id: main
+    type: shell
+    argv: ["/bin/true"]
+    requires: [stop_game]
+cleanup:
+  - id: stop_game
+    type: shell
+    argv: ["/bin/true"]
+`))
+	if err == nil || !strings.Contains(err.Error(), "requires unknown step stop_game") {
+		t.Fatalf("want cleanup dependency rejected, got %v", err)
 	}
 }
 

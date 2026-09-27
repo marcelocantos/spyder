@@ -1510,6 +1510,16 @@ Step kinds:
 - `spyder_script` — in-process `app_exec` (`script` path + optional `params`)
 - `human_gate` — structured owner question (dashboard `/dashboard#verify`). The Verify tab is live over `GET /ws/verify` (Snapshot JSON on connect and on every run change); it does not poll.
 
+Verification stops after five minutes without a step transition or emitted
+output. Set `idle_timeout_sec` on the workflow to change that limit. A waiting
+owner gate also counts as idle; answer it within the limit or resume the run.
+
+Use a top-level `cleanup:` list of `shell` steps for device teardown. Cleanup
+runs after pass, failure, investigation, abort, and idle timeout, using fresh
+bounded contexts after active steps stop. Each command defaults to a 30-second
+timeout and appears in the dashboard and final report. Every cleanup command
+is attempted; a cleanup failure prevents a passed result.
+
 The Verify tab displays physical screenshots from workflow steps and pauses
 app thumbnail and preview capture. This keeps screenshot readback from
 disturbing the app while an owner judges the screen.
