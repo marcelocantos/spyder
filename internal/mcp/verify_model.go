@@ -4,14 +4,53 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/jpeg"
+	"image/png"
 	"path/filepath"
 	"strings"
 
 	"github.com/marcelocantos/claudia"
 	"github.com/marcelocantos/spyder/internal/verify"
 )
+
+// Claudia v0.44 scans Claude's JSONL output with a 1 MiB line limit. The
+// image returned by Claude's Read tool is base64 inside one line, so bound
+// the model copy well below that limit. Keep the full PNG in the run bundle.
+const maxModelImageBytes = 512 * 1024
+
+func modelImage(pngData []byte) ([]byte, error) {
+	source, err := png.Decode(bytes.NewReader(pngData))
+	if err != nil {
+		return nil, fmt.Errorf("decode screenshot PNG: %w", err)
+	}
+	for {
+		for _, quality := range []int{65, 50, 35, 25} {
+			var out bytes.Buffer
+			if err := jpeg.Encode(&out, source, &jpeg.Options{Quality: quality}); err != nil {
+				return nil, fmt.Errorf("encode model JPEG: %w", err)
+			}
+			if out.Len() <= maxModelImageBytes {
+				return out.Bytes(), nil
+			}
+		}
+		bounds := source.Bounds()
+		width, height := bounds.Dx()/2, bounds.Dy()/2
+		if width < 640 || height < 360 {
+			return nil, fmt.Errorf("model JPEG remains over %d bytes at %dx%d", maxModelImageBytes, bounds.Dx(), bounds.Dy())
+		}
+		scaled := image.NewRGBA(image.Rect(0, 0, width, height))
+		for y := 0; y < height; y++ {
+			for x := 0; x < width; x++ {
+				scaled.Set(x, y, source.At(bounds.Min.X+x*2, bounds.Min.Y+y*2))
+			}
+		}
+		source = scaled
+	}
+}
 
 // execVerifyModel runs a bounded one-shot text task using Claudia's model
 // predicates for selection. The model's final result is recorded in the
@@ -33,7 +72,7 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 		req.Emit(fmt.Sprintf("Claudia selected %s %s (%s)", pick.Provider, pick.Model, pick.Reason))
 	}
 	prompt := req.Step.Prompt
-	var screenshotPath string
+	var modelImagePath string
 	if req.Step.CaptureScreen {
 		if pick.Provider != claudia.ProviderClaude {
 			return verify.ExecResult{Code: 1, Output: fmt.Sprintf("model screen review needs Claude's image-reading tool; Claudia selected %s", pick.Provider)}
@@ -41,24 +80,35 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 		if err := ctx.Err(); err != nil {
 			return verify.ExecResult{Code: 124, Output: err.Error(), TimedOut: true}
 		}
-		screenshotPath = filepath.Join(req.Env["SPYDER_RUN_DIR"], sanitizeFilename(req.Step.ID)+".png")
+		shotDir := req.Env["SPYDER_RUN_DIR"]
+		stem := sanitizeFilename(req.Step.ID)
+		screenshotPath := filepath.Join(shotDir, stem+".png")
+		modelImagePath = filepath.Join(filepath.Dir(shotDir), "model-inputs", stem+".jpg")
 		h.mu.Lock()
 		adapter, _, id, err := h.resolveAdapter(req.Step.Device)
-		var png []byte
+		var pngData []byte
 		if err == nil {
-			png, err = adapter.Screenshot(id)
+			pngData, err = adapter.Screenshot(id)
 		}
 		h.mu.Unlock()
 		if err != nil {
 			return verify.ExecResult{Code: 1, Output: "model screenshot: " + err.Error()}
 		}
-		if err := writeOutputFile(screenshotPath, png); err != nil {
+		if err := writeOutputFile(screenshotPath, pngData); err != nil {
 			return verify.ExecResult{Code: 1, Output: "saving model screenshot: " + err.Error()}
+		}
+		jpegData, err := modelImage(pngData)
+		if err != nil {
+			return verify.ExecResult{Code: 1, Output: "preparing model screenshot: " + err.Error()}
+		}
+		if err := writeOutputFile(modelImagePath, jpegData); err != nil {
+			return verify.ExecResult{Code: 1, Output: "saving model image: " + err.Error()}
 		}
 		if req.Emit != nil {
 			req.Emit("captured current screen: " + screenshotPath)
+			req.Emit(fmt.Sprintf("model image: %s (%d bytes)", modelImagePath, len(jpegData)))
 		}
-		prompt = fmt.Sprintf("Read the current physical screenshot at %s with the Read image tool before deciding. If the image cannot be opened, reject it.\n\n%s", screenshotPath, prompt)
+		prompt = fmt.Sprintf("Read the current physical screenshot at %s with the Read image tool before deciding. If the image cannot be opened, reject it.\n\n%s", modelImagePath, prompt)
 	}
 	cfg := claudia.TaskConfig{
 		ID:       "spyder-verify-" + req.Step.ID,
@@ -72,7 +122,7 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 	switch pick.Provider {
 	case claudia.ProviderClaude:
 		cfg.DisallowTools = []string{"Bash", "Write", "Edit", "WebFetch", "WebSearch"}
-		if screenshotPath == "" {
+		if modelImagePath == "" {
 			cfg.DisallowTools = append(cfg.DisallowTools, "Read")
 		}
 	case claudia.ProviderCodex:
@@ -93,7 +143,7 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 	for ev := range events {
 		switch ev.Type {
 		case claudia.TaskEventToolUse:
-			if ev.ToolName == "Read" && strings.Contains(ev.ToolInput, screenshotPath) && screenshotPath != "" {
+			if ev.ToolName == "Read" && strings.Contains(ev.ToolInput, modelImagePath) && modelImagePath != "" {
 				readScreenshot = true
 			}
 		case claudia.TaskEventResult:
@@ -111,7 +161,7 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 	if result == "" {
 		return verify.ExecResult{Code: 1, Output: "claudia task: no final result"}
 	}
-	if screenshotPath != "" && !readScreenshot {
+	if modelImagePath != "" && !readScreenshot {
 		return verify.ExecResult{Code: 1, Output: "model did not read the current screenshot"}
 	}
 	if req.Emit != nil {

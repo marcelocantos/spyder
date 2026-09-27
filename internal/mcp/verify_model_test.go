@@ -9,6 +9,7 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,30 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/verify"
 )
+
+func TestModelImageFitsClaudeTaskStream(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 2200, 1200))
+	rng := rand.New(rand.NewSource(1))
+	for y := 0; y < img.Bounds().Dy(); y++ {
+		for x := 0; x < img.Bounds().Dx(); x++ {
+			img.SetRGBA(x, y, color.RGBA{R: uint8(rng.Intn(256)), G: uint8(rng.Intn(256)), B: uint8(rng.Intn(256)), A: 255})
+		}
+	}
+	var source bytes.Buffer
+	if err := png.Encode(&source, img); err != nil {
+		t.Fatal(err)
+	}
+	compressed, err := modelImage(source.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compressed) > maxModelImageBytes {
+		t.Fatalf("model image is %d bytes, limit %d", len(compressed), maxModelImageBytes)
+	}
+	if _, _, err := image.Decode(bytes.NewReader(compressed)); err != nil {
+		t.Fatalf("bounded model image is unreadable: %v", err)
+	}
+}
 
 func TestVerifyModelLive(t *testing.T) {
 	if os.Getenv("SPYDER_LIVE_MODEL") != "1" {
@@ -94,9 +119,43 @@ func TestVerifyModelRejectsWrongScreenLive(t *testing.T) {
 		Accept:        "PASS",
 		ModelSpec:     []byte(`{"mode":"task","purpose":"analysis","quality":"standard","prefer_provider":"claude","exclude_providers":["grok","codex","cursor","bedrock","ollama"]}`),
 	}
-	result := h.execVerifyModel(ctx, verify.StepRequest{Step: step, Cwd: t.TempDir(), Env: map[string]string{"SPYDER_RUN_DIR": filepath.Join(t.TempDir(), "screenshots")}, Emit: func(line string) { t.Log(line) }})
+	shotDir := filepath.Join(t.TempDir(), "screenshots")
+	result := h.execVerifyModel(ctx, verify.StepRequest{Step: step, Cwd: t.TempDir(), Env: map[string]string{"SPYDER_RUN_DIR": shotDir}, Emit: func(line string) { t.Log(line) }})
 	if result.Code == 0 || !strings.Contains(result.Output, "FAIL") {
 		t.Fatalf("wrong screen was not rejected by model: %+v", result)
+	}
+	modelFile := filepath.Join(filepath.Dir(shotDir), "model-inputs", "wrong_screen.jpg")
+	info, err := os.Stat(modelFile)
+	if err != nil || info.Size() > maxModelImageBytes {
+		t.Fatalf("model image exceeds stream budget: err=%v info=%v", err, info)
+	}
+}
+
+func TestVerifyModelAcceptsNightScreenLive(t *testing.T) {
+	path := os.Getenv("SPYDER_LIVE_NIGHT_SCREEN_IMAGE")
+	if path == "" {
+		t.Skip("set SPYDER_LIVE_NIGHT_SCREEN_IMAGE to a known night race screenshot")
+	}
+	pngData, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandlerWithAdapters(&stubAdapter{screenshot: func(string) ([]byte, error) { return pngData, nil }}, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	step := verify.Step{
+		ID:            "night_screen",
+		Type:          verify.KindModel,
+		Device:        "00008103-001122334455667A",
+		CaptureScreen: true,
+		Prompt:        "Inspect whether this fresh device image is the right starting screen for the owner check. Expected: A live Thunderdome 100 Night race is on screen, rather than a menu or another track. Return exactly PASS if it matches. Otherwise return FAIL followed by a short reason. Do not judge the owner's subjective question.",
+		Accept:        "PASS",
+		ModelSpec:     []byte(`{"mode":"task","purpose":"analysis","quality":"standard","prefer_provider":"claude","exclude_providers":["grok","codex","cursor","bedrock","ollama"]}`),
+	}
+	shotDir := filepath.Join(t.TempDir(), "screenshots")
+	result := h.execVerifyModel(ctx, verify.StepRequest{Step: step, Cwd: t.TempDir(), Env: map[string]string{"SPYDER_RUN_DIR": shotDir}, Emit: func(line string) { t.Log(line) }})
+	if result.Code != 0 || result.Output != "PASS" {
+		t.Fatalf("matching night screen not accepted: %+v", result)
 	}
 }
 
