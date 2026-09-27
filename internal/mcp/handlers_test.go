@@ -645,6 +645,7 @@ func TestHandleLaunchApp_EnvPassthrough(t *testing.T) {
 // launch_app auto-injects SPYDER_APP_CHANNEL when the appchannel
 // manager is wired and the caller didn't supply one. (🎯T83)
 func TestHandleLaunchApp_AutoInjectsAppChannelEnv(t *testing.T) {
+	t.Setenv("SPYDER_APP_CHANNEL_HOST", "192.168.1.217")
 	var got map[string]string
 	ios := &stubAdapter{launchApp: func(id, bundle string, env map[string]string) error {
 		got = env
@@ -671,10 +672,15 @@ func TestHandleLaunchApp_AutoInjectsAppChannelEnv(t *testing.T) {
 	if !ok {
 		t.Fatalf("no keyed listener after launch_app")
 	}
-	// The iPad fixture is a hardware UDID, so the host is the first
-	// LAN IPv4 (machine-dependent) — assert on the suffix only.
-	if !strings.HasSuffix(got["SPYDER_APP_CHANNEL"], ":"+strconv.Itoa(l.Port)) {
-		t.Errorf("SPYDER_APP_CHANNEL = %q; want suffix :%d", got["SPYDER_APP_CHANNEL"], l.Port)
+	if want := "192.168.1.217:" + strconv.Itoa(l.Port); got["SPYDER_APP_CHANNEL"] != want {
+		t.Errorf("SPYDER_APP_CHANNEL = %q; want %q", got["SPYDER_APP_CHANNEL"], want)
+	}
+}
+
+func TestPickAppChannelHostRejectsInvalidOverride(t *testing.T) {
+	t.Setenv("SPYDER_APP_CHANNEL_HOST", "127.0.0.1")
+	if _, err := pickAppChannelHost("ios", "00008103-001122334455667A"); err == nil {
+		t.Fatal("loopback override cannot be reached by a physical iPad")
 	}
 }
 

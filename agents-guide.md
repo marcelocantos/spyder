@@ -713,6 +713,10 @@ app_log_get(device="Jevons", bundle_id="com.example.app")
 You can still pass an explicit `SPYDER_APP_CHANNEL` in `env` to
 override the auto-injected value (e.g. for an app on one device
 dialing a listener on another host).
+For physical devices, Spyder chooses the IPv4 address of the host's
+default-route interface. If a VPN or unusual routing makes that address
+unreachable from the device, set `SPYDER_APP_CHANNEL_HOST` to the host's
+device-facing IPv4 address in the daemon environment.
 
 Compared to the old raw-text path: structured fields (level,
 subsystem, format, args), no per-line regex parsing, server-side jq

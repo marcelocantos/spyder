@@ -6,6 +6,7 @@ package mcp
 import (
 	"fmt"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/marcelocantos/spyder/internal/device"
@@ -17,7 +18,8 @@ import (
 //
 //   - iOS simulator       → "127.0.0.1" (simulator shares the host loopback)
 //   - Android emulator    → "10.0.2.2" (the emulator's alias for the host)
-//   - Physical iOS/Android → first LAN IPv4 advertised by the host
+//   - Physical iOS/Android → SPYDER_APP_CHANNEL_HOST, then the default-route
+//     interface's IPv4, then the first available LAN IPv4
 //
 // Returns an error when the device is physical and no LAN address is
 // available — spyder can't tell the device where to dial.
@@ -35,12 +37,32 @@ func pickAppChannelHost(platform, deviceID string) (string, error) {
 		// Desktop apps run on the same host as spyder.
 		return "127.0.0.1", nil
 	}
+	if host := strings.TrimSpace(os.Getenv("SPYDER_APP_CHANNEL_HOST")); host != "" {
+		ip := net.ParseIP(host)
+		if ip == nil || ip.To4() == nil || ip.IsUnspecified() || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() {
+			return "", fmt.Errorf("appchannel: SPYDER_APP_CHANNEL_HOST must be a reachable IPv4 address, got %q", host)
+		}
+		return ip.To4().String(), nil
+	}
 	hosts, err := lanHosts()
 	if err != nil {
 		return "", fmt.Errorf("appchannel: enumerate LAN hosts: %w", err)
 	}
 	if len(hosts) == 0 {
 		return "", fmt.Errorf("appchannel: no LAN IPv4 address available for physical device")
+	}
+	// A UDP connect only asks the kernel for a route; it sends no packet.
+	// Prefer that interface over virtual bridge addresses that a phone
+	// cannot reach. The explicit override above handles VPNs and other
+	// networks where the default route is not the device-facing LAN.
+	if conn, err := net.Dial("udp4", "192.0.2.1:9"); err == nil {
+		routed := conn.LocalAddr().(*net.UDPAddr).IP.String()
+		_ = conn.Close()
+		for _, host := range hosts {
+			if host == routed {
+				return host, nil
+			}
+		}
 	}
 	return hosts[0], nil
 }
