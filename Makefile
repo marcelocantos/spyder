@@ -82,7 +82,7 @@ bullseye:
 	@CGO_ENABLED=1 go vet ./... && echo "✓ vet"
 	@CGO_ENABLED=1 go build -ldflags "-X main.version=dev" -o bin/spyder . && echo "✓ build"
 	@go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios && echo "✓ build ios"
-	@CGO_ENABLED=1 go test ./... 2>&1 | tail -20 && echo "✓ tests"
+	@CGO_ENABLED=1 go test ./... && echo "✓ tests"
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
 	if [ -z "$$dirty" ]; then echo "✓ working tree clean"; \
 	else \
