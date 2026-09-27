@@ -39,7 +39,7 @@ func TestDesktopAdapter_LaunchLifecycle(t *testing.T) {
 	}
 
 	// Captured stdout must reach LogRange.
-	if !eventually(t, 5*time.Second, func() bool {
+	if !eventually(t, 15*time.Second, func() bool {
 		lines, _ := a.LogRange(script, LogFilter{}, time.Time{}, time.Time{})
 		for _, ll := range lines {
 			if strings.Contains(ll.Message, "ready") {

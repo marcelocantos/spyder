@@ -2190,6 +2190,14 @@ holder).
 
 ## Common gotchas
 
+- **`spyder verify` skips steps that already passed** → that is the
+  pass record at `<cwd>/verify-runs/resume/<workflow>.json`. Delete the
+  file to rerun. At most one `human_gate` is in flight anywhere on the
+  daemon. A `STATUS passed` block with exit 0 is final.
+- **`battery_history` is empty after a fresh start** → the daemon
+  samples connected iOS/Android devices every minute into
+  `~/.spyder/battery/` (14-day JSONL). Desktop hosts are not sampled.
+  Dashboard: `/dashboard#battery`.
 - **"tunneld unavailable"** in a tool error → the bundled `ios tunnel
   start --userspace` child process is meant to be running. If spyder
   started it but it crashed, `brew services restart spyder` brings it

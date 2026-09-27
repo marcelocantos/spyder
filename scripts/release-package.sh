@@ -35,6 +35,7 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
 # Homebrew-releaser cds into the single top-level directory; keep that prefix.
 mkdir -p "$DIST/$TARBALL_DIR"
 mv "$STAGE/bin" "$STAGE/libexec" "$DIST/$TARBALL_DIR/"
+cp "$ROOT/LICENSE" "$ROOT/NOTICE" "$DIST/$TARBALL_DIR/"
 rmdir "$STAGE"
 tar -czf "$DIST/$ASSET" -C "$DIST" "$TARBALL_DIR"
 rm -rf "$DIST/$TARBALL_DIR"

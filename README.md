@@ -2,8 +2,9 @@
 
 HTTP-based MCP server for cross-platform mobile development workflow
 orchestration. Spyder owns device inventory, live device facts (battery,
-charging, foreground app), screenshots, app lifecycle, and reservations
-that serialise concurrent agent sessions on the same physical device.
+charging, foreground app), fleet battery history, screenshots, app
+lifecycle, verification workflows, and reservations that serialise
+concurrent agent sessions on the same physical device.
 
 Not a replacement for
 [mobile-mcp](https://github.com/mobile-next/mobile-mcp) (UI automation via
@@ -174,7 +175,26 @@ spyder crashes iPad --bundle-id com.example.app --since -1h --json
 spyder runs list
 spyder runs show 20260419-143022-a3f1b2
 spyder runs artefacts 20260419-143022-a3f1b2
+spyder battery-history --since -6h --json
+spyder verify workflows/smoke.yaml --answer look=pass
 ```
+
+## Dashboard
+
+The daemon serves a browser cockpit at
+`http://127.0.0.1:3030/dashboard`:
+
+- `#battery` — fleet charge over time (sampled every minute into
+  `~/.spyder/battery/`)
+- `#verify` — live DAG workflow progress, logs, screenshots, and owner
+  gates for `spyder verify`
+
+Deep-link with the hash; no second HTTP server.
+
+`spyder verify path/to/workflow.yaml` runs a product-neutral step graph
+(`shell`, `spyder_script`, `human_gate`). Progress is a pass record at
+`<cwd>/verify-runs/resume/<workflow>.json` — delete it to rerun. A
+closing `STATUS` / `END STATUS` block is the result; exit 0 is a pass.
 
 `--as OWNER` flags default to `filepath.Base(cwd)` so project-rooted
 shells get a sensible reservation identity without ceremony.
