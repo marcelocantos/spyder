@@ -1,6 +1,7 @@
 bin/
 dist/
 .DS_Store
+.playwright-mcp/
 .claude/
 .spyder/
 

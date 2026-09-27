@@ -23,6 +23,9 @@ type Hub struct {
 	script StepRunner
 	sleep  func(time.Duration)
 	now    func() time.Time
+
+	liveMu sync.Mutex
+	live   map[chan struct{}]struct{}
 }
 
 // HubArgs configures a Hub. Zero values pick production defaults.
@@ -55,6 +58,7 @@ func NewHub(args HubArgs) *Hub {
 		script: args.Script,
 		sleep:  sleep,
 		now:    now,
+		live:   map[chan struct{}]struct{}{},
 	}
 }
 
@@ -100,6 +104,7 @@ func (h *Hub) Start(ctx context.Context, args StartArgs) (*Run, error) {
 	h.mu.Lock()
 	h.runs[run.ID] = run
 	h.mu.Unlock()
+	h.notify()
 	go run.drive()
 	return run, nil
 }
@@ -153,6 +158,32 @@ func (h *Hub) RunByID(id string) *Run {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.runs[id]
+}
+
+// subscribe is a coalesced wake channel for dashboard WebSocket clients.
+// A buffered 1-slot send means a slow consumer gets the latest snapshot,
+// not every intermediate log line.
+func (h *Hub) subscribe() (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	h.liveMu.Lock()
+	h.live[ch] = struct{}{}
+	h.liveMu.Unlock()
+	return ch, func() {
+		h.liveMu.Lock()
+		delete(h.live, ch)
+		h.liveMu.Unlock()
+	}
+}
+
+func (h *Hub) notify() {
+	h.liveMu.Lock()
+	defer h.liveMu.Unlock()
+	for ch := range h.live {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // Snapshot is verify_status payload.

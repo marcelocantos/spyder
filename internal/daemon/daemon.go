@@ -42,6 +42,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/streamrelay"
+	"github.com/marcelocantos/spyder/internal/verify"
 	"github.com/marcelocantos/spyder/internal/wedge"
 )
 
@@ -326,11 +327,14 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	mux.Handle("/mcp", server.NewStreamableHTTPServer(srv,
 		server.WithHeartbeatInterval(30*time.Second)))
 	mux.Handle(rest.Prefix, rest.NewHandler(handler))
-	// 🎯T91.5 the single-page dashboard over the app-channel surface. Pure
-	// presentation on top of the same REST tools; served at /dashboard.
+	// 🎯T91.5 the single-page dashboard over the app-channel surface.
+	// REST for mutations; 🎯T139 Verify live feed at /ws/verify.
 	dash := dashboard.NewHandler()
 	mux.Handle(dashboard.Path, dash)
 	mux.Handle(dashboard.Path+"/", dash)
+	if handler != nil {
+		mux.HandleFunc(verify.WSPath, handler.VerifyHub().HandleWS)
+	}
 	// 🎯T101/🎯T106 browser player: the wasm-compiled spyder player, served
 	// at /player/?name=<server>. Attaches to the relay via /ws/wire like
 	// the native player.

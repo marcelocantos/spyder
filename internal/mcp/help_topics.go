@@ -215,7 +215,7 @@ names, deploys, prompts, and scripts live only in the workflow file.
 Nested groups are dashboard collapse only. At most one human_gate is
 in flight anywhere on the daemon. Pass records live at
 <cwd>/verify-runs/resume/<workflow>.json — delete the file to rerun.
-Dashboard: /dashboard#verify.
+Dashboard: /dashboard#verify (live over /ws/verify).
 
 recipes:
 # check a workflow file

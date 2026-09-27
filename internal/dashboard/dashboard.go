@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package dashboard serves spyder's single-page control UI (🎯T91.5 /
-// 🎯T137 / 🎯T138): a browser view over the app-channel surface
+// 🎯T137 / 🎯T138 / 🎯T139): a browser view over the app-channel surface
 // (info/tweaks/logs/state/screenshot), a fleet Battery tab, and a Verify
-// tab for DAG workflows. It is pure presentation — every datum it
-// renders comes from the same REST tool surface (POST /api/v1/<tool>) an
-// agent uses, so there is no dashboard-specific backend to keep in sync.
+// tab for DAG workflows. Mutations go through the same REST tool surface
+// (POST /api/v1/<tool>) an agent uses. Verify live state is pushed on
+// GET /ws/verify as Snapshot JSON; the tab does not poll.
 package dashboard
 
 import (
@@ -22,7 +22,8 @@ var indexHTML []byte
 
 // NewHandler returns an http.Handler serving the dashboard SPA. It handles
 // the Path prefix; any sub-path returns the same single page (the app is
-// client-routed). The page talks to the REST surface on the same origin.
+// client-routed). The page talks to REST and, for Verify, GET /ws/verify
+// on the same origin.
 func NewHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {

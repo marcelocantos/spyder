@@ -3,11 +3,11 @@
   Copyright 2026 Marcelo Cantos
   SPDX-License-Identifier: Apache-2.0
 
-  spyder dashboard (🎯T91.5 / 🎯T137 / 🎯T138) — a single UI over the
-  app-channel control surface (info/tweaks/logs/state/screenshot), fleet
-  battery history, and verification workflows. Talks only to spyder's
-  REST layer (POST /api/v1/<tool>); vanilla JS, no build step, embedded
-  and served by the daemon.
+  spyder dashboard (🎯T91.5 / 🎯T137 / 🎯T138 / 🎯T139) — a single UI over
+  the app-channel control surface (info/tweaks/logs/state/screenshot),
+  fleet battery history, and verification workflows. Mutations go through
+  REST (POST /api/v1/<tool>). Verify live state is a WebSocket at
+  /ws/verify. Vanilla JS, no build step, embedded and served by the daemon.
 -->
 <html lang="en">
 <head>
@@ -43,9 +43,19 @@
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
   .tabs { display: flex; gap: 2px; padding: 8px 12px 0; background: var(--panel);
           border-bottom: 1px solid var(--line); }
-  .tab { padding: 7px 16px; cursor: pointer; color: var(--dim); border-radius: 6px 6px 0 0; }
+  .tab { padding: 7px 16px; cursor: pointer; color: var(--dim); border-radius: 6px 6px 0 0;
+         display: inline-flex; align-items: center; gap: 6px; }
   .tab:hover { color: var(--fg); }
   .tab.sel { color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-bottom: none; }
+  .tab-count { display: inline-flex; align-items: center; justify-content: center;
+               min-width: 1.35em; height: 1.35em; padding: 0 5px; border-radius: 999px;
+               background: var(--accent); color: #0e1116; font-size: 11px; font-weight: 700;
+               line-height: 1; font-variant-numeric: tabular-nums; }
+  @keyframes tab-count-blink {
+    0%, 49% { opacity: 1; }
+    50%, 100% { opacity: 0.12; }
+  }
+  .tab-count.blink { animation: tab-count-blink 0.1s steps(1, end) 8; }
   .content { flex: 1; overflow: auto; padding: 16px; }
   .hidden { display: none !important; }
   h2 { margin: 0 0 12px; font-size: 14px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
@@ -137,7 +147,7 @@
       <div class="tab" data-tab="state">State</div>
       <div class="tab" data-tab="stream">Stream</div>
       <div class="tab" data-tab="battery">Battery</div>
-      <div class="tab" data-tab="verify">Verify</div>
+      <div class="tab" data-tab="verify">Verify<span id="verify-badge" class="tab-count hidden" aria-live="polite">0</span></div>
     </div>
     <div class="content">
       <div id="none" class="empty">Select a connected app on the left.</div>
@@ -202,8 +212,7 @@
       <div id="tab-verify" class="tabpane hidden">
         <div class="row">
           <h2 style="margin:0">Verify</h2>
-          <button class="sm" id="verify-refresh">Refresh</button>
-          <span class="muted" id="verify-stat">no run</span>
+          <span class="muted" id="verify-stat">connecting…</span>
         </div>
         <div class="row" style="align-items:flex-start">
           <div style="flex:1;min-width:220px">
@@ -335,7 +344,6 @@ function showTab(tab, force) {
   if (shot) shot.classList.toggle("hidden", tab === "battery" || tab === "verify");
   stopLogPoll();
   stopBattPoll();
-  stopVerifyPoll();
   if (tab === "battery") {
     if (location.hash !== "#battery") history.replaceState(null, "", "#battery");
   } else if (tab === "verify") {
@@ -348,7 +356,6 @@ function showTab(tab, force) {
   else if (tab === "state") loadSlices();
   else if (tab === "stream") loadStreamServers();
   else if (tab === "battery") startBattPoll(true);
-  else if (tab === "verify") startVerifyPoll(true);
 }
 for (const t of document.querySelectorAll(".tab")) t.onclick = () => showTab(t.dataset.tab);
 
@@ -887,26 +894,37 @@ for (const el of $("batt-windows").children) {
 }
 $("batt-refresh").onclick = () => loadBattery(true);
 
-let verifyTimer = null;
 let verifyLogLen = 0;
-function stopVerifyPoll() { if (verifyTimer) { clearInterval(verifyTimer); verifyTimer = null; } }
-function startVerifyPoll(immediate) {
-  stopVerifyPoll();
-  const tick = () => loadVerify();
-  if (immediate) tick();
-  verifyTimer = setInterval(tick, 1000);
+let verifySeen = null;
+let verifyWS = null;
+function blinkVerifyBadge() {
+  const el = $("verify-badge");
+  el.classList.remove("blink");
+  void el.offsetWidth;
+  el.classList.add("blink");
+  el.addEventListener("animationend", () => el.classList.remove("blink"), {once: true});
 }
-async function loadVerify() {
-  let snap;
-  try { snap = await callTool("verify_status", {}); }
-  catch (e) { $("verify-stat").textContent = "offline"; return; }
+function applyVerifySnapshot(snap) {
   const runs = snap.runs || [];
   const gate = snap.gate || null;
+  const running = runs.filter(r => r.status === "running");
+  const badge = $("verify-badge");
+  badge.textContent = String(running.length);
+  badge.classList.toggle("hidden", running.length === 0);
+  if (verifySeen) {
+    for (const r of runs) {
+      if (r.run_id && !verifySeen.has(r.run_id)) {
+        blinkVerifyBadge();
+        break;
+      }
+    }
+  }
+  verifySeen = new Set(runs.map(r => r.run_id).filter(Boolean));
   const run = pickVerifyRun(runs, gate);
   if (!run) {
     $("verify-stat").textContent = "no run";
     $("verify-timeline").innerHTML = '<div class="empty">No verification run.</div>';
-    $("verify-gate").classList.add("hidden");
+    renderVerifyGate(null);
     return;
   }
   $("verify-stat").textContent = (run.workflow || "workflow") + " · " + (run.status || "");
@@ -924,6 +942,21 @@ async function loadVerify() {
     $("verify-shot-empty").classList.add("hidden");
   }
   renderVerifyGate(gate);
+}
+function startVerifyWS() {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(proto + "//" + location.host + "/ws/verify");
+  verifyWS = ws;
+  ws.onmessage = (ev) => {
+    try { applyVerifySnapshot(JSON.parse(ev.data)); }
+    catch (e) { $("verify-stat").textContent = "bad snapshot"; }
+  };
+  ws.onclose = () => {
+    if (verifyWS === ws) {
+      $("verify-stat").textContent = "offline";
+      setTimeout(startVerifyWS, 1000);
+    }
+  };
 }
 function pickVerifyRun(runs, gate) {
   if (gate && gate.run_id) {
@@ -990,8 +1023,9 @@ function renderVerifyTimeline(run) {
 }
 function renderVerifyGate(gate) {
   const box = $("verify-gate");
-  if (!gate) { box.classList.add("hidden"); return; }
+  if (!gate) { box.classList.add("hidden"); box.dataset.runId = ""; return; }
   box.classList.remove("hidden");
+  box.dataset.runId = gate.run_id || "";
   $("verify-gate-prompt").textContent = gate.prompt || "Check the device";
   const meta = [];
   if (gate.workflow) meta.push("workflow " + gate.workflow);
@@ -1025,26 +1059,22 @@ async function answerVerifyGate(gate, choice) {
       run_id: gate.run_id, gate_id: gate.step_id, choice_id: choice.id, comment: text
     });
     toast("answered " + choice.id);
-    loadVerify();
   } catch (e) {
     $("verify-gate-error").textContent = e.message;
   }
 }
-$("verify-refresh").onclick = () => loadVerify();
 $("verify-abort").onclick = async () => {
-  const snap = await callTool("verify_status", {}).catch(() => null);
-  const gate = snap && snap.gate;
-  const run = pickVerifyRun((snap && snap.runs) || [], gate);
-  if (!run) return;
+  const runID = $("verify-gate").dataset.runId;
+  if (!runID) return;
   try {
-    await callTool("verify_abort", {run_id: run.run_id, reason: "aborted from the dashboard"});
+    await callTool("verify_abort", {run_id: runID, reason: "aborted from the dashboard"});
     toast("aborted");
-    loadVerify();
   } catch (e) { toast(e.message, true); }
 };
 
 refreshApps();
 setInterval(refreshApps, 5000);
+startVerifyWS();
 if (location.hash === "#verify") showTab("verify");
 else if (location.hash === "#battery") showTab("battery");
 window.addEventListener("hashchange", () => {

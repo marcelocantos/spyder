@@ -5,7 +5,9 @@ package dashboard_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
@@ -17,9 +19,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+
 	"github.com/marcelocantos/spyder/internal/dashboard"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/rest"
+	"github.com/marcelocantos/spyder/internal/verify"
 )
 
 func TestDashboard_VerifyTabMarkup(t *testing.T) {
@@ -40,7 +45,11 @@ func TestDashboard_VerifyTabMarkup(t *testing.T) {
 		`id="verify-gate-choices"`,
 		`id="verify-abort"`,
 		`#verify`,
-		`verify_status`,
+		`/ws/verify`,
+		`id="verify-badge"`,
+		`tab-count-blink`,
+		`startVerifyWS`,
+		`blinkVerifyBadge`,
 		`verify_answer`,
 		`details.group`,
 		`gate-sheet`,
@@ -49,6 +58,16 @@ func TestDashboard_VerifyTabMarkup(t *testing.T) {
 	} {
 		if !bytes.Contains(body, []byte(want)) {
 			t.Errorf("dashboard HTML missing %q", want)
+		}
+	}
+	for _, forbid := range []string{
+		`id="verify-refresh"`,
+		`startVerifyPoll`,
+		`verifyTimer`,
+		`setInterval(tick, 1000)`,
+	} {
+		if bytes.Contains(body, []byte(forbid)) {
+			t.Errorf("dashboard HTML must not poll verify: still contains %q", forbid)
 		}
 	}
 	if bytes.Contains(body, []byte(":8765")) {
@@ -248,6 +267,80 @@ func assertDashShot(t *testing.T, uri string, seed []byte) {
 	}
 	if !bytes.Equal(raw, seed) {
 		t.Fatalf("screenshot bytes do not match the PNG the shell wrote")
+	}
+}
+
+func TestDashboard_VerifyWSPushesRun(t *testing.T) {
+	h := spydermcp.NewHandler()
+	mux := http.NewServeMux()
+	mux.Handle(rest.Prefix, rest.NewHandler(h))
+	mux.Handle(dashboard.Path, dashboard.NewHandler())
+	mux.HandleFunc(verify.WSPath, h.VerifyHub().HandleWS)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	t.Cleanup(cancel)
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + verify.WSPath
+	c, _, err := websocket.Dial(ctx, wsURL, nil)
+	if err != nil {
+		t.Fatalf("dial %s: %v", wsURL, err)
+	}
+	t.Cleanup(func() { _ = c.Close(websocket.StatusNormalClosure, "") })
+
+	if _, data, err := c.Read(ctx); err != nil {
+		t.Fatalf("first snapshot: %v", err)
+	} else {
+		var snap map[string]any
+		if err := json.Unmarshal(data, &snap); err != nil {
+			t.Fatalf("first snapshot json: %v", err)
+		}
+		if runs, _ := snap["runs"].([]any); len(runs) != 0 {
+			t.Fatalf("fresh snapshot runs = %v", runs)
+		}
+	}
+
+	wf := `
+name: dash-ws
+steps:
+  - id: ask
+    type: human_gate
+    prompt: Look
+    choices:
+      - id: pass
+        label: Yes
+`
+	started := postTool(t, srv.URL, "verify", map[string]any{
+		"workflow": wf,
+		"cwd":      t.TempDir(),
+		"wait":     false,
+	})
+	runID, _ := started["run_id"].(string)
+	if runID == "" {
+		t.Fatalf("verify start: %v", started)
+	}
+	t.Cleanup(func() {
+		_ = h.VerifyHub().Abort(runID, "test done")
+		if r := h.VerifyHub().RunByID(runID); r != nil {
+			r.Wait()
+		}
+	})
+
+	for {
+		_, data, err := c.Read(ctx)
+		if err != nil {
+			t.Fatalf("waiting for run on websocket (REST was not polled): %v", err)
+		}
+		var snap map[string]any
+		if err := json.Unmarshal(data, &snap); err != nil {
+			t.Fatalf("snapshot json: %v", err)
+		}
+		for _, item := range asSlice(snap["runs"]) {
+			rm, _ := item.(map[string]any)
+			if rm["run_id"] == runID && rm["status"] == "running" {
+				return
+			}
+		}
 	}
 }
 

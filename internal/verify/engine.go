@@ -211,6 +211,12 @@ func (r *Run) view() RunView {
 	return v
 }
 
+func (r *Run) poke() {
+	if r.hub != nil {
+		r.hub.notify()
+	}
+}
+
 func (r *Run) emit(stepID, line string) {
 	r.mu.Lock()
 	if len(r.logs) > 400 {
@@ -219,6 +225,7 @@ func (r *Run) emit(stepID, line string) {
 	r.logs = append(r.logs, line)
 	r.mu.Unlock()
 	_ = stepID
+	r.poke()
 }
 
 func (r *Run) setStatus(id, status string, dur int64) {
@@ -228,6 +235,7 @@ func (r *Run) setStatus(id, status string, dur int64) {
 		r.stepDur[id] = dur
 	}
 	r.mu.Unlock()
+	r.poke()
 }
 
 func (r *Run) abort(reason string) {
@@ -238,6 +246,7 @@ func (r *Run) abort(reason string) {
 	r.mu.Unlock()
 	r.cancel()
 	r.hub.pool.broadcast()
+	r.poke()
 }
 
 func (r *Run) submitAnswer(gateID string, ans Answer) error {
@@ -266,6 +275,7 @@ type stepOutcome struct {
 
 func (r *Run) drive() {
 	defer close(r.done)
+	defer r.cancel()
 	_ = os.MkdirAll(r.shotsDir(), 0o755)
 	go r.watchShots()
 
@@ -564,10 +574,12 @@ func (r *Run) humanGate(step Step) stepOutcome {
 	r.mu.Lock()
 	r.gate = view
 	r.mu.Unlock()
+	r.poke()
 	defer func() {
 		r.mu.Lock()
 		r.gate = nil
 		r.mu.Unlock()
+		r.poke()
 	}()
 
 	var ans Answer
@@ -733,6 +745,7 @@ func (r *Run) scanShots() {
 		r.gate.Screenshot = uri
 	}
 	r.mu.Unlock()
+	r.poke()
 }
 
 func encodeShot(path string) string {
