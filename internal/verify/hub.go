@@ -16,13 +16,13 @@ import (
 // Hub is the daemon-wide scheduler: one pool, one human_gate lock, many
 // concurrent workflow graphs.
 type Hub struct {
-	mu      sync.Mutex
-	pool    *resourcePool
-	runs    map[string]*Run
-	shell   StepRunner
-	script  StepRunner
-	sleep   func(time.Duration)
-	now     func() time.Time
+	mu     sync.Mutex
+	pool   *resourcePool
+	runs   map[string]*Run
+	shell  StepRunner
+	script StepRunner
+	sleep  func(time.Duration)
+	now    func() time.Time
 }
 
 // HubArgs configures a Hub. Zero values pick production defaults.

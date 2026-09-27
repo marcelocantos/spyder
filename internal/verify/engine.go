@@ -16,38 +16,38 @@ import (
 
 // Run is one in-flight (or finished) workflow graph.
 type Run struct {
-	ID       string
-	hub      *Hub
-	wf       *Workflow
-	path     string
-	cwd      string
-	params   map[string]string
-	answers  map[string]Answer
-	allowW   bool
-	ctx      context.Context
-	cancel   context.CancelFunc
+	ID      string
+	hub     *Hub
+	wf      *Workflow
+	path    string
+	cwd     string
+	params  map[string]string
+	answers map[string]Answer
+	allowW  bool
+	ctx     context.Context
+	cancel  context.CancelFunc
 
-	mu          sync.Mutex
-	okIDs       map[string]bool
-	skipIDs     map[string]bool
-	passed      map[string]bool
-	stepStatus  map[string]string
-	stepDur     map[string]int64
-	records     []StepRecord
-	logs        []string
-	gate        *GateView
-	answerCh    chan Answer
-	failedID    string
+	mu           sync.Mutex
+	okIDs        map[string]bool
+	skipIDs      map[string]bool
+	passed       map[string]bool
+	stepStatus   map[string]string
+	stepDur      map[string]int64
+	records      []StepRecord
+	logs         []string
+	gate         *GateView
+	answerCh     chan Answer
+	failedID     string
 	failedReason string
 	ownerComment string
-	reportDir   string
-	status      string
-	exitCode    int
-	statusBlock string
-	screenshot  string
-	shotKey     string // last encoded path+mod+size, to skip unchanged files
-	done        chan struct{}
-	result      Result
+	reportDir    string
+	status       string
+	exitCode     int
+	statusBlock  string
+	screenshot   string
+	shotKey      string // last encoded path+mod+size, to skip unchanged files
+	done         chan struct{}
+	result       Result
 }
 
 // RunOpts is internal construction data.
@@ -134,17 +134,17 @@ type GateView struct {
 
 // RunView is one graph in verify_status.
 type RunView struct {
-	RunID      string         `json:"run_id"`
-	Workflow   string         `json:"workflow"`
-	Status     string         `json:"status"`
-	Cwd        string         `json:"cwd"`
-	Device     string         `json:"device,omitempty"`
-	Groups     []Group        `json:"groups"`
-	Steps      []StepView     `json:"steps"`
-	Log        []string       `json:"log"`
-	Gate       *GateView      `json:"gate,omitempty"`
-	Screenshot string         `json:"screenshot,omitempty"`
-	ReportDir  string         `json:"report_dir"`
+	RunID      string     `json:"run_id"`
+	Workflow   string     `json:"workflow"`
+	Status     string     `json:"status"`
+	Cwd        string     `json:"cwd"`
+	Device     string     `json:"device,omitempty"`
+	Groups     []Group    `json:"groups"`
+	Steps      []StepView `json:"steps"`
+	Log        []string   `json:"log"`
+	Gate       *GateView  `json:"gate,omitempty"`
+	Screenshot string     `json:"screenshot,omitempty"`
+	ReportDir  string     `json:"report_dir"`
 }
 
 // StepView is a dashboard step row.
