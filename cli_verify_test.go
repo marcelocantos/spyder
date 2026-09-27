@@ -4,6 +4,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -47,13 +48,16 @@ steps:
     choices:
       - id: pass
         label: Yes
+      - id: fail
+        label: No
+        outcome: investigate
 `
 	if err := os.WriteFile(wf, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	run := func() (string, int) {
-		cmd := exec.Command(bin, "verify", wf, "--cwd", cwd, "--answer", "ask=pass")
+	run := func(answer string) (string, int) {
+		cmd := exec.Command(bin, "verify", wf, "--cwd", cwd, "--answer", "ask="+answer)
 		cmd.Env = append(os.Environ(), "SPYDER_DAEMON_URL="+ts.URL)
 		out, err := cmd.CombinedOutput()
 		code := 0
@@ -67,7 +71,7 @@ steps:
 		return string(out), code
 	}
 
-	out1, code1 := run()
+	out1, code1 := run("pass")
 	if code1 != 0 {
 		t.Fatalf("first run exit %d\n%s", code1, out1)
 	}
@@ -85,7 +89,7 @@ steps:
 		}
 	}
 
-	out2, code2 := run()
+	out2, code2 := run("pass")
 	if code2 != 0 {
 		t.Fatalf("second run exit %d\n%s", code2, out2)
 	}
@@ -99,6 +103,39 @@ steps:
 	if strings.Count(string(b), "prep") != 1 {
 		t.Fatalf("prep ran %d times; second run should skip passed steps\nfirst:\n%s\nsecond:\n%s",
 			strings.Count(string(b), "prep"), out1, out2)
+	}
+
+	if err := os.Remove(filepath.Join(cwd, "verify-runs", "resume", "cli-sample.json")); err != nil {
+		t.Fatal(err)
+	}
+	out3, code3 := run("fail")
+	if code3 != 2 || !strings.Contains(out3, "STATUS investigate") || !strings.Contains(out3, "choice=fail") {
+		t.Fatalf("investigate exit %d\n%s", code3, out3)
+	}
+	var reportDir string
+	for _, line := range strings.Split(out3, "\n") {
+		if strings.HasPrefix(line, "report: ") {
+			reportDir = strings.TrimPrefix(line, "report: ")
+		}
+	}
+	if reportDir == "" {
+		t.Fatalf("missing report path\n%s", out3)
+	}
+	data, err := os.ReadFile(filepath.Join(reportDir, "report.json"))
+	if err != nil {
+		t.Fatalf("investigate report: %v\n%s", err, out3)
+	}
+	var report struct {
+		Status       string `json:"status"`
+		ExitCode     int    `json:"exit_code"`
+		FailedStepID string `json:"failed_step_id"`
+		FailedReason string `json:"failed_reason"`
+	}
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Status != "investigate" || report.ExitCode != 2 || report.FailedStepID != "ask" || report.FailedReason != "human_gate: choice=fail" {
+		t.Fatalf("investigate report = %+v", report)
 	}
 }
 

@@ -6,6 +6,7 @@ package verify
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -110,11 +111,13 @@ func (r *Run) Wait() Result {
 type Result struct {
 	RunID        string       `json:"run_id"`
 	Workflow     string       `json:"workflow"`
+	Device       string       `json:"device,omitempty"`
 	Status       string       `json:"status"`
 	ExitCode     int          `json:"exit_code"`
 	StatusBlock  string       `json:"status_block"`
 	FailedStepID string       `json:"failed_step_id,omitempty"`
 	FailedReason string       `json:"failed_reason,omitempty"`
+	OwnerComment string       `json:"owner_comment,omitempty"`
 	ReportDir    string       `json:"report_dir"`
 	Steps        []StepRecord `json:"steps"`
 }
@@ -782,15 +785,51 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 	r.result = Result{
 		RunID:        r.ID,
 		Workflow:     r.wf.Name,
+		Device:       r.params["device"],
 		Status:       status,
 		ExitCode:     code,
 		StatusBlock:  block,
 		FailedStepID: r.failedID,
 		FailedReason: r.failedReason,
+		OwnerComment: r.ownerComment,
 		ReportDir:    r.reportDir,
 		Steps:        append([]StepRecord{}, r.records...),
 	}
 	r.mu.Unlock()
+	reportErr := os.MkdirAll(r.reportDir, 0o755)
+	if reportErr == nil {
+		var data []byte
+		data, reportErr = json.MarshalIndent(r.result, "", "  ")
+		if reportErr == nil {
+			data = append(data, '\n')
+			reportErr = os.WriteFile(filepath.Join(r.reportDir, "report.json"), data, 0o644)
+		}
+	}
+	if reportErr != nil {
+		status = StatusFailed
+		reason = "report: " + reportErr.Error()
+		r.mu.Lock()
+		r.status = status
+		r.exitCode = ExitError
+		r.failedReason = reason
+		r.statusBlock = FormatStatus(StatusInput{
+			Status:       status,
+			Workflow:     r.wf.Name,
+			Device:       r.params["device"],
+			FailedStepID: r.failedID,
+			FailedReason: reason,
+			SkipN:        len(r.skipIDs),
+			Steps:        append([]StepRecord{}, r.records...),
+			OwnerComment: r.ownerComment,
+			ReportDir:    r.reportDir,
+		})
+		r.result.Status = status
+		r.result.ExitCode = ExitError
+		r.result.FailedReason = reason
+		r.result.StatusBlock = r.statusBlock
+		block = r.statusBlock
+		r.mu.Unlock()
+	}
 
 	rec := &Record{Workflow: r.wf.Name, Passed: passed, Params: r.params}
 	if status != StatusPassed {
