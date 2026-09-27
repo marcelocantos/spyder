@@ -189,6 +189,9 @@ The daemon serves a browser cockpit at
 - `#verify` — live DAG workflow progress, logs, screenshots, and owner
   gates for `spyder verify`
 
+The Verify tab shows screenshots captured by workflow steps. It pauses app
+thumbnail and preview capture while an owner inspects the device.
+
 Deep-link with the hash; no second HTTP server.
 
 `spyder verify path/to/workflow.yaml` runs a product-neutral step graph

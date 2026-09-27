@@ -1510,6 +1510,10 @@ Step kinds:
 - `spyder_script` — in-process `app_exec` (`script` path + optional `params`)
 - `human_gate` — structured owner question (dashboard `/dashboard#verify`). The Verify tab is live over `GET /ws/verify` (Snapshot JSON on connect and on every run change); it does not poll.
 
+The Verify tab displays physical screenshots from workflow steps and pauses
+app thumbnail and preview capture. This keeps screenshot readback from
+disturbing the app while an owner judges the screen.
+
 Scheduling is a leaf-level frontier on a daemon-wide pool. Nested `groups`
 (`parent:`) collapse in the dashboard when every descendant is ok/skipped;
 they do not schedule. Several `spyder verify` invocations share `device:` /
