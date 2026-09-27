@@ -93,3 +93,31 @@ func RerunIDs(steps []Step, failedStepID string) map[string]bool {
 	}
 	return out
 }
+
+// ResumeRerunIDs invalidates a step marked always_run and every step that
+// depends on it. This prevents a prior owner judgment from being reused after
+// a deployment is repeated with a new build.
+func ResumeRerunIDs(steps []Step, failedStepID string) map[string]bool {
+	out := RerunIDs(steps, failedStepID)
+	for _, step := range steps {
+		if step.AlwaysRun {
+			out[step.ID] = true
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for _, step := range steps {
+			if out[step.ID] {
+				continue
+			}
+			for _, req := range step.Requires {
+				if out[req] {
+					out[step.ID] = true
+					changed = true
+					break
+				}
+			}
+		}
+	}
+	return out
+}

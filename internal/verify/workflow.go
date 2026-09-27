@@ -94,6 +94,7 @@ type Step struct {
 	Hint         string
 	Choices      []Choice
 	AllowComment bool
+	AlwaysRun    bool
 }
 
 // Retry is optional command-step retry.
@@ -334,6 +335,14 @@ func parseStep(index int, m map[string]any) (Step, []string) {
 			errs = append(errs, id+": requires must be a list of step ids")
 		} else {
 			step.Requires = list
+		}
+	}
+	if v := m["always_run"]; v != nil {
+		always, ok := v.(bool)
+		if !ok {
+			errs = append(errs, id+": always_run must be a boolean")
+		} else {
+			step.AlwaysRun = always
 		}
 	}
 	if v := m["next"]; v != nil {

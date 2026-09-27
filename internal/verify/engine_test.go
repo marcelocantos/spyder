@@ -204,6 +204,42 @@ steps:
 	}
 }
 
+func TestAlwaysRunRepeatsDeployAndItsPassedDescendants(t *testing.T) {
+	cwd := t.TempDir()
+	marker := filepath.Join(cwd, "steps.log")
+	yaml := `
+name: fresh-deploy
+steps:
+  - id: preflight
+    type: shell
+    argv: ["/bin/sh", "-c", "echo preflight >> ` + marker + `"]
+  - id: deploy
+    type: shell
+    requires: [preflight]
+    always_run: true
+    argv: ["/bin/sh", "-c", "echo deploy >> ` + marker + `"]
+  - id: visual_check
+    type: shell
+    requires: [deploy]
+    argv: ["/bin/sh", "-c", "echo visual_check >> ` + marker + `"]
+`
+	hub := NewHub(HubArgs{})
+	for i := 0; i < 2; i++ {
+		if res := runWF(t, hub, yaml, cwd, nil); res.ExitCode != 0 {
+			t.Fatalf("run %d: %s", i+1, res.FailedReason)
+		}
+	}
+	b, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for step, want := range map[string]int{"preflight": 1, "deploy": 2, "visual_check": 2} {
+		if got := strings.Count(string(b), step+"\n"); got != want {
+			t.Errorf("%s ran %d times; want %d", step, got, want)
+		}
+	}
+}
+
 func TestDeleteRecordReruns(t *testing.T) {
 	cwd := t.TempDir()
 	marker := filepath.Join(cwd, "prep.log")

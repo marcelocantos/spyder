@@ -282,7 +282,7 @@ func (r *Run) drive() {
 	prior := LoadRecord(r.cwd, r.wf.Name)
 	retry := map[string]bool{}
 	if prior != nil {
-		retry = RerunIDs(r.wf.Steps, prior.FailedStepID)
+		retry = ResumeRerunIDs(r.wf.Steps, prior.FailedStepID)
 		for _, id := range prior.Passed {
 			if !retry[id] {
 				r.skipIDs[id] = true

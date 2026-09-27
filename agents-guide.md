@@ -1518,7 +1518,9 @@ graphs keep running.
 
 Progress is a pass record at `<cwd>/verify-runs/resume/<workflow>.json`. A
 pass keeps the file; the next run skips passed steps and restages the
-`spyder_script` a failed gate requires. Delete the file to rerun. When a
+`spyder_script` a failed gate requires. Set `always_run: true` on a build/deploy
+step to repeat it on every invocation; all dependent steps, including prior
+human judgments, repeat too. Delete the file to rerun every step. When a
 run ends, stdout prints a `STATUS` / `END STATUS` block (overall result,
 per-step status with durations, `choice=` on owner gates). Exit 0 plus that
 block is the result; a `passed` run is passed.
