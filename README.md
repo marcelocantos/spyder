@@ -206,6 +206,11 @@ before execution starts, then streams `events.log` and screenshots into the
 same directory. It saves `report.json` on completion. The
 agent can share that directory for later review without keeping old runs in
 the daemon's memory.
+To reconstruct a saved run, read `workflow.yaml` for step order, labels,
+groups, and choices; apply the recorded step outcomes from `report.json` by
+step ID, then show `events.log` and the saved screenshots. `params.json`
+records the substitutions used for that run even if the original workflow
+file is later edited.
 
 `model` steps run a Claudia-selected one-shot task. Their `model` mapping
 uses Claudia's model predicates fields (`purpose`, `quality`,
