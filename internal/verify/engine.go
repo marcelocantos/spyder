@@ -5,6 +5,7 @@ package verify
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -17,21 +18,25 @@ import (
 
 // Run is one in-flight (or finished) workflow graph.
 type Run struct {
-	ID      string
-	hub     *Hub
-	wf      *Workflow
-	path    string
-	cwd     string
-	params  map[string]string
-	answers map[string]Answer
-	allowW  bool
-	ctx     context.Context
-	cancel  context.CancelFunc
+	ID             string
+	hub            *Hub
+	wf             *Workflow
+	path           string
+	cwd            string
+	params         map[string]string
+	answers        map[string]Answer
+	allowW         bool
+	deferHuman     bool
+	reviewDeferred bool
+	prior          *Record
+	ctx            context.Context
+	cancel         context.CancelFunc
 
 	mu           sync.Mutex
 	okIDs        map[string]bool
 	skipIDs      map[string]bool
 	passed       map[string]bool
+	deferred     map[string]bool
 	stepStatus   map[string]string
 	stepDur      map[string]int64
 	records      []StepRecord
@@ -56,12 +61,15 @@ type Run struct {
 
 // RunOpts is internal construction data.
 type RunOpts struct {
-	Path       string
-	Cwd        string
-	Params     map[string]string
-	Answers    map[string]Answer
-	AllowWaive bool
-	Ctx        context.Context
+	Path            string
+	Cwd             string
+	Params          map[string]string
+	Answers         map[string]Answer
+	AllowWaive      bool
+	DeferHumanGates bool
+	ReviewDeferred  bool
+	Prior           *Record
+	Ctx             context.Context
 }
 
 func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
@@ -73,26 +81,30 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 	stamp := time.Now().UTC().Format("20060102T150405Z")
 	report := filepath.Join(opts.Cwd, "verify-runs", stamp+"-"+shortID())
 	r := &Run{
-		ID:           shortID(),
-		hub:          h,
-		wf:           wf,
-		path:         opts.Path,
-		cwd:          opts.Cwd,
-		params:       opts.Params,
-		answers:      opts.Answers,
-		allowW:       opts.AllowWaive,
-		ctx:          ctx,
-		cancel:       cancel,
-		okIDs:        map[string]bool{},
-		skipIDs:      map[string]bool{},
-		passed:       map[string]bool{},
-		stepStatus:   map[string]string{},
-		stepDur:      map[string]int64{},
-		answerCh:     make(chan Answer, 1),
-		reportDir:    report,
-		status:       "running",
-		lastProgress: time.Now(),
-		done:         make(chan struct{}),
+		ID:             shortID(),
+		hub:            h,
+		wf:             wf,
+		path:           opts.Path,
+		cwd:            opts.Cwd,
+		params:         opts.Params,
+		answers:        opts.Answers,
+		allowW:         opts.AllowWaive,
+		deferHuman:     opts.DeferHumanGates,
+		reviewDeferred: opts.ReviewDeferred,
+		prior:          opts.Prior,
+		ctx:            ctx,
+		cancel:         cancel,
+		okIDs:          map[string]bool{},
+		skipIDs:        map[string]bool{},
+		passed:         map[string]bool{},
+		deferred:       map[string]bool{},
+		stepStatus:     map[string]string{},
+		stepDur:        map[string]int64{},
+		answerCh:       make(chan Answer, 1),
+		reportDir:      report,
+		status:         "running",
+		lastProgress:   time.Now(),
+		done:           make(chan struct{}),
 	}
 	if r.answers == nil {
 		r.answers = map[string]Answer{}
@@ -138,6 +150,7 @@ type Result struct {
 	OwnerComment string       `json:"owner_comment,omitempty"`
 	ReportDir    string       `json:"report_dir"`
 	Steps        []StepRecord `json:"steps"`
+	Unattended   bool         `json:"unattended,omitempty"`
 }
 
 // GateView is the one in-flight owner question.
@@ -363,12 +376,33 @@ func (r *Run) drive() {
 	go r.watchShots()
 	go r.watchIdle()
 
-	prior := LoadRecord(r.cwd, r.wf.Name)
+	prior := r.prior
+	if prior == nil {
+		prior = LoadRecord(r.cwd, r.wf.Name)
+	}
+	// A normal run after unattended preparation must restage the whole graph.
+	// Reusing its automated passes is reserved for the explicit review mode.
+	if prior != nil && !r.reviewDeferred && len(prior.Deferred) > 0 {
+		prior = nil
+	}
 	retry := map[string]bool{}
 	if prior != nil {
-		retry = ResumeRerunIDs(r.wf.Steps, prior.FailedStepID)
+		if r.reviewDeferred {
+			for _, id := range prior.Deferred {
+				r.deferred[id] = true
+			}
+		} else {
+			retry = ResumeRerunIDs(r.wf.Steps, prior.FailedStepID)
+		}
+		byID := map[string]Step{}
+		for _, step := range r.wf.Steps {
+			byID[step.ID] = step
+		}
 		for _, id := range prior.Passed {
-			if !retry[id] {
+			step, known := byID[id]
+			if known && r.reviewDeferred && step.Type == KindShell && !step.ReviewReplay {
+				r.skipIDs[id] = true
+			} else if !r.reviewDeferred && !retry[id] {
 				r.skipIDs[id] = true
 			}
 		}
@@ -445,7 +479,7 @@ func (r *Run) drive() {
 			delete(remaining, s.ID)
 			label := s.Label
 			r.setStatus(s.ID, StepRunning, 0)
-			if s.Type == KindHumanGate {
+			if s.Type == KindHumanGate && !r.deferHuman {
 				r.setStatus(s.ID, StepWaiting, 0)
 			}
 			msg := "--> " + s.ID + "  " + s.Type
@@ -542,14 +576,23 @@ func (r *Run) drive() {
 			stopRun()
 			return
 		}
-		if got.out.status != "ok" {
+		if got.out.status != "ok" && got.out.status != StepDeferred {
 			finishRun(got.out.status, got.out.code, got.out.reason, got.id)
 			return
 		}
 		r.okIDs[got.id] = true
-		r.rememberPass(got.id)
+		if got.out.status == StepDeferred {
+			r.deferred[got.id] = true
+		} else {
+			delete(r.deferred, got.id)
+			r.rememberPass(got.id)
+		}
 	}
 
+	if len(r.deferred) > 0 {
+		finishRun(StatusPrepared, ExitPrepared, "owner judgments deferred", "")
+		return
+	}
 	finishRun(StatusPassed, ExitPassed, "", "")
 }
 
@@ -561,6 +604,12 @@ func (r *Run) currentFailed() string {
 
 func (r *Run) runOne(step Step) stepOutcome {
 	if step.Type == KindHumanGate {
+		if r.deferHuman {
+			r.record(StepRecord{StepID: step.ID, Status: StepDeferred, Type: KindHumanGate, Label: step.Label})
+			r.setStatus(step.ID, StepDeferred, 0)
+			r.emit(step.ID, "deferred "+step.ID+"  owner review pending")
+			return stepOutcome{status: StepDeferred}
+		}
 		return r.humanGate(step)
 	}
 	return r.commandStep(step)
@@ -928,7 +977,7 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 	r.cancel()
 	cleanupID, cleanupReason := r.runCleanup()
 	if cleanupID != "" {
-		if status == StatusPassed {
+		if status == StatusPassed || status == StatusPrepared {
 			status, code, stepID, reason = StatusInvestigate, ExitInvestigate, cleanupID, cleanupReason
 		} else if reason == "" {
 			reason = cleanupReason
@@ -986,6 +1035,7 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 		OwnerComment: r.ownerComment,
 		ReportDir:    r.reportDir,
 		Steps:        append([]StepRecord{}, r.records...),
+		Unattended:   r.deferHuman,
 	}
 	r.mu.Unlock()
 	data, reportErr := json.MarshalIndent(r.result, "", "  ")
@@ -1019,7 +1069,7 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 		r.mu.Unlock()
 	}
 
-	rec := &Record{Workflow: r.wf.Name, Passed: passed, Params: r.params}
+	rec := &Record{Workflow: r.wf.Name, Passed: passed, Deferred: keys(r.deferred), DefinitionSHA256: fmt.Sprintf("%x", sha256.Sum256(r.wf.Raw)), Params: r.params}
 	if status != StatusPassed {
 		rec.FailedStepID = failed
 	}

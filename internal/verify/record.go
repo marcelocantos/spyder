@@ -20,10 +20,12 @@ var unsafeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 // Record is the persistent pass file for one workflow in one cwd.
 type Record struct {
-	Workflow     string            `json:"workflow"`
-	Passed       []string          `json:"passed"`
-	FailedStepID string            `json:"failed_step_id,omitempty"`
-	Params       map[string]string `json:"params,omitempty"`
+	Workflow         string            `json:"workflow"`
+	Passed           []string          `json:"passed"`
+	Deferred         []string          `json:"deferred,omitempty"`
+	DefinitionSHA256 string            `json:"definition_sha256,omitempty"`
+	FailedStepID     string            `json:"failed_step_id,omitempty"`
+	Params           map[string]string `json:"params,omitempty"`
 }
 
 // ResumeDir is the directory that holds pass records for cwd.

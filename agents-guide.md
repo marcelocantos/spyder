@@ -483,7 +483,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `resolve(name?, selector?)` | Symbolic name → structured `Entry` with all known IDs. Exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`). | Unknown raw inputs are echoed back classified. With `selector`, returns the entry of the first matching live device. |
 | `device_state(device)` | Battery level, charging, extra native battery keys (`battery` map), thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). iOS extras come from lockdown + diagnostics IORegistry (`InstantAmperage`, capacities, cycle count). Android extras are the full `dumpsys battery` key set. |
 | `battery_history(since?, until?, device?, bucket_s?, sample?)` | Fleet charge history the daemon records every minute for connected iOS/Android devices (🎯T137). Returns `{since, until, bucket_s?, samples, latest}`. Each sample may include `details` (greedy native dump). | Default window `-24h`..now. `sample=True` takes a live tick first. Dashboard: `/dashboard#battery`. Desktop hosts are not sampled. |
-| `verify(workflow?, workflow_path?, cwd?, params?, answers?, wait?, validate_only?, allow_waive?)` | Run a product-neutral verification workflow YAML on the daemon-wide DAG scheduler (🎯T138). Step kinds: `shell`, `spyder_script` (in-process `app_exec`), `model` (Claudia-selected task), `human_gate`. | `wait=True` (default) blocks until the run ends and returns `{status, exit_code, status_block, report_dir, …}`. Pass records: `<cwd>/verify-runs/resume/<workflow>.json` — delete to rerun. Dashboard: `/dashboard#verify` live over `GET /ws/verify` (🎯T139). CLI: `spyder verify`. |
+| `verify(workflow?, workflow_path?, cwd?, params?, answers?, wait?, validate_only?, allow_waive?, defer_human_gates?, review_deferred?)` | Run a product-neutral verification workflow YAML on the daemon-wide DAG scheduler (🎯T138). Step kinds: `shell`, `spyder_script` (in-process `app_exec`), `model` (Claudia-selected task), `human_gate`. | `wait=True` (default) blocks until the run ends. `defer_human_gates` completes automation without asking the owner and returns `prepared` (exit 4). `review_deferred` replays pending owner checks with fresh staging and model checks. Pass records: `<cwd>/verify-runs/resume/<workflow>.json`. Dashboard: `/dashboard#verify`. CLI: `spyder verify`. |
 | `verify_status()` | Snapshot of active verification runs plus the single in-flight owner gate. | Read-only REST. Completed runs leave memory; the dashboard uses `/ws/verify` instead of polling this. |
 | `verify_answer(run_id, gate_id, choice_id, comment?)` | Answer the in-flight `human_gate`. | Same path the dashboard gate buttons use. |
 | `verify_abort(run_id, reason?)` | Abort a verification run. | |
@@ -1544,6 +1544,18 @@ run ends, stdout prints a `STATUS` / `END STATUS` block (overall result,
 per-step status with durations, `choice=` on owner gates). Exit 0 plus that
 block is the result; a `passed` run is passed.
 
+For unattended preparation, use `--defer-human-gates`. The engine never opens
+an owner gate, records each one as `deferred`, and continues automated steps
+that depend on it. A fully automated pass ends `prepared` with exit 4, not
+`passed`. The resume record keeps deferred gate IDs separate from passed
+steps. `--review-deferred` requires that record plus the identical workflow
+definition and parameters. It reuses completed shell steps (even
+`always_run` build/deploy steps), reruns staging scripts and model checks,
+and asks each deferred question. Mark a shell step that must rerun during
+review as `review_replay: true`. Device cleanup runs in both passes. A changed
+app build invalidates the previous preparation; use a full run after changing
+the product.
+
 Each run stores its exact original `workflow.yaml` and resolved `params.json`
 before execution starts. Its report directory then accumulates `events.log`
 and screenshots, and receives `report.json` on completion. The definition and
@@ -1551,6 +1563,8 @@ results remain on disk after the daemon forgets the completed run.
 
 ```bash
 spyder verify workflows/smoke.yaml --answer look=pass
+spyder verify workflows/smoke.yaml --defer-human-gates
+spyder verify workflows/smoke.yaml --review-deferred
 spyder verify workflows/smoke.yaml --validate
 ```
 

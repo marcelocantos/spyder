@@ -95,6 +95,99 @@ cleanup:
 	}
 }
 
+func TestUnattendedDefersOwnerGateAndContinuesAutomation(t *testing.T) {
+	var before, stage, model, after, cleaned atomic.Int32
+	hub := NewHub(HubArgs{Shell: func(_ context.Context, req StepRequest) ExecResult {
+		switch req.Step.ID {
+		case "before_owner":
+			before.Add(1)
+		case "after_owner":
+			after.Add(1)
+		case "stop_app":
+			cleaned.Add(1)
+		}
+		return ExecResult{}
+	}, Script: func(_ context.Context, _ StepRequest) ExecResult {
+		stage.Add(1)
+		return ExecResult{}
+	}, Model: func(_ context.Context, _ StepRequest) ExecResult {
+		model.Add(1)
+		return ExecResult{}
+	}})
+	cwd := t.TempDir()
+	wf := loadWF(t, `
+name: unattended-test
+steps:
+  - id: before_owner
+    type: shell
+    argv: [/usr/bin/true]
+  - id: stage
+    type: spyder_script
+    requires: [before_owner]
+    script: stage.star
+  - id: review
+    type: model
+    requires: [stage]
+    prompt: Inspect the screen
+    model: {purpose: analysis, quality: standard}
+    accept: PASS
+  - id: owner
+    type: human_gate
+    requires: [review]
+    prompt: Is it right?
+    choices:
+      - id: pass
+        label: Yes
+  - id: after_owner
+    type: shell
+    requires: [owner]
+    review_replay: true
+    argv: [/usr/bin/true]
+cleanup:
+  - id: stop_app
+    type: shell
+    argv: [/usr/bin/true]
+`)
+	run, err := hub.Start(context.Background(), StartArgs{Workflow: wf, Cwd: cwd, DeferHumanGates: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := run.Wait()
+	if res.Status != StatusPrepared || res.ExitCode != ExitPrepared || !res.Unattended || after.Load() != 1 || cleaned.Load() != 1 {
+		t.Fatalf("unexpected result: status=%s exit=%d unattended=%v after=%d cleanup=%d", res.Status, res.ExitCode, res.Unattended, after.Load(), cleaned.Load())
+	}
+	if len(res.Steps) != 6 || res.Steps[3].Status != StepDeferred || res.Steps[3].ChoiceID != "" {
+		t.Fatalf("owner gate was not deferred: %+v", res.Steps)
+	}
+	rec := LoadRecord(cwd, wf.Name)
+	if rec == nil || len(rec.Deferred) != 1 || rec.Deferred[0] != "owner" || len(rec.Passed) != 4 || rec.DefinitionSHA256 == "" {
+		t.Fatalf("resume record: %+v", rec)
+	}
+	for _, id := range rec.Passed {
+		if id == "owner" {
+			t.Fatal("owner gate recorded as passed")
+		}
+	}
+	data, err := os.ReadFile(filepath.Join(res.ReportDir, "report.json"))
+	if err != nil || !bytes.Contains(data, []byte(`"status": "deferred"`)) {
+		t.Fatalf("saved report: %v %s", err, data)
+	}
+	if _, err := hub.Start(context.Background(), StartArgs{Workflow: loadWF(t, "name: unattended-test\nsteps:\n  - id: owner\n    type: human_gate\n    prompt: Wrong\n    choices: [{id: pass, label: Yes}]\n"), Cwd: cwd, ReviewDeferred: true}); err == nil {
+		t.Fatal("review accepted a changed workflow")
+	}
+	replay, err := hub.Start(context.Background(), StartArgs{Workflow: wf, Cwd: cwd, ReviewDeferred: true, Answers: map[string]Answer{"owner": {ChoiceID: "pass"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewed := replay.Wait()
+	if reviewed.Status != StatusPassed || before.Load() != 1 || stage.Load() != 2 || model.Load() != 2 || after.Load() != 2 || cleaned.Load() != 2 {
+		t.Fatalf("review replay: status=%s before=%d stage=%d model=%d after=%d cleanup=%d", reviewed.Status, before.Load(), stage.Load(), model.Load(), after.Load(), cleaned.Load())
+	}
+	if record := LoadRecord(cwd, wf.Name); record == nil || len(record.Deferred) != 0 {
+		t.Fatalf("review did not clear deferred gates: %+v", record)
+	}
+}
+
 func TestFinishedRunLeavesMemoryWithDefinitionAndEventsOnDisk(t *testing.T) {
 	hub := NewHub(HubArgs{})
 	cwd := t.TempDir()

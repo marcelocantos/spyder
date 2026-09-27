@@ -139,6 +139,83 @@ steps:
 	}
 }
 
+func TestCLI_VerifyUnattendedThenReviewDeferred(t *testing.T) {
+	bin := buildSpyder(t)
+	t.Setenv("HOME", t.TempDir())
+	handler, _, _, logCap, appChan := daemon.Build(daemon.Config{Version: "test"})
+	t.Cleanup(func() {
+		if appChan != nil {
+			appChan.Close()
+		}
+		if logCap != nil {
+			logCap.Close()
+		}
+	})
+	ts := httptest.NewServer(handler)
+	t.Cleanup(ts.Close)
+	cwd := t.TempDir()
+	marker := filepath.Join(cwd, "steps.log")
+	wf := filepath.Join(cwd, "unattended.yaml")
+	body := `
+name: cli-unattended
+steps:
+  - id: build
+    type: shell
+    always_run: true
+    argv: [/bin/sh, -c, "echo build >> ` + marker + `"]
+  - id: owner
+    type: human_gate
+    requires: [build]
+    prompt: Is it right?
+    choices:
+      - id: pass
+        label: Yes
+  - id: after
+    type: shell
+    requires: [owner]
+    review_replay: true
+    argv: [/bin/sh, -c, "echo after >> ` + marker + `"]
+cleanup:
+  - id: stop
+    type: shell
+    argv: [/bin/sh, -c, "echo cleanup >> ` + marker + `"]
+`
+	if err := os.WriteFile(wf, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run := func(flags ...string) (string, int) {
+		args := append([]string{"verify", wf, "--cwd", cwd}, flags...)
+		cmd := exec.Command(bin, args...)
+		cmd.Env = append(os.Environ(), "SPYDER_DAEMON_URL="+ts.URL)
+		out, err := cmd.CombinedOutput()
+		if err == nil {
+			return string(out), 0
+		}
+		if ee, ok := err.(*exec.ExitError); ok {
+			return string(out), ee.ExitCode()
+		}
+		t.Fatalf("verify: %v\n%s", err, out)
+		return "", 0
+	}
+	prepared, code := run("--defer-human-gates")
+	if code != 4 || !strings.Contains(prepared, "STATUS prepared") || !strings.Contains(prepared, "owner  deferred") || strings.Contains(prepared, "choice=pass") {
+		t.Fatalf("unattended exit %d\n%s", code, prepared)
+	}
+	reviewed, code := run("--review-deferred", "--answer", "owner=pass")
+	if code != 0 || !strings.Contains(reviewed, "STATUS passed") || !strings.Contains(reviewed, "owner  ok") {
+		t.Fatalf("review exit %d\n%s", code, reviewed)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for label, want := range map[string]int{"build": 1, "after": 2, "cleanup": 2} {
+		if got := strings.Count(string(data), label); got != want {
+			t.Errorf("%s ran %d times; want %d\n%s", label, got, want, data)
+		}
+	}
+}
+
 func buildSpyder(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()

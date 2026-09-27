@@ -89,7 +89,7 @@ func init() {
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 		{"list-scripts", "spyder list-scripts [--json]", runListScripts},
 		{"run-script", "spyder run-script <name|path> [--param k=v]... [--max-duration-ms N] [--json]", runRunScript},
-		{"verify", "spyder verify <workflow.yaml> [--set k=v] [--device NAME] [--answer GATE=CHOICE] [--cwd DIR] [--validate] [--json]", runVerify},
+		{"verify", "spyder verify <workflow.yaml> [--set k=v] [--device NAME] [--answer GATE=CHOICE] [--defer-human-gates|--review-deferred] [--cwd DIR] [--validate] [--json]", runVerify},
 		{"verify-answer", "spyder verify-answer --run ID --gate ID --choice ID [--comment TEXT]", runVerifyAnswer},
 		{"verify-status", "spyder verify-status [--json]", runVerifyStatus},
 	}
@@ -1843,7 +1843,7 @@ func runRunScript(args []string) {
 func runVerify(args []string) {
 	pf, ctx, cancel := setupCommand("verify", args,
 		[]string{"--set", "--device", "--answer", "--comment", "--cwd"},
-		[]string{"--json", "--validate", "--allow-waive"},
+		[]string{"--json", "--validate", "--allow-waive", "--defer-human-gates", "--review-deferred"},
 		clitimeout.DefaultRun)
 	defer cancel()
 	if len(pf.positional) != 1 {
@@ -1910,11 +1910,13 @@ func runVerify(args []string) {
 		answers[k] = map[string]any{"choice_id": v, "comment": comments[k]}
 	}
 	a := map[string]any{
-		"workflow":      string(raw),
-		"workflow_path": path,
-		"cwd":           cwd,
-		"wait":          true,
-		"allow_waive":   pf.bools["--allow-waive"],
+		"workflow":          string(raw),
+		"workflow_path":     path,
+		"cwd":               cwd,
+		"wait":              true,
+		"allow_waive":       pf.bools["--allow-waive"],
+		"defer_human_gates": pf.bools["--defer-human-gates"],
+		"review_deferred":   pf.bools["--review-deferred"],
 	}
 	if len(params) > 0 {
 		a["params"] = params

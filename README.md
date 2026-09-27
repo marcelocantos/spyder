@@ -206,6 +206,14 @@ before execution starts, then streams `events.log` and screenshots into the
 same directory. It saves `report.json` on completion. The
 agent can share that directory for later review without keeping old runs in
 the daemon's memory.
+For overnight checks, `spyder verify path/to/workflow.yaml --defer-human-gates`
+continues past owner questions without answering them. Its final status is
+`prepared` (exit 4), with each question recorded as `deferred`. Run the same
+workflow with `--review-deferred` to reuse completed shell checks while
+restaging screens, rerunning model checks, and asking the owner. Mark any shell
+step needed during review with `review_replay: true`. Replay requires the same
+workflow definition and parameters; it does not claim a deferred judgment
+passed. Cleanup still runs at the end of both passes.
 To reconstruct a saved run, read `workflow.yaml` for step order, labels,
 groups, and choices; apply the recorded step outcomes from `report.json` by
 step ID, then show `events.log` and the saved screenshots. `params.json`

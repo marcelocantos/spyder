@@ -6,8 +6,10 @@ package verify
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -68,12 +70,14 @@ func NewHub(args HubArgs) *Hub {
 
 // StartArgs is one workflow invocation.
 type StartArgs struct {
-	Workflow     *Workflow
-	WorkflowPath string
-	Cwd          string
-	Params       map[string]string
-	Answers      map[string]Answer
-	AllowWaive   bool
+	Workflow        *Workflow
+	WorkflowPath    string
+	Cwd             string
+	Params          map[string]string
+	Answers         map[string]Answer
+	AllowWaive      bool
+	DeferHumanGates bool
+	ReviewDeferred  bool
 }
 
 // Answer is a human_gate response (CLI --answer or REST verify_answer).
@@ -97,13 +101,29 @@ func (h *Hub) Start(ctx context.Context, args StartArgs) (*Run, error) {
 	if cwd == "" {
 		cwd, _ = filepath.Abs(".")
 	}
+	if args.DeferHumanGates && args.ReviewDeferred {
+		return nil, fmt.Errorf("defer_human_gates and review_deferred cannot be combined")
+	}
+	var prior *Record
+	if args.ReviewDeferred {
+		prior = LoadRecord(cwd, rendered.Name)
+		if prior == nil || len(prior.Deferred) == 0 {
+			return nil, fmt.Errorf("no deferred owner checks to review for %s", rendered.Name)
+		}
+		if prior.DefinitionSHA256 != fmt.Sprintf("%x", sha256.Sum256(rendered.Raw)) || !maps.Equal(prior.Params, params) {
+			return nil, fmt.Errorf("prepared workflow or parameters changed; run full verification before owner review")
+		}
+	}
 	run := newRun(h, rendered, RunOpts{
-		Path:       args.WorkflowPath,
-		Cwd:        cwd,
-		Params:     params,
-		Answers:    args.Answers,
-		AllowWaive: args.AllowWaive,
-		Ctx:        ctx,
+		Path:            args.WorkflowPath,
+		Cwd:             cwd,
+		Params:          params,
+		Answers:         args.Answers,
+		AllowWaive:      args.AllowWaive,
+		DeferHumanGates: args.DeferHumanGates,
+		ReviewDeferred:  args.ReviewDeferred,
+		Prior:           prior,
+		Ctx:             ctx,
 	})
 	if err := run.persistDefinition(); err != nil {
 		run.cancel()

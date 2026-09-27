@@ -111,18 +111,22 @@ func (h *Handler) handleVerify(args map[string]any) (*mcpgo.CallToolResult, erro
 		}
 	}
 	allowWaive, _ := args["allow_waive"].(bool)
+	deferHumanGates, _ := args["defer_human_gates"].(bool)
+	reviewDeferred, _ := args["review_deferred"].(bool)
 	wait := true
 	if v, ok := args["wait"].(bool); ok {
 		wait = v
 	}
 
 	run, err := h.VerifyHub().Start(context.Background(), verify.StartArgs{
-		Workflow:     wf,
-		WorkflowPath: optString(args, "workflow_path"),
-		Cwd:          cwd,
-		Params:       params,
-		Answers:      answers,
-		AllowWaive:   allowWaive,
+		Workflow:        wf,
+		WorkflowPath:    optString(args, "workflow_path"),
+		Cwd:             cwd,
+		Params:          params,
+		Answers:         answers,
+		AllowWaive:      allowWaive,
+		DeferHumanGates: deferHumanGates,
+		ReviewDeferred:  reviewDeferred,
 	})
 	if err != nil {
 		return toolErr("%v", err)
@@ -201,6 +205,12 @@ func verifyDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithBoolean("allow_waive",
 				mcpgo.Description("Permit human_gate choices with outcome waive"),
+			),
+			mcpgo.WithBoolean("defer_human_gates",
+				mcpgo.Description("Run unattended: continue through human gates without asking; record each as deferred, never passed. Final status is prepared (exit 4)."),
+			),
+			mcpgo.WithBoolean("review_deferred",
+				mcpgo.Description("Replay owner checks from a prepared run. Reuse completed shell steps when the workflow and parameters match; rerun staging scripts, model checks, and review_replay shell steps."),
 			),
 		),
 		mcpgo.NewTool("verify_status",

@@ -13,14 +13,16 @@ const (
 	StatusInvestigate = "investigate"
 	StatusFailed      = "failed"
 	StatusAborted     = "aborted"
+	StatusPrepared    = "prepared"
 
-	StepOK      = "ok"
-	StepFailed  = "failed"
-	StepSkipped = "skipped"
-	StepRunning = "running"
-	StepPending = "pending"
-	StepWaiting = "waiting_human"
-	StepAborted = "aborted"
+	StepOK       = "ok"
+	StepFailed   = "failed"
+	StepSkipped  = "skipped"
+	StepRunning  = "running"
+	StepPending  = "pending"
+	StepWaiting  = "waiting_human"
+	StepAborted  = "aborted"
+	StepDeferred = "deferred"
 )
 
 const (
@@ -28,6 +30,7 @@ const (
 	ExitError       = 1
 	ExitInvestigate = 2
 	ExitAborted     = 3
+	ExitPrepared    = 4
 )
 
 // StepRecord is one executed (or skipped) step in the STATUS block.
@@ -57,13 +60,15 @@ type StatusInput struct {
 // FormatStatus builds the closing stdio block. Exit 0 plus this block is
 // the result; a passed run is passed.
 func FormatStatus(in StatusInput) string {
-	ok, failed := 0, 0
+	ok, failed, deferred := 0, 0, 0
 	for _, rec := range in.Steps {
 		switch rec.Status {
 		case StepOK:
 			ok++
 		case StepFailed:
 			failed++
+		case StepDeferred:
+			deferred++
 		}
 	}
 	var b strings.Builder
@@ -78,7 +83,7 @@ func FormatStatus(in StatusInput) string {
 	if in.FailedReason != "" {
 		fmt.Fprintf(&b, "reason: %s\n", in.FailedReason)
 	}
-	fmt.Fprintf(&b, "ok: %d  skipped: %d  failed: %d\n", ok, in.SkipN, failed)
+	fmt.Fprintf(&b, "ok: %d  skipped: %d  deferred: %d  failed: %d\n", ok, in.SkipN, deferred, failed)
 	if len(in.Steps) > 0 {
 		b.WriteString("steps:\n")
 		for _, rec := range in.Steps {
