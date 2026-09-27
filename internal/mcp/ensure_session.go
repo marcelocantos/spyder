@@ -91,7 +91,7 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 	key := appchannel.AppKey{DeviceID: id, BundleID: bundleID}
 
 	// Fast path: a healthy session already exists — return it untouched.
-	if s, ok := h.waitForChannelSession(key, 0); ok {
+	if s, ok := h.waitForChannelSession(key, time.Time{}, 0); ok {
 		if sessionHealthy(s) {
 			return toolJSON(ensureSessionResult{
 				Device:      dev,
@@ -170,7 +170,7 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 		return errRes, nil
 	}
 
-	s, ok := h.waitForChannelSession(key, wait)
+	s, ok := h.waitForChannelSession(key, time.Time{}, wait)
 	if !ok {
 		return toolErr("ensure_session: %s launched on %s (pid %d) but no app-channel session formed within %s — the app may not support SPYDER_APP_CHANNEL; check app_channel_list()", bundleID, dev, pid, wait)
 	}
@@ -191,11 +191,12 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 }
 
 // waitForChannelSession polls the keyed listener for (device, bundle)
-// until a handshaken session appears or timeout elapses. timeout 0 means
+// until a handshaken session newer than after appears or timeout elapses.
+// A zero after accepts any session; timeout 0 means
 // a single check. Returns immediately when no keyed listener exists — no
 // listener means the launch never wired SPYDER_APP_CHANNEL, so nothing
 // can ever connect.
-func (h *Handler) waitForChannelSession(key appchannel.AppKey, timeout time.Duration) (*appchannel.Session, bool) {
+func (h *Handler) waitForChannelSession(key appchannel.AppKey, after time.Time, timeout time.Duration) (*appchannel.Session, bool) {
 	if h.appChannel == nil {
 		return nil, false
 	}
@@ -206,9 +207,12 @@ func (h *Handler) waitForChannelSession(key appchannel.AppKey, timeout time.Dura
 	deadline := time.Now().Add(timeout)
 	for {
 		if sessions := l.Sessions(); len(sessions) > 0 {
-			// Most recent session — matters after a relaunch when a dying
-			// predecessor may still be draining.
-			return sessions[len(sessions)-1], true
+			// Most recent fresh session — a predecessor may still be draining.
+			for i := len(sessions) - 1; i >= 0; i-- {
+				if after.IsZero() || !sessions[i].StartedAt.Before(after) {
+					return sessions[i], true
+				}
+			}
 		}
 		if !time.Now().Before(deadline) {
 			return nil, false

@@ -180,6 +180,92 @@ func TestHandleDeployApp_FreshInstallNoChannelDial(t *testing.T) {
 	}
 }
 
+func TestHandleDeployApp_ChannelProvesLaunchWhenPIDServiceFails(t *testing.T) {
+	shortPostLaunchWait(t)
+	appPath := mkAppFixture(t)
+	ios := &stubAdapter{
+		terminateApp: func(string, string) error { return nil },
+		installApp:   func(string, string) error { return nil },
+		launchApp: func(_ string, _ string, env map[string]string) error {
+			dialSmokeFromEnv(env, []string{appchannel.MethodPing})
+			return nil
+		},
+		appPID: func(string, string) (int, error) {
+			return 0, errors.New("DTX process list connection closed")
+		},
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	h.appChannel = appchannel.NewManager()
+	t.Cleanup(h.appChannel.Close)
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device": "iPad", "path": appPath, "bundle_id": "com.example.app",
+	})
+	if r.IsError {
+		t.Fatalf("fresh app-channel handshake proves launch despite PID service failure: %s", resultText(t, &r))
+	}
+	var out deployResult
+	if err := json.Unmarshal([]byte(resultText(t, &r)), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.SessionID == "" || out.PID != 0 {
+		t.Fatalf("want channel session and unknown PID, got %+v", out)
+	}
+}
+
+func TestHandleDeployApp_PIDAndChannelFailureIsNotSuccess(t *testing.T) {
+	shortPostLaunchWait(t)
+	appPath := mkAppFixture(t)
+	ios := &stubAdapter{
+		terminateApp: func(string, string) error { return nil },
+		installApp:   func(string, string) error { return nil },
+		launchApp:    func(string, string, map[string]string) error { return nil },
+		appPID: func(string, string) (int, error) {
+			return 0, errors.New("DTX process list connection closed")
+		},
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	h.appChannel = appchannel.NewManager()
+	t.Cleanup(h.appChannel.Close)
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device": "iPad", "path": appPath, "bundle_id": "com.example.app",
+	})
+	if !r.IsError || !strings.Contains(resultText(t, &r), "no fresh app-channel session") {
+		t.Fatalf("unproven launch must fail: %s", resultText(t, &r))
+	}
+}
+
+func TestHandleDeployApp_StaleChannelDoesNotProveLaunch(t *testing.T) {
+	shortPostLaunchWait(t)
+	appPath := mkAppFixture(t)
+	ios := &stubAdapter{
+		terminateApp: func(string, string) error { return nil },
+		installApp:   func(string, string) error { return nil },
+		launchApp:    func(string, string, map[string]string) error { return nil },
+		appPID: func(string, string) (int, error) {
+			return 0, errors.New("DTX process list connection closed")
+		},
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	h.appChannel = appchannel.NewManager()
+	t.Cleanup(h.appChannel.Close)
+	l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{
+		DeviceID: "00008103-001122334455667A", BundleID: "com.example.app",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := dialSmoke(t, l.Port, []string{appchannel.MethodPing})
+	defer client.close()
+	_ = waitForAppSession(t, h)
+
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device": "iPad", "path": appPath, "bundle_id": "com.example.app",
+	})
+	if !r.IsError || !strings.Contains(resultText(t, &r), "no fresh app-channel session") {
+		t.Fatalf("old session must not prove the new launch: %s", resultText(t, &r))
+	}
+}
+
 // --- 🎯T119: launch_app result includes the live session ----------------
 
 func TestHandleLaunchApp_ResultIncludesSession(t *testing.T) {

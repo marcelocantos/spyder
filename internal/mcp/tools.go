@@ -527,7 +527,7 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 		return errRes, nil
 	}
 	out := launchAppResult{Device: dev, BundleID: bundleID}
-	if s, ok := h.waitForChannelSession(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID}, postLaunchSessionWait); ok {
+	if s, ok := h.waitForChannelSession(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID}, time.Time{}, postLaunchSessionWait); ok {
 		out.SessionID = s.ID
 		out.ChannelPort = s.Port
 	}
@@ -1688,6 +1688,8 @@ type deployResult struct {
 	Replaced    bool   `json:"replaced"`
 	SessionID   string `json:"session_id,omitempty"`
 	ChannelPort int    `json:"channel_port,omitempty"`
+	launchedAt  time.Time
+	pidErr      error
 }
 
 // handleDeployApp is the public deploy_app tool. It refuses the spyder stream
@@ -1725,9 +1727,16 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 		return errRes, nil
 	}
 	if !allowPlayer {
-		if s, ok := h.waitForChannelSession(appchannel.AppKey{DeviceID: deviceID, BundleID: out.BundleID}, postLaunchSessionWait); ok {
+		wait := postLaunchSessionWait
+		if out.pidErr != nil && wait < 5*time.Second {
+			wait = 5 * time.Second
+		}
+		if s, ok := h.waitForChannelSession(appchannel.AppKey{DeviceID: deviceID, BundleID: out.BundleID}, out.launchedAt, wait); ok {
 			out.SessionID = s.ID
 			out.ChannelPort = s.Port
+		}
+		if out.pidErr != nil && out.SessionID == "" {
+			return toolErr("deploy_app: verify pid for %s on %s: %v; no fresh app-channel session connected", out.BundleID, dev, out.pidErr)
 		}
 	}
 	return toolJSON(out)
@@ -1806,6 +1815,7 @@ func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[str
 	if err != nil {
 		return fail("deploy_app: launch %s on %s: %v", bundleID, dev, err)
 	}
+	launchedAt := time.Now()
 	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
 		return fail("deploy_app: launch %s on %s: %v", bundleID, dev, err)
 	}
@@ -1815,10 +1825,13 @@ func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[str
 	// sees the process — poll briefly so deploy does not false-fail.
 	pid, err := waitForAppPID(adapter, id, bundleID, 3*time.Second)
 	if err != nil {
-		return fail("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
+		if allowPlayer {
+			return fail("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
+		}
+		return deployResult{BundleID: bundleID, Replaced: replaced, launchedAt: launchedAt, pidErr: err}, id, nil
 	}
 
-	return deployResult{BundleID: bundleID, PID: pid, Replaced: replaced}, id, nil
+	return deployResult{BundleID: bundleID, PID: pid, Replaced: replaced, launchedAt: launchedAt}, id, nil
 }
 
 // isSpyderPlayerTarget reports whether a deploy targets the stream glass
