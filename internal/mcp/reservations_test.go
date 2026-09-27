@@ -246,7 +246,7 @@ func TestMutatingTool_AnonymousCaller_FreeDevice_Proceeds(t *testing.T) {
 	ios := &stubAdapter{terminateApp: func(id, bundle string) error {
 		called = true
 		return nil
-	}}
+	}, appPID: func(id, bundle string) (int, error) { return 0, nil }}
 	h, _ := newHandlerWithReservations(t, ios, nil)
 
 	// No reservation → anonymous caller proceeds.

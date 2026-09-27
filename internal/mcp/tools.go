@@ -667,7 +667,30 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 	if err := adapter.TerminateApp(id, bundleID); err != nil {
 		return toolErr("terminate_app %s on %s: %v", bundleID, dev, err)
 	}
-	return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
+	// A successful kill request does not mean the process has exited yet.
+	// In particular, iOS appservice can acknowledge KillProcess while the
+	// process still appears in the live process list. Do not let Verify's
+	// cleanup report success until the app is actually gone.
+	const stopChecks = 10
+	for check := range stopChecks {
+		pid, pidErr := adapter.AppPID(id, bundleID)
+		if pidErr != nil {
+			if strings.HasPrefix(pidErr.Error(), "app not running") {
+				return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
+			}
+			return toolErr("verify termination of %s on %s: %v", bundleID, dev, pidErr)
+		}
+		if pid <= 0 {
+			return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
+		}
+		if check == stopChecks/2 {
+			if err := adapter.TerminateApp(id, bundleID); err != nil {
+				return toolErr("retry termination of %s on %s: %v", bundleID, dev, err)
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return toolErr("terminate_app %s on %s: process is still running", bundleID, dev)
 }
 
 // authorize checks that the caller (identified by owner) may perform

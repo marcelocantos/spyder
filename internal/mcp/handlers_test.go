@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"image"
 	"image/png"
 	"os"
@@ -782,6 +783,11 @@ func TestHandleTerminateApp(t *testing.T) {
 			t.Errorf("bundle = %q; want com.squz.tiltbuggy", bundle)
 		}
 		return nil
+	}, appPID: func(id, bundle string) (int, error) {
+		if !called {
+			return 1234, nil
+		}
+		return 0, fmt.Errorf("app not running: %s", bundle)
 	}}
 	h := newHandlerWithStubs(t, nil, android)
 	r := dispatchJSON(t, h, "terminate_app", map[string]any{
@@ -796,6 +802,25 @@ func TestHandleTerminateApp(t *testing.T) {
 	}
 	if !strings.Contains(resultText(t, &r), "terminated com.squz.tiltbuggy on Raspberry") {
 		t.Errorf("unexpected body: %s", resultText(t, &r))
+	}
+}
+
+func TestHandleTerminateAppStillRunning(t *testing.T) {
+	stops := 0
+	android := &stubAdapter{
+		terminateApp: func(id, bundle string) error { stops++; return nil },
+		appPID:       func(id, bundle string) (int, error) { return 1234, nil },
+	}
+	h := newHandlerWithStubs(t, nil, android)
+	r := dispatchJSON(t, h, "terminate_app", map[string]any{
+		"device":    "Raspberry",
+		"bundle_id": "com.squz.tiltbuggy",
+	})
+	if !r.IsError || !strings.Contains(resultText(t, &r), "process is still running") {
+		t.Fatalf("false cleanup success: %s", resultText(t, &r))
+	}
+	if stops < 2 {
+		t.Fatalf("termination was not retried: %d attempts", stops)
 	}
 }
 
