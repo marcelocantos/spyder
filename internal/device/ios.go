@@ -1059,6 +1059,24 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 		}
 		return nil
 	}
+	// CoreDevice's graceful termination prevents iOS from immediately
+	// relaunching some apps after a SIGKILL (observed with Stock Cars on
+	// Jevons). Prefer it when Xcode is available; keep go-ios as the
+	// transport-independent fallback for hosts without devicectl.
+	if _, lookErr := exec.LookPath("xcrun"); lookErr == nil {
+		_, stderr, termErr := runDevicectl("device", "process", "terminate",
+			"--device", id, "--pid", fmt.Sprintf("%d", pid))
+		if termErr == nil {
+			slog.Info("iOS app terminated gracefully", "device", id, "bundle_id", bundleID, "pid", pid)
+			return nil
+		}
+		if _, pidErr := a.AppPID(id, bundleID); pidErr != nil && strings.HasPrefix(pidErr.Error(), "app not running") {
+			return nil
+		}
+		slog.Warn("iOS graceful termination failed; falling back to go-ios SIGKILL",
+			"device", id, "bundle_id", bundleID, "pid", pid,
+			"error", termErr, "stderr", truncate(string(stderr), 200))
+	}
 	conn, release, err := a.asPool.Acquire(id)
 	if err != nil {
 		a.goios.Invalidate(id)
