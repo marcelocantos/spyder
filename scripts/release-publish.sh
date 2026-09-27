@@ -91,7 +91,7 @@ if [[ "$SKIP_BREW" == false ]]; then
 	brew upgrade marcelocantos/tap/spyder 2>/dev/null || brew install marcelocantos/tap/spyder
 	installed_spyder="$(brew --prefix marcelocantos/tap/spyder)/bin/spyder"
 	got="$("$installed_spyder" --version 2>/dev/null || true)"
-	if [[ "$got" != "$TAG" && "$got" != "$VERSION" ]]; then
+	if [[ "$got" != "spyder $TAG" && "$got" != "$TAG" && "$got" != "$VERSION" ]]; then
 		echo "release-publish: expected ${installed_spyder} --version ${TAG}, got ${got:-<missing>}" >&2
 		exit 1
 	fi
