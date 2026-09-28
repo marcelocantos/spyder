@@ -20,7 +20,7 @@ import (
 )
 
 func TestModelImageFitsClaudeTaskStream(t *testing.T) {
-	img := image.NewRGBA(image.Rect(0, 0, 2200, 1200))
+	img := image.NewRGBA(image.Rect(0, 0, 2266, 1488)) // iPad mini landscape
 	rng := rand.New(rand.NewSource(1))
 	for y := 0; y < img.Bounds().Dy(); y++ {
 		for x := 0; x < img.Bounds().Dx(); x++ {
@@ -38,8 +38,12 @@ func TestModelImageFitsClaudeTaskStream(t *testing.T) {
 	if len(compressed) > maxModelImageBytes {
 		t.Fatalf("model image is %d bytes, limit %d", len(compressed), maxModelImageBytes)
 	}
-	if _, _, err := image.Decode(bytes.NewReader(compressed)); err != nil {
+	decoded, _, err := image.Decode(bytes.NewReader(compressed))
+	if err != nil {
 		t.Fatalf("bounded model image is unreadable: %v", err)
+	}
+	if b := decoded.Bounds(); max(b.Dx(), b.Dy()) > maxModelImageEdge {
+		t.Fatalf("model image %v exceeds Claude's %d px long edge", b, maxModelImageEdge)
 	}
 }
 

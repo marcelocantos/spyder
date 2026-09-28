@@ -14,41 +14,47 @@ import (
 	"strings"
 
 	"github.com/marcelocantos/claudia"
+	"golang.org/x/image/draw"
 	"github.com/marcelocantos/spyder/internal/verify"
 )
 
-// Claudia v0.44 scans Claude's JSONL output with a 1 MiB line limit. The
-// image returned by Claude's Read tool is base64 inside one line, so bound
-// the model copy well below that limit. Keep the full PNG in the run bundle.
-const maxModelImageBytes = 512 * 1024
+// Claude reads images at up to 1568 px on the long edge, so a larger copy
+// adds nothing the model can see. Claudia v0.44 also scans Claude's JSONL
+// output with a 1 MiB line limit, and the Read tool's result line carries the
+// base64 image more than once: a 485 KB iPad JPEG produced no final result
+// (🎯T149) while 240 KB Android images passed. Keep the full PNG in the run
+// bundle and give the model a resized copy well inside that budget.
+const (
+	maxModelImageEdge  = 1568
+	maxModelImageBytes = 256 * 1024
+)
 
 func modelImage(pngData []byte) ([]byte, error) {
 	source, err := png.Decode(bytes.NewReader(pngData))
 	if err != nil {
 		return nil, fmt.Errorf("decode screenshot PNG: %w", err)
 	}
+	bounds := source.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+	if long := max(width, height); long > maxModelImageEdge {
+		width, height = width*maxModelImageEdge/long, height*maxModelImageEdge/long
+	}
 	for {
-		for _, quality := range []int{65, 50, 35, 25} {
+		scaled := image.NewRGBA(image.Rect(0, 0, width, height))
+		draw.CatmullRom.Scale(scaled, scaled.Bounds(), source, bounds, draw.Src, nil)
+		for _, quality := range []int{75, 60, 45, 30} {
 			var out bytes.Buffer
-			if err := jpeg.Encode(&out, source, &jpeg.Options{Quality: quality}); err != nil {
+			if err := jpeg.Encode(&out, scaled, &jpeg.Options{Quality: quality}); err != nil {
 				return nil, fmt.Errorf("encode model JPEG: %w", err)
 			}
 			if out.Len() <= maxModelImageBytes {
 				return out.Bytes(), nil
 			}
 		}
-		bounds := source.Bounds()
-		width, height := bounds.Dx()/2, bounds.Dy()/2
-		if width < 640 || height < 360 {
-			return nil, fmt.Errorf("model JPEG remains over %d bytes at %dx%d", maxModelImageBytes, bounds.Dx(), bounds.Dy())
+		if width/2 < 640 || height/2 < 360 {
+			return nil, fmt.Errorf("model JPEG remains over %d bytes at %dx%d", maxModelImageBytes, width, height)
 		}
-		scaled := image.NewRGBA(image.Rect(0, 0, width, height))
-		for y := 0; y < height; y++ {
-			for x := 0; x < width; x++ {
-				scaled.Set(x, y, source.At(bounds.Min.X+x*2, bounds.Min.Y+y*2))
-			}
-		}
-		source = scaled
+		width, height = width*3/4, height*3/4
 	}
 }
 
