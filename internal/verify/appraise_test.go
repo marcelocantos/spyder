@@ -339,3 +339,40 @@ steps:
 		t.Fatalf("detail must refuse images outside the bundle: %+v %v", d, err)
 	}
 }
+
+func TestAppraisalCutShortByRunStopSaysSo(t *testing.T) {
+	started := make(chan struct{})
+	hub := NewHub(HubArgs{Model: func(ctx context.Context, _ StepRequest) ExecResult {
+		close(started)
+		<-ctx.Done()
+		return ExecResult{Code: 124, Output: "model: " + ctx.Err().Error(), TimedOut: true}
+	}})
+	run, err := hub.Start(context.Background(), StartArgs{Workflow: loadWF(t, `
+name: stopped-appraisal
+steps:
+  - id: look
+    type: human_gate
+    judgment: static
+    device: phone
+    prompt: Look
+    choices: [{id: pass, label: Yes}]
+`), Cwd: t.TempDir(), DeferHumanGates: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	_ = hub.Abort(run.ID, "another step failed")
+	res := run.Wait()
+	found := false
+	for _, rec := range res.Steps {
+		if rec.StepID == "look" {
+			found = true
+			if rec.Appraisal == nil || rec.Appraisal.Error != "run stopped before the appraisal finished" {
+				t.Fatalf("appraisal cut short by the run stopping must say so, not claim a timeout: %+v", rec.Appraisal)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("stopped appraisal left no record: %+v", res.Steps)
+	}
+}

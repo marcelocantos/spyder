@@ -64,6 +64,8 @@ func (r *Run) appraise(step Step) *Appraisal {
 		a.Provider, a.Model, a.Report, a.Images = ev.Provider, ev.Model, ev.Result, ev.Images
 	}
 	switch {
+	case r.ctx.Err() != nil:
+		a.Error = "run stopped before the appraisal finished"
 	case res.TimedOut:
 		a.Error = "model appraisal timed out"
 	case res.Code != 0:
