@@ -14,8 +14,8 @@ import (
 	"strings"
 
 	"github.com/marcelocantos/claudia"
-	"golang.org/x/image/draw"
 	"github.com/marcelocantos/spyder/internal/verify"
+	"golang.org/x/image/draw"
 )
 
 // Claude reads images at up to 1568 px on the long edge, so a larger copy
