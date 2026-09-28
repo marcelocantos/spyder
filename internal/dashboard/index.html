@@ -118,6 +118,10 @@
   .vstep.sel { background: var(--panel2); border-color: var(--accent); }
   .vstep .vtext { min-width: 0; overflow-wrap: anywhere; }
   .vreview { position: relative; border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+  .vsteps-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+                 margin-bottom: 12px; background: var(--panel); }
+  .vsteps-head h2 { margin: 0; }
+  .vnext-top { width: 32px; height: 32px; padding: 0; font-size: 16px; line-height: 1; border-radius: 50%; }
   .vreview-next { position: absolute; right: 8px; bottom: 8px; width: 36px; height: 36px; padding: 0;
                   font-size: 18px; line-height: 1; border-radius: 50%; }
   .vreview h2 { margin-bottom: 8px; }
@@ -205,6 +209,7 @@
     #tab-verify .verify-run { height: 100%; min-height: 0; display: flex; flex-direction: column; }
     #tab-verify .verify-grid { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
     #tab-verify .vcol { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
+    #tab-verify .vsteps-head { position: sticky; top: 0; z-index: 1; padding-bottom: 4px; }
   }
   @media (max-width: 720px) {
     body { flex-direction: column; height: auto; min-height: 100vh; }
@@ -1076,7 +1081,7 @@ function createVerifyCard() {
   el.innerHTML = `<div class="verify-run-head"><h3 data-v="title"></h3><span data-v="status" class="vstatus"></span><span data-v="device" class="muted"></span><span data-v="owner" class="muted"></span></div>
     <p data-v="reason" class="muted vreason hidden"></p>
     <div data-v="gate-banner" class="gate-banner hidden"><span>This run is asking you a question.</span><button data-v="to-gate" class="sm" type="button">Show the question</button></div>
-    <div class="verify-grid"><div class="vcol" data-v="steps-col"><h2>Steps</h2><div data-v="timeline"></div></div>
+    <div class="verify-grid"><div class="vcol" data-v="steps-col"><div class="vsteps-head"><h2>Steps</h2><button type="button" data-v="next-top" class="vnext-top" aria-label="Next unassessed entry" title="Next unassessed entry">↓</button></div><div data-v="timeline"></div></div>
     <div data-v="live" class="vcol"><h2>Live</h2><p data-v="shot-empty" class="muted">No screenshot yet.</p>
     <img data-v="shot" class="verify-shot hidden" alt="Latest screenshot from this run">
     <h2>Log</h2><div data-v="log" class="verify-log"></div>
@@ -1107,6 +1112,7 @@ function createVerifyCard() {
     } catch (e) { toast(e.message, true); }
   };
   get("back").onclick = () => selectVerifyStep(verifySelected, null);
+  get("next-top").onclick = () => nextUnassessed(verifySelected, verifyStepSel.get(verifySelected) || null);
   get("to-gate").onclick = () => selectVerifyStep(verifySelected, null);
   card.comment.oninput = () => { if (card.gateKey) verifyDrafts.set(card.gateKey, card.comment.value); };
   return card;
@@ -1434,7 +1440,11 @@ function paintVerifyNow(card) {
     if (status.textContent !== "Starting…") btn.disabled = false;
     return;
   }
-  const device = run.device ? " on " + run.device : "";
+  // The entry's own device, not the run's default (an iPad gate in a run
+  // whose device parameter is the phone).
+  const focus = (run.steps || []).find(s => s.id === run.focus) || {};
+  const target = focus.device || run.device;
+  const device = target ? " on " + target : "";
   if (run.status === "running") {
     const current = (run.steps || []).find(s => s.status === "running");
     btn.disabled = true;
@@ -1456,8 +1466,9 @@ function nextUnassessed(runID, stepID) {
   const order = n => (n || "").split(".").map(x => x.padStart(6, "0")).join(".");
   const steps = (run.steps || []).slice().sort((a, b) => order(a.number) < order(b.number) ? -1 : order(a.number) > order(b.number) ? 1 : 0);
   const here = steps.findIndex(s => s.id === stepID);
-  for (let i = 1; i < steps.length; i++) {
-    const s = steps[(here + i) % steps.length];
+  for (let i = 1; i <= steps.length; i++) {
+    const s = steps[(here + i + steps.length) % steps.length];
+    if (s.id === stepID) continue;
     if (s.reviewable && !s.reviewed) {
       selectVerifyStep(runID, s.id);
       const row = document.querySelector(`.vstep[data-step-id="${CSS.escape(s.id)}"]`);
