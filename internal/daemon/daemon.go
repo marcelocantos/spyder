@@ -335,6 +335,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	mux.Handle(dashboard.Path+"/", dash)
 	if handler != nil {
 		mux.HandleFunc(verify.WSPath, handler.VerifyHub().HandleWS)
+		mux.HandleFunc(verify.ReportPathPrefix, handler.VerifyHub().HandleReport)
 	}
 	// 🎯T101/🎯T106 browser player: the wasm-compiled spyder player, served
 	// at /player/?name=<server>. Attaches to the relay via /ws/wire like

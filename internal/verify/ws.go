@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -68,4 +69,35 @@ func (h *Hub) writeSnapshot(ctx context.Context, c *websocket.Conn) error {
 	wctx, cancel := context.WithTimeout(ctx, snapshotWriteTimeout)
 	defer cancel()
 	return c.Write(wctx, websocket.MessageText, b)
+}
+
+// ReportPathPrefix serves a run's full report as plain JSON at
+// /verify/runs/<run_id>/report.json: a URL an agent can fetch directly,
+// without the REST tool envelope.
+const ReportPathPrefix = "/verify/runs/"
+
+// HandleReport serves GET /verify/runs/<run_id>/report.json.
+func (h *Hub) HandleReport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	runID, ok := strings.CutSuffix(strings.TrimPrefix(r.URL.Path, ReportPathPrefix), "/report.json")
+	if !ok || runID == "" || strings.Contains(runID, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	report, err := h.Report(runID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	b, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	_, _ = w.Write(append(b, '\n'))
 }

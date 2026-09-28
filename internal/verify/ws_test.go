@@ -175,3 +175,32 @@ func runningCount(snap Snapshot) int {
 	}
 	return n
 }
+
+func TestHandleReportServesPlainJSON(t *testing.T) {
+	hub := NewHub(HubArgs{})
+	res := runWF(t, hub, "name: report-url\nsteps:\n  - {id: a, type: shell, argv: [/usr/bin/true]}\n", "", nil)
+	srv := httptest.NewServer(http.HandlerFunc(hub.HandleReport))
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + ReportPathPrefix + res.RunID + "/report.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var rep Report
+	if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil || resp.StatusCode != 200 || rep.RunID != res.RunID || rep.Status != StatusPassed || len(rep.Steps) != 1 {
+		t.Fatalf("status=%d err=%v report=%+v", resp.StatusCode, err, rep)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("content type %q", ct)
+	}
+	for _, path := range []string{"nope/report.json", res.RunID + "/other.json", "a/b/report.json"} {
+		r, err := http.Get(srv.URL + ReportPathPrefix + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s: status %d", path, r.StatusCode)
+		}
+	}
+}
