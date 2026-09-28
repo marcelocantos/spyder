@@ -111,7 +111,7 @@ has signatures.
 | OS control | `perf_fps`, `port_forward_start`, `port_forward_stop`, `port_forward_list`, `input_tap`, `input_swipe`, `device_setting` |
 | App channel | `app_channel_stop`, `app_channel_list`, `app_ping`, `app_quit`, `app_flush`, `app_background`, `app_foreground`, `app_low_memory`, `app_pause`, `app_resume`, `app_step`, `app_speed`, `app_input`, `app_sensor_suppress`, `app_sensor_set`, `app_sensor_unsuppress`, `app_sensor_status`, `ensure_session`, `state_query`, `app_state`, `wait_state`, `app_tweak_list`, `app_tweak_get`, `app_tweak_set`, `app_tweak_reset`, `app_spawn`, `app_acquire`, `app_release`, `games`, `app_save_state`, `app_restore_state`, `app_screenshot`, `app_state_slices`, `app_state_describe`, `app_state_capture_start`, `app_state_capture_get`, `app_state_capture_stop`, `app_state_capture_list`, `app_log_get`, `app_perf_get`, `app_metrics_list`, `app_metrics_arm`, `app_metrics_disarm`, `app_metrics_status`, `app_metrics_dump`, `app_methods`, `app_call` |
 | Pool / scripts | `pool_list`, `pool_warm`, `pool_drain`, `pool_gc`, `list_scripts`, `run_script` |
-| Verify | `verify`, `verify_status`, `verify_answer`, `verify_abort`, `verify_dismiss`, `verify_detail` |
+| Verify | `verify`, `verify_status`, `verify_answer`, `verify_abort`, `verify_dismiss`, `verify_detail`, `verify_review`, `verify_report` |
 
 Starlark also adds non-verb helpers: `sleep`, `emit`, `health()`, `help()`,
 and the 🎯T108/T109 assert and hit-target helpers.
@@ -197,6 +197,12 @@ outline numbers (`1.2.3`) for referring to them briefly; `verify_detail`
 accepts a number as the step. Select a step to see its
 detail in the right-hand pane; model-evaluated steps are marked 🤖 and show
 the model's verdict, full report, model identity, and the images it reviewed.
+Each model result and each pending owner gate has a review section in that
+pane: pick a finding (the gate's own choices, or pass/fail/unclear for a model
+step) and write notes. It saves as you type to `~/.spyder/verify/reviews.db`,
+and the tab's "to review" count drops as findings land. `spyder verify-report
+--run ID` (or `verify_report`) returns the whole run, reviews included, as one
+JSON document for an agent.
 Finished runs stay until the agent that created them runs
 `spyder verify-dismiss --run ID`; they survive daemon restarts. The tab pauses
 app thumbnail and preview capture while an owner inspects the device.

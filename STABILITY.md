@@ -70,6 +70,8 @@ builtin). `log_stream` is REST SSE only and is not in the verb table.
 | `verify_answer` | `{run_id, gate_id, choice_id, comment?}`. | JSON `{ok, run_id, gate_id, choice_id}`. | Stable (🎯T138) |
 | `verify_abort` | `{run_id, reason?}`. | JSON `{ok, run_id}`. | Stable (🎯T138) |
 | `verify_dismiss` | `{run_id, owner?, cwd?}`. | JSON `{ok, run_id}`. Refused while active or for a caller other than the creator. | Beta (🎯T149) |
+| `verify_review` | `{run_id, step_id, finding?, notes?}`. | JSON `{ok, run_id, step_id, review}`. Refused for steps not awaiting review or unknown findings. | Beta (🎯T149) |
+| `verify_report` | `{run_id}`. | JSON `Report` `{run_id, workflow, status, exit_code, reason?, owner, params, summary, groups, steps[StepDetail], status_block?}`. | Beta (🎯T149) |
 | `verify_detail` | `{run_id, step_id?}`; `step_id` may be an outline number such as `1.2.3`. | JSON `StepDetail` `{run_id, step_id?, step?, prompt?, choices?, records?, appraisal?, images?[{path, data_uri?, error?}], screenshot?}`. | Beta (🎯T149) |
 | `screenshot` | `{device: string, owner?: string, path?: string, inline?: bool}` (device required; owner archives into the active run). | Default (🎯T114): JSON `{device, path, width, height, bytes}` — PNG written under `~/.spyder/screenshots` (or `path`). `inline=true` returns an MCP image content block (base64 PNG, `image/png`). iOS uses go-ios DVT `ScreenshotService` (iOS 17+ needs the bundled tunnel; iOS ≤16 uses lockdown and needs the Developer Disk Image mounted). Android uses `adb shell screencap`. Read-only; not reservation-gated. | Stable |
 | `list_apps` | `{device: string}` (required). | JSON array of `device.AppInfo` (`bundle_id`, `name?`, `version?`). | Needs review — Android currently returns bundle_id only; name/version parity pending |
@@ -237,6 +239,7 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder verify <workflow.yaml> [--set k=v] [--device NAME] [--answer GATE=CHOICE] [--defer-human-gates\|--review-deferred] [--cwd DIR] [--as OWNER] [--validate] [--json]` | REST proxy to `verify`. Prints a `STATUS` / `END STATUS` block; exit 0/1/2/3/4 = passed / error / investigate / aborted / prepared. Pass record: `<cwd>/verify-runs/resume/<workflow>.json`. Dashboard: `/dashboard#verify`. | Stable (🎯T138) |
 | `spyder verify-status [--json]` | REST proxy to `verify_status`. | Stable (🎯T138) |
 | `spyder verify-answer --run ID --gate ID --choice ID [--comment TEXT]` | REST proxy to `verify_answer`. | Stable (🎯T138) |
+| `spyder verify-report --run ID` | REST proxy to `verify_report`; prints the JSON report. | Beta (🎯T149) |
 | `spyder verify-dismiss --run ID [--as OWNER]` | REST proxy to `verify_dismiss`; owner defaults to basename(cwd). | Beta (🎯T149) |
 | `spyder screenshot <device> [--output FILE] [--as OWNER]` | REST proxy to `screenshot`; writes PNG to `--output` (default `<device>-<ts>.png`). | Stable |
 | `spyder list-apps <device> [--json]` | REST proxy to `list_apps`. | Stable |

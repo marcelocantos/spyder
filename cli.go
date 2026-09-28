@@ -92,6 +92,7 @@ func init() {
 		{"verify", "spyder verify <workflow.yaml> [--set k=v] [--device NAME] [--answer GATE=CHOICE] [--defer-human-gates|--review-deferred] [--cwd DIR] [--as OWNER] [--validate] [--json]", runVerify},
 		{"verify-answer", "spyder verify-answer --run ID --gate ID --choice ID [--comment TEXT]", runVerifyAnswer},
 		{"verify-dismiss", "spyder verify-dismiss --run ID [--as OWNER]", runVerifyDismiss},
+		{"verify-report", "spyder verify-report --run ID", runVerifyReport},
 		{"verify-status", "spyder verify-status [--json]", runVerifyStatus},
 	}
 }
@@ -1992,6 +1993,17 @@ func runVerifyDismiss(args []string) {
 	}
 	a := map[string]any{"run_id": pf.flags["--run"], "owner": deriveOwner(pf.flags["--as"])}
 	dispatchAndExit(ctx, "verify_dismiss", a, pf.bools["--json"], false)
+}
+
+// runVerifyReport prints a run's full report, owner reviews included, as one
+// JSON document.
+func runVerifyReport(args []string) {
+	pf, ctx, cancel := setupCommand("verify-report", args, []string{"--run"}, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	if pf.flags["--run"] == "" {
+		fatalUsage("verify-report", fmt.Errorf("--run is required"))
+	}
+	dispatchAndExit(ctx, "verify_report", map[string]any{"run_id": pf.flags["--run"]}, true, false)
 }
 
 func runVerifyStatus(args []string) {

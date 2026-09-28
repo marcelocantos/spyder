@@ -65,6 +65,9 @@ type Run struct {
 	// for the owner review to confirm or override.
 	appraisals      map[string]*Appraisal
 	priorAppraisals map[string]*Appraisal
+	// reviews caches the owner's saved findings; the hub's review
+	// database is the source of truth.
+	reviews map[string]*OwnerReview
 }
 
 // RunOpts is internal construction data.
@@ -122,6 +125,7 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 		lastProgress:   time.Now(),
 		done:           make(chan struct{}),
 		appraisals:     map[string]*Appraisal{},
+		reviews:        map[string]*OwnerReview{},
 	}
 	if r.answers == nil {
 		r.answers = map[string]Answer{}
@@ -247,16 +251,21 @@ type RunView struct {
 // "model" for a model step or an appraised gate still awaiting the owner,
 // "owner" or "preset" for an answered gate, empty for automation.
 type StepView struct {
-	ID          string `json:"id"`
-	Number      string `json:"number,omitempty"`
-	Label       string `json:"label"`
-	Type        string `json:"type"`
-	Group       string `json:"group,omitempty"`
-	Status      string `json:"status"`
-	DurationMS  int64  `json:"duration_ms,omitempty"`
-	ChoiceID    string `json:"choice_id,omitempty"`
-	Device      string `json:"device,omitempty"`
-	Judgment    string `json:"judgment,omitempty"`
+	ID         string `json:"id"`
+	Number     string `json:"number,omitempty"`
+	Label      string `json:"label"`
+	Type       string `json:"type"`
+	Group      string `json:"group,omitempty"`
+	Status     string `json:"status"`
+	DurationMS int64  `json:"duration_ms,omitempty"`
+	ChoiceID   string `json:"choice_id,omitempty"`
+	Device     string `json:"device,omitempty"`
+	Judgment   string `json:"judgment,omitempty"`
+	// Reviewable steps await the owner's review; Review is the owner's
+	// saved finding and Reviewed says it settles the step.
+	Reviewable  bool   `json:"reviewable,omitempty"`
+	Review      string `json:"review,omitempty"`
+	Reviewed    bool   `json:"reviewed,omitempty"`
 	Evaluator   string `json:"evaluator,omitempty"`
 	Appraised   bool   `json:"appraised,omitempty"`
 	Verdict     string `json:"verdict,omitempty"`
@@ -290,9 +299,6 @@ func (r *Run) view() RunView {
 		if st == "" {
 			st = StepPending
 		}
-		if st == StepDeferred {
-			pending++
-		}
 		label := s.Label
 		if label == "" {
 			label = s.ID
@@ -310,6 +316,15 @@ func (r *Run) view() RunView {
 		}
 		if cleanup[s.ID] {
 			sv.Group = CleanupGroupID
+		}
+		if options := reviewOptions(s, st); options != nil {
+			rev := r.reviews[s.ID]
+			sv.Reviewable = true
+			sv.Review = findingOf(rev)
+			sv.Reviewed = reviewComplete(rev, options)
+			if !sv.Reviewed {
+				pending++
+			}
 		}
 		if rec, ok := last[s.ID]; ok {
 			sv.ChoiceID = rec.ChoiceID

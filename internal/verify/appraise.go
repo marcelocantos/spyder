@@ -212,6 +212,10 @@ type StepDetail struct {
 	Appraisal  *Appraisal    `json:"appraisal,omitempty"`
 	Images     []DetailImage `json:"images,omitempty"`
 	Screenshot string        `json:"screenshot,omitempty"`
+	// ReviewOptions are the findings the owner can record, when the step
+	// awaits owner review; Review is what they have saved so far.
+	ReviewOptions []Choice     `json:"review_options,omitempty"`
+	Review        *OwnerReview `json:"review,omitempty"`
 }
 
 // DetailImage is one image a model reviewed, inline for the browser.
@@ -224,6 +228,39 @@ type DetailImage struct {
 // Detail returns the evidence for stepID (a step ID or its outline number,
 // such as "1.2.3"), or the run's latest screenshot when stepID is empty.
 // Images are served only from inside this run's bundle.
+// fillEvidence adds a step's definition, records, latest appraisal and owner
+// review to out, whose Step is set. Images stay as paths.
+func (r *Run) fillEvidence(out *StepDetail) {
+	stepID := out.Step.ID
+	for _, s := range append(append([]Step{}, r.wf.Steps...), r.wf.Cleanup...) {
+		if s.ID == stepID {
+			out.Prompt, out.Hint, out.Choices = s.Prompt, s.Hint, s.Choices
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range r.records {
+		if rec.StepID == stepID {
+			out.Records = append(out.Records, rec)
+			if rec.Appraisal != nil {
+				out.Appraisal = rec.Appraisal
+			}
+		}
+	}
+	if out.Appraisal == nil {
+		out.Appraisal = r.priorAppraisals[stepID]
+	}
+	for _, s := range append(append([]Step{}, r.wf.Steps...), r.wf.Cleanup...) {
+		if s.ID == stepID {
+			out.ReviewOptions = reviewOptions(s, r.stepStatus[stepID])
+		}
+	}
+	if rev := r.reviews[stepID]; rev != nil {
+		copied := *rev
+		out.Review = &copied
+	}
+}
+
 func (r *Run) Detail(stepID string) (*StepDetail, error) {
 	out := &StepDetail{RunID: r.ID, StepID: stepID}
 	if stepID == "" {
@@ -240,26 +277,8 @@ func (r *Run) Detail(stepID string) (*StepDetail, error) {
 	if out.Step == nil {
 		return nil, fmt.Errorf("run %s has no step %s", r.ID, stepID)
 	}
-	stepID = out.Step.ID
-	out.StepID = stepID
-	for _, s := range append(append([]Step{}, r.wf.Steps...), r.wf.Cleanup...) {
-		if s.ID == stepID {
-			out.Prompt, out.Hint, out.Choices = s.Prompt, s.Hint, s.Choices
-		}
-	}
-	r.mu.Lock()
-	for _, rec := range r.records {
-		if rec.StepID == stepID {
-			out.Records = append(out.Records, rec)
-			if rec.Appraisal != nil {
-				out.Appraisal = rec.Appraisal
-			}
-		}
-	}
-	if out.Appraisal == nil {
-		out.Appraisal = r.priorAppraisals[stepID]
-	}
-	r.mu.Unlock()
+	out.StepID = out.Step.ID
+	r.fillEvidence(out)
 	if out.Appraisal != nil {
 		for _, path := range out.Appraisal.Images {
 			img := DetailImage{Path: path}

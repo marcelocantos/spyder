@@ -117,6 +117,17 @@
   .vstep:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .vstep.sel { background: var(--panel2); border-color: var(--accent); }
   .vstep .vtext { min-width: 0; overflow-wrap: anywhere; }
+  .vreview { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+  .vreview h2 { margin-bottom: 8px; }
+  .vreview-findings { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .vreview-finding { padding: 6px 12px; min-height: 36px; }
+  .vreview-finding.sel { border-color: var(--accent); background: var(--panel); box-shadow: inset 0 0 0 1px var(--accent); }
+  .vreview-finding.sel.good { border-color: var(--accent2); box-shadow: inset 0 0 0 1px var(--accent2); }
+  .vreview-finding.sel.bad { border-color: var(--err); box-shadow: inset 0 0 0 1px var(--err); }
+  .vreview-label { display: block; color: var(--dim); }
+  .vreview-notes { display: block; width: 100%; min-height: 96px; margin-top: 4px; resize: vertical; background: var(--panel2);
+                   border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 8px; font: inherit; }
+  .vreview-status { margin: 6px 0 0; font-size: 12px; }
   .vnum { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-right: 6px; font-variant-numeric: tabular-nums; }
   .vmark { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: #3a4258; flex: none; }
   .vstep.running .vmark { background: var(--accent); }
@@ -1130,9 +1141,12 @@ function selectVerifyStep(runID, stepID) {
   verifyDetailKey = "";
   renderVerifyRun(verifyRuns.get(runID), verifyCard);
   // On a phone the detail pane stacks below the steps; bring it into view.
-  const pane = stepID ? verifyCard.detail : verifyCard.live;
-  if (window.matchMedia("(max-width: 720px)").matches) pane.scrollIntoView({block: "start"});
+  // Step detail loads asynchronously, so it scrolls once it has rendered.
+  verifyScrollToDetail = !!stepID && verifyPhone();
+  if (!stepID && verifyPhone()) verifyCard.live.scrollIntoView({block: "start"});
 }
+let verifyScrollToDetail = false;
+function verifyPhone() { return window.matchMedia("(max-width: 720px)").matches; }
 function startVerifyWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(proto + "//" + location.host + "/ws/verify");
@@ -1149,6 +1163,13 @@ function startVerifyWS() {
   };
 }
 function verifyWho(s) {
+  const mark = verifyWhoMark(s);
+  if (!s.review) return mark;
+  const cls = s.reviewed ? "owner" : "owed";
+  const title = s.reviewed ? "Owner review" : "Owner review incomplete (notes required)";
+  return mark + `<span class="vwho ${cls}" title="${title}">✍ ${esc(s.review)}</span>`;
+}
+function verifyWhoMark(s) {
   // 🤖 marks model evaluation; 👤 an owner answer; automation has no marker.
   if (s.evaluator === "owner" || s.evaluator === "preset") {
     const who = s.evaluator === "owner" ? "👤" : "⚙︎";
@@ -1161,7 +1182,7 @@ function verifyWho(s) {
     const title = s.type === "model" ? "Model step" : `Model appraisal${s.verdict ? ": " + s.verdict : ""}, awaiting owner confirmation`;
     return `<span class="vwho model" title="${esc(title)}">🤖${s.verdict && s.type !== "model" ? " " + esc(s.verdict) : ""}</span>`;
   }
-  if (s.type === "human_gate" && s.status === "deferred") return '<span class="vwho owed" title="Needs the owner">👤?</span>';
+  if (s.type === "human_gate" && s.status === "deferred" && !s.review) return '<span class="vwho owed" title="Needs the owner">👤?</span>';
   return "";
 }
 function renderVerifyTimeline(run, host, selectedStep) {
@@ -1230,6 +1251,8 @@ function renderVerifyTimeline(run, host, selectedStep) {
   }
 }
 async function loadVerifyDetail(run, step, card) {
+  // Review fields are deliberately absent: a save must not re-render the
+  // pane (and drop focus) while the owner is typing.
   const key = [run.run_id, step.id, step.status, step.evaluator, step.choice_id, step.model_review, step.verdict].join(":");
   if (key === verifyDetailKey) return;
   verifyDetailKey = key;
@@ -1272,6 +1295,7 @@ async function loadVerifyDetail(run, step, card) {
       <p class="muted">${esc([a.provider, a.model].filter(Boolean).join(" / ") || "model unknown")}${a.duration_ms ? " · " + a.duration_ms + "ms" : ""}</p>${pending}
       ${a.error ? `<p class="verr">${esc(a.error)}</p>` : ""}
       ${a.report ? `<h2>Report</h2><pre class="vreport">${esc(a.report)}</pre>` : ""}</div>`);
+    if (d.review_options) parts.push('<div data-review-slot></div>');
     const imgs = d.images || [];
     if (imgs.length) parts.push(`<h2>What the model reviewed</h2>`);
     for (const img of imgs) {
@@ -1282,7 +1306,14 @@ async function loadVerifyDetail(run, step, card) {
   } else if (!parts.length) {
     parts.push('<p class="muted">Automated step. See the log for its output.</p>');
   }
+  if (d.review_options && !parts.some(p => p.includes("data-review-slot"))) parts.push('<div data-review-slot></div>');
   card.dBody.innerHTML = parts.join("");
+  const slot = card.dBody.querySelector("[data-review-slot]");
+  if (slot) slot.replaceWith(renderVerifyReview(run.run_id, step, d));
+  if (verifyScrollToDetail) {
+    verifyScrollToDetail = false;
+    card.detail.scrollIntoView({block: "start"});
+  }
   for (const img of card.dBody.querySelectorAll(".vdetail-img")) {
     img.title = "Click to enlarge";
     img.onclick = () => {
@@ -1292,6 +1323,107 @@ async function loadVerifyDetail(run, step, card) {
     };
   }
 }
+// Owner review of a model result or a pending owner gate. Saves while the
+// owner types, Nagle-style: the first change goes out after a short
+// coalescing pause; while a save is in flight, later changes accumulate and
+// only the latest goes out when it returns. The database is the record.
+const verifyReviewDrafts = new Map();   // "run:step" -> {finding, notes} not yet acknowledged
+const verifyReviewSync = new Map();     // "run:step" -> {inflight, pending, timer, statusEl}
+const REVIEW_COALESCE_MS = 400;
+function renderVerifyReview(runID, step, d) {
+  const key = runID + ":" + step.id;
+  const saved = d.review || {};
+  const draft = verifyReviewDrafts.get(key);
+  const state = {finding: draft ? draft.finding : (saved.finding || ""), notes: draft ? draft.notes : (saved.notes || "")};
+  const box = document.createElement("section");
+  box.className = "vreview";
+  box.innerHTML = `<h2>Your review${step.number ? " of " + esc(step.number) : ""}</h2>
+    <div class="vreview-findings" role="radiogroup" aria-label="Finding"></div>
+    <label class="vreview-label">Notes<textarea class="vreview-notes" rows="5" placeholder="What you saw, what should change…"></textarea></label>
+    <p class="vreview-status muted"></p>`;
+  const findings = box.querySelector(".vreview-findings");
+  const notes = box.querySelector(".vreview-notes");
+  const status = box.querySelector(".vreview-status");
+  notes.value = state.notes;
+  const hint = () => {
+    const choice = (d.review_options || []).find(c => c.id === state.finding);
+    return choice && choice.comment === "required" && !state.notes.trim() ? "Notes are required for this finding." : "";
+  };
+  const paint = () => {
+    for (const b of findings.children) {
+      const on = b.dataset.finding === state.finding;
+      b.classList.toggle("sel", on);
+      b.setAttribute("aria-checked", on ? "true" : "false");
+    }
+  };
+  for (const c of (d.review_options || [])) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "vreview-finding" + (c.outcome === "investigate" || c.id === "fail" ? " bad" : c.id === "pass" ? " good" : "");
+    b.dataset.finding = c.id;
+    b.setAttribute("role", "radio");
+    b.textContent = c.label || c.id;
+    b.onclick = () => {
+      state.finding = state.finding === c.id ? "" : c.id;
+      paint();
+      queueVerifyReview(runID, step.id, state, status, hint);
+    };
+    findings.appendChild(b);
+  }
+  paint();
+  notes.oninput = () => {
+    state.notes = notes.value;
+    queueVerifyReview(runID, step.id, state, status, hint);
+  };
+  const sync = verifyReviewSync.get(key);
+  if (sync) sync.statusEl = status;
+  status.textContent = draft ? "Saving…" : saved.updated_at ? "Saved " + new Date(saved.updated_at).toLocaleString() : "Not reviewed yet. Changes save as you type.";
+  if (hint()) status.textContent += " " + hint();
+  return box;
+}
+function queueVerifyReview(runID, stepID, state, statusEl, hint) {
+  const key = runID + ":" + stepID;
+  verifyReviewDrafts.set(key, {finding: state.finding, notes: state.notes});
+  let st = verifyReviewSync.get(key);
+  if (!st) { st = {inflight: false, pending: null, timer: 0, statusEl}; verifyReviewSync.set(key, st); }
+  st.statusEl = statusEl;
+  st.hint = hint;
+  st.pending = {run_id: runID, step_id: stepID, finding: state.finding, notes: state.notes};
+  statusEl.textContent = "Editing…";
+  if (!st.inflight && !st.timer) st.timer = setTimeout(() => flushVerifyReview(key), REVIEW_COALESCE_MS);
+}
+async function flushVerifyReview(key) {
+  const st = verifyReviewSync.get(key);
+  st.timer = 0;
+  if (!st.pending || st.inflight) return;
+  const body = st.pending;
+  st.pending = null;
+  st.inflight = true;
+  if (st.statusEl) st.statusEl.textContent = "Saving…";
+  try {
+    await callTool("verify_review", body);
+    if (!st.pending) {
+      verifyReviewDrafts.delete(key);
+      if (st.statusEl) st.statusEl.textContent = "Saved " + new Date().toLocaleTimeString() + (st.hint && st.hint() ? " " + st.hint() : "");
+    }
+  } catch (e) {
+    // Keep the draft; the next change retries with the latest text.
+    st.pending = st.pending || body;
+    if (st.statusEl) st.statusEl.textContent = "Not saved: " + e.message;
+    st.inflight = false;
+    return;
+  }
+  st.inflight = false;
+  if (st.pending) flushVerifyReview(key); // send what accumulated in flight
+}
+// Leaving the page sends any unsent review without waiting for a pause.
+window.addEventListener("pagehide", () => {
+  for (const st of verifyReviewSync.values()) {
+    if (!st.pending) continue;
+    fetch("/api/v1/verify_review", {method: "POST", keepalive: true,
+      headers: {"Content-Type": "application/json"}, body: JSON.stringify(st.pending)});
+  }
+});
 function renderVerifyGate(gate, card) {
   if (!gate) {
     card.gate.classList.add("hidden");

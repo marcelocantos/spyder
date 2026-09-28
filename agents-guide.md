@@ -486,6 +486,8 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `verify(workflow?, workflow_path?, cwd?, params?, answers?, wait?, validate_only?, allow_waive?, defer_human_gates?, review_deferred?, owner?)` | Run a product-neutral verification workflow YAML on the daemon-wide DAG scheduler (🎯T138). Step kinds: `shell`, `spyder_script` (in-process `app_exec`), `model` (Claudia-selected task), `human_gate`. | `wait=True` (default) blocks until the run ends. `defer_human_gates` completes automation without asking the owner and returns `prepared` (exit 4). `review_deferred` replays pending owner checks with fresh staging and model checks, showing model verdicts on static gates for confirmation. `owner` (default basename(cwd)) is the only caller that may `verify_dismiss` the finished run. Pass records: `<cwd>/verify-runs/resume/<workflow>.json`. Dashboard: `/dashboard#verify`. CLI: `spyder verify`. |
 | `verify_status()` | Snapshot of active and retained verification runs plus the single in-flight owner gate. | Read-only REST. Finished runs stay until their creator dismisses them; their screenshots are omitted (use `verify_detail`). The dashboard uses `/ws/verify` instead of polling this. |
 | `verify_dismiss(run_id, owner?, cwd?)` | Remove a finished run from the live view; its bundle stays on disk. | Refused while the run is active or when the caller is not its creator (owner defaults to basename(cwd)). CLI: `spyder verify-dismiss --run ID [--as OWNER]`. |
+| `verify_review(run_id, step_id, finding?, notes?)` | Save the owner's review of a model result or deferred gate. `step_id` may be an outline number. | Normally called by the dashboard as the owner types. Findings are the gate's choices, or `pass`/`fail`/`unclear` for a model step; notes alone are a draft; empty finding and notes clear it. Stored in `~/.spyder/verify/reviews.db`, exported to the bundle's `owner-reviews.json`. The run status does not change. |
+| `verify_report(run_id)` | The full run report as one JSON document: run facts, final status and STATUS block, the numbered outline, and every step with definition, records, model appraisal (image paths) and the owner's review, plus summary counts (`by_status`, `reviewable`, `reviewed`, `pending_review`, `model_verdicts`, `owner_findings`). | CLI: `spyder verify-report --run ID`. Read this to act on the owner's findings. |
 | `verify_detail(run_id, step_id?)` | One step's evidence: records, model appraisal (verdict, report, model), and every reviewed image as a data URI. Without `step_id`, the run's latest screenshot. | Images are served only from inside the run bundle. |
 | `verify_answer(run_id, gate_id, choice_id, comment?)` | Answer the in-flight `human_gate`. | Same path the dashboard gate buttons use. |
 | `verify_abort(run_id, reason?)` | Abort a verification run. | |
@@ -1540,6 +1542,13 @@ as `number`, and `verify_detail(step_id="1.2.3")` accepts one. Model-evaluated s
 full report, model identity, and every image the model reviewed. Deep link:
 `/dashboard#verify/<run_id>`. The tab pauses app thumbnail and preview capture
 so owner review does not disturb the app.
+
+Owner review: each model result and each deferred owner gate has a review
+section in the step pane (finding plus multiline notes), saved as the owner
+types, Nagle-style (one save in flight; later edits coalesce into the next).
+To act on the owner's findings, fetch `verify_report(run_id)` (CLI:
+`spyder verify-report --run ID`) and read each step's `review`. A finding is
+review evidence; it does not change the run status or the resume record.
 
 Finished runs (passed, prepared, investigate, failed, aborted) stay on the
 dashboard and in `verify_status` until the agent that created them dismisses

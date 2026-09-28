@@ -224,6 +224,9 @@ judgment: static (and a device) gets a model appraisal in unattended runs
 (defer_human_gates); the verdict is evidence, never an owner pass, and
 review_deferred asks the owner to confirm or override it. verify_detail
 returns one step's evidence, including the images the model reviewed.
+The owner reviews model results and deferred gates in the dashboard
+(verify_review saves a finding and notes as they type); verify_report
+returns the whole run with those reviews as one JSON document.
 
 recipes:
 # check a workflow file
@@ -241,6 +244,7 @@ verify_answer(run_id=r["run_id"], gate_id="look", choice_id="pass")
 # unattended pass: static gates get model verdicts; then review with the owner
 emit(verify(workflow_path="workflows/smoke.yaml", defer_human_gates=True, owner="me"))
 emit(verify_detail(run_id=r["run_id"], step_id="look"))
+emit(verify_report(run_id=r["run_id"]))  # owner findings in steps[].review
 verify_dismiss(run_id=r["run_id"], owner="me")`,
 }
 

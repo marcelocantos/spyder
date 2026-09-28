@@ -123,6 +123,12 @@ func loadRetained(h *Hub, dir string) (*Run, error) {
 		done:            make(chan struct{}),
 		appraisals:      map[string]*Appraisal{},
 		priorAppraisals: map[string]*Appraisal{},
+		reviews:         map[string]*OwnerReview{},
+	}
+	if saved, err := h.reviews.load(r.ID); err == nil {
+		r.reviews = saved
+	} else {
+		slog.Warn("verify: owner reviews unreadable", "run_id", r.ID, "error", err)
 	}
 	close(r.done)
 	r.logs = tailLines(filepath.Join(dir, "events.log"), logTailLines)

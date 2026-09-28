@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log/slog"
 	"maps"
 	"path/filepath"
 	"sort"
@@ -27,9 +28,10 @@ type Hub struct {
 	model  StepRunner
 	sleep  func(time.Duration)
 	now    func() time.Time
-	// stateDir holds the retained-run index; empty keeps retention in
-	// memory only (tests).
+	// stateDir holds the retained-run index and review database; empty
+	// keeps both in memory only (tests).
 	stateDir string
+	reviews  *reviewStore
 
 	liveMu sync.Mutex
 	live   map[chan struct{}]struct{}
@@ -73,6 +75,14 @@ func NewHub(args HubArgs) *Hub {
 		stateDir: args.StateDir,
 		live:     map[chan struct{}]struct{}{},
 	}
+	reviews, err := openReviewStore(h.stateDir)
+	if err != nil {
+		slog.Warn("verify: review database unavailable; reviews kept in memory", "dir", h.stateDir, "error", err)
+		if reviews, err = openReviewStore(""); err != nil {
+			panic(fmt.Sprintf("verify: in-memory review database: %v", err))
+		}
+	}
+	h.reviews = reviews
 	if h.stateDir != "" {
 		h.rehydrate()
 	}

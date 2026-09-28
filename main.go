@@ -100,6 +100,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   verify-status Snapshot of active and retained verification runs
   verify-answer Answer the in-flight human_gate on a run
   verify-dismiss Remove a finished run you created from the Verify dashboard
+  verify-report Full run report with owner reviews as one JSON document
 
 Serve:
   spyder serve [--addr :3030]

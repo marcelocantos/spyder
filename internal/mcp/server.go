@@ -811,6 +811,8 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		// --- owner review of retained runs (🎯T149) ---
 		"verify_dismiss": h.handleVerifyDismiss,
 		"verify_detail":  h.handleVerifyDetail,
+		"verify_review":  h.handleVerifyReview,
+		"verify_report":  h.handleVerifyReport,
 	}
 }
 

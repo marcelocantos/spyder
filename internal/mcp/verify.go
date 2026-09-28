@@ -226,6 +226,34 @@ func (h *Handler) handleVerifyDetail(args map[string]any) (*mcpgo.CallToolResult
 	return toolJSON(detail)
 }
 
+func (h *Handler) handleVerifyReview(args map[string]any) (*mcpgo.CallToolResult, error) {
+	runID, err := requireString(args, "run_id")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	stepID, err := requireString(args, "step_id")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	rev, err := h.VerifyHub().Review(runID, stepID, optString(args, "finding"), optString(args, "notes"))
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(map[string]any{"ok": true, "run_id": runID, "step_id": stepID, "review": rev})
+}
+
+func (h *Handler) handleVerifyReport(args map[string]any) (*mcpgo.CallToolResult, error) {
+	runID, err := requireString(args, "run_id")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	report, err := h.VerifyHub().Report(runID)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(report)
+}
+
 func nilToEmpty(v any) any {
 	if v == nil {
 		return ""
@@ -273,6 +301,17 @@ func verifyDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("run_id", mcpgo.Required(), mcpgo.Description("Run id from verify")),
 			mcpgo.WithString("owner", mcpgo.Description("Caller identity; must match the run's owner")),
 			mcpgo.WithString("cwd", mcpgo.Description("Caller cwd; its basename is the owner when owner is omitted")),
+		),
+		mcpgo.NewTool("verify_review",
+			mcpgo.WithDescription("Save the owner's review of a step awaiting it (a model result or a deferred owner gate): a finding and free-form notes. The dashboard saves as the owner types. Findings are the gate's choices, or pass/fail/unclear for a model step. Empty finding and notes clear the review. It is evidence beside the run; the run status does not change."),
+			mcpgo.WithString("run_id", mcpgo.Required(), mcpgo.Description("Run id")),
+			mcpgo.WithString("step_id", mcpgo.Required(), mcpgo.Description("Step id or outline number (e.g. 1.2.3)")),
+			mcpgo.WithString("finding", mcpgo.Description("Choice id; empty keeps notes as a draft")),
+			mcpgo.WithString("notes", mcpgo.Description("Free-form notes, multiline")),
+		),
+		mcpgo.NewTool("verify_report",
+			mcpgo.WithDescription("A run's full report as one JSON document: run facts and final status, the numbered outline, and every step with its definition, records, model appraisal (verdict, full report, model, image paths) and the owner's review (finding and notes), plus summary counts. Use verify_detail for one step's images inline."),
+			mcpgo.WithString("run_id", mcpgo.Required(), mcpgo.Description("Run id")),
 		),
 		mcpgo.NewTool("verify_detail",
 			mcpgo.WithDescription("One step's evidence on demand: its records, the model appraisal (verdict, full report, model identity), and every image the model reviewed as data URIs. Without step_id, the run's latest screenshot."),
