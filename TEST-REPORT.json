@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-09-28T05:55:56Z",
+  "generated_at": "2026-09-28T11:52:47Z",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test -timeout 2m  ./...",
-      "duration_s": 48,
+      "duration_s": 50,
       "status": "pass"
     },
     {
@@ -17,8 +17,8 @@
     },
     {
       "name": "live-appraise",
-      "cmd": "go test -timeout 2m  -count=1 -run '^TestVerifyStaticGateAppraisalLive$' ./internal/mcp/",
-      "duration_s": 40,
+      "cmd": "go test -timeout 10m  -count=1 -run '^(TestVerifyStaticGateAppraisalLive|TestVerifyPreconditionTaggingLive)$' ./internal/mcp/",
+      "duration_s": 132,
       "status": "pass"
     }
   ],
