@@ -26,6 +26,9 @@ type Record struct {
 	DefinitionSHA256 string            `json:"definition_sha256,omitempty"`
 	FailedStepID     string            `json:"failed_step_id,omitempty"`
 	Params           map[string]string `json:"params,omitempty"`
+	// Appraisals are model verdicts on deferred static gates, carried to the
+	// owner review so it can confirm or override each one.
+	Appraisals map[string]*Appraisal `json:"appraisals,omitempty"`
 }
 
 // ResumeDir is the directory that holds pass records for cwd.

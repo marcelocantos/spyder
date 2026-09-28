@@ -71,14 +71,15 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 	if req.Emit != nil {
 		req.Emit(fmt.Sprintf("Claudia selected %s %s (%s)", pick.Provider, pick.Model, pick.Reason))
 	}
+	evidence := &verify.ModelEvidence{Provider: fmt.Sprint(pick.Provider), Model: pick.Model}
 	prompt := req.Step.Prompt
 	var modelImagePath string
 	if req.Step.CaptureScreen {
 		if pick.Provider != claudia.ProviderClaude {
-			return verify.ExecResult{Code: 1, Output: fmt.Sprintf("model screen review needs Claude's image-reading tool; Claudia selected %s", pick.Provider)}
+			return verify.ExecResult{Code: 1, Output: fmt.Sprintf("model screen review needs Claude's image-reading tool; Claudia selected %s", pick.Provider), Model: evidence}
 		}
 		if err := ctx.Err(); err != nil {
-			return verify.ExecResult{Code: 124, Output: err.Error(), TimedOut: true}
+			return verify.ExecResult{Code: 124, Output: err.Error(), TimedOut: true, Model: evidence}
 		}
 		shotDir := req.Env["SPYDER_RUN_DIR"]
 		stem := sanitizeFilename(req.Step.ID)
@@ -92,18 +93,19 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 		}
 		h.mu.Unlock()
 		if err != nil {
-			return verify.ExecResult{Code: 1, Output: "model screenshot: " + err.Error()}
+			return verify.ExecResult{Code: 1, Output: "model screenshot: " + err.Error(), Model: evidence}
 		}
 		if err := writeOutputFile(screenshotPath, pngData); err != nil {
-			return verify.ExecResult{Code: 1, Output: "saving model screenshot: " + err.Error()}
+			return verify.ExecResult{Code: 1, Output: "saving model screenshot: " + err.Error(), Model: evidence}
 		}
 		jpegData, err := modelImage(pngData)
 		if err != nil {
-			return verify.ExecResult{Code: 1, Output: "preparing model screenshot: " + err.Error()}
+			return verify.ExecResult{Code: 1, Output: "preparing model screenshot: " + err.Error(), Model: evidence}
 		}
 		if err := writeOutputFile(modelImagePath, jpegData); err != nil {
-			return verify.ExecResult{Code: 1, Output: "saving model image: " + err.Error()}
+			return verify.ExecResult{Code: 1, Output: "saving model image: " + err.Error(), Model: evidence}
 		}
+		evidence.Images = []string{modelImagePath}
 		if req.Emit != nil {
 			req.Emit("captured current screen: " + screenshotPath)
 			req.Emit(fmt.Sprintf("model image: %s (%d bytes)", modelImagePath, len(jpegData)))
@@ -129,13 +131,13 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 		cfg.SandboxMode = "read-only"
 		cfg.ApprovalPolicy = "never"
 	default:
-		return verify.ExecResult{Code: 1, Output: fmt.Sprintf("model: selected provider %s has no Verify read-only policy", pick.Provider)}
+		return verify.ExecResult{Code: 1, Output: fmt.Sprintf("model: selected provider %s has no Verify read-only policy", pick.Provider), Model: evidence}
 	}
 	task := claudia.NewTask(cfg)
 	defer task.Stop()
 	events, err := task.Run(ctx, prompt)
 	if err != nil {
-		return verify.ExecResult{Code: 1, Output: "claudia task: " + err.Error()}
+		return verify.ExecResult{Code: 1, Output: "claudia task: " + err.Error(), Model: evidence}
 	}
 	var result string
 	var taskErr string
@@ -152,23 +154,24 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 			taskErr = ev.ErrorMsg
 		}
 	}
+	evidence.Result = result
 	if err := ctx.Err(); err != nil {
-		return verify.ExecResult{Code: 124, Output: "model: " + err.Error(), TimedOut: true}
+		return verify.ExecResult{Code: 124, Output: "model: " + err.Error(), TimedOut: true, Model: evidence}
 	}
 	if taskErr != "" {
-		return verify.ExecResult{Code: 1, Output: "claudia task: " + taskErr}
+		return verify.ExecResult{Code: 1, Output: "claudia task: " + taskErr, Model: evidence}
 	}
 	if result == "" {
-		return verify.ExecResult{Code: 1, Output: "claudia task: no final result"}
+		return verify.ExecResult{Code: 1, Output: "claudia task: no final result", Model: evidence}
 	}
 	if modelImagePath != "" && !readScreenshot {
-		return verify.ExecResult{Code: 1, Output: "model did not read the current screenshot"}
+		return verify.ExecResult{Code: 1, Output: "model did not read the current screenshot", Model: evidence}
 	}
 	if req.Emit != nil {
 		req.Emit("model result: " + result)
 	}
 	if req.Step.Accept != "" && result != req.Step.Accept {
-		return verify.ExecResult{Code: 1, Output: "model response did not match accept: " + result}
+		return verify.ExecResult{Code: 1, Output: "model response did not match accept: " + result, Model: evidence}
 	}
-	return verify.ExecResult{Code: 0, Output: result}
+	return verify.ExecResult{Code: 0, Output: result, Model: evidence}
 }

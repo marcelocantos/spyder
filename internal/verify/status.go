@@ -33,15 +33,46 @@ const (
 	ExitPrepared    = 4
 )
 
+// Who settled a human_gate. A model appraisal never settles a gate; it
+// leaves the gate deferred with the model's verdict attached.
+const (
+	AnsweredByOwner  = "owner"
+	AnsweredByPreset = "preset"
+)
+
+// How an owner answer relates to an earlier model appraisal of the gate.
+const (
+	ModelConfirmed  = "confirmed"
+	ModelOverridden = "overridden"
+)
+
 // StepRecord is one executed (or skipped) step in the STATUS block.
 type StepRecord struct {
-	StepID     string `json:"step_id"`
-	Status     string `json:"status"`
-	DurationMS int64  `json:"duration_ms"`
-	ChoiceID   string `json:"choice_id,omitempty"`
-	Comment    string `json:"comment,omitempty"`
-	Type       string `json:"type,omitempty"`
-	Label      string `json:"label,omitempty"`
+	StepID      string     `json:"step_id"`
+	Status      string     `json:"status"`
+	DurationMS  int64      `json:"duration_ms"`
+	ChoiceID    string     `json:"choice_id,omitempty"`
+	Comment     string     `json:"comment,omitempty"`
+	Type        string     `json:"type,omitempty"`
+	Label       string     `json:"label,omitempty"`
+	Judgment    string     `json:"judgment,omitempty"`
+	AnsweredBy  string     `json:"answered_by,omitempty"`
+	Appraisal   *Appraisal `json:"appraisal,omitempty"`
+	ModelReview string     `json:"model_review,omitempty"`
+}
+
+// Appraisal is what a model concluded about a step: a model step's result,
+// or a first-cut verdict on a static human_gate. Images are absolute paths
+// inside the run bundle, exactly the files the model was given.
+type Appraisal struct {
+	Provider   string   `json:"provider,omitempty"`
+	Model      string   `json:"model,omitempty"`
+	Verdict    string   `json:"verdict,omitempty"`
+	Outcome    string   `json:"outcome,omitempty"`
+	Report     string   `json:"report,omitempty"`
+	Images     []string `json:"images,omitempty"`
+	Error      string   `json:"error,omitempty"`
+	DurationMS int64    `json:"duration_ms,omitempty"`
 }
 
 // StatusInput is everything FormatStatus needs.
@@ -96,6 +127,17 @@ func FormatStatus(in StatusInput) string {
 			}
 			if strings.TrimSpace(rec.Comment) != "" {
 				bits = append(bits, "comment="+oneLine(rec.Comment))
+			}
+			if a := rec.Appraisal; a != nil && rec.Type == KindHumanGate {
+				switch {
+				case a.Verdict != "":
+					bits = append(bits, "model="+a.Verdict)
+				case a.Error != "":
+					bits = append(bits, "model_error="+oneLine(a.Error))
+				}
+			}
+			if rec.ModelReview != "" {
+				bits = append(bits, "model_review="+rec.ModelReview)
 			}
 			fmt.Fprintf(&b, "  %s\n", strings.Join(bits, "  "))
 		}

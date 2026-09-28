@@ -28,6 +28,18 @@ const (
 	KindHumanGate    = "human_gate"
 )
 
+// A human_gate's judgment is static when a screenshot of the device is
+// enough to decide it, so an unattended run may ask a model for a first-cut
+// verdict. A dynamic judgment needs the owner to play or watch motion.
+const (
+	JudgmentStatic  = "static"
+	JudgmentDynamic = "dynamic"
+)
+
+// defaultAppraiseModel selects a Claude task model for a static gate that
+// names no model. Screen appraisal needs Claude's image-reading tool.
+const defaultAppraiseModel = `{"mode":"task","purpose":"analysis","quality":"standard","prefer_provider":"claude"}`
+
 const (
 	OutcomeContinue    = "continue"
 	OutcomeInvestigate = "investigate"
@@ -112,6 +124,11 @@ type Step struct {
 	AllowComment  bool
 	AlwaysRun     bool
 	ReviewReplay  bool
+	// human_gate only.
+	Judgment           string
+	AppraiseModel      json.RawMessage
+	AppraisePrompt     string
+	AppraiseTimeoutSec *float64
 }
 
 // Retry is optional command-step retry.
@@ -536,29 +553,9 @@ func parseStep(index int, m map[string]any) (Step, []string) {
 		} else {
 			step.Prompt = prompt
 		}
-		model, ok := m["model"].(map[string]any)
-		if !ok {
-			errs = append(errs, id+": model requires a Claudia model predicates mapping")
-		} else if raw, err := json.Marshal(model); err != nil {
-			errs = append(errs, id+": invalid model predicates: "+err.Error())
-		} else {
-			allowed := map[string]bool{"mode": true, "purpose": true, "skill": true, "quality": true, "model": true, "effort": true, "prefer_plan": true, "background": true, "prefer_provider": true, "exclude_providers": true, "require_usage": true, "thresholds": true}
-			for key := range model {
-				if !allowed[key] {
-					errs = append(errs, id+": unknown Claudia model predicate "+key)
-				}
-			}
-			if strings.Contains(string(raw), "${") {
-				errs = append(errs, id+": model predicates cannot contain workflow parameters")
-			}
-			pred, decodeErr := claudia.DecodePredicatesWire(raw)
-			if decodeErr != nil {
-				errs = append(errs, id+": invalid Claudia model predicates: "+decodeErr.Error())
-			} else if pred.Mode != "" && pred.Mode != claudia.CapabilityTask {
-				errs = append(errs, id+": model mode must be task")
-			}
-			step.ModelSpec = raw
-		}
+		raw, modelErrs := parseModelPredicates(id, m["model"])
+		errs = append(errs, modelErrs...)
+		step.ModelSpec = raw
 		if v, exists := m["capture_screen"]; exists {
 			b, ok := v.(bool)
 			if !ok {
@@ -582,6 +579,36 @@ func parseStep(index int, m map[string]any) (Step, []string) {
 		errs = append(errs, validateGate(id, m, &step)...)
 	}
 	return step, errs
+}
+
+// parseModelPredicates checks a Claudia model predicates mapping and returns
+// it as wire JSON.
+func parseModelPredicates(id string, v any) (json.RawMessage, []string) {
+	model, ok := v.(map[string]any)
+	if !ok {
+		return nil, []string{id + ": model requires a Claudia model predicates mapping"}
+	}
+	raw, err := json.Marshal(model)
+	if err != nil {
+		return nil, []string{id + ": invalid model predicates: " + err.Error()}
+	}
+	var errs []string
+	allowed := map[string]bool{"mode": true, "purpose": true, "skill": true, "quality": true, "model": true, "effort": true, "prefer_plan": true, "background": true, "prefer_provider": true, "exclude_providers": true, "require_usage": true, "thresholds": true}
+	for key := range model {
+		if !allowed[key] {
+			errs = append(errs, id+": unknown Claudia model predicate "+key)
+		}
+	}
+	if strings.Contains(string(raw), "${") {
+		errs = append(errs, id+": model predicates cannot contain workflow parameters")
+	}
+	pred, decodeErr := claudia.DecodePredicatesWire(raw)
+	if decodeErr != nil {
+		errs = append(errs, id+": invalid Claudia model predicates: "+decodeErr.Error())
+	} else if pred.Mode != "" && pred.Mode != claudia.CapabilityTask {
+		errs = append(errs, id+": model mode must be task")
+	}
+	return raw, errs
 }
 
 func validateShell(id string, m map[string]any, step *Step) []string {
@@ -679,6 +706,59 @@ func validateGate(id string, m map[string]any, step *Step) []string {
 		}
 		step.Choices = append(step.Choices, c)
 	}
+	step.Judgment = JudgmentDynamic
+	if v := m["judgment"]; v != nil {
+		j, _ := asString(v)
+		if j != JudgmentStatic && j != JudgmentDynamic {
+			errs = append(errs, id+": judgment must be static or dynamic")
+		} else {
+			step.Judgment = j
+		}
+	}
+	if v, exists := m["appraise"]; exists && v != nil {
+		am, ok := v.(map[string]any)
+		switch {
+		case !ok:
+			errs = append(errs, id+": appraise must be a mapping")
+		case step.Judgment != JudgmentStatic:
+			errs = append(errs, id+": appraise requires judgment: static")
+		default:
+			for key := range am {
+				if key != "model" && key != "prompt" && key != "timeout_sec" {
+					errs = append(errs, id+": unknown appraise field "+key)
+				}
+			}
+			if mv, has := am["model"]; has {
+				raw, modelErrs := parseModelPredicates(id, mv)
+				errs = append(errs, modelErrs...)
+				step.AppraiseModel = raw
+			}
+			if pv, has := am["prompt"]; has {
+				p, ok := asString(pv)
+				if !ok {
+					errs = append(errs, id+": appraise.prompt must be a string")
+				} else {
+					step.AppraisePrompt = p
+				}
+			}
+			if tv, has := am["timeout_sec"]; has {
+				n, ok := asNumber(tv)
+				if !ok || n <= 0 {
+					errs = append(errs, id+": appraise.timeout_sec must be a positive number")
+				} else {
+					step.AppraiseTimeoutSec = &n
+				}
+			}
+		}
+	}
+	if step.Judgment == JudgmentStatic {
+		if strings.TrimSpace(step.Device) == "" {
+			errs = append(errs, id+": judgment static requires device (the screen a model appraises)")
+		}
+		if step.AppraiseModel == nil {
+			step.AppraiseModel = json.RawMessage(defaultAppraiseModel)
+		}
+	}
 	return errs
 }
 
@@ -773,6 +853,7 @@ func collectMissing(v any, params map[string]string, missing map[string]bool) {
 		collectMissing(t.Prompt, params, missing)
 		collectMissing(t.Accept, params, missing)
 		collectMissing(t.Hint, params, missing)
+		collectMissing(t.AppraisePrompt, params, missing)
 		collectMissing(t.Label, params, missing)
 		collectMissing(t.Device, params, missing)
 		collectMissing(t.Mutex, params, missing)
@@ -813,6 +894,7 @@ func Substitute(wf *Workflow, params map[string]string) *Workflow {
 			s.Prompt = subString(s.Prompt, params)
 			s.Accept = subString(s.Accept, params)
 			s.Hint = subString(s.Hint, params)
+			s.AppraisePrompt = subString(s.AppraisePrompt, params)
 			s.Device = subString(s.Device, params)
 			s.Mutex = subString(s.Mutex, params)
 			s.Env = subStringMap(s.Env, params)

@@ -97,8 +97,9 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   device-setting Set/restore/get allowlisted Android settings (iOS: not supported)
   log           Fetch or tail device logs (--follow for live SSE stream)
   verify        Run a verification workflow YAML (shell / spyder_script / model / human_gate)
-  verify-status Snapshot of in-flight verification runs
+  verify-status Snapshot of active and retained verification runs
   verify-answer Answer the in-flight human_gate on a run
+  verify-dismiss Remove a finished run you created from the Verify dashboard
 
 Serve:
   spyder serve [--addr :3030]

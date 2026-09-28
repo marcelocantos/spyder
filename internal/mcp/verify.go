@@ -23,11 +23,32 @@ func (h *Handler) VerifyHub() *verify.Hub {
 	defer h.verifyMu.Unlock()
 	if h.verifyHub == nil {
 		h.verifyHub = verify.NewHub(verify.HubArgs{
-			Script: h.execVerifyScript,
-			Model:  h.execVerifyModel,
+			Script:   h.execVerifyScript,
+			Model:    h.execVerifyModel,
+			StateDir: h.verifyStateDir,
 		})
 	}
 	return h.verifyHub
+}
+
+// SetVerifyStateDir makes finished Verify runs survive a daemon restart by
+// persisting the retained-run index under dir. Call before VerifyHub.
+func (h *Handler) SetVerifyStateDir(dir string) {
+	h.verifyMu.Lock()
+	defer h.verifyMu.Unlock()
+	h.verifyStateDir = dir
+}
+
+// verifyOwner is the caller's identity for run ownership: the explicit
+// owner, else the basename of the caller's cwd, as with reservations.
+func verifyOwner(args map[string]any) string {
+	if owner := strings.TrimSpace(optString(args, "owner")); owner != "" {
+		return owner
+	}
+	if cwd := optString(args, "cwd"); cwd != "" {
+		return filepath.Base(cwd)
+	}
+	return ""
 }
 
 func (h *Handler) execVerifyScript(ctx context.Context, req verify.StepRequest) verify.ExecResult {
@@ -127,6 +148,7 @@ func (h *Handler) handleVerify(args map[string]any) (*mcpgo.CallToolResult, erro
 		AllowWaive:      allowWaive,
 		DeferHumanGates: deferHumanGates,
 		ReviewDeferred:  reviewDeferred,
+		Owner:           verifyOwner(map[string]any{"owner": optString(args, "owner"), "cwd": cwd}),
 	})
 	if err != nil {
 		return toolErr("%v", err)
@@ -177,6 +199,33 @@ func (h *Handler) handleVerifyAbort(args map[string]any) (*mcpgo.CallToolResult,
 	return toolJSON(map[string]any{"ok": true, "run_id": runID})
 }
 
+func (h *Handler) handleVerifyDismiss(args map[string]any) (*mcpgo.CallToolResult, error) {
+	runID, err := requireString(args, "run_id")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	owner := verifyOwner(args)
+	if owner == "" {
+		return toolErr("verify_dismiss: owner or cwd is required to identify the run's creator")
+	}
+	if err := h.VerifyHub().Dismiss(runID, owner); err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(map[string]any{"ok": true, "run_id": runID})
+}
+
+func (h *Handler) handleVerifyDetail(args map[string]any) (*mcpgo.CallToolResult, error) {
+	runID, err := requireString(args, "run_id")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	detail, err := h.VerifyHub().Detail(runID, optString(args, "step_id"))
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(detail)
+}
+
 func nilToEmpty(v any) any {
 	if v == nil {
 		return ""
@@ -210,11 +259,25 @@ func verifyDefinitions() []mcpgo.Tool {
 				mcpgo.Description("Run unattended: continue through human gates without asking; record each as deferred, never passed. Final status is prepared (exit 4)."),
 			),
 			mcpgo.WithBoolean("review_deferred",
-				mcpgo.Description("Replay owner checks from a prepared run. Reuse completed shell steps when the workflow and parameters match; rerun staging scripts, model checks, and review_replay shell steps."),
+				mcpgo.Description("Replay owner checks from a prepared run. Reuse completed shell steps when the workflow and parameters match; rerun staging scripts, model checks, and review_replay shell steps. Model verdicts on static gates are shown to the owner to confirm or override."),
+			),
+			mcpgo.WithString("owner",
+				mcpgo.Description("Creating agent's identity; only it may dismiss the finished run (default: basename of cwd)"),
 			),
 		),
 		mcpgo.NewTool("verify_status",
-			mcpgo.WithDescription("Snapshot of in-flight and recent verification runs, plus the single in-flight human_gate if any."),
+			mcpgo.WithDescription("Snapshot of active and retained verification runs, plus the single in-flight human_gate if any. Finished runs stay until their creator calls verify_dismiss; their screenshots load through verify_detail."),
+		),
+		mcpgo.NewTool("verify_dismiss",
+			mcpgo.WithDescription("Remove a finished verification run from the live view. The run bundle stays on disk. Refused while the run is active or when the caller is not the run's creator."),
+			mcpgo.WithString("run_id", mcpgo.Required(), mcpgo.Description("Run id from verify")),
+			mcpgo.WithString("owner", mcpgo.Description("Caller identity; must match the run's owner")),
+			mcpgo.WithString("cwd", mcpgo.Description("Caller cwd; its basename is the owner when owner is omitted")),
+		),
+		mcpgo.NewTool("verify_detail",
+			mcpgo.WithDescription("One step's evidence on demand: its records, the model appraisal (verdict, full report, model identity), and every image the model reviewed as data URIs. Without step_id, the run's latest screenshot."),
+			mcpgo.WithString("run_id", mcpgo.Required(), mcpgo.Description("Run id from verify")),
+			mcpgo.WithString("step_id", mcpgo.Description("Step id; omit for the run's latest screenshot")),
 		),
 		mcpgo.NewTool("verify_answer",
 			mcpgo.WithDescription("Answer the in-flight human_gate for a run."),

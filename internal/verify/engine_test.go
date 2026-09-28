@@ -188,43 +188,6 @@ cleanup:
 	}
 }
 
-func TestFinishedRunLeavesMemoryWithDefinitionAndEventsOnDisk(t *testing.T) {
-	hub := NewHub(HubArgs{})
-	cwd := t.TempDir()
-	wf := loadWF(t, `
-name: persisted-run
-params:
-  device: iPad
-steps:
-  - id: check
-    type: shell
-    label: Check ${device}
-    argv: [/usr/bin/true]
-`)
-	run, err := hub.Start(context.Background(), StartArgs{Workflow: wf, Cwd: cwd})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := run.Wait()
-	if result.Status != StatusPassed {
-		t.Fatalf("run status: %s reason=%s block=%s", result.Status, result.FailedReason, result.StatusBlock)
-	}
-	if got := hub.Snapshot().Runs; len(got) != 0 {
-		t.Fatalf("completed run remains in memory: %+v", got)
-	}
-	for filename, want := range map[string]string{
-		"report.json":   `"status": "passed"`,
-		"workflow.yaml": "name: persisted-run",
-		"params.json":   `"device": "iPad"`,
-		"events.log":    "passed persisted-run",
-	} {
-		data, err := os.ReadFile(filepath.Join(result.ReportDir, filename))
-		if err != nil || !strings.Contains(string(data), want) {
-			t.Fatalf("%s: err=%v content=%q", filename, err, data)
-		}
-	}
-}
-
 func TestRunPreservesDefinitionBeforeCompletion(t *testing.T) {
 	hub := NewHub(HubArgs{})
 	cwd := t.TempDir()

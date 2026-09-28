@@ -124,8 +124,11 @@ type Handler struct {
 	batteryStore *battery.Store
 
 	// verifyHub is the daemon-wide verification DAG scheduler (🎯T138).
-	verifyMu  sync.Mutex
-	verifyHub *verify.Hub
+	// verifyStateDir persists retained runs across restarts (🎯T149.1);
+	// empty keeps them in memory only.
+	verifyMu       sync.Mutex
+	verifyHub      *verify.Hub
+	verifyStateDir string
 }
 
 // launchKey indexes launchTimes. The device dimension is the
@@ -805,6 +808,9 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"verify_status": h.handleVerifyStatus,
 		"verify_answer": h.handleVerifyAnswer,
 		"verify_abort":  h.handleVerifyAbort,
+		// --- owner review of retained runs (🎯T149) ---
+		"verify_dismiss": h.handleVerifyDismiss,
+		"verify_detail":  h.handleVerifyDetail,
 	}
 }
 

@@ -73,6 +73,12 @@ func ShipAuditBase() string {
 	return filepath.Join(Base(), "ship-audit")
 }
 
+// VerifyDir returns the Verify state directory (~/.spyder/verify). It holds
+// the index of finished runs retained for owner review (🎯T149.1).
+func VerifyDir() string {
+	return filepath.Join(Base(), "verify")
+}
+
 // BatteryDir returns the fleet battery-history store
 // (~/.spyder/battery). Daily JSONL files live here (🎯T137).
 func BatteryDir() string {

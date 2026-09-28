@@ -45,7 +45,7 @@ func toolDeadlineClass(name string) time.Duration {
 	case "verify":
 		// Owner gates and long shell graphs; no extra wall-clock cap.
 		return 0
-	case "verify_status", "verify_answer", "verify_abort":
+	case "verify_status", "verify_answer", "verify_abort", "verify_dismiss", "verify_detail":
 		return DeadlineFastRead
 	case "app_exec", "run_script", "list_scripts":
 		// Outer dispatch must not undercut max_duration_ms (default 30s,

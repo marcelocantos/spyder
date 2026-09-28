@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,8 @@ type Run struct {
 	deferHuman     bool
 	reviewDeferred bool
 	prior          *Record
+	owner          string
+	startedAt      time.Time
 	ctx            context.Context
 	cancel         context.CancelFunc
 
@@ -57,6 +60,11 @@ type Run struct {
 	idleExpired  bool
 	done         chan struct{}
 	result       Result
+	// appraisals are this run's model verdicts on deferred static gates;
+	// priorAppraisals are a prepared run's verdicts, copied into this bundle
+	// for the owner review to confirm or override.
+	appraisals      map[string]*Appraisal
+	priorAppraisals map[string]*Appraisal
 }
 
 // RunOpts is internal construction data.
@@ -69,6 +77,7 @@ type RunOpts struct {
 	DeferHumanGates bool
 	ReviewDeferred  bool
 	Prior           *Record
+	Owner           string
 	Ctx             context.Context
 }
 
@@ -78,7 +87,12 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithCancel(parent)
-	stamp := time.Now().UTC().Format("20060102T150405Z")
+	started := time.Now()
+	stamp := started.UTC().Format("20060102T150405Z")
+	owner := opts.Owner
+	if owner == "" {
+		owner = filepath.Base(opts.Cwd)
+	}
 	report := filepath.Join(opts.Cwd, "verify-runs", stamp+"-"+shortID())
 	r := &Run{
 		ID:             shortID(),
@@ -92,6 +106,8 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 		deferHuman:     opts.DeferHumanGates,
 		reviewDeferred: opts.ReviewDeferred,
 		prior:          opts.Prior,
+		owner:          owner,
+		startedAt:      started,
 		ctx:            ctx,
 		cancel:         cancel,
 		okIDs:          map[string]bool{},
@@ -105,6 +121,7 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 		status:         "running",
 		lastProgress:   time.Now(),
 		done:           make(chan struct{}),
+		appraisals:     map[string]*Appraisal{},
 	}
 	if r.answers == nil {
 		r.answers = map[string]Answer{}
@@ -126,7 +143,38 @@ func (r *Run) persistDefinition() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(r.reportDir, "params.json"), append(params, '\n'), 0o644)
+	if err := os.WriteFile(filepath.Join(r.reportDir, "params.json"), append(params, '\n'), 0o644); err != nil {
+		return err
+	}
+	meta, err := json.MarshalIndent(runMeta{
+		RunID:          r.ID,
+		Owner:          r.owner,
+		Workflow:       r.wf.Name,
+		WorkflowPath:   r.path,
+		Cwd:            r.cwd,
+		StartedAt:      r.startedAt,
+		Unattended:     r.deferHuman,
+		ReviewDeferred: r.reviewDeferred,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(r.reportDir, runMetaFile), append(meta, '\n'), 0o644)
+}
+
+// runMetaFile identifies a run bundle: who created it and when. The daemon
+// rehydrates retained runs from it after a restart.
+const runMetaFile = "run.json"
+
+type runMeta struct {
+	RunID          string    `json:"run_id"`
+	Owner          string    `json:"owner"`
+	Workflow       string    `json:"workflow"`
+	WorkflowPath   string    `json:"workflow_path,omitempty"`
+	Cwd            string    `json:"cwd"`
+	StartedAt      time.Time `json:"started_at"`
+	Unattended     bool      `json:"unattended,omitempty"`
+	ReviewDeferred bool      `json:"review_deferred,omitempty"`
 }
 
 // Wait blocks until the run ends.
@@ -151,6 +199,10 @@ type Result struct {
 	ReportDir    string       `json:"report_dir"`
 	Steps        []StepRecord `json:"steps"`
 	Unattended   bool         `json:"unattended,omitempty"`
+	Owner        string       `json:"owner,omitempty"`
+	// StepStatus is every step's final state, including resume skips that
+	// have no record, so a restarted daemon can redraw the timeline.
+	StepStatus map[string]string `json:"step_status,omitempty"`
 }
 
 // GateView is the one in-flight owner question.
@@ -164,76 +216,120 @@ type GateView struct {
 	Choices      []Choice `json:"choices"`
 	AllowComment bool     `json:"allow_comment"`
 	Screenshot   string   `json:"screenshot,omitempty"`
+	// Appraisal is a prepared run's model verdict on this gate. The owner
+	// confirms it by choosing the same answer, or overrides it.
+	Appraisal *Appraisal `json:"appraisal,omitempty"`
 }
 
-// RunView is one graph in verify_status.
+// RunView is one graph in verify_status. Screenshot is sent only while the
+// run is active; a finished run's images load on demand (verify_detail).
 type RunView struct {
-	RunID      string     `json:"run_id"`
-	Workflow   string     `json:"workflow"`
-	Status     string     `json:"status"`
-	Cwd        string     `json:"cwd"`
-	Device     string     `json:"device,omitempty"`
-	Groups     []Group    `json:"groups"`
-	Steps      []StepView `json:"steps"`
-	Log        []string   `json:"log"`
-	Gate       *GateView  `json:"gate,omitempty"`
-	Screenshot string     `json:"screenshot,omitempty"`
-	ReportDir  string     `json:"report_dir"`
+	RunID          string     `json:"run_id"`
+	Workflow       string     `json:"workflow"`
+	Status         string     `json:"status"`
+	Reason         string     `json:"reason,omitempty"`
+	Owner          string     `json:"owner,omitempty"`
+	StartedAt      time.Time  `json:"started_at"`
+	Unattended     bool       `json:"unattended,omitempty"`
+	ReviewDeferred bool       `json:"review_deferred,omitempty"`
+	PendingReview  int        `json:"pending_review,omitempty"`
+	Cwd            string     `json:"cwd"`
+	Device         string     `json:"device,omitempty"`
+	Groups         []Group    `json:"groups"`
+	Steps          []StepView `json:"steps"`
+	Log            []string   `json:"log"`
+	Gate           *GateView  `json:"gate,omitempty"`
+	Screenshot     string     `json:"screenshot,omitempty"`
+	ReportDir      string     `json:"report_dir"`
 }
 
-// StepView is a dashboard step row.
+// StepView is a dashboard step row. Evaluator says who judged the step:
+// "model" for a model step or an appraised gate still awaiting the owner,
+// "owner" or "preset" for an answered gate, empty for automation.
 type StepView struct {
-	ID         string `json:"id"`
-	Label      string `json:"label"`
-	Type       string `json:"type"`
-	Group      string `json:"group,omitempty"`
-	Status     string `json:"status"`
-	DurationMS int64  `json:"duration_ms,omitempty"`
-	ChoiceID   string `json:"choice_id,omitempty"`
-	Device     string `json:"device,omitempty"`
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Type        string `json:"type"`
+	Group       string `json:"group,omitempty"`
+	Status      string `json:"status"`
+	DurationMS  int64  `json:"duration_ms,omitempty"`
+	ChoiceID    string `json:"choice_id,omitempty"`
+	Device      string `json:"device,omitempty"`
+	Judgment    string `json:"judgment,omitempty"`
+	Evaluator   string `json:"evaluator,omitempty"`
+	Appraised   bool   `json:"appraised,omitempty"`
+	Verdict     string `json:"verdict,omitempty"`
+	ModelReview string `json:"model_review,omitempty"`
 }
 
 func (r *Run) view() RunView {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	steps := make([]StepView, 0, len(r.wf.Steps)+len(r.wf.Cleanup))
-	choice := map[string]string{}
+	last := map[string]StepRecord{}
 	for _, rec := range r.records {
-		if rec.ChoiceID != "" {
-			choice[rec.StepID] = rec.ChoiceID
-		}
+		last[rec.StepID] = rec
 	}
+	pending := 0
 	for _, s := range append(append([]Step{}, r.wf.Steps...), r.wf.Cleanup...) {
 		st := r.stepStatus[s.ID]
 		if st == "" {
 			st = StepPending
 		}
+		if st == StepDeferred {
+			pending++
+		}
 		label := s.Label
 		if label == "" {
 			label = s.ID
 		}
-		steps = append(steps, StepView{
+		sv := StepView{
 			ID:         s.ID,
 			Label:      label,
 			Type:       s.Type,
 			Group:      s.Group,
 			Status:     st,
 			DurationMS: r.stepDur[s.ID],
-			ChoiceID:   choice[s.ID],
 			Device:     s.Device,
-		})
+			Judgment:   s.Judgment,
+		}
+		if rec, ok := last[s.ID]; ok {
+			sv.ChoiceID = rec.ChoiceID
+			sv.ModelReview = rec.ModelReview
+			sv.Evaluator = rec.AnsweredBy
+			if a := rec.Appraisal; a != nil {
+				sv.Appraised = true
+				sv.Verdict = a.Verdict
+				if sv.Evaluator == "" {
+					sv.Evaluator = "model"
+				}
+			}
+		} else if a := r.priorAppraisals[s.ID]; a != nil {
+			sv.Appraised = true
+			sv.Verdict = a.Verdict
+		}
+		steps = append(steps, sv)
 	}
 	v := RunView{
-		RunID:      r.ID,
-		Workflow:   r.wf.Name,
-		Status:     r.status,
-		Cwd:        r.cwd,
-		Device:     r.params["device"],
-		Groups:     r.wf.Groups,
-		Steps:      steps,
-		Log:        append([]string{}, r.logs...),
-		Screenshot: r.screenshot,
-		ReportDir:  r.reportDir,
+		RunID:          r.ID,
+		Workflow:       r.wf.Name,
+		Status:         r.status,
+		Owner:          r.owner,
+		StartedAt:      r.startedAt,
+		Unattended:     r.deferHuman,
+		ReviewDeferred: r.reviewDeferred,
+		PendingReview:  pending,
+		Cwd:            r.cwd,
+		Device:         r.params["device"],
+		Groups:         r.wf.Groups,
+		Steps:          steps,
+		Log:            append([]string{}, r.logs...),
+		ReportDir:      r.reportDir,
+	}
+	if r.status == "running" {
+		v.Screenshot = r.screenshot
+	} else {
+		v.Reason = r.failedReason
 	}
 	if r.gate != nil {
 		g := *r.gate
@@ -371,7 +467,7 @@ type stepOutcome struct {
 func (r *Run) drive() {
 	defer close(r.done)
 	defer r.cancel()
-	defer r.hub.forgetRun(r.ID)
+	defer r.hub.notify()
 	_ = os.MkdirAll(r.shotsDir(), 0o755)
 	go r.watchShots()
 	go r.watchIdle()
@@ -391,6 +487,7 @@ func (r *Run) drive() {
 			for _, id := range prior.Deferred {
 				r.deferred[id] = true
 			}
+			r.adoptPriorAppraisals(prior.Appraisals)
 		} else {
 			retry = ResumeRerunIDs(r.wf.Steps, prior.FailedStepID)
 		}
@@ -473,6 +570,11 @@ func (r *Run) drive() {
 				continue
 			}
 			keys := resourceKeys(s)
+			if r.deferHuman && s.Type == KindHumanGate {
+				// No owner is asked, so the daemon-wide owner lock stays free
+				// for attended runs while a model appraises this gate.
+				keys = withoutKey(keys, resourceKeyHuman)
+			}
 			if !r.hub.pool.tryStart(r.ID, keys) {
 				continue
 			}
@@ -605,9 +707,24 @@ func (r *Run) currentFailed() string {
 func (r *Run) runOne(step Step) stepOutcome {
 	if step.Type == KindHumanGate {
 		if r.deferHuman {
-			r.record(StepRecord{StepID: step.ID, Status: StepDeferred, Type: KindHumanGate, Label: step.Label})
-			r.setStatus(step.ID, StepDeferred, 0)
-			r.emit(step.ID, "deferred "+step.ID+"  owner review pending")
+			rec := StepRecord{StepID: step.ID, Status: StepDeferred, Type: KindHumanGate, Label: step.Label, Judgment: step.Judgment}
+			if step.Judgment == JudgmentStatic {
+				rec.Appraisal = r.appraise(step)
+				rec.DurationMS = rec.Appraisal.DurationMS
+				r.mu.Lock()
+				r.appraisals[step.ID] = rec.Appraisal
+				r.mu.Unlock()
+			}
+			r.record(rec)
+			r.setStatus(step.ID, StepDeferred, rec.DurationMS)
+			switch a := rec.Appraisal; {
+			case a == nil:
+				r.emit(step.ID, "deferred "+step.ID+"  owner review pending")
+			case a.Verdict != "":
+				r.emit(step.ID, "deferred "+step.ID+"  model verdict "+a.Verdict+"; owner confirmation pending")
+			default:
+				r.emit(step.ID, "deferred "+step.ID+"  model appraisal failed ("+oneLine(a.Error)+"); owner review pending")
+			}
 			return stepOutcome{status: StepDeferred}
 		}
 		return r.humanGate(step)
@@ -641,6 +758,9 @@ func (r *Run) commandStep(step Step) stepOutcome {
 			Type:       step.Type,
 			Label:      step.Label,
 		}
+		if step.Type == KindModel {
+			rec.Appraisal = modelStepAppraisal(step, last, dur)
+		}
 		if last.Code == 0 {
 			r.record(rec)
 			r.setStatus(step.ID, StepOK, dur)
@@ -666,7 +786,7 @@ func (r *Run) commandStep(step Step) stepOutcome {
 	return stepOutcome{status: StatusInvestigate, code: ExitInvestigate, reason: reason}
 }
 
-func (r *Run) execStep(step Step) ExecResult {
+func (r *Run) stepEnv(step Step) map[string]string {
 	env := map[string]string{
 		"SPYDER_VERIFY_REPORT_DIR":   r.reportDir,
 		"SPYDER_VERIFY_ARTIFACT_DIR": filepath.Join(r.reportDir, "artifacts"),
@@ -677,6 +797,11 @@ func (r *Run) execStep(step Step) ExecResult {
 	for k, v := range step.Env {
 		env[k] = v
 	}
+	return env
+}
+
+func (r *Run) execStep(step Step) ExecResult {
+	env := r.stepEnv(step)
 	timeout := time.Duration(0)
 	if step.TimeoutSec != nil {
 		timeout = time.Duration(*step.TimeoutSec * float64(time.Second))
@@ -721,6 +846,13 @@ func (r *Run) humanGate(step Step) stepOutcome {
 		view.Device = r.params["device"]
 	}
 	r.mu.Lock()
+	prior := r.priorAppraisals[step.ID]
+	r.mu.Unlock()
+	if prior != nil {
+		a := *prior
+		view.Appraisal = &a
+	}
+	r.mu.Lock()
 	r.gate = view
 	r.mu.Unlock()
 	r.poke()
@@ -732,8 +864,10 @@ func (r *Run) humanGate(step Step) stepOutcome {
 	}()
 
 	var ans Answer
+	answeredBy := AnsweredByOwner
 	if preset, ok := r.answers[step.ID]; ok {
 		ans = preset
+		answeredBy = AnsweredByPreset
 	} else {
 		var timeout <-chan time.Time
 		if step.TimeoutSec != nil {
@@ -788,6 +922,15 @@ func (r *Run) humanGate(step Step) stepOutcome {
 		Comment:    ans.Comment,
 		Type:       KindHumanGate,
 		Label:      step.Label,
+		Judgment:   step.Judgment,
+		AnsweredBy: answeredBy,
+	}
+	if prior != nil {
+		rec.Appraisal = prior
+		rec.ModelReview = ModelOverridden
+		if prior.Verdict == choice.ID {
+			rec.ModelReview = ModelConfirmed
+		}
 	}
 	r.record(rec)
 	if choice.Outcome == OutcomeInvestigate {
@@ -805,6 +948,9 @@ func (r *Run) record(rec StepRecord) {
 	r.mu.Lock()
 	r.records = append(r.records, rec)
 	r.mu.Unlock()
+	if rec.Appraisal != nil {
+		r.saveAppraisal(rec)
+	}
 }
 
 func (r *Run) rememberPass(id string) {
@@ -1036,6 +1182,16 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 		ReportDir:    r.reportDir,
 		Steps:        append([]StepRecord{}, r.records...),
 		Unattended:   r.deferHuman,
+		Owner:        r.owner,
+		StepStatus:   maps.Clone(r.stepStatus),
+	}
+	appraisals := map[string]*Appraisal{}
+	for id := range r.deferred {
+		if a := r.appraisals[id]; a != nil {
+			appraisals[id] = a
+		} else if a := r.priorAppraisals[id]; a != nil {
+			appraisals[id] = a
+		}
 	}
 	r.mu.Unlock()
 	data, reportErr := json.MarshalIndent(r.result, "", "  ")
@@ -1070,6 +1226,9 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 	}
 
 	rec := &Record{Workflow: r.wf.Name, Passed: passed, Deferred: keys(r.deferred), DefinitionSHA256: fmt.Sprintf("%x", sha256.Sum256(r.wf.Raw)), Params: r.params}
+	if len(appraisals) > 0 {
+		rec.Appraisals = appraisals
+	}
 	if status != StatusPassed {
 		rec.FailedStepID = failed
 	}

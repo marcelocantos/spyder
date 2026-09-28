@@ -201,11 +201,26 @@ steps:
 	if ra, rb := runARef.Wait(), runBRef.Wait(); ra.Status != "passed" || rb.Status != "passed" {
 		t.Fatalf("runs did not both pass: A=%s B=%s", ra.Status, rb.Status)
 	}
-	if snap := dispatchJSONMap(t, h, "verify_status", map[string]any{}); snap["runs"] != nil {
-		runs, _ := snap["runs"].([]any)
-		if len(runs) != 0 {
-			t.Fatalf("completed runs remain in active snapshot: %v", runs)
+	// Finished runs stay for owner review until their creator dismisses them
+	// (🎯T149.1). The owner defaults to the basename of the run's cwd.
+	snap := dispatchJSONMap(t, h, "verify_status", map[string]any{})
+	runs, _ := snap["runs"].([]any)
+	if len(runs) != 2 || snap["gate"] != nil {
+		t.Fatalf("finished runs not retained: %v", snap)
+	}
+	for _, item := range runs {
+		rm, _ := item.(map[string]any)
+		if rm["status"] != "passed" || rm["screenshot"] != nil {
+			t.Fatalf("retained run view: %v", rm)
 		}
+	}
+	if r := dispatchJSON(t, h, "verify_dismiss", map[string]any{"run_id": runA, "owner": "b"}); !r.IsError {
+		t.Fatal("a caller that did not create run A dismissed it")
+	}
+	dispatchJSONMap(t, h, "verify_dismiss", map[string]any{"run_id": runA, "cwd": cwd + "/a"})
+	dispatchJSONMap(t, h, "verify_dismiss", map[string]any{"run_id": runB, "owner": "b"})
+	if runs, _ := dispatchJSONMap(t, h, "verify_status", map[string]any{})["runs"].([]any); len(runs) != 0 {
+		t.Fatalf("dismissed runs remain: %v", runs)
 	}
 }
 

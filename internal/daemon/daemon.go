@@ -294,6 +294,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	}
 
 	handler := spydermcp.NewHandler(handlerOpts...)
+	handler.SetVerifyStateDir(paths.VerifyDir())
 
 	// Kick off pool adoption in the background so startup latency stays
 	// low. Adoption rebuilds inventory from live simctl/avdmanager state

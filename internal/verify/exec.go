@@ -26,6 +26,16 @@ type ExecResult struct {
 	Code     int
 	Output   string
 	TimedOut bool
+	Model    *ModelEvidence // set by the model runner once a model is chosen
+}
+
+// ModelEvidence is what a model runner reports beyond its exit code: which
+// model ran, its full final text, and the image files it was given.
+type ModelEvidence struct {
+	Provider string
+	Model    string
+	Result   string
+	Images   []string
 }
 
 // StepRunner runs a shell or spyder_script step.

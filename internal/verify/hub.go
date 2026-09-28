@@ -27,6 +27,9 @@ type Hub struct {
 	model  StepRunner
 	sleep  func(time.Duration)
 	now    func() time.Time
+	// stateDir holds the retained-run index; empty keeps retention in
+	// memory only (tests).
+	stateDir string
 
 	liveMu sync.Mutex
 	live   map[chan struct{}]struct{}
@@ -40,6 +43,9 @@ type HubArgs struct {
 	Model      StepRunner
 	Sleep      func(time.Duration)
 	Now        func() time.Time
+	// StateDir persists the list of retained runs so they survive a daemon
+	// restart. Empty disables persistence.
+	StateDir string
 }
 
 // NewHub returns a daemon-wide verification hub.
@@ -56,16 +62,21 @@ func NewHub(args HubArgs) *Hub {
 	if now == nil {
 		now = time.Now
 	}
-	return &Hub{
-		pool:   newPool(args.MaxWorkers),
-		runs:   map[string]*Run{},
-		shell:  shell,
-		script: args.Script,
-		model:  args.Model,
-		sleep:  sleep,
-		now:    now,
-		live:   map[chan struct{}]struct{}{},
+	h := &Hub{
+		pool:     newPool(args.MaxWorkers),
+		runs:     map[string]*Run{},
+		shell:    shell,
+		script:   args.Script,
+		model:    args.Model,
+		sleep:    sleep,
+		now:      now,
+		stateDir: args.StateDir,
+		live:     map[chan struct{}]struct{}{},
 	}
+	if h.stateDir != "" {
+		h.rehydrate()
+	}
+	return h
 }
 
 // StartArgs is one workflow invocation.
@@ -78,6 +89,9 @@ type StartArgs struct {
 	AllowWaive      bool
 	DeferHumanGates bool
 	ReviewDeferred  bool
+	// Owner is the creating agent; only it may dismiss the finished run.
+	// Empty means filepath.Base(Cwd).
+	Owner string
 }
 
 // Answer is a human_gate response (CLI --answer or REST verify_answer).
@@ -123,6 +137,7 @@ func (h *Hub) Start(ctx context.Context, args StartArgs) (*Run, error) {
 		DeferHumanGates: args.DeferHumanGates,
 		ReviewDeferred:  args.ReviewDeferred,
 		Prior:           prior,
+		Owner:           args.Owner,
 		Ctx:             ctx,
 	})
 	if err := run.persistDefinition(); err != nil {
@@ -131,6 +146,7 @@ func (h *Hub) Start(ctx context.Context, args StartArgs) (*Run, error) {
 	}
 	h.mu.Lock()
 	h.runs[run.ID] = run
+	h.saveRetainedLocked()
 	h.mu.Unlock()
 	h.notify()
 	go run.drive()
@@ -160,7 +176,8 @@ func (h *Hub) Abort(runID, reason string) error {
 	return nil
 }
 
-// Snapshot is the dashboard/REST view of active runs plus the single in-flight gate.
+// Snapshot is the dashboard/REST view of active and retained runs plus the
+// single in-flight gate.
 func (h *Hub) Snapshot() Snapshot {
 	h.mu.Lock()
 	runs := make([]*Run, 0, len(h.runs))
@@ -178,25 +195,21 @@ func (h *Hub) Snapshot() Snapshot {
 			out.Gate = &g
 		}
 	}
-	sort.Slice(out.Runs, func(i, j int) bool {
-		if (out.Runs[i].Status == "running") != (out.Runs[j].Status == "running") {
-			return out.Runs[i].Status == "running"
-		}
-		return out.Runs[i].ReportDir < out.Runs[j].ReportDir
-	})
+	sort.Slice(out.Runs, func(i, j int) bool { return runStartOrder(out.Runs[i], out.Runs[j]) })
 	return out
 }
 
-// forgetRun removes a completed run from memory. The caller retains its Run
-// pointer for Wait; the report, screenshots, and log remain on disk.
-func (h *Hub) forgetRun(id string) {
-	h.mu.Lock()
-	delete(h.runs, id)
-	h.mu.Unlock()
-	h.notify()
+// Detail returns one step's evidence, or the run's latest screenshot when
+// stepID is empty.
+func (h *Hub) Detail(runID, stepID string) (*StepDetail, error) {
+	run := h.RunByID(runID)
+	if run == nil {
+		return nil, fmt.Errorf("unknown run %s", runID)
+	}
+	return run.Detail(stepID)
 }
 
-// RunByID returns a live run or nil.
+// RunByID returns an active or retained run, or nil.
 func (h *Hub) RunByID(id string) *Run {
 	h.mu.Lock()
 	defer h.mu.Unlock()

@@ -89,8 +89,9 @@ func init() {
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 		{"list-scripts", "spyder list-scripts [--json]", runListScripts},
 		{"run-script", "spyder run-script <name|path> [--param k=v]... [--max-duration-ms N] [--json]", runRunScript},
-		{"verify", "spyder verify <workflow.yaml> [--set k=v] [--device NAME] [--answer GATE=CHOICE] [--defer-human-gates|--review-deferred] [--cwd DIR] [--validate] [--json]", runVerify},
+		{"verify", "spyder verify <workflow.yaml> [--set k=v] [--device NAME] [--answer GATE=CHOICE] [--defer-human-gates|--review-deferred] [--cwd DIR] [--as OWNER] [--validate] [--json]", runVerify},
 		{"verify-answer", "spyder verify-answer --run ID --gate ID --choice ID [--comment TEXT]", runVerifyAnswer},
+		{"verify-dismiss", "spyder verify-dismiss --run ID [--as OWNER]", runVerifyDismiss},
 		{"verify-status", "spyder verify-status [--json]", runVerifyStatus},
 	}
 }
@@ -1842,7 +1843,7 @@ func runRunScript(args []string) {
 
 func runVerify(args []string) {
 	pf, ctx, cancel := setupCommand("verify", args,
-		[]string{"--set", "--device", "--answer", "--comment", "--cwd"},
+		[]string{"--set", "--device", "--answer", "--comment", "--cwd", "--as"},
 		[]string{"--json", "--validate", "--allow-waive", "--defer-human-gates", "--review-deferred"},
 		clitimeout.DefaultRun)
 	defer cancel()
@@ -1917,6 +1918,10 @@ func runVerify(args []string) {
 		"allow_waive":       pf.bools["--allow-waive"],
 		"defer_human_gates": pf.bools["--defer-human-gates"],
 		"review_deferred":   pf.bools["--review-deferred"],
+		"owner":             filepath.Base(cwd),
+	}
+	if owner := pf.flags["--as"]; owner != "" {
+		a["owner"] = owner
 	}
 	if len(params) > 0 {
 		a["params"] = params
@@ -1975,6 +1980,18 @@ func runVerifyAnswer(args []string) {
 		a["comment"] = c
 	}
 	dispatchAndExit(ctx, "verify_answer", a, pf.bools["--json"], false)
+}
+
+// runVerifyDismiss removes a finished run from the dashboard. Only the run's
+// creator may: --as defaults to the basename of the cwd, as for `spyder verify`.
+func runVerifyDismiss(args []string) {
+	pf, ctx, cancel := setupCommand("verify-dismiss", args, []string{"--run", "--as"}, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	if pf.flags["--run"] == "" {
+		fatalUsage("verify-dismiss", fmt.Errorf("--run is required"))
+	}
+	a := map[string]any{"run_id": pf.flags["--run"], "owner": deriveOwner(pf.flags["--as"])}
+	dispatchAndExit(ctx, "verify_dismiss", a, pf.bools["--json"], false)
 }
 
 func runVerifyStatus(args []string) {
