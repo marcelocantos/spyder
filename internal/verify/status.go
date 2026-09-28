@@ -74,6 +74,13 @@ const (
 	PreconditionUnchecked = "unchecked"
 )
 
+// Untrusted reports whether a gate's evidence and review may not be about
+// the intended screen: its precondition failed, or could not be checked
+// (model error or timeout).
+func (p *PreconditionResult) Untrusted() bool {
+	return p != nil && p.Status != PreconditionMet
+}
+
 // PreconditionResult is what the starting-screen check saw. Screenshot is the
 // full frame, which a static gate's appraisal reuses.
 type PreconditionResult struct {

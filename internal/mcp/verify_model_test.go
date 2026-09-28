@@ -341,3 +341,119 @@ cleanup:
 		t.Fatalf("report.json lacks both appraisals: %v", err)
 	}
 }
+
+// 🎯T145 live: a gate's precondition checks the physical screen. A correct
+// screen leaves the review untagged; a wrong one tags it untrustworthy,
+// both on the live owner gate (attended) and on the model appraisal
+// (unattended). Neither case blocks the gate.
+func TestVerifyPreconditionTaggingLive(t *testing.T) {
+	device := os.Getenv("SPYDER_LIVE_APPRAISE_DEVICE")
+	if device == "" {
+		t.Skip("set SPYDER_LIVE_APPRAISE_DEVICE to an Android device (stages Settings, then the home screen)")
+	}
+	settings := "The Android Settings app is open, showing a list of settings such as Network and Battery."
+	wf, err := verify.Load([]byte(`
+name: precondition-tagging-live
+defaults:
+  screen_model: {mode: task, purpose: analysis, quality: standard, prefer_provider: claude, exclude_providers: [grok, codex, cursor, bedrock, ollama]}
+steps:
+  - id: stage_settings
+    type: shell
+    argv: [sh, -c, "spyder launch-app ${device} com.android.settings --as t145-live && sleep 3"]
+  - id: right_screen
+    type: human_gate
+    requires: [stage_settings]
+    device: ${device}
+    judgment: static
+    precondition: {screen: "` + settings + `", retry: {count: 1, backoff_sec: 1}}
+    prompt: Is the Settings list readable?
+    choices: [{id: pass, label: "Yes"}, {id: fail, label: "No"}]
+  - id: stage_home
+    type: shell
+    requires: [right_screen]
+    argv: [sh, -c, "spyder terminate-app ${device} com.android.settings --as t145-live && sleep 3"]
+  - id: wrong_screen
+    type: human_gate
+    requires: [stage_home]
+    device: ${device}
+    judgment: static
+    precondition: {screen: "` + settings + `", retry: {count: 1, backoff_sec: 1}}
+    prompt: Is the Settings search bar readable?
+    choices: [{id: pass, label: "Yes"}, {id: fail, label: "No"}]
+cleanup:
+  - id: close_settings
+    type: shell
+    argv: [spyder, terminate-app, "${device}", com.android.settings, --as, t145-live]
+  - id: release
+    type: shell
+    argv: [spyder, release, "${device}", --as, t145-live]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := NewHandler()
+	params := map[string]string{"device": device}
+	check := func(label string, v verify.StepView, wantUntrusted bool) {
+		t.Helper()
+		if v.Untrusted != wantUntrusted {
+			t.Fatalf("%s %s: precondition=%s untrusted=%v, want untrusted=%v", label, v.ID, v.Precondition, v.Untrusted, wantUntrusted)
+		}
+	}
+
+	// Attended: both gates open (never blocked); the wrong one carries a warning.
+	run, err := h.VerifyHub().Start(context.Background(), verify.StartArgs{Workflow: wf, Cwd: t.TempDir(), Params: params})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gates := map[string]*verify.GateView{}
+	deadline := time.Now().Add(5 * time.Minute)
+	for len(gates) < 2 && time.Now().Before(deadline) {
+		if snap := h.VerifyHub().Snapshot(); snap.Gate != nil && snap.Gate.RunID == run.ID && gates[snap.Gate.StepID] == nil {
+			gv := *snap.Gate
+			gates[gv.StepID] = &gv
+			if err := h.VerifyHub().Answer(run.ID, gv.StepID, verify.Answer{ChoiceID: "pass"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	res := run.Wait()
+	t.Logf("attended: %s\n%s", res.ReportDir, res.StatusBlock)
+	for id, want := range map[string]string{"right_screen": verify.PreconditionMet, "wrong_screen": verify.PreconditionNotMet} {
+		g := gates[id]
+		if g == nil || g.Precondition == nil || g.Precondition.Status != want {
+			t.Fatalf("attended owner gate %s: %+v", id, g)
+		}
+		t.Logf("attended %s: precondition %s (%s)", id, g.Precondition.Status, g.Precondition.Reason)
+	}
+	for _, s := range run.Report().Steps {
+		switch s.StepID {
+		case "right_screen":
+			check("attended", *s.Step, false)
+		case "wrong_screen":
+			check("attended", *s.Step, true)
+		}
+	}
+
+	// Unattended: the model appraises each gate's precondition frame; the
+	// appraisal of the wrong screen is tagged untrustworthy.
+	prep, err := h.VerifyHub().Start(context.Background(), verify.StartArgs{Workflow: wf, Cwd: t.TempDir(), Params: params, DeferHumanGates: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pres := prep.Wait()
+	t.Logf("unattended: %s\n%s", pres.ReportDir, pres.StatusBlock)
+	if pres.Status != verify.StatusPrepared {
+		t.Fatalf("unattended: %s %s", pres.Status, pres.FailedReason)
+	}
+	for _, s := range prep.Report().Steps {
+		if s.StepID != "right_screen" && s.StepID != "wrong_screen" {
+			continue
+		}
+		if s.Appraisal == nil || s.Appraisal.Verdict == "" {
+			t.Fatalf("%s was not appraised: %+v", s.StepID, s.Appraisal)
+		}
+		t.Logf("unattended %s: precondition %s (%s; %d checks), 🤖 %s: %s", s.StepID, s.Precondition.Status, s.Precondition.Report, s.Precondition.Attempts, s.Appraisal.Verdict, s.Appraisal.Report)
+		check("unattended", *s.Step, s.StepID == "wrong_screen")
+	}
+}

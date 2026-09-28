@@ -104,7 +104,7 @@ fi
 # Settings app and then the home screen, and needs a working Claudia/Claude
 # login for the model.
 if [[ -n "${SPYDER_LIVE_APPRAISE_DEVICE:-}" ]]; then
-  run_suite live-appraise "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS -count=1 -run '^TestVerifyStaticGateAppraisalLive$' ./internal/mcp/"
+  run_suite live-appraise "go test -timeout 10m $GO_TEST_FLAGS -count=1 -run '^(TestVerifyStaticGateAppraisalLive|TestVerifyPreconditionTaggingLive)$' ./internal/mcp/"
 else
   run_suite_skipped live-appraise "set SPYDER_LIVE_APPRAISE_DEVICE=<android alias> to run; needs a device and a Claude login"
 fi

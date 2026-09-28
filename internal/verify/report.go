@@ -46,6 +46,9 @@ type ReportSummary struct {
 	// PreconditionsNotMet counts entries whose starting screen the model
 	// doubted: their evidence and any review of them may be untrustworthy.
 	PreconditionsNotMet int `json:"preconditions_not_met"`
+	// Untrusted counts entries whose precondition failed or could not be
+	// checked; their appraisals and reviews may be about the wrong screen.
+	Untrusted     int            `json:"untrusted"`
 	ModelVerdicts map[string]int `json:"model_verdicts,omitempty"`
 	OwnerFindings map[string]int `json:"owner_findings,omitempty"`
 }
@@ -111,6 +114,9 @@ func (r *Run) Report() *Report {
 		}
 		if sv.Precondition == PreconditionNotMet {
 			out.Summary.PreconditionsNotMet++
+		}
+		if sv.Untrusted {
+			out.Summary.Untrusted++
 		}
 	}
 	out.Summary.PendingReview = view.PendingReview

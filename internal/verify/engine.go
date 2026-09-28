@@ -287,6 +287,10 @@ type StepView struct {
 	// Precondition is the starting-screen check's outcome, if the step
 	// has one: met, not_met or unchecked.
 	Precondition string `json:"precondition,omitempty"`
+	// Untrusted marks a step whose precondition failed or could not be
+	// checked: its model appraisal and review may not be about the
+	// intended screen.
+	Untrusted bool `json:"untrusted,omitempty"`
 	// Reviewable steps await the owner's review; Review is the owner's
 	// saved finding and Reviewed says it settles the step.
 	Reviewable bool `json:"reviewable,omitempty"`
@@ -347,6 +351,7 @@ func (r *Run) view() RunView {
 		}
 		if p := r.preconditions[s.ID]; p != nil {
 			sv.Precondition = p.Status
+			sv.Untrusted = p.Untrusted()
 		}
 		if options := reviewOptions(s, st); options != nil {
 			rev := r.reviews[s.ID]

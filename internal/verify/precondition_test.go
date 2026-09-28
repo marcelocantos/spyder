@@ -109,8 +109,11 @@ func TestPreconditionNotMetWarnsButNeverBlocks(t *testing.T) {
 	if !strings.Contains(res.StatusBlock, "precondition=not_met") {
 		t.Fatalf("STATUS block hides the warning:\n%s", res.StatusBlock)
 	}
-	if v := run.view(); v.Steps[0].Precondition != PreconditionNotMet || v.Steps[0].Reviewable {
-		t.Fatalf("view: %+v", v.Steps[0])
+	if v := run.view(); v.Steps[0].Precondition != PreconditionNotMet || !v.Steps[0].Untrusted || v.Steps[0].Reviewable {
+		t.Fatalf("view must tag the gate untrustworthy: %+v", v.Steps[0])
+	}
+	if sm := run.Report().Summary; sm.PreconditionsNotMet != 1 || sm.Untrusted != 1 {
+		t.Fatalf("report summary: %+v", sm)
 	}
 }
 
@@ -132,6 +135,10 @@ func TestPreconditionRechecksTransientScreensAndToleratesModelErrors(t *testing.
 			p := res.Steps[0].Precondition
 			if res.Status != StatusPassed || p == nil || p.Status != tc.status || p.Attempts != tc.attempts {
 				t.Fatalf("status=%s precondition=%+v", res.Status, p)
+			}
+			// A check that failed or timed out leaves the review untrustworthy.
+			if p.Untrusted() != (tc.status != PreconditionMet) {
+				t.Fatalf("untrusted=%v for %s", p.Untrusted(), tc.status)
 			}
 		})
 	}

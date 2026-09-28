@@ -43,7 +43,11 @@ func (r *Run) checkPrecondition(step Step) *PreconditionResult {
 		Env:           step.Env,
 		ModelSpec:     spec,
 		CaptureScreen: true,
+		// False negatives cost the owner a doubtful review, so judge the
+		// screen in substance and fail only a clearly different one.
 		Prompt: "Inspect whether this fresh device image is the right starting screen for an owner check. Expected: " + p.Screen +
+			"\nJudge it in substance: layout, scroll position, which sub-page or item is showing, and animation state do not matter." +
+			" Answer FAIL only when it is clearly a different screen or app, or an error, loading or blank screen." +
 			"\nReply with PASS on the first line if it matches, otherwise FAIL, then give a short reason. Do not judge the owner's question itself.",
 	}
 	release := r.holdMutex(p.Mutex)
