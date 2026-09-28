@@ -228,7 +228,7 @@ cleanup:
 func TestVerifyStaticGateAppraisalLive(t *testing.T) {
 	device := os.Getenv("SPYDER_LIVE_APPRAISE_DEVICE")
 	if device == "" {
-		t.Skip("set SPYDER_LIVE_APPRAISE_DEVICE to an Android device with Settings and Google Keep")
+		t.Skip("set SPYDER_LIVE_APPRAISE_DEVICE to an Android device (stages Settings, then the home screen)")
 	}
 	wf, err := verify.Load([]byte(`
 name: static-gate-appraisal-live
@@ -253,18 +253,19 @@ steps:
       - id: fail
         label: No, another screen is shown
         outcome: investigate
-  - id: stage_keep
+  - id: stage_home
     type: shell
+    label: Close Settings, leaving the launcher home screen
     requires: [settings_shown]
     timeout_sec: 60
-    argv: [spyder, launch-app, "${device}", com.google.android.keep, --as, t149-live]
-  - id: settle_keep
+    argv: [spyder, terminate-app, "${device}", com.android.settings, --as, t149-live]
+  - id: settle_home
     type: shell
-    requires: [stage_keep]
+    requires: [stage_home]
     argv: [/bin/sleep, "3"]
-  - id: keep_is_settings
+  - id: home_is_settings
     type: human_gate
-    requires: [settle_keep]
+    requires: [settle_home]
     judgment: static
     device: ${device}
     prompt: Is the Android Settings app open on ${device}, showing a list of settings such as Battery and System?
@@ -276,16 +277,13 @@ steps:
         outcome: investigate
   - id: scroll_feel
     type: human_gate
-    requires: [keep_is_settings]
+    requires: [home_is_settings]
     judgment: dynamic
-    prompt: Does scrolling the notes list feel smooth?
+    prompt: Does swiping between home screens feel smooth?
     choices:
       - id: pass
         label: Smooth
 cleanup:
-  - id: stop_keep
-    type: shell
-    argv: [spyder, terminate-app, "${device}", com.google.android.keep, --as, t149-live]
   - id: stop_settings
     type: shell
     argv: [spyder, terminate-app, "${device}", com.android.settings, --as, t149-live]
@@ -312,7 +310,7 @@ cleanup:
 	for _, rec := range res.Steps {
 		byID[rec.StepID] = rec
 	}
-	for id, want := range map[string]string{"settings_shown": "pass", "keep_is_settings": "fail"} {
+	for id, want := range map[string]string{"settings_shown": "pass", "home_is_settings": "fail"} {
 		rec := byID[id]
 		a := rec.Appraisal
 		if rec.Status != verify.StepDeferred || rec.ChoiceID != "" || a == nil {
