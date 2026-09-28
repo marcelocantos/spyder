@@ -237,6 +237,7 @@ type RunView struct {
 	Unattended     bool       `json:"unattended,omitempty"`
 	ReviewDeferred bool       `json:"review_deferred,omitempty"`
 	PendingReview  int        `json:"pending_review,omitempty"`
+	NeedsInGame    int        `json:"needs_in_game,omitempty"`
 	Cwd            string     `json:"cwd"`
 	Device         string     `json:"device,omitempty"`
 	Groups         []Group    `json:"groups"`
@@ -280,7 +281,7 @@ func (r *Run) view() RunView {
 	for _, rec := range r.records {
 		last[rec.StepID] = rec
 	}
-	pending := 0
+	pending, inGame := 0, 0
 	outline := outlineOf(r.wf)
 	groups := make([]Group, 0, len(r.wf.Groups)+1)
 	for _, g := range r.wf.Groups {
@@ -325,6 +326,9 @@ func (r *Run) view() RunView {
 			if !sv.Reviewed {
 				pending++
 			}
+			if sv.Review == FindingInGame {
+				inGame++
+			}
 		}
 		if rec, ok := last[s.ID]; ok {
 			sv.ChoiceID = rec.ChoiceID
@@ -352,6 +356,7 @@ func (r *Run) view() RunView {
 		Unattended:     r.deferHuman,
 		ReviewDeferred: r.reviewDeferred,
 		PendingReview:  pending,
+		NeedsInGame:    inGame,
 		Cwd:            r.cwd,
 		Device:         r.params["device"],
 		Groups:         groups,

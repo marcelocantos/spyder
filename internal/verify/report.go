@@ -42,6 +42,7 @@ type ReportSummary struct {
 	Reviewable    int            `json:"reviewable"`
 	Reviewed      int            `json:"reviewed"`
 	PendingReview int            `json:"pending_review"`
+	NeedsInGame   int            `json:"needs_in_game"`
 	ModelVerdicts map[string]int `json:"model_verdicts,omitempty"`
 	OwnerFindings map[string]int `json:"owner_findings,omitempty"`
 }
@@ -107,5 +108,6 @@ func (r *Run) Report() *Report {
 		}
 	}
 	out.Summary.PendingReview = view.PendingReview
+	out.Summary.NeedsInGame = view.NeedsInGame
 	return out
 }

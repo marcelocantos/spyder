@@ -125,6 +125,9 @@
   .vreview-finding { padding: 6px 12px; min-height: 36px; }
   .vreview-finding.sel { border-color: var(--accent); background: var(--panel); box-shadow: inset 0 0 0 1px var(--accent); }
   .vreview-finding.sel.good { border-color: var(--accent2); box-shadow: inset 0 0 0 1px var(--accent2); }
+  .vreview-finding.sel.ingame { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
+  .vwho.ingame { background: rgba(255, 171, 112, .15); color: var(--warn); }
+  .vbadge.ingame { background: rgba(255, 171, 112, .18); color: var(--warn); }
   .vreview-finding.sel.bad { border-color: var(--err); box-shadow: inset 0 0 0 1px var(--err); }
   .vreview-label { display: block; color: var(--dim); }
   .vreview-notes { display: block; width: 100%; min-height: 96px; margin-top: 4px; resize: vertical; background: var(--panel2);
@@ -1036,7 +1039,8 @@ function renderVerifyTabs(runs) {
     el.setAttribute("aria-selected", selected ? "true" : "false");
     const badges = [];
     if (run.gate) badges.push('<span class="vbadge gate" title="An owner question is open on this run">● asks you</span>');
-    if (run.pending_review) badges.push(`<span class="vbadge review" title="Owner judgments deferred for review">${run.pending_review} to review</span>`);
+    if (run.pending_review) badges.push(`<span class="vbadge review" title="Entries awaiting your review">${run.pending_review} to review</span>`);
+    if (run.needs_in_game) badges.push(`<span class="vbadge ingame" title="Entries you marked for an in-game check">${run.needs_in_game} in game</span>`);
     el.innerHTML = `<span class="vtab-name">${esc(run.workflow || "workflow")}</span>
       <span class="vtab-meta">${esc(run.device || "")}${run.device ? " · " : ""}<span class="vstatus ${esc(run.status || "")}">${esc(run.status || "")}</span></span>
       ${badges.length ? `<span class="vtab-badges">${badges.join("")}</span>` : ""}`;
@@ -1167,6 +1171,7 @@ function startVerifyWS() {
 function verifyWho(s) {
   const mark = verifyWhoMark(s);
   if (!s.review) return mark;
+  if (s.review === "in_game") return mark + '<span class="vwho ingame" title="Owner review: needs an in-game check">🎮 in game</span>';
   const cls = s.reviewed ? "owner" : "owed";
   const title = s.reviewed ? "Owner review" : "Owner review incomplete (notes required)";
   return mark + `<span class="vwho ${cls}" title="${title}">✍ ${esc(s.review)}</span>`;
@@ -1363,7 +1368,7 @@ function renderVerifyReview(runID, step, d) {
   for (const c of (d.review_options || [])) {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "vreview-finding" + (c.outcome === "investigate" || c.id === "fail" ? " bad" : c.id === "pass" ? " good" : "");
+    b.className = "vreview-finding" + (c.id === "in_game" ? " ingame" : c.outcome === "investigate" || c.id === "fail" ? " bad" : c.id === "pass" ? " good" : "");
     b.dataset.finding = c.id;
     b.setAttribute("role", "radio");
     b.textContent = c.label || c.id;
@@ -1431,10 +1436,13 @@ async function flushVerifyReview(key) {
       if (st.statusEl) st.statusEl.textContent = "Saved " + new Date().toLocaleTimeString() + (st.hint && st.hint() ? " " + st.hint() : "");
     }
   } catch (e) {
-    // Keep the draft; the next change retries with the latest text.
+    // Keep the draft. If the daemon was unreachable (a restart), retry on
+    // its own; a refused review waits for the owner's next change.
     st.pending = st.pending || body;
-    if (st.statusEl) st.statusEl.textContent = "Not saved: " + e.message;
     st.inflight = false;
+    const unreachable = e instanceof TypeError || /HTTP 5\d\d/.test(e.message);
+    if (st.statusEl) st.statusEl.textContent = unreachable ? "Not saved yet: daemon unreachable, retrying…" : "Not saved: " + e.message;
+    if (unreachable && !st.timer) st.timer = setTimeout(() => flushVerifyReview(key), 2000);
     return;
   }
   st.inflight = false;

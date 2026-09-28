@@ -25,6 +25,14 @@ type OwnerReview struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// FindingInGame says the owner cannot judge the entry from the evidence and
+// must see it in the running product. It is neither pass nor fail: the entry
+// is assessed for this review, and counted as needing an in-game check.
+const FindingInGame = "in_game"
+
+// inGameFinding is offered on every reviewable entry after its own choices.
+var inGameFinding = Choice{ID: FindingInGame, Label: "Check in game"}
+
 // modelStepFindings are the owner's findings on a model step's result.
 var modelStepFindings = []Choice{
 	{ID: "pass", Label: "Pass"},
@@ -37,13 +45,21 @@ var modelStepFindings = []Choice{
 // gates left pending (deferred) do. A gate offers its own choices, so a
 // finding means what an owner answer would.
 func reviewOptions(s Step, status string) []Choice {
+	var options []Choice
 	switch {
 	case s.Type == KindHumanGate && status == StepDeferred:
-		return s.Choices
+		options = s.Choices
 	case s.Type == KindModel && (status == StepOK || status == StepFailed):
-		return modelStepFindings
+		options = modelStepFindings
+	default:
+		return nil
 	}
-	return nil
+	for _, c := range options {
+		if c.ID == FindingInGame {
+			return options
+		}
+	}
+	return append(append([]Choice{}, options...), inGameFinding)
 }
 
 // reviewComplete reports whether a review settles its step: it has a finding,
