@@ -87,7 +87,7 @@ DEFAULT_TIMEOUT="-timeout 2m"
 # SPYDER_LIVE_UDID to enable the live tier below would also run the live
 # tests here, double-running them and exposing the unit tier to device
 # flakiness (🎯T72.6).
-run_suite go-unit "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS ./..."
+run_suite go-unit "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS ./..."
 
 # ── Tier 2: live device tier (go-ios) ────────────────────────────────────────
 # Gated on SPYDER_LIVE_UDID. Requires a paired iOS device + the bundled
@@ -97,6 +97,16 @@ if [[ -n "${SPYDER_LIVE_UDID:-}" ]]; then
   run_suite live "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS -run '_Live$' ./internal/device/..."
 else
   run_suite_skipped live "set SPYDER_LIVE_UDID=<udid> to run; requires a paired device"
+fi
+
+# ── Tier 3: live model appraisal of static owner gates (🎯T149.2) ──────────
+# Gated on SPYDER_LIVE_APPRAISE_DEVICE (an Android device alias). Stages the
+# Settings app and then the home screen, and needs a working Claudia/Claude
+# login for the model.
+if [[ -n "${SPYDER_LIVE_APPRAISE_DEVICE:-}" ]]; then
+  run_suite live-appraise "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS -count=1 -run '^TestVerifyStaticGateAppraisalLive$' ./internal/mcp/"
+else
+  run_suite_skipped live-appraise "set SPYDER_LIVE_APPRAISE_DEVICE=<android alias> to run; needs a device and a Claude login"
 fi
 
 # ── Compose overall ──────────────────────────────────────────────────────────
