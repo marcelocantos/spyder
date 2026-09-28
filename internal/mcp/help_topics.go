@@ -210,7 +210,7 @@ rotate(device="<sim-udid>", orientation="landscape-left")`,
 	"verify": `verify — product-neutral DAG workflows (🎯T138)
 
 Run a workflow YAML on the daemon-wide scheduler. Step kinds are
-shell, spyder_script (in-process app_exec), and human_gate. Device
+shell, spyder_script (in-process app_exec), model, and human_gate. Device
 names, deploys, prompts, and scripts live only in the workflow file.
 Nested groups are dashboard collapse only. At most one human_gate is
 in flight anywhere on the daemon. Pass records live at
@@ -218,7 +218,12 @@ in flight anywhere on the daemon. Pass records live at
 Dashboard: /dashboard#verify (live over /ws/verify). Each run saves its exact
 workflow.yaml and resolved params.json before it starts; events.log and
 screenshots stream into that directory, and report.json appears on completion.
-Finished runs leave the live dashboard and daemon memory.
+Finished runs stay on the dashboard (and survive restarts) until their creator
+calls verify_dismiss; owner defaults to basename(cwd). A human_gate with
+judgment: static (and a device) gets a model appraisal in unattended runs
+(defer_human_gates); the verdict is evidence, never an owner pass, and
+review_deferred asks the owner to confirm or override it. verify_detail
+returns one step's evidence, including the images the model reviewed.
 
 recipes:
 # check a workflow file
@@ -231,7 +236,12 @@ emit(verify(workflow_path="workflows/smoke.yaml", cwd=".", wait=True))
 r = verify(workflow_path="workflows/smoke.yaml", wait=False)
 emit(r)
 emit(verify_status())
-verify_answer(run_id=r["run_id"], gate_id="look", choice_id="pass")`,
+verify_answer(run_id=r["run_id"], gate_id="look", choice_id="pass")
+
+# unattended pass: static gates get model verdicts; then review with the owner
+emit(verify(workflow_path="workflows/smoke.yaml", defer_human_gates=True, owner="me"))
+emit(verify_detail(run_id=r["run_id"], step_id="look"))
+verify_dismiss(run_id=r["run_id"], owner="me")`,
 }
 
 // helpTopicNames returns the sorted topic list for discovery and errors.

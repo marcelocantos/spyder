@@ -57,7 +57,11 @@ func TestDashboard_VerifyTabMarkup(t *testing.T) {
 		`details.group`,
 		`gate-sheet`,
 		`run.screenshot || (gate && gate.screenshot)`,
-		`const shown = running`,
+		`id="verify-tabs"`,
+		`renderVerifyTabs`,
+		`data-v="detail"`,
+		`verify_detail`,
+		`gate.run_id !== verifySelected`,
 		`card.comment.value = ""`,
 	} {
 		if !bytes.Contains(body, []byte(want)) {

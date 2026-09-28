@@ -111,16 +111,60 @@
   details.group > summary { cursor: pointer; font-weight: 600; color: var(--fg); }
   details.group.done > summary { color: var(--accent2); }
   .group-body { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-  .vstep { display: flex; gap: 8px; align-items: flex-start; padding: 4px 0; }
+  .vstep { display: flex; gap: 8px; align-items: flex-start; padding: 4px 6px; border-radius: 6px;
+           cursor: pointer; border: 1px solid transparent; }
+  .vstep:hover { background: var(--panel2); }
+  .vstep:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .vstep.sel { background: var(--panel2); border-color: var(--accent); }
+  .vstep .vtext { min-width: 0; overflow-wrap: anywhere; }
   .vmark { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: #3a4258; flex: none; }
   .vstep.running .vmark { background: var(--accent); }
   .vstep.ok .vmark, .vstep.skipped .vmark { background: var(--accent2); }
   .vstep.failed .vmark, .vstep.aborted .vmark { background: var(--err); }
   .vstep.waiting_human .vmark { background: var(--warn); }
+  .vstep.deferred .vmark { background: transparent; border: 2px solid var(--warn); }
+  .vwho { font-size: 12px; white-space: nowrap; margin-left: 4px; padding: 0 5px; border-radius: 4px; }
+  .vwho.model { background: rgba(90, 200, 250, .15); color: var(--accent); }
+  .vwho.owner { background: rgba(126, 231, 135, .15); color: var(--accent2); }
+  .vwho.preset { color: var(--dim); }
+  .vwho.owed { color: var(--warn); }
   .vstep .vid { color: var(--dim); font-size: 11px; font-family: var(--mono); }
   .verify-runs { display: flex; flex-direction: column; gap: 16px; }
+  .vtabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  .vtab { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; text-align: left;
+          padding: 6px 12px; border-radius: 8px; max-width: 100%; min-width: 0; color: var(--dim); }
+  .vtab.sel { color: var(--fg); border-color: var(--accent); background: var(--panel); box-shadow: inset 0 -2px 0 var(--accent); }
+  .vtab.attn { border-color: var(--warn); }
+  .vtab-name { font-weight: 600; color: inherit; overflow-wrap: anywhere; }
+  .vtab-meta { font-size: 11px; }
+  .vtab-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+  .vbadge { font-size: 11px; border-radius: 999px; padding: 0 7px; line-height: 18px; }
+  .vbadge.gate { background: var(--warn); color: #0e1116; font-weight: 700; }
+  .vbadge.review { background: rgba(90, 200, 250, .18); color: var(--accent); }
+  .vstatus.running { color: var(--accent); } .vstatus.passed { color: var(--accent2); }
+  .vstatus.prepared { color: var(--accent); } .vstatus.investigate, .vstatus.failed, .vstatus.aborted { color: var(--err); }
+  .vreason { margin: -6px 0 12px; font-family: var(--mono); font-size: 11px; overflow-wrap: anywhere; }
+  .gate-banner { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--panel2);
+                 border: 1px solid var(--warn); border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; }
+  .vdetail h3 { margin: 0 0 4px; }
+  .vq { font-size: 14px; }
+  .vappraisal { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin: 12px 0; background: var(--panel2); }
+  .vappraisal-head { font-size: 14px; }
+  .vverdict { font-weight: 700; }
+  .vverdict.good { color: var(--accent2); } .vverdict.bad { color: var(--err); }
+  .verr { color: var(--err); overflow-wrap: anywhere; }
+  .vreport { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; margin-bottom: 8px; }
+  .vfig { margin: 0 0 12px; }
+  .vdetail-img { width: 100%; height: auto; display: block; background: #000; border-radius: 8px; border: 1px solid var(--line); }
+  .vdetail-img { cursor: zoom-in; }
+  .vlightbox { position: fixed; inset: 0; background: rgba(0, 0, 0, .88); display: flex; align-items: center;
+               justify-content: center; padding: 16px; z-index: 50; cursor: zoom-out; }
+  .vlightbox img { max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 6px; }
+  .gate-appraisal { border: 1px dashed var(--accent); border-radius: 8px; padding: 8px 10px; margin: 8px 0; }
+  .gate-choice.model-pick { border-color: var(--accent); }
   .verify-run { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); padding: 16px; }
-  .verify-run-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .verify-run-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; min-width: 0; }
+  .verify-run-head h3 { overflow-wrap: anywhere; }
   .verify-run-head h3 { margin: 0; font-size: 16px; }
   .verify-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; }
   .verify-grid > div { min-width: 0; }
@@ -221,7 +265,9 @@
           <h2 style="margin:0">Verify</h2>
           <span class="muted" id="verify-stat">connecting…</span>
         </div>
-        <div id="verify-runs" class="verify-runs"><div class="empty">No verification run.</div></div>
+        <div id="verify-tabs" class="vtabs" role="tablist" aria-label="Verification runs"></div>
+        <div id="verify-runs" class="verify-runs"><div class="empty">No verification runs.</div></div>
+        <div id="verify-lightbox" class="vlightbox hidden" role="dialog" aria-label="Enlarged model input"><img alt="Enlarged image the model reviewed"></div>
       </div>
     </div>
   </div>
@@ -332,8 +378,8 @@ function showTab(tab, force) {
   if (tab === "battery") {
     if (location.hash !== "#battery") history.replaceState(null, "", "#battery");
   } else if (tab === "verify") {
-    if (location.hash !== "#verify") history.replaceState(null, "", "#verify");
-  } else if (location.hash === "#battery" || location.hash === "#verify") {
+    if (!location.hash.startsWith("#verify")) history.replaceState(null, "", "#verify");
+  } else if (location.hash === "#battery" || location.hash.startsWith("#verify")) {
     history.replaceState(null, "", location.pathname + location.search);
   }
   if (tab === "tweaks") loadTweaks();
@@ -883,9 +929,20 @@ for (const el of $("batt-windows").children) {
 }
 $("batt-refresh").onclick = () => loadBattery(true);
 
-const verifyCards = new Map();
+// ---- verify (🎯T138/🎯T139/🎯T149) ----------------------------------------
+// One run is visible at a time behind per-run tabs. Snapshots never change the
+// selected tab or step; a run that needs the owner draws attention through
+// its tab badge. Step evidence loads on demand through verify_detail.
+const verifyRuns = new Map();       // run_id -> latest RunView
+const verifyTabEls = new Map();     // run_id -> tab button
+const verifyStepSel = new Map();    // run_id -> selected step id
+const verifyDrafts = new Map();     // "run:gate" -> unsent owner comment
+let verifySelected = null;
 let verifySeen = null;
 let verifyWS = null;
+let verifyCard = null;
+let verifyDetailKey = "";
+const verifyFinalShots = new Map(); // run_id -> {status, uri} for finished runs
 function blinkVerifyBadge() {
   const el = $("verify-badge");
   el.classList.remove("blink");
@@ -893,82 +950,121 @@ function blinkVerifyBadge() {
   el.classList.add("blink");
   el.addEventListener("animationend", () => el.classList.remove("blink"), {once: true});
 }
+function verifyHashRun() {
+  const m = /^#verify\/(.+)$/.exec(location.hash);
+  return m ? decodeURIComponent(m[1]) : null;
+}
 function applyVerifySnapshot(snap) {
   const runs = snap.runs || [];
   const running = runs.filter(r => r.status === "running");
+  const asking = runs.filter(r => r.gate);
   const badge = $("verify-badge");
   badge.textContent = String(running.length);
   badge.classList.toggle("hidden", running.length === 0);
   if (verifySeen) {
     for (const r of runs) {
-      if (r.run_id && !verifySeen.has(r.run_id)) {
-        blinkVerifyBadge();
-        break;
-      }
+      if (r.run_id && !verifySeen.has(r.run_id)) { blinkVerifyBadge(); break; }
     }
   }
   verifySeen = new Set(runs.map(r => r.run_id).filter(Boolean));
-  const shown = running;
-  const host = $("verify-runs");
-  $("verify-stat").textContent = running.length ? `${running.length} active` : "no active runs";
-  const wanted = new Set(shown.map(r => r.run_id));
-  for (const [id, card] of verifyCards) {
-    if (!wanted.has(id)) {
-      card.el.remove();
-      verifyCards.delete(id);
-    }
+  verifyRuns.clear();
+  for (const r of runs) verifyRuns.set(r.run_id, r);
+  const review = runs.filter(r => r.status !== "running" && r.pending_review).length;
+  const stat = [];
+  if (running.length) stat.push(`${running.length} active`);
+  if (asking.length) stat.push(`${asking.length} asking you`);
+  if (review) stat.push(`${review} awaiting review`);
+  if (runs.length > running.length) stat.push(`${runs.length - running.length} finished`);
+  $("verify-stat").textContent = stat.length ? stat.join(" · ") : "no runs";
+
+  if (verifySelected && !verifyRuns.has(verifySelected)) verifySelected = null;
+  if (!verifySelected && runs.length) {
+    // Only an empty selection is ever filled in; a chosen tab is never moved.
+    const wanted = verifyHashRun();
+    const pick = (wanted && verifyRuns.get(wanted)) || asking[0] || runs[runs.length - 1];
+    verifySelected = pick.run_id;
   }
-  if (!shown.length) {
-    host.innerHTML = '<div class="empty">No active verification runs.</div>';
+  renderVerifyTabs(runs);
+  const host = $("verify-runs");
+  if (!runs.length) {
+    host.innerHTML = '<div class="empty">No verification runs.</div>';
+    verifyCard = null;
     return;
   }
-  for (const [index, run] of shown.entries()) {
-    let card = verifyCards.get(run.run_id);
-    if (!card) {
-      if (!verifyCards.size) host.innerHTML = "";
-      card = createVerifyCard();
-      verifyCards.set(run.run_id, card);
-    }
-    if (host.children[index] !== card.el) host.insertBefore(card.el, host.children[index] || null);
-    card.title.textContent = run.workflow || "workflow";
-    card.status.textContent = run.status || "";
-    card.device.textContent = run.device ? `device ${run.device}` : "";
-    renderVerifyTimeline(run, card.timeline);
-    const lines = run.log || [];
-    if (lines.length !== card.logLength) {
-      card.log.textContent = lines.join("\n");
-      card.log.scrollTop = card.log.scrollHeight;
-      card.logLength = lines.length;
-    }
-    const gate = run.gate || null;
-    const shot = run.screenshot || (gate && gate.screenshot);
-    if (shot && shot !== card.shot.src) card.shot.src = shot;
-    card.shot.classList.toggle("hidden", !shot);
-    card.shotEmpty.classList.toggle("hidden", !!shot);
-    renderVerifyGate(gate, card);
+  if (!verifyCard) {
+    host.innerHTML = "";
+    verifyCard = createVerifyCard();
+    host.appendChild(verifyCard.el);
   }
+  renderVerifyRun(verifyRuns.get(verifySelected), verifyCard);
+}
+function renderVerifyTabs(runs) {
+  const strip = $("verify-tabs");
+  const wanted = new Set(runs.map(r => r.run_id));
+  for (const [id, el] of verifyTabEls) {
+    if (!wanted.has(id)) { el.remove(); verifyTabEls.delete(id); }
+  }
+  runs.forEach((run, index) => {
+    let el = verifyTabEls.get(run.run_id);
+    if (!el) {
+      el = document.createElement("button");
+      el.type = "button";
+      el.className = "vtab";
+      el.setAttribute("role", "tab");
+      el.dataset.runId = run.run_id;
+      el.onclick = () => selectVerifyRun(run.run_id);
+      verifyTabEls.set(run.run_id, el);
+    }
+    if (strip.children[index] !== el) strip.insertBefore(el, strip.children[index] || null);
+    const selected = run.run_id === verifySelected;
+    el.classList.toggle("sel", selected);
+    el.classList.toggle("attn", !!run.gate && !selected);
+    el.setAttribute("aria-selected", selected ? "true" : "false");
+    const badges = [];
+    if (run.gate) badges.push('<span class="vbadge gate" title="An owner question is open on this run">● asks you</span>');
+    if (run.pending_review) badges.push(`<span class="vbadge review" title="Owner judgments deferred for review">${run.pending_review} to review</span>`);
+    el.innerHTML = `<span class="vtab-name">${esc(run.workflow || "workflow")}</span>
+      <span class="vtab-meta">${esc(run.device || "")}${run.device ? " · " : ""}<span class="vstatus ${esc(run.status || "")}">${esc(run.status || "")}</span></span>
+      ${badges.length ? `<span class="vtab-badges">${badges.join("")}</span>` : ""}`;
+  });
+}
+function selectVerifyRun(id) {
+  if (!verifyRuns.has(id)) return;
+  verifySelected = id;
+  history.replaceState(null, "", "#verify/" + encodeURIComponent(id));
+  renderVerifyTabs([...verifyRuns.values()]);
+  renderVerifyRun(verifyRuns.get(id), verifyCard);
 }
 function createVerifyCard() {
   const el = document.createElement("section");
   el.className = "verify-run";
-  el.innerHTML = `<div class="verify-run-head"><h3 data-v="title"></h3><span data-v="status" class="muted"></span><span data-v="device" class="muted"></span></div>
+  el.setAttribute("role", "tabpanel");
+  el.innerHTML = `<div class="verify-run-head"><h3 data-v="title"></h3><span data-v="status" class="vstatus"></span><span data-v="device" class="muted"></span><span data-v="owner" class="muted"></span></div>
+    <p data-v="reason" class="muted vreason hidden"></p>
+    <div data-v="gate-banner" class="gate-banner hidden"><span>This run is asking you a question.</span><button data-v="to-gate" class="sm" type="button">Show the question</button></div>
     <div class="verify-grid"><div><h2>Steps</h2><div data-v="timeline"></div></div>
-    <div><h2>Live</h2><p data-v="shot-empty" class="muted">No screenshot yet.</p>
+    <div data-v="live"><h2>Live</h2><p data-v="shot-empty" class="muted">No screenshot yet.</p>
     <img data-v="shot" class="verify-shot hidden" alt="Latest screenshot from this run">
     <h2>Log</h2><div data-v="log" class="verify-log"></div>
     <div data-v="gate" class="gate-sheet hidden" role="dialog" aria-label="Owner verification question">
       <h3 data-v="gate-prompt"></h3><p data-v="gate-meta" class="muted"></p>
-      <p data-v="gate-hint" class="muted"></p><div data-v="gate-choices"></div>
+      <p data-v="gate-hint" class="muted"></p>
+      <div data-v="gate-appraisal" class="gate-appraisal hidden"></div>
+      <div data-v="gate-choices"></div>
       <label data-v="comment-wrap" class="hidden">Comment<textarea data-v="comment" class="verify-gate-comment"></textarea></label>
       <p data-v="gate-error" class="muted"></p><button data-v="abort" class="sm" type="button">Abort the run</button>
-    </div></div></div>`;
+    </div></div>
+    <div data-v="detail" class="vdetail hidden"><div class="row"><button data-v="back" class="sm" type="button">← Live view</button></div>
+      <h3 data-v="d-title"></h3><p data-v="d-meta" class="muted"></p><div data-v="d-body"></div></div>
+    </div>`;
   const get = name => el.querySelector(`[data-v="${name}"]`);
-  const card = {el, title: get("title"), status: get("status"), device: get("device"),
-    timeline: get("timeline"), shotEmpty: get("shot-empty"), shot: get("shot"),
-    log: get("log"), logLength: -1, gate: get("gate"), gatePrompt: get("gate-prompt"),
-    gateMeta: get("gate-meta"), gateHint: get("gate-hint"), choices: get("gate-choices"),
-    commentWrap: get("comment-wrap"), comment: get("comment"), error: get("gate-error"),
-    gateKey: "", currentGate: null};
+  const card = {el, title: get("title"), status: get("status"), device: get("device"), owner: get("owner"),
+    reason: get("reason"), banner: get("gate-banner"), timeline: get("timeline"), live: get("live"),
+    shotEmpty: get("shot-empty"), shot: get("shot"), log: get("log"), logKey: "",
+    gate: get("gate"), gatePrompt: get("gate-prompt"), gateMeta: get("gate-meta"), gateHint: get("gate-hint"),
+    gateAppraisal: get("gate-appraisal"), choices: get("gate-choices"), commentWrap: get("comment-wrap"),
+    comment: get("comment"), error: get("gate-error"), gateKey: "", currentGate: null,
+    detail: get("detail"), dTitle: get("d-title"), dMeta: get("d-meta"), dBody: get("d-body")};
   get("abort").onclick = async () => {
     if (!card.currentGate) return;
     try {
@@ -976,7 +1072,65 @@ function createVerifyCard() {
       toast("aborted");
     } catch (e) { toast(e.message, true); }
   };
+  get("back").onclick = () => selectVerifyStep(verifySelected, null);
+  get("to-gate").onclick = () => selectVerifyStep(verifySelected, null);
+  card.comment.oninput = () => { if (card.gateKey) verifyDrafts.set(card.gateKey, card.comment.value); };
   return card;
+}
+function renderVerifyRun(run, card) {
+  if (!run || !card) return;
+  card.title.textContent = run.workflow || "workflow";
+  card.status.textContent = run.status || "";
+  card.status.className = "vstatus " + (run.status || "");
+  card.device.textContent = run.device ? `device ${run.device}` : "";
+  card.owner.textContent = run.owner ? `created by ${run.owner}` : "";
+  card.reason.textContent = run.reason ? `${run.reason}${run.report_dir ? " · " + run.report_dir : ""}` : (run.report_dir || "");
+  card.reason.classList.toggle("hidden", !card.reason.textContent);
+  const stepID = verifyStepSel.get(run.run_id) || null;
+  renderVerifyTimeline(run, card.timeline, stepID);
+  const lines = run.log || [];
+  const logKey = run.run_id + ":" + lines.length + ":" + (lines[lines.length - 1] || "");
+  if (logKey !== card.logKey) {
+    card.log.textContent = lines.join("\n");
+    card.log.scrollTop = card.log.scrollHeight;
+    card.logKey = logKey;
+  }
+  const gate = run.gate || null;
+  let shot = run.screenshot || (gate && gate.screenshot) || "";
+  if (!shot && run.status !== "running") {
+    const cached = verifyFinalShots.get(run.run_id);
+    if (cached && cached.status === run.status) shot = cached.uri;
+    else loadVerifyFinalShot(run, card);
+  }
+  if (shot && shot !== card.shot.src) card.shot.src = shot;
+  card.shot.classList.toggle("hidden", !shot);
+  card.shotEmpty.classList.toggle("hidden", !!shot);
+  renderVerifyGate(gate, card);
+  card.banner.classList.toggle("hidden", !(gate && stepID));
+  card.live.classList.toggle("hidden", !!stepID);
+  card.detail.classList.toggle("hidden", !stepID);
+  if (stepID) {
+    const step = (run.steps || []).find(s => s.id === stepID);
+    if (step) loadVerifyDetail(run, step, card);
+  }
+}
+// A finished run's snapshot carries no image; fetch its last screenshot once.
+async function loadVerifyFinalShot(run, card) {
+  verifyFinalShots.set(run.run_id, {status: run.status, uri: ""});
+  try {
+    const d = await callTool("verify_detail", {run_id: run.run_id});
+    verifyFinalShots.set(run.run_id, {status: run.status, uri: d.screenshot || ""});
+    if (verifySelected === run.run_id) renderVerifyRun(verifyRuns.get(run.run_id), card);
+  } catch (e) { verifyFinalShots.delete(run.run_id); }
+}
+function selectVerifyStep(runID, stepID) {
+  if (!runID) return;
+  if (stepID) verifyStepSel.set(runID, stepID); else verifyStepSel.delete(runID);
+  verifyDetailKey = "";
+  renderVerifyRun(verifyRuns.get(runID), verifyCard);
+  // On a phone the detail pane stacks below the steps; bring it into view.
+  const pane = stepID ? verifyCard.detail : verifyCard.live;
+  if (window.matchMedia("(max-width: 720px)").matches) pane.scrollIntoView({block: "start"});
 }
 function startVerifyWS() {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -984,7 +1138,7 @@ function startVerifyWS() {
   verifyWS = ws;
   ws.onmessage = (ev) => {
     try { applyVerifySnapshot(JSON.parse(ev.data)); }
-    catch (e) { $("verify-stat").textContent = "bad snapshot"; }
+    catch (e) { $("verify-stat").textContent = "bad snapshot"; console.error(e); }
   };
   ws.onclose = () => {
     if (verifyWS === ws) {
@@ -993,7 +1147,23 @@ function startVerifyWS() {
     }
   };
 }
-function renderVerifyTimeline(run, host) {
+function verifyWho(s) {
+  // 🤖 marks model evaluation; 👤 an owner answer; automation has no marker.
+  if (s.evaluator === "owner" || s.evaluator === "preset") {
+    const who = s.evaluator === "owner" ? "👤" : "⚙︎";
+    const review = s.model_review === "confirmed" ? " 🤖✓" : s.model_review === "overridden" ? " 🤖✗" : "";
+    const title = (s.evaluator === "owner" ? "Answered by the owner" : "Answered by a preset") +
+      (review ? (s.model_review === "confirmed" ? ", confirming the model" : ", overriding the model") : "");
+    return `<span class="vwho ${s.evaluator}" title="${title}">${who}${review}</span>`;
+  }
+  if (s.appraised || s.evaluator === "model") {
+    const title = s.type === "model" ? "Model step" : `Model appraisal${s.verdict ? ": " + s.verdict : ""}, awaiting owner confirmation`;
+    return `<span class="vwho model" title="${esc(title)}">🤖${s.verdict && s.type !== "model" ? " " + esc(s.verdict) : ""}</span>`;
+  }
+  if (s.type === "human_gate" && s.status === "deferred") return '<span class="vwho owed" title="Needs the owner">👤?</span>';
+  return "";
+}
+function renderVerifyTimeline(run, host, selectedStep) {
   host.innerHTML = "";
   const groups = new Map();
   for (const g of (run.groups || [])) {
@@ -1015,14 +1185,21 @@ function renderVerifyTimeline(run, host) {
   const stepEls = [];
   for (const s of (run.steps || [])) {
     const item = document.createElement("div");
-    item.className = "vstep " + (s.status || "pending");
+    item.className = "vstep " + (s.status || "pending") + (s.id === selectedStep ? " sel" : "");
     item.dataset.stepId = s.id;
     item.dataset.groupId = s.group || "";
+    item.tabIndex = 0;
+    item.setAttribute("role", "button");
+    item.setAttribute("aria-pressed", s.id === selectedStep ? "true" : "false");
     const mark = document.createElement("span");
     mark.className = "vmark";
     const text = document.createElement("div");
-    text.innerHTML = `<div>${esc(s.label || s.id)}</div><div class="vid">${esc(s.id)}${s.choice_id ? " · choice=" + esc(s.choice_id) : ""}</div>`;
+    text.className = "vtext";
+    text.innerHTML = `<div>${esc(s.label || s.id)} ${verifyWho(s)}</div><div class="vid">${esc(s.id)}${s.choice_id ? " · choice=" + esc(s.choice_id) : ""}${s.status === "deferred" ? " · deferred" : ""}</div>`;
     item.append(mark, text);
+    const pick = () => selectVerifyStep(run.run_id, s.id === selectedStep ? null : s.id);
+    item.onclick = pick;
+    item.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } };
     const g = s.group && groups.get(s.group);
     (g ? g.body : host).append(item);
     stepEls.push(item);
@@ -1040,11 +1217,74 @@ function renderVerifyTimeline(run, host) {
     }
     const kids = stepEls.filter(el => ids.has(el.dataset.groupId || ""));
     const done = kids.length > 0 && kids.every(el => el.classList.contains("ok") || el.classList.contains("skipped"));
-    const active = kids.some(el => el.classList.contains("running") || el.classList.contains("waiting_human"));
+    const active = kids.some(el => el.classList.contains("running") || el.classList.contains("waiting_human") || el.classList.contains("sel"));
     rec.el.classList.toggle("done", done);
     rec.el.open = active || !done;
     const ok = kids.filter(el => el.classList.contains("ok") || el.classList.contains("skipped")).length;
     rec.summary.textContent = rec.label + (kids.length ? `  ${ok}/${kids.length}` : "");
+  }
+}
+async function loadVerifyDetail(run, step, card) {
+  const key = [run.run_id, step.id, step.status, step.evaluator, step.choice_id, step.model_review, step.verdict].join(":");
+  if (key === verifyDetailKey) return;
+  verifyDetailKey = key;
+  card.dTitle.textContent = step.label || step.id;
+  card.dMeta.textContent = "Loading…";
+  card.dBody.innerHTML = "";
+  let d;
+  try { d = await callTool("verify_detail", {run_id: run.run_id, step_id: step.id}); }
+  catch (e) {
+    if (verifyDetailKey === key) { card.dMeta.textContent = e.message; verifyDetailKey = ""; }
+    return;
+  }
+  if (verifyDetailKey !== key) return;
+  const meta = [step.id, step.type, step.status];
+  if (step.judgment && step.type === "human_gate") meta.push(step.judgment + " judgment");
+  if (step.duration_ms) meta.push(step.duration_ms + "ms");
+  card.dMeta.textContent = meta.join(" · ");
+  const parts = [];
+  if (d.prompt) {
+    parts.push(`<p class="vq">${esc(d.prompt)}</p>`);
+    if (d.hint) parts.push(`<p class="muted">${esc(d.hint)}</p>`);
+  }
+  for (const rec of (d.records || [])) {
+    if (!rec.choice_id && !rec.comment) continue;
+    const who = rec.answered_by === "owner" ? "Owner" : rec.answered_by === "preset" ? "Preset answer" : "Answer";
+    const review = rec.model_review ? ` (${rec.model_review === "confirmed" ? "confirms" : "overrides"} the model)` : "";
+    parts.push(`<p><b>${who}:</b> ${esc(rec.choice_id || "")}${review}${rec.comment ? " — " + esc(rec.comment) : ""}</p>`);
+  }
+  const a = d.appraisal;
+  if (a) {
+    let verdict;
+    if (a.verdict) {
+      const choice = (d.choices || []).find(c => c.id === a.verdict);
+      verdict = `<span class="vverdict ${a.outcome === "investigate" || a.verdict === "rejected" ? "bad" : "good"}">${esc(a.verdict)}</span>${choice ? " — " + esc(choice.label) : ""}`;
+    } else {
+      verdict = `<span class="vverdict bad">no verdict</span>`;
+    }
+    const pending = step.type === "human_gate" && step.status === "deferred" ? '<p class="muted">Pending owner confirmation; this is not an owner answer.</p>' : "";
+    parts.push(`<div class="vappraisal"><div class="vappraisal-head">🤖 Model verdict: ${verdict}</div>
+      <p class="muted">${esc([a.provider, a.model].filter(Boolean).join(" / ") || "model unknown")}${a.duration_ms ? " · " + a.duration_ms + "ms" : ""}</p>${pending}
+      ${a.error ? `<p class="verr">${esc(a.error)}</p>` : ""}
+      ${a.report ? `<h2>Report</h2><pre class="vreport">${esc(a.report)}</pre>` : ""}</div>`);
+    const imgs = d.images || [];
+    if (imgs.length) parts.push(`<h2>What the model reviewed</h2>`);
+    for (const img of imgs) {
+      parts.push(img.data_uri
+        ? `<figure class="vfig"><img class="vdetail-img" src="${esc(img.data_uri)}" alt="Image the model reviewed for ${esc(step.id)}"><figcaption class="vid">${esc(img.path)}</figcaption></figure>`
+        : `<p class="verr">${esc(img.path)}: ${esc(img.error || "unavailable")}</p>`);
+    }
+  } else if (!parts.length) {
+    parts.push('<p class="muted">Automated step. See the log for its output.</p>');
+  }
+  card.dBody.innerHTML = parts.join("");
+  for (const img of card.dBody.querySelectorAll(".vdetail-img")) {
+    img.title = "Click to enlarge";
+    img.onclick = () => {
+      const box = $("verify-lightbox");
+      box.querySelector("img").src = img.src;
+      box.classList.remove("hidden");
+    };
   }
 }
 function renderVerifyGate(gate, card) {
@@ -1060,7 +1300,7 @@ function renderVerifyGate(gate, card) {
   const key = `${gate.run_id}:${gate.step_id}`;
   if (key === card.gateKey) return;
   card.gateKey = key;
-  card.comment.value = "";
+  card.comment.value = verifyDrafts.get(key) || "";
   card.error.textContent = "";
   card.gatePrompt.textContent = gate.prompt || "Check the device";
   const meta = [];
@@ -1069,19 +1309,32 @@ function renderVerifyGate(gate, card) {
   if (gate.step_id) meta.push(gate.step_id);
   card.gateMeta.textContent = meta.join(" · ");
   card.gateHint.textContent = gate.hint || "";
+  const a = gate.appraisal;
+  card.gateAppraisal.classList.toggle("hidden", !a);
+  if (a) {
+    card.gateAppraisal.innerHTML = `<div>🤖 The model said <b>${esc(a.verdict || "nothing usable")}</b>. Confirm it by choosing the same answer, or override it.</div>
+      ${a.report ? `<pre class="vreport">${esc(a.report)}</pre>` : ""}${a.error ? `<p class="verr">${esc(a.error)}</p>` : ""}
+      <button class="sm" type="button">See what the model reviewed</button>`;
+    card.gateAppraisal.querySelector("button").onclick = () => selectVerifyStep(gate.run_id, gate.step_id);
+  }
   const needs = gate.allow_comment || (gate.choices || []).some(c => c.comment === "required");
   card.commentWrap.classList.toggle("hidden", !needs);
   card.choices.innerHTML = "";
   for (const c of (gate.choices || [])) {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "gate-choice";
-    b.textContent = c.label || c.id;
+    b.className = "gate-choice" + (a && a.verdict === c.id ? " model-pick" : "");
+    b.textContent = (c.label || c.id) + (a && a.verdict === c.id ? "  🤖" : "");
     b.onclick = () => answerVerifyGate(gate, c, card);
     card.choices.appendChild(b);
   }
 }
 async function answerVerifyGate(gate, choice, card) {
+  // An answer only ever goes to the run whose tab is selected.
+  if (gate.run_id !== verifySelected) {
+    card.error.textContent = "This question belongs to another run. Select its tab first.";
+    return;
+  }
   const required = choice.comment === "required";
   const text = card.comment.value.trim();
   if (required && !text) {
@@ -1093,6 +1346,7 @@ async function answerVerifyGate(gate, choice, card) {
     await callTool("verify_answer", {
       run_id: gate.run_id, gate_id: gate.step_id, choice_id: choice.id, comment: text
     });
+    verifyDrafts.delete(`${gate.run_id}:${gate.step_id}`);
     toast("answered " + choice.id);
   } catch (e) {
     card.error.textContent = e.message;
@@ -1101,12 +1355,17 @@ async function answerVerifyGate(gate, choice, card) {
 
 refreshApps();
 setInterval(refreshApps, 5000);
+$("verify-lightbox").onclick = () => $("verify-lightbox").classList.add("hidden");
+document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") $("verify-lightbox").classList.add("hidden"); });
 startVerifyWS();
-if (location.hash === "#verify") showTab("verify");
+if (location.hash.startsWith("#verify")) showTab("verify");
 else if (location.hash === "#battery") showTab("battery");
 window.addEventListener("hashchange", () => {
-  if (location.hash === "#verify") showTab("verify");
-  else if (location.hash === "#battery") showTab("battery");
+  if (location.hash.startsWith("#verify")) {
+    showTab("verify");
+    const id = verifyHashRun();
+    if (id && id !== verifySelected) selectVerifyRun(id);
+  } else if (location.hash === "#battery") showTab("battery");
 });
 </script>
 </body>

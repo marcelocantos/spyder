@@ -483,8 +483,10 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `resolve(name?, selector?)` | Symbolic name → structured `Entry` with all known IDs. Exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`). | Unknown raw inputs are echoed back classified. With `selector`, returns the entry of the first matching live device. |
 | `device_state(device)` | Battery level, charging, extra native battery keys (`battery` map), thermal state, foreground app. | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). iOS extras come from lockdown + diagnostics IORegistry (`InstantAmperage`, capacities, cycle count). Android extras are the full `dumpsys battery` key set. |
 | `battery_history(since?, until?, device?, bucket_s?, sample?)` | Fleet charge history the daemon records every minute for connected iOS/Android devices (🎯T137). Returns `{since, until, bucket_s?, samples, latest}`. Each sample may include `details` (greedy native dump). | Default window `-24h`..now. `sample=True` takes a live tick first. Dashboard: `/dashboard#battery`. Desktop hosts are not sampled. |
-| `verify(workflow?, workflow_path?, cwd?, params?, answers?, wait?, validate_only?, allow_waive?, defer_human_gates?, review_deferred?)` | Run a product-neutral verification workflow YAML on the daemon-wide DAG scheduler (🎯T138). Step kinds: `shell`, `spyder_script` (in-process `app_exec`), `model` (Claudia-selected task), `human_gate`. | `wait=True` (default) blocks until the run ends. `defer_human_gates` completes automation without asking the owner and returns `prepared` (exit 4). `review_deferred` replays pending owner checks with fresh staging and model checks. Pass records: `<cwd>/verify-runs/resume/<workflow>.json`. Dashboard: `/dashboard#verify`. CLI: `spyder verify`. |
-| `verify_status()` | Snapshot of active verification runs plus the single in-flight owner gate. | Read-only REST. Completed runs leave memory; the dashboard uses `/ws/verify` instead of polling this. |
+| `verify(workflow?, workflow_path?, cwd?, params?, answers?, wait?, validate_only?, allow_waive?, defer_human_gates?, review_deferred?, owner?)` | Run a product-neutral verification workflow YAML on the daemon-wide DAG scheduler (🎯T138). Step kinds: `shell`, `spyder_script` (in-process `app_exec`), `model` (Claudia-selected task), `human_gate`. | `wait=True` (default) blocks until the run ends. `defer_human_gates` completes automation without asking the owner and returns `prepared` (exit 4). `review_deferred` replays pending owner checks with fresh staging and model checks, showing model verdicts on static gates for confirmation. `owner` (default basename(cwd)) is the only caller that may `verify_dismiss` the finished run. Pass records: `<cwd>/verify-runs/resume/<workflow>.json`. Dashboard: `/dashboard#verify`. CLI: `spyder verify`. |
+| `verify_status()` | Snapshot of active and retained verification runs plus the single in-flight owner gate. | Read-only REST. Finished runs stay until their creator dismisses them; their screenshots are omitted (use `verify_detail`). The dashboard uses `/ws/verify` instead of polling this. |
+| `verify_dismiss(run_id, owner?, cwd?)` | Remove a finished run from the live view; its bundle stays on disk. | Refused while the run is active or when the caller is not its creator (owner defaults to basename(cwd)). CLI: `spyder verify-dismiss --run ID [--as OWNER]`. |
+| `verify_detail(run_id, step_id?)` | One step's evidence: records, model appraisal (verdict, report, model), and every reviewed image as a data URI. Without `step_id`, the run's latest screenshot. | Images are served only from inside the run bundle. |
 | `verify_answer(run_id, gate_id, choice_id, comment?)` | Answer the in-flight `human_gate`. | Same path the dashboard gate buttons use. |
 | `verify_abort(run_id, reason?)` | Abort a verification run. | |
 | `screenshot(device, owner?, path?, inline?)` | PNG of the current screen. Default: saved under `~/.spyder/screenshots/` (or `path`), returning `{path, width, height, bytes}`; `inline=True` returns the image inline instead (🎯T114). | iOS uses go-ios's DVT `ScreenshotService`. iOS-17+ needs the bundled tunnel; iOS ≤16 uses lockdown directly and needs the Developer Disk Image mounted (`ios image auto <udid>` or open the device in Xcode once). Android uses `adb shell screencap`. Read-only; not gated by reservations — any session may screenshot any device. Pass `owner` to archive the PNG into the active run. |
@@ -1525,9 +1527,25 @@ bounded contexts after active steps stop. Each command defaults to a 30-second
 timeout and appears in the dashboard and final report. Every cleanup command
 is attempted; a cleanup failure prevents a passed result.
 
-The Verify tab displays every active run in stable order, with its own steps,
-screenshots, log, and owner gate. Completed runs disappear. It pauses app
-thumbnail and preview capture so owner review does not disturb the app.
+The Verify tab gives every active or retained run a tab (workflow, device,
+status, plus badges for an open owner gate and pending review). Only the
+selected run is visible; snapshot updates never switch tabs, and an owner
+answer can only go to the selected run. Step rows are selectable: the
+right-hand pane then shows that step's detail, loaded on demand through
+`verify_detail`. Model-evaluated steps carry a 🤖 marker and show the verdict,
+full report, model identity, and every image the model reviewed. Deep link:
+`/dashboard#verify/<run_id>`. The tab pauses app thumbnail and preview capture
+so owner review does not disturb the app.
+
+Finished runs (passed, prepared, investigate, failed, aborted) stay on the
+dashboard and in `verify_status` until the agent that created them dismisses
+them with `verify_dismiss(run_id, owner?)` or `spyder verify-dismiss --run ID`.
+The owner is `verify(owner=…)` / `spyder verify --as OWNER`, defaulting to the
+basename of the run's cwd, as with reservations. Dismissal is refused while a
+run is active or when the caller is not its creator. The daemon lists retained
+runs in `~/.spyder/verify/retained.json` and rehydrates them from their bundles
+after a restart; a run the restart interrupted returns as `aborted`. Dismiss
+your runs once the owner has reviewed them.
 
 Scheduling is a leaf-level frontier on a daemon-wide pool. Nested `groups`
 (`parent:`) collapse in the dashboard when every descendant is ok/skipped;
@@ -1556,16 +1574,44 @@ review as `review_replay: true`. Device cleanup runs in both passes. A changed
 app build invalidates the previous preparation; use a full run after changing
 the product.
 
+Mark each `human_gate` with `judgment: static` when a screenshot settles it, or
+`judgment: dynamic` (the default) when the owner must play or watch motion.
+A static gate needs `device:`. In an unattended run, a Claude model (chosen by
+Claudia; override with `appraise.model`) reviews a fresh screenshot and picks
+one of the gate's choices. `appraise.prompt` adds guidance and
+`appraise.timeout_sec` bounds it (default 180). The step record carries
+`appraisal` (verdict, outcome, full report, provider/model, image paths) and
+`artifacts/appraisals/<step>.json` is written immediately; the STATUS block
+shows `model=<choice>`. The gate stays `deferred`, never passed. During
+`--review-deferred`, the owner sees the verdict and confirms or overrides it;
+the record keeps `answered_by: owner` and `model_review`. Dynamic gates are
+deferred without a model. `model` steps also keep their result, model identity,
+and image on the step record.
+
+```yaml
+- id: shop_screen
+  type: human_gate
+  judgment: static
+  device: ${device}
+  prompt: Does the Vehicles shop show the Featured Car and class tiles?
+  appraise:
+    prompt: The status bar and notification icons do not matter.
+  choices:
+    - {id: pass, label: "Yes"}
+    - {id: fail, label: "No", outcome: investigate, comment: required}
+```
+
 Each run stores its exact original `workflow.yaml` and resolved `params.json`
 before execution starts. Its report directory then accumulates `events.log`
 and screenshots, and receives `report.json` on completion. The definition and
-results remain on disk after the daemon forgets the completed run.
+results remain on disk after the run is dismissed.
 
 ```bash
 spyder verify workflows/smoke.yaml --answer look=pass
 spyder verify workflows/smoke.yaml --defer-human-gates
 spyder verify workflows/smoke.yaml --review-deferred
 spyder verify workflows/smoke.yaml --validate
+spyder verify-dismiss --run 3cea48bfacc0
 ```
 
 ## Reservations

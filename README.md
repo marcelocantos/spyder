@@ -111,7 +111,7 @@ has signatures.
 | OS control | `perf_fps`, `port_forward_start`, `port_forward_stop`, `port_forward_list`, `input_tap`, `input_swipe`, `device_setting` |
 | App channel | `app_channel_stop`, `app_channel_list`, `app_ping`, `app_quit`, `app_flush`, `app_background`, `app_foreground`, `app_low_memory`, `app_pause`, `app_resume`, `app_step`, `app_speed`, `app_input`, `app_sensor_suppress`, `app_sensor_set`, `app_sensor_unsuppress`, `app_sensor_status`, `ensure_session`, `state_query`, `app_state`, `wait_state`, `app_tweak_list`, `app_tweak_get`, `app_tweak_set`, `app_tweak_reset`, `app_spawn`, `app_acquire`, `app_release`, `games`, `app_save_state`, `app_restore_state`, `app_screenshot`, `app_state_slices`, `app_state_describe`, `app_state_capture_start`, `app_state_capture_get`, `app_state_capture_stop`, `app_state_capture_list`, `app_log_get`, `app_perf_get`, `app_metrics_list`, `app_metrics_arm`, `app_metrics_disarm`, `app_metrics_status`, `app_metrics_dump`, `app_methods`, `app_call` |
 | Pool / scripts | `pool_list`, `pool_warm`, `pool_drain`, `pool_gc`, `list_scripts`, `run_script` |
-| Verify | `verify`, `verify_status`, `verify_answer`, `verify_abort` |
+| Verify | `verify`, `verify_status`, `verify_answer`, `verify_abort`, `verify_dismiss`, `verify_detail` |
 
 Starlark also adds non-verb helpers: `sleep`, `emit`, `health()`, `help()`,
 and the 🎯T108/T109 assert and hit-target helpers.
@@ -189,11 +189,18 @@ The daemon serves a browser cockpit at
 - `#verify` — live DAG workflow progress, logs, screenshots, and owner
   gates for `spyder verify`
 
-The Verify tab shows every active workflow together, with each run's steps,
-screenshots, log, and owner gate. Finished runs disappear from this live view.
-It pauses app thumbnail and preview capture while an owner inspects the device.
+The Verify tab gives each active or retained run its own tab, showing the
+workflow, device, status, and badges for an open owner question or pending
+review. Only the selected run is visible, and updates never switch tabs, so an
+answer always goes to the run you are looking at. Select a step to see its
+detail in the right-hand pane; model-evaluated steps are marked 🤖 and show
+the model's verdict, full report, model identity, and the images it reviewed.
+Finished runs stay until the agent that created them runs
+`spyder verify-dismiss --run ID`; they survive daemon restarts. The tab pauses
+app thumbnail and preview capture while an owner inspects the device.
 
-Deep-link with the hash; no second HTTP server.
+Deep-link with the hash (`#verify/<run_id>` selects a run); no second HTTP
+server.
 
 `spyder verify path/to/workflow.yaml` runs a product-neutral step graph
 (`shell`, `spyder_script`, `model`, `human_gate`). Progress is a pass record at
@@ -204,8 +211,7 @@ an idle run stops after five minutes without progress by default.
 Each run saves the exact original `workflow.yaml` and resolved `params.json`
 before execution starts, then streams `events.log` and screenshots into the
 same directory. It saves `report.json` on completion. The
-agent can share that directory for later review without keeping old runs in
-the daemon's memory.
+directory stays on disk after the run is dismissed from the dashboard.
 For overnight checks, `spyder verify path/to/workflow.yaml --defer-human-gates`
 continues past owner questions without answering them. Its final status is
 `prepared` (exit 4), with each question recorded as `deferred`. Run the same
@@ -214,6 +220,17 @@ restaging screens, rerunning model checks, and asking the owner. Mark any shell
 step needed during review with `review_replay: true`. Replay requires the same
 workflow definition and parameters; it does not claim a deferred judgment
 passed. Cleanup still runs at the end of both passes.
+
+A `human_gate` declares `judgment: static` when a screenshot is enough to
+decide it, or `judgment: dynamic` (the default) when the owner must play or
+watch motion. Static gates name the `device` to capture. In an unattended run
+a Claudia-selected Claude model appraises each static gate from a fresh
+screenshot (optional `appraise:` with `model`, `prompt`, and `timeout_sec`).
+The verdict, full report, model identity, and image are stored on the step and
+in the run directory, but the gate stays `deferred`: a model verdict is never
+an owner pass. `--review-deferred` shows each verdict to the owner, who
+confirms or overrides it; the record keeps `model_review: confirmed` or
+`overridden`.
 To reconstruct a saved run, read `workflow.yaml` for step order, labels,
 groups, and choices; apply the recorded step outcomes from `report.json` by
 step ID, then show `events.log` and the saved screenshots. `params.json`

@@ -220,3 +220,122 @@ cleanup:
 	}
 	t.Logf("physical screen rejected; report=%s reason=%s", result.ReportDir, result.FailedReason)
 }
+
+// 🎯T149.2 live: an unattended run stages a correct and a wrong screen on a
+// real device, a model appraises both static gates from fresh screenshots,
+// and the report keeps each verdict, full report and image. The dynamic
+// gate is deferred without a model.
+func TestVerifyStaticGateAppraisalLive(t *testing.T) {
+	device := os.Getenv("SPYDER_LIVE_APPRAISE_DEVICE")
+	if device == "" {
+		t.Skip("set SPYDER_LIVE_APPRAISE_DEVICE to an Android device with Settings and Google Keep")
+	}
+	wf, err := verify.Load([]byte(`
+name: static-gate-appraisal-live
+steps:
+  - id: stage_settings
+    type: shell
+    timeout_sec: 60
+    argv: [spyder, launch-app, "${device}", com.android.settings, --as, t149-live]
+  - id: settle_settings
+    type: shell
+    requires: [stage_settings]
+    argv: [/bin/sleep, "3"]
+  - id: settings_shown
+    type: human_gate
+    requires: [settle_settings]
+    judgment: static
+    device: ${device}
+    prompt: Is the Android Settings app open on ${device}, showing a list of settings such as Battery and System?
+    choices:
+      - id: pass
+        label: Yes, Settings is open
+      - id: fail
+        label: No, another screen is shown
+        outcome: investigate
+  - id: stage_keep
+    type: shell
+    requires: [settings_shown]
+    timeout_sec: 60
+    argv: [spyder, launch-app, "${device}", com.google.android.keep, --as, t149-live]
+  - id: settle_keep
+    type: shell
+    requires: [stage_keep]
+    argv: [/bin/sleep, "3"]
+  - id: keep_is_settings
+    type: human_gate
+    requires: [settle_keep]
+    judgment: static
+    device: ${device}
+    prompt: Is the Android Settings app open on ${device}, showing a list of settings such as Battery and System?
+    choices:
+      - id: pass
+        label: Yes, Settings is open
+      - id: fail
+        label: No, another screen is shown
+        outcome: investigate
+  - id: scroll_feel
+    type: human_gate
+    requires: [keep_is_settings]
+    judgment: dynamic
+    prompt: Does scrolling the notes list feel smooth?
+    choices:
+      - id: pass
+        label: Smooth
+cleanup:
+  - id: stop_keep
+    type: shell
+    argv: [spyder, terminate-app, "${device}", com.google.android.keep, --as, t149-live]
+  - id: stop_settings
+    type: shell
+    argv: [spyder, terminate-app, "${device}", com.android.settings, --as, t149-live]
+  - id: release
+    type: shell
+    argv: [spyder, release, "${device}", --as, t149-live]
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	h := NewHandler()
+	run, err := h.VerifyHub().Start(ctx, verify.StartArgs{Workflow: wf, Cwd: t.TempDir(), Params: map[string]string{"device": device}, DeferHumanGates: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := run.Wait()
+	t.Logf("report=%s\n%s", res.ReportDir, res.StatusBlock)
+	if res.Status != verify.StatusPrepared {
+		t.Fatalf("unattended run: %s %s", res.Status, res.FailedReason)
+	}
+	byID := map[string]verify.StepRecord{}
+	for _, rec := range res.Steps {
+		byID[rec.StepID] = rec
+	}
+	for id, want := range map[string]string{"settings_shown": "pass", "keep_is_settings": "fail"} {
+		rec := byID[id]
+		a := rec.Appraisal
+		if rec.Status != verify.StepDeferred || rec.ChoiceID != "" || a == nil {
+			t.Fatalf("%s: %+v", id, rec)
+		}
+		t.Logf("%s: verdict=%s model=%s/%s\n%s", id, a.Verdict, a.Provider, a.Model, a.Report)
+		if a.Verdict != want || a.Report == "" || a.Model == "" || len(a.Images) != 1 {
+			t.Fatalf("%s appraisal: %+v", id, a)
+		}
+		info, err := os.Stat(a.Images[0])
+		if err != nil || info.Size() > maxModelImageBytes || !strings.HasPrefix(a.Images[0], res.ReportDir) {
+			t.Fatalf("%s image: %v %v", id, err, info)
+		}
+		d, err := h.VerifyHub().Detail(res.RunID, id)
+		if err != nil || len(d.Images) != 1 || !strings.HasPrefix(d.Images[0].DataURI, "data:image/jpeg;base64,") {
+			t.Fatalf("%s detail: %+v %v", id, d, err)
+		}
+	}
+	if rec := byID["scroll_feel"]; rec.Status != verify.StepDeferred || rec.Appraisal != nil {
+		t.Fatalf("dynamic gate: %+v", rec)
+	}
+	report, err := os.ReadFile(filepath.Join(res.ReportDir, "report.json"))
+	if err != nil || !bytes.Contains(report, []byte(`"verdict": "pass"`)) || !bytes.Contains(report, []byte(`"verdict": "fail"`)) {
+		t.Fatalf("report.json lacks both appraisals: %v", err)
+	}
+}

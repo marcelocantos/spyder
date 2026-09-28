@@ -38,7 +38,7 @@ const (
 
 // defaultAppraiseModel selects a Claude task model for a static gate that
 // names no model. Screen appraisal needs Claude's image-reading tool.
-const defaultAppraiseModel = `{"mode":"task","purpose":"analysis","quality":"standard","prefer_provider":"claude"}`
+const defaultAppraiseModel = `{"mode":"task","purpose":"analysis","quality":"standard","prefer_provider":"claude","exclude_providers":["grok","codex","cursor","bedrock","ollama"]}`
 
 const (
 	OutcomeContinue    = "continue"
