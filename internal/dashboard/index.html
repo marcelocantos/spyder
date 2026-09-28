@@ -117,7 +117,9 @@
   .vstep:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .vstep.sel { background: var(--panel2); border-color: var(--accent); }
   .vstep .vtext { min-width: 0; overflow-wrap: anywhere; }
-  .vreview { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+  .vreview { position: relative; border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+  .vreview-next { position: absolute; right: 8px; bottom: 8px; width: 36px; height: 36px; padding: 0;
+                  font-size: 18px; line-height: 1; border-radius: 50%; }
   .vreview h2 { margin-bottom: 8px; }
   .vreview-findings { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .vreview-finding { padding: 6px 12px; min-height: 36px; }
@@ -127,7 +129,7 @@
   .vreview-label { display: block; color: var(--dim); }
   .vreview-notes { display: block; width: 100%; min-height: 96px; margin-top: 4px; resize: vertical; background: var(--panel2);
                    border: 1px solid var(--line); color: var(--fg); border-radius: 6px; padding: 8px; font: inherit; }
-  .vreview-status { margin: 6px 0 0; font-size: 12px; }
+  .vreview-status { margin: 6px 0 0; font-size: 12px; min-height: 36px; padding-right: 48px; }
   .vnum { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-right: 6px; font-variant-numeric: tabular-nums; }
   .vmark { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: #3a4258; flex: none; }
   .vstep.running .vmark { background: var(--accent); }
@@ -1142,7 +1144,7 @@ function selectVerifyStep(runID, stepID) {
   renderVerifyRun(verifyRuns.get(runID), verifyCard);
   // On a phone the detail pane stacks below the steps; bring it into view.
   // Step detail loads asynchronously, so it scrolls once it has rendered.
-  verifyScrollToDetail = !!stepID && verifyPhone();
+  verifyScrollToDetail = !!stepID && (verifyScrollToDetail || verifyPhone());
   if (!stepID && verifyPhone()) verifyCard.live.scrollIntoView({block: "start"});
 }
 let verifyScrollToDetail = false;
@@ -1340,7 +1342,9 @@ function renderVerifyReview(runID, step, d) {
   box.innerHTML = `<h2>Your review${step.number ? " of " + esc(step.number) : ""}</h2>
     <div class="vreview-findings" role="radiogroup" aria-label="Finding"></div>
     <label class="vreview-label">Notes<textarea class="vreview-notes" rows="5" placeholder="What you saw, what should change…"></textarea></label>
-    <p class="vreview-status muted"></p>`;
+    <p class="vreview-status muted"></p>
+    <button type="button" class="vreview-next" aria-label="Next unassessed entry" title="Next unassessed entry">↓</button>`;
+  box.querySelector(".vreview-next").onclick = () => nextUnassessed(runID, step.id);
   const findings = box.querySelector(".vreview-findings");
   const notes = box.querySelector(".vreview-notes");
   const status = box.querySelector(".vreview-status");
@@ -1380,6 +1384,26 @@ function renderVerifyReview(runID, step, d) {
   status.textContent = draft ? "Saving…" : saved.updated_at ? "Saved " + new Date(saved.updated_at).toLocaleString() : "Not reviewed yet. Changes save as you type.";
   if (hint()) status.textContent += " " + hint();
   return box;
+}
+// nextUnassessed selects the next entry awaiting review that the owner has not
+// settled, in outline order after stepID, wrapping to the top.
+function nextUnassessed(runID, stepID) {
+  const run = verifyRuns.get(runID);
+  if (!run) return;
+  const order = n => (n || "").split(".").map(x => x.padStart(6, "0")).join(".");
+  const steps = (run.steps || []).slice().sort((a, b) => order(a.number) < order(b.number) ? -1 : order(a.number) > order(b.number) ? 1 : 0);
+  const here = steps.findIndex(s => s.id === stepID);
+  for (let i = 1; i < steps.length; i++) {
+    const s = steps[(here + i) % steps.length];
+    if (s.reviewable && !s.reviewed) {
+      verifyScrollToDetail = true;
+      selectVerifyStep(runID, s.id);
+      const row = document.querySelector(`.vstep[data-step-id="${CSS.escape(s.id)}"]`);
+      if (row) row.scrollIntoView({block: "nearest"});
+      return;
+    }
+  }
+  toast("Nothing else awaits your review");
 }
 function queueVerifyReview(runID, stepID, state, statusEl, hint) {
   const key = runID + ":" + stepID;
