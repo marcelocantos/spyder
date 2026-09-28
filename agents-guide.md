@@ -1532,7 +1532,11 @@ status, plus badges for an open owner gate and pending review). Only the
 selected run is visible; snapshot updates never switch tabs, and an owner
 answer can only go to the selected run. Step rows are selectable: the
 right-hand pane then shows that step's detail, loaded on demand through
-`verify_detail`. Model-evaluated steps carry a 🤖 marker and show the verdict,
+`verify_detail`. Every group and step has a dotted outline number (`1.2.3`)
+by its place in the tree: subgroups and steps in flow order, cleanup as the
+last top-level section. Numbers come from the workflow definition alone, so
+they match across runs and apply to saved runs; `verify_status` returns them
+as `number`, and `verify_detail(step_id="1.2.3")` accepts one. Model-evaluated steps carry a 🤖 marker and show the verdict,
 full report, model identity, and every image the model reviewed. Deep link:
 `/dashboard#verify/<run_id>`. The tab pauses app thumbnail and preview capture
 so owner review does not disturb the app.

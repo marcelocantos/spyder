@@ -192,7 +192,9 @@ The daemon serves a browser cockpit at
 The Verify tab gives each active or retained run its own tab, showing the
 workflow, device, status, and badges for an open owner question or pending
 review. Only the selected run is visible, and updates never switch tabs, so an
-answer always goes to the run you are looking at. Select a step to see its
+answer always goes to the run you are looking at. Groups and steps carry dotted
+outline numbers (`1.2.3`) for referring to them briefly; `verify_detail`
+accepts a number as the step. Select a step to see its
 detail in the right-hand pane; model-evaluated steps are marked 🤖 and show
 the model's verdict, full report, model identity, and the images it reviewed.
 Finished runs stay until the agent that created them runs

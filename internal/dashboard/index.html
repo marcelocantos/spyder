@@ -117,6 +117,7 @@
   .vstep:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .vstep.sel { background: var(--panel2); border-color: var(--accent); }
   .vstep .vtext { min-width: 0; overflow-wrap: anywhere; }
+  .vnum { font-family: var(--mono); font-size: 12px; color: var(--dim); margin-right: 6px; font-variant-numeric: tabular-nums; }
   .vmark { width: 10px; height: 10px; margin-top: 5px; border-radius: 50%; background: #3a4258; flex: none; }
   .vstep.running .vmark { background: var(--accent); }
   .vstep.ok .vmark, .vstep.skipped .vmark { background: var(--accent2); }
@@ -1176,12 +1177,12 @@ function renderVerifyTimeline(run, host, selectedStep) {
     const body = document.createElement("div");
     body.className = "group-body";
     details.append(summary, body);
-    groups.set(g.id, { id: g.id, parent: g.parent || "", el: details, summary, body, label: g.label || g.id });
+    groups.set(g.id, { id: g.id, parent: g.parent || "", el: details, summary, body, label: g.label || g.id, number: g.number || "" });
   }
-  for (const rec of groups.values()) {
-    const parent = rec.parent && groups.get(rec.parent);
-    (parent ? parent.body : host).append(rec.el);
-  }
+  // Children are appended in outline order ("1.2" before "1.10"), so
+  // subgroups and steps interleave as the flow runs.
+  const placed = [];
+  groups.forEach(rec => placed.push({number: rec.number, el: rec.el, into: (rec.parent && groups.get(rec.parent)) ? groups.get(rec.parent).body : host}));
   const stepEls = [];
   for (const s of (run.steps || [])) {
     const item = document.createElement("div");
@@ -1195,15 +1196,19 @@ function renderVerifyTimeline(run, host, selectedStep) {
     mark.className = "vmark";
     const text = document.createElement("div");
     text.className = "vtext";
-    text.innerHTML = `<div>${esc(s.label || s.id)} ${verifyWho(s)}</div><div class="vid">${esc(s.id)}${s.choice_id ? " · choice=" + esc(s.choice_id) : ""}${s.status === "deferred" ? " · deferred" : ""}</div>`;
+    text.innerHTML = `<div>${s.number ? `<span class="vnum">${esc(s.number)}</span>` : ""}${esc(s.label || s.id)} ${verifyWho(s)}</div><div class="vid">${esc(s.id)}${s.choice_id ? " · choice=" + esc(s.choice_id) : ""}${s.status === "deferred" ? " · deferred" : ""}</div>`;
     item.append(mark, text);
     const pick = () => selectVerifyStep(run.run_id, s.id === selectedStep ? null : s.id);
     item.onclick = pick;
     item.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); pick(); } };
     const g = s.group && groups.get(s.group);
-    (g ? g.body : host).append(item);
+    placed.push({number: s.number || "", el: item, into: g ? g.body : host});
     stepEls.push(item);
   }
+  const order = n => (n || "").split(".").map(x => x.padStart(6, "0")).join(".");
+  placed.map((p, i) => ({...p, i}))
+    .sort((a, b) => (a.number && b.number) ? (order(a.number) < order(b.number) ? -1 : order(a.number) > order(b.number) ? 1 : a.i - b.i) : a.i - b.i)
+    .forEach(p => p.into.append(p.el));
   for (const rec of groups.values()) {
     const ids = new Set([rec.id]);
     let grew = true;
@@ -1221,14 +1226,14 @@ function renderVerifyTimeline(run, host, selectedStep) {
     rec.el.classList.toggle("done", done);
     rec.el.open = active || !done;
     const ok = kids.filter(el => el.classList.contains("ok") || el.classList.contains("skipped")).length;
-    rec.summary.textContent = rec.label + (kids.length ? `  ${ok}/${kids.length}` : "");
+    rec.summary.textContent = (rec.number ? rec.number + "  " : "") + rec.label + (kids.length ? `  ${ok}/${kids.length}` : "");
   }
 }
 async function loadVerifyDetail(run, step, card) {
   const key = [run.run_id, step.id, step.status, step.evaluator, step.choice_id, step.model_review, step.verdict].join(":");
   if (key === verifyDetailKey) return;
   verifyDetailKey = key;
-  card.dTitle.textContent = step.label || step.id;
+  card.dTitle.textContent = (step.number ? step.number + "  " : "") + (step.label || step.id);
   card.dMeta.textContent = "Loading…";
   card.dBody.innerHTML = "";
   let d;
@@ -1306,7 +1311,8 @@ function renderVerifyGate(gate, card) {
   const meta = [];
   if (gate.workflow) meta.push("workflow " + gate.workflow);
   if (gate.device) meta.push("device " + gate.device);
-  if (gate.step_id) meta.push(gate.step_id);
+  const gateStep = ((verifyRuns.get(gate.run_id) || {}).steps || []).find(s => s.id === gate.step_id);
+  if (gate.step_id) meta.push((gateStep && gateStep.number ? gateStep.number + " " : "") + gate.step_id);
   card.gateMeta.textContent = meta.join(" · ");
   card.gateHint.textContent = gate.hint || "";
   const a = gate.appraisal;

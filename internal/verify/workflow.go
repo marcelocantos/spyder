@@ -94,6 +94,8 @@ type Group struct {
 	ID     string `json:"id"`
 	Label  string `json:"label,omitempty"`
 	Parent string `json:"parent,omitempty"`
+	// Number is the dotted outline position, set only in run views.
+	Number string `json:"number,omitempty"`
 }
 
 // Step is one leaf in the DAG.

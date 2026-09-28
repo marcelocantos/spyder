@@ -248,6 +248,7 @@ type RunView struct {
 // "owner" or "preset" for an answered gate, empty for automation.
 type StepView struct {
 	ID          string `json:"id"`
+	Number      string `json:"number,omitempty"`
 	Label       string `json:"label"`
 	Type        string `json:"type"`
 	Group       string `json:"group,omitempty"`
@@ -271,6 +272,19 @@ func (r *Run) view() RunView {
 		last[rec.StepID] = rec
 	}
 	pending := 0
+	outline := outlineOf(r.wf)
+	groups := make([]Group, 0, len(r.wf.Groups)+1)
+	for _, g := range r.wf.Groups {
+		g.Number = outline.Groups[g.ID]
+		groups = append(groups, g)
+	}
+	if len(r.wf.Cleanup) > 0 {
+		groups = append(groups, Group{ID: CleanupGroupID, Label: "Cleanup", Number: outline.Groups[CleanupGroupID]})
+	}
+	cleanup := map[string]bool{}
+	for _, s := range r.wf.Cleanup {
+		cleanup[s.ID] = true
+	}
 	for _, s := range append(append([]Step{}, r.wf.Steps...), r.wf.Cleanup...) {
 		st := r.stepStatus[s.ID]
 		if st == "" {
@@ -285,6 +299,7 @@ func (r *Run) view() RunView {
 		}
 		sv := StepView{
 			ID:         s.ID,
+			Number:     outline.Steps[s.ID],
 			Label:      label,
 			Type:       s.Type,
 			Group:      s.Group,
@@ -292,6 +307,9 @@ func (r *Run) view() RunView {
 			DurationMS: r.stepDur[s.ID],
 			Device:     s.Device,
 			Judgment:   s.Judgment,
+		}
+		if cleanup[s.ID] {
+			sv.Group = CleanupGroupID
 		}
 		if rec, ok := last[s.ID]; ok {
 			sv.ChoiceID = rec.ChoiceID
@@ -321,7 +339,7 @@ func (r *Run) view() RunView {
 		PendingReview:  pending,
 		Cwd:            r.cwd,
 		Device:         r.params["device"],
-		Groups:         r.wf.Groups,
+		Groups:         groups,
 		Steps:          steps,
 		Log:            append([]string{}, r.logs...),
 		ReportDir:      r.reportDir,

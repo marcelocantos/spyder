@@ -221,8 +221,9 @@ type DetailImage struct {
 	Error   string `json:"error,omitempty"`
 }
 
-// Detail returns the evidence for stepID, or the run's latest screenshot when
-// stepID is empty. Images are served only from inside this run's bundle.
+// Detail returns the evidence for stepID (a step ID or its outline number,
+// such as "1.2.3"), or the run's latest screenshot when stepID is empty.
+// Images are served only from inside this run's bundle.
 func (r *Run) Detail(stepID string) (*StepDetail, error) {
 	out := &StepDetail{RunID: r.ID, StepID: stepID}
 	if stepID == "" {
@@ -231,7 +232,7 @@ func (r *Run) Detail(stepID string) (*StepDetail, error) {
 	}
 	view := r.view()
 	for i := range view.Steps {
-		if view.Steps[i].ID == stepID {
+		if view.Steps[i].ID == stepID || view.Steps[i].Number == stepID {
 			sv := view.Steps[i]
 			out.Step = &sv
 		}
@@ -239,6 +240,8 @@ func (r *Run) Detail(stepID string) (*StepDetail, error) {
 	if out.Step == nil {
 		return nil, fmt.Errorf("run %s has no step %s", r.ID, stepID)
 	}
+	stepID = out.Step.ID
+	out.StepID = stepID
 	for _, s := range append(append([]Step{}, r.wf.Steps...), r.wf.Cleanup...) {
 		if s.ID == stepID {
 			out.Prompt, out.Hint, out.Choices = s.Prompt, s.Hint, s.Choices
