@@ -10,6 +10,7 @@ import (
 	"image"
 	"image/jpeg"
 	"image/png"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -91,13 +92,20 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 		stem := sanitizeFilename(req.Step.ID)
 		screenshotPath := filepath.Join(shotDir, stem+".png")
 		modelImagePath = filepath.Join(filepath.Dir(shotDir), "model-inputs", stem+".jpg")
-		h.mu.Lock()
-		adapter, _, id, err := h.resolveAdapter(req.Step.Device)
 		var pngData []byte
-		if err == nil {
-			pngData, err = adapter.Screenshot(id)
+		var err error
+		if req.Step.ScreenPNG != "" {
+			// Judge a frame another check already captured.
+			pngData, err = os.ReadFile(req.Step.ScreenPNG)
+		} else {
+			h.mu.Lock()
+			adapter, _, id, resolveErr := h.resolveAdapter(req.Step.Device)
+			err = resolveErr
+			if err == nil {
+				pngData, err = adapter.Screenshot(id)
+			}
+			h.mu.Unlock()
 		}
-		h.mu.Unlock()
 		if err != nil {
 			return verify.ExecResult{Code: 1, Output: "model screenshot: " + err.Error(), Model: evidence}
 		}

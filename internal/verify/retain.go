@@ -126,6 +126,7 @@ func loadRetained(h *Hub, dir string) (*Run, error) {
 		appraisals:      map[string]*Appraisal{},
 		priorAppraisals: map[string]*Appraisal{},
 		reviews:         map[string]*OwnerReview{},
+		preconditions:   map[string]*PreconditionResult{},
 	}
 	if saved, err := h.reviews.load(r.ID); err == nil {
 		r.reviews = saved
@@ -166,6 +167,9 @@ func loadRetained(h *Hub, dir string) (*Run, error) {
 		r.stepDur[rec.StepID] = rec.DurationMS
 		if rec.Status == StepDeferred && rec.Appraisal != nil {
 			r.appraisals[rec.StepID] = rec.Appraisal
+		}
+		if rec.Precondition != nil {
+			r.preconditions[rec.StepID] = rec.Precondition
 		}
 	}
 	for id, st := range res.StepStatus {

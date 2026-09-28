@@ -48,6 +48,7 @@ func (r *Run) appraise(step Step) *Appraisal {
 		Env:           step.Env,
 		ModelSpec:     step.AppraiseModel,
 		CaptureScreen: true,
+		ScreenPNG:     step.ScreenPNG,
 		Prompt:        appraisalPrompt(step),
 	}
 	r.emit(step.ID, "appraise "+step.ID+"  model reviews the current screen")
@@ -216,6 +217,10 @@ type StepDetail struct {
 	// awaits owner review; Review is what they have saved so far.
 	ReviewOptions []Choice     `json:"review_options,omitempty"`
 	Review        *OwnerReview `json:"review,omitempty"`
+	// Precondition is the gate's starting-screen check, shown as front
+	// matter; PreconditionImages are what it looked at (inline in detail).
+	Precondition       *PreconditionResult `json:"precondition,omitempty"`
+	PreconditionImages []DetailImage       `json:"precondition_images,omitempty"`
 }
 
 // DetailImage is one image a model reviewed, inline for the browser.
@@ -259,6 +264,25 @@ func (r *Run) fillEvidence(out *StepDetail) {
 		copied := *rev
 		out.Review = &copied
 	}
+	if p := r.preconditions[stepID]; p != nil {
+		copied := *p
+		out.Precondition = &copied
+	}
+}
+
+// bundleImages inlines image files from inside the run bundle only.
+func (r *Run) bundleImages(paths []string) []DetailImage {
+	var out []DetailImage
+	for _, path := range paths {
+		img := DetailImage{Path: path}
+		if rel, err := filepath.Rel(r.reportDir, path); err != nil || !filepath.IsLocal(rel) {
+			img.Error = "outside the run bundle"
+		} else if img.DataURI = encodeShot(path); img.DataURI == "" {
+			img.Error = "unreadable"
+		}
+		out = append(out, img)
+	}
+	return out
 }
 
 func (r *Run) Detail(stepID string) (*StepDetail, error) {
@@ -280,15 +304,10 @@ func (r *Run) Detail(stepID string) (*StepDetail, error) {
 	out.StepID = out.Step.ID
 	r.fillEvidence(out)
 	if out.Appraisal != nil {
-		for _, path := range out.Appraisal.Images {
-			img := DetailImage{Path: path}
-			if rel, err := filepath.Rel(r.reportDir, path); err != nil || !filepath.IsLocal(rel) {
-				img.Error = "outside the run bundle"
-			} else if img.DataURI = encodeShot(path); img.DataURI == "" {
-				img.Error = "unreadable"
-			}
-			out.Images = append(out.Images, img)
-		}
+		out.Images = r.bundleImages(out.Appraisal.Images)
+	}
+	if out.Precondition != nil {
+		out.PreconditionImages = r.bundleImages(out.Precondition.Images)
 	}
 	return out, nil
 }

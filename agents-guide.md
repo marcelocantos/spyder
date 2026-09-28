@@ -1607,6 +1607,31 @@ the record keeps `answered_by: owner` and `model_review`. Dynamic gates are
 deferred without a model. `model` steps also keep their result, model identity,
 and image on the step record.
 
+A `human_gate` can carry a best-effort `precondition`: a model check that the
+device shows the expected starting screen, run immediately before the gate
+(or its appraisal). It replaces a separate "check live screen before X"
+model step. It never blocks: when the model says the screen is wrong (after
+`retry`, default 2 rechecks), the gate still proceeds but is marked
+untrustworthy (a large **?** in the dashboard, `precondition=not_met` in the
+STATUS block, `preconditions_not_met` in `verify_report`); a model error
+leaves it `unchecked`. An unattended appraisal judges the precondition's
+frame. `precondition.mutex` is held only during the check, never while the
+owner looks. Set the default model once with `defaults.screen_model`.
+
+```yaml
+defaults:
+  screen_model: {mode: task, purpose: analysis, quality: standard, prefer_provider: claude}
+steps:
+  - id: night_lighting
+    type: human_gate
+    device: ${device}
+    precondition:
+      screen: A live race with cars and race HUD on screen, not a menu or loading screen.
+      mutex: unity
+    prompt: Does the night lighting look right?
+    choices: [{id: pass, label: "Yes"}, {id: fail, label: "No", outcome: investigate}]
+```
+
 ```yaml
 - id: shop_screen
   type: human_gate

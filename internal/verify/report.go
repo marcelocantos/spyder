@@ -43,6 +43,9 @@ type ReportSummary struct {
 	Reviewed      int            `json:"reviewed"`
 	PendingReview int            `json:"pending_review"`
 	NeedsInGame   int            `json:"needs_in_game"`
+	// PreconditionsNotMet counts entries whose starting screen the model
+	// doubted: their evidence and any review of them may be untrustworthy.
+	PreconditionsNotMet int `json:"preconditions_not_met"`
 	ModelVerdicts map[string]int `json:"model_verdicts,omitempty"`
 	OwnerFindings map[string]int `json:"owner_findings,omitempty"`
 }
@@ -105,6 +108,9 @@ func (r *Run) Report() *Report {
 		}
 		if sv.Review != "" {
 			out.Summary.OwnerFindings[sv.Review]++
+		}
+		if sv.Precondition == PreconditionNotMet {
+			out.Summary.PreconditionsNotMet++
 		}
 	}
 	out.Summary.PendingReview = view.PendingReview

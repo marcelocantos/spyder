@@ -62,6 +62,31 @@ type StepRecord struct {
 	AnsweredBy  string     `json:"answered_by,omitempty"`
 	Appraisal   *Appraisal `json:"appraisal,omitempty"`
 	ModelReview string     `json:"model_review,omitempty"`
+	// Precondition is the best-effort starting-screen check made before
+	// the gate; it annotates the gate and never decides it.
+	Precondition *PreconditionResult `json:"precondition,omitempty"`
+}
+
+// Precondition outcomes.
+const (
+	PreconditionMet       = "met"
+	PreconditionNotMet    = "not_met"
+	PreconditionUnchecked = "unchecked"
+)
+
+// PreconditionResult is what the starting-screen check saw. Screenshot is the
+// full frame, which a static gate's appraisal reuses.
+type PreconditionResult struct {
+	Status     string   `json:"status"`
+	Expected   string   `json:"expected"`
+	Reason     string   `json:"reason,omitempty"`
+	Provider   string   `json:"provider,omitempty"`
+	Model      string   `json:"model,omitempty"`
+	Report     string   `json:"report,omitempty"`
+	Images     []string `json:"images,omitempty"`
+	Screenshot string   `json:"screenshot,omitempty"`
+	Attempts   int      `json:"attempts"`
+	DurationMS int64    `json:"duration_ms"`
 }
 
 // Appraisal is what a model concluded about a step: a model step's result,
@@ -141,6 +166,9 @@ func FormatStatus(in StatusInput) string {
 			}
 			if rec.ModelReview != "" {
 				bits = append(bits, "model_review="+rec.ModelReview)
+			}
+			if p := rec.Precondition; p != nil && p.Status != PreconditionMet {
+				bits = append(bits, "precondition="+p.Status)
 			}
 			fmt.Fprintf(&b, "  %s\n", strings.Join(bits, "  "))
 		}

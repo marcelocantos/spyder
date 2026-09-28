@@ -199,7 +199,10 @@ detail in the right-hand pane; model-evaluated steps are marked 🤖 and show
 the model's verdict, full report, model identity, and the images it reviewed.
 Each model result and each pending owner gate has a review section in that
 pane: pick a finding (the gate's own choices, or pass/fail/unclear for a model
-step) and write notes. Every entry also offers **Check in game** when you cannot judge it without
+step) and write notes. An owner gate can declare a best-effort `precondition` (the expected starting
+screen); a model checks it just before the gate, and when it is not met the
+entry is marked untrustworthy with a large **?** rather than blocked.
+Every entry also offers **Check in game** when you cannot judge it without
 seeing it running, and **Other** (with notes) when no finding fits, and entries with staging have **▶ Verify now**: it replays
 only that entry's staging scripts from the saved run (no builds, checks, gates
 or cleanup, nothing reassessed) and leaves the app in that state for you.

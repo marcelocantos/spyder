@@ -72,6 +72,8 @@ type Run struct {
 	// reviews caches the owner's saved findings; the hub's review
 	// database is the source of truth.
 	reviews map[string]*OwnerReview
+	// preconditions are the starting-screen checks made before gates.
+	preconditions map[string]*PreconditionResult
 }
 
 // RunOpts is internal construction data.
@@ -134,6 +136,7 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 		done:           make(chan struct{}),
 		appraisals:     map[string]*Appraisal{},
 		reviews:        map[string]*OwnerReview{},
+		preconditions:  map[string]*PreconditionResult{},
 	}
 	if r.answers == nil {
 		r.answers = map[string]Answer{}
@@ -235,6 +238,9 @@ type GateView struct {
 	// Appraisal is a prepared run's model verdict on this gate. The owner
 	// confirms it by choosing the same answer, or overrides it.
 	Appraisal *Appraisal `json:"appraisal,omitempty"`
+	// Precondition is the starting-screen check; when not met the gate
+	// still opens, with a warning.
+	Precondition *PreconditionResult `json:"precondition,omitempty"`
 }
 
 // RunView is one graph in verify_status. Screenshot is sent only while the
@@ -278,6 +284,9 @@ type StepView struct {
 	ChoiceID   string `json:"choice_id,omitempty"`
 	Device     string `json:"device,omitempty"`
 	Judgment   string `json:"judgment,omitempty"`
+	// Precondition is the starting-screen check's outcome, if the step
+	// has one: met, not_met or unchecked.
+	Precondition string `json:"precondition,omitempty"`
 	// Reviewable steps await the owner's review; Review is the owner's
 	// saved finding and Reviewed says it settles the step.
 	Reviewable bool `json:"reviewable,omitempty"`
@@ -335,6 +344,9 @@ func (r *Run) view() RunView {
 		}
 		if cleanup[s.ID] {
 			sv.Group = CleanupGroupID
+		}
+		if p := r.preconditions[s.ID]; p != nil {
+			sv.Precondition = p.Status
 		}
 		if options := reviewOptions(s, st); options != nil {
 			rev := r.reviews[s.ID]
@@ -780,9 +792,23 @@ func (r *Run) currentFailed() string {
 
 func (r *Run) runOne(step Step) stepOutcome {
 	if step.Type == KindHumanGate {
+		var pre *PreconditionResult
+		if step.Precondition != nil {
+			pre = r.checkPrecondition(step)
+			r.setPrecondition(step.ID, pre)
+			line := "precondition " + step.ID + "  " + pre.Status
+			if pre.Reason != "" {
+				line += "  " + pre.Reason
+			}
+			r.emit(step.ID, line)
+		}
 		if r.deferHuman {
-			rec := StepRecord{StepID: step.ID, Status: StepDeferred, Type: KindHumanGate, Label: step.Label, Judgment: step.Judgment}
+			rec := StepRecord{StepID: step.ID, Status: StepDeferred, Type: KindHumanGate, Label: step.Label, Judgment: step.Judgment, Precondition: pre}
 			if step.Judgment == JudgmentStatic {
+				// Judge the frame the precondition looked at.
+				if pre != nil && pre.Screenshot != "" {
+					step.ScreenPNG = pre.Screenshot
+				}
 				rec.Appraisal = r.appraise(step)
 				rec.DurationMS = rec.Appraisal.DurationMS
 				r.mu.Lock()
@@ -921,6 +947,10 @@ func (r *Run) humanGate(step Step) stepOutcome {
 	}
 	r.mu.Lock()
 	prior := r.priorAppraisals[step.ID]
+	if p := r.preconditions[step.ID]; p != nil {
+		copied := *p
+		view.Precondition = &copied
+	}
 	r.mu.Unlock()
 	if prior != nil {
 		a := *prior
@@ -1018,8 +1048,18 @@ func (r *Run) humanGate(step Step) stepOutcome {
 	return stepOutcome{status: "ok", code: 0, record: rec}
 }
 
+func (r *Run) setPrecondition(stepID string, p *PreconditionResult) {
+	r.mu.Lock()
+	r.preconditions[stepID] = p
+	r.mu.Unlock()
+	r.poke()
+}
+
 func (r *Run) record(rec StepRecord) {
 	r.mu.Lock()
+	if rec.Precondition == nil {
+		rec.Precondition = r.preconditions[rec.StepID]
+	}
 	r.records = append(r.records, rec)
 	r.mu.Unlock()
 	if rec.Appraisal != nil {

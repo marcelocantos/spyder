@@ -80,7 +80,10 @@ type Workflow struct {
 	Steps             []Step
 	Cleanup           []Step
 	IdleTimeoutSec    float64
-	Raw               []byte
+	// ScreenModel is the Claudia model predicates for preconditions that
+	// name none (defaults.screen_model).
+	ScreenModel json.RawMessage
+	Raw         []byte
 }
 
 const (
@@ -131,7 +134,29 @@ type Step struct {
 	AppraiseModel      json.RawMessage
 	AppraisePrompt     string
 	AppraiseTimeoutSec *float64
+	Precondition       *Precondition
+	// ScreenPNG makes a model step read this saved screenshot instead of
+	// capturing the device (set by the engine, not by workflows).
+	ScreenPNG string
 }
+
+// Precondition is a best-effort model check that the device shows the
+// expected starting screen before an owner gate. It is front matter to the
+// gate, not a reviewable step, and it never blocks: whatever the model says,
+// the gate proceeds, carrying the verdict as a note (a warning when not met).
+type Precondition struct {
+	Screen     string
+	Model      json.RawMessage
+	Mutex      string
+	TimeoutSec float64
+	Retry      Retry
+}
+
+const (
+	defaultPreconditionTimeoutSec = 90
+	defaultPreconditionRetries    = 2
+	defaultPreconditionBackoffSec = 2
+)
 
 // Retry is optional command-step retry.
 type Retry struct {
@@ -220,6 +245,24 @@ func parseWorkflow(m map[string]any) (*Workflow, []string) {
 			errs = append(errs, "idle_timeout_sec must be a positive number no greater than 86400")
 		} else {
 			wf.IdleTimeoutSec = n
+		}
+	}
+
+	if v, exists := m["defaults"]; exists && v != nil {
+		dm, ok := v.(map[string]any)
+		if !ok {
+			errs = append(errs, "defaults must be a mapping")
+		} else {
+			for key, val := range dm {
+				switch key {
+				case "screen_model":
+					raw, modelErrs := parseModelPredicates("defaults.screen_model", val)
+					errs = append(errs, modelErrs...)
+					wf.ScreenModel = raw
+				default:
+					errs = append(errs, "unknown defaults field "+key)
+				}
+			}
 		}
 	}
 
@@ -613,6 +656,75 @@ func parseModelPredicates(id string, v any) (json.RawMessage, []string) {
 	return raw, errs
 }
 
+func parsePrecondition(id string, v any) (*Precondition, []string) {
+	pm, ok := v.(map[string]any)
+	if !ok {
+		return nil, []string{id + ": precondition must be a mapping"}
+	}
+	p := &Precondition{
+		TimeoutSec: defaultPreconditionTimeoutSec,
+		Retry:      Retry{Count: defaultPreconditionRetries, BackoffSec: defaultPreconditionBackoffSec},
+	}
+	var errs []string
+	for key, val := range pm {
+		switch key {
+		case "screen":
+			s, ok := asString(val)
+			if !ok || strings.TrimSpace(s) == "" {
+				errs = append(errs, id+": precondition.screen must describe the expected screen")
+			} else {
+				p.Screen = s
+			}
+		case "model":
+			raw, modelErrs := parseModelPredicates(id+".precondition", val)
+			errs = append(errs, modelErrs...)
+			p.Model = raw
+		case "mutex":
+			s, ok := asString(val)
+			if !ok || strings.TrimSpace(s) == "" {
+				errs = append(errs, id+": precondition.mutex must be a string")
+			} else {
+				p.Mutex = s
+			}
+		case "timeout_sec":
+			n, ok := asNumber(val)
+			if !ok || n <= 0 {
+				errs = append(errs, id+": precondition.timeout_sec must be a positive number")
+			} else {
+				p.TimeoutSec = n
+			}
+		case "retry":
+			rm, ok := val.(map[string]any)
+			if !ok {
+				errs = append(errs, id+": precondition.retry must be a mapping")
+				continue
+			}
+			if c, has := rm["count"]; has {
+				n, ok := asInt(c)
+				if !ok || n < 0 {
+					errs = append(errs, id+": precondition.retry.count must be a non-negative integer")
+				} else {
+					p.Retry.Count = n
+				}
+			}
+			if b, has := rm["backoff_sec"]; has {
+				n, ok := asNumber(b)
+				if !ok || n < 0 {
+					errs = append(errs, id+": precondition.retry.backoff_sec must be a non-negative number")
+				} else {
+					p.Retry.BackoffSec = n
+				}
+			}
+		default:
+			errs = append(errs, id+": unknown precondition field "+key)
+		}
+	}
+	if p.Screen == "" && len(errs) == 0 {
+		errs = append(errs, id+": precondition.screen must describe the expected screen")
+	}
+	return p, errs
+}
+
 func validateShell(id string, m map[string]any, step *Step) []string {
 	_, hasCmd := m["command"]
 	_, hasArgv := m["argv"]
@@ -753,6 +865,14 @@ func validateGate(id string, m map[string]any, step *Step) []string {
 			}
 		}
 	}
+	if v, exists := m["precondition"]; exists && v != nil {
+		p, perrs := parsePrecondition(id, v)
+		errs = append(errs, perrs...)
+		step.Precondition = p
+		if strings.TrimSpace(step.Device) == "" {
+			errs = append(errs, id+": precondition requires device (the screen it checks)")
+		}
+	}
 	if step.Judgment == JudgmentStatic {
 		if strings.TrimSpace(step.Device) == "" {
 			errs = append(errs, id+": judgment static requires device (the screen a model appraises)")
@@ -856,6 +976,10 @@ func collectMissing(v any, params map[string]string, missing map[string]bool) {
 		collectMissing(t.Accept, params, missing)
 		collectMissing(t.Hint, params, missing)
 		collectMissing(t.AppraisePrompt, params, missing)
+		if t.Precondition != nil {
+			collectMissing(t.Precondition.Screen, params, missing)
+			collectMissing(t.Precondition.Mutex, params, missing)
+		}
 		collectMissing(t.Label, params, missing)
 		collectMissing(t.Device, params, missing)
 		collectMissing(t.Mutex, params, missing)
@@ -897,6 +1021,12 @@ func Substitute(wf *Workflow, params map[string]string) *Workflow {
 			s.Accept = subString(s.Accept, params)
 			s.Hint = subString(s.Hint, params)
 			s.AppraisePrompt = subString(s.AppraisePrompt, params)
+			if s.Precondition != nil {
+				p := *s.Precondition
+				p.Screen = subString(p.Screen, params)
+				p.Mutex = subString(p.Mutex, params)
+				s.Precondition = &p
+			}
 			s.Device = subString(s.Device, params)
 			s.Mutex = subString(s.Mutex, params)
 			s.Env = subStringMap(s.Env, params)

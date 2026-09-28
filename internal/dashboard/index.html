@@ -118,6 +118,18 @@
   .vstep.sel { background: var(--panel2); border-color: var(--accent); }
   .vstep .vtext { min-width: 0; overflow-wrap: anywhere; }
   .vreview { position: relative; border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+  .vpre { display: flex; gap: 12px; align-items: flex-start; border-radius: 8px; padding: 10px 12px; margin-bottom: 12px;
+          border: 1px solid var(--line); overflow-wrap: anywhere; }
+  .vpre.bad { border: 2px solid var(--warn); background: rgba(255, 171, 112, .08); }
+  .vpre.good { color: var(--accent2); align-items: center; }
+  .vpre > div { flex: 1; min-width: 0; }
+  .vpre-mark { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 40px; height: 40px;
+               border-radius: 50%; background: var(--warn); color: #0e1116; font-size: 28px; font-weight: 800; line-height: 1; }
+  h2 .vpre-mark { width: 28px; height: 28px; font-size: 20px; vertical-align: middle; }
+  .vpre .vpre-thumb { width: 120px; max-width: 30%; height: auto; flex: none; }
+  .vreview.untrusted { border: 2px solid var(--warn); }
+  .vuntrusted { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; margin-right: 6px;
+                border-radius: 50%; background: var(--warn); color: #0e1116; font-weight: 800; font-size: 15px; vertical-align: middle; }
   .vsteps-head { display: flex; align-items: center; justify-content: space-between; gap: 8px;
                  margin-bottom: 12px; background: var(--panel); }
   .vsteps-head h2 { margin: 0; }
@@ -217,6 +229,8 @@
     .shotpanel { width: 100%; flex: none; }
     #batt-chart { height: 280px; }
     .verify-grid { grid-template-columns: 1fr; }
+    .vpre { flex-wrap: wrap; }
+    .vpre .vpre-thumb { width: 180px; max-width: 100%; }
   }
 </style>
 </head>
@@ -1088,6 +1102,7 @@ function createVerifyCard() {
     <div data-v="gate" class="gate-sheet hidden" role="dialog" aria-label="Owner verification question">
       <h3 data-v="gate-prompt"></h3><p data-v="gate-meta" class="muted"></p>
       <p data-v="gate-hint" class="muted"></p>
+      <div data-v="gate-precondition" class="vpre bad hidden"></div>
       <div data-v="gate-appraisal" class="gate-appraisal hidden"></div>
       <div data-v="gate-choices"></div>
       <label data-v="comment-wrap" class="hidden">Comment<textarea data-v="comment" class="verify-gate-comment"></textarea></label>
@@ -1101,7 +1116,7 @@ function createVerifyCard() {
     reason: get("reason"), banner: get("gate-banner"), timeline: get("timeline"), live: get("live"),
     shotEmpty: get("shot-empty"), shot: get("shot"), log: get("log"), logKey: "",
     gate: get("gate"), gatePrompt: get("gate-prompt"), gateMeta: get("gate-meta"), gateHint: get("gate-hint"),
-    gateAppraisal: get("gate-appraisal"), choices: get("gate-choices"), commentWrap: get("comment-wrap"),
+    gateAppraisal: get("gate-appraisal"), gatePrecondition: get("gate-precondition"), choices: get("gate-choices"), commentWrap: get("comment-wrap"),
     comment: get("comment"), error: get("gate-error"), gateKey: "", currentGate: null,
     detail: get("detail"), dTitle: get("d-title"), dMeta: get("d-meta"), dBody: get("d-body")};
   get("abort").onclick = async () => {
@@ -1200,6 +1215,13 @@ function verifyWho(s) {
   const title = s.reviewed ? "Owner review" : "Owner review incomplete (notes required)";
   return mark + `<span class="vwho ${cls}" title="${title}">✍ ${esc(s.review)}</span>`;
 }
+// A precondition the model says was not met makes the entry untrustworthy:
+// the screen it was judged on may not have been the expected one.
+function verifyUntrusted(s) {
+  if (s.precondition === "not_met") return '<span class="vuntrusted" title="Precondition not met: this entry may not show the expected screen, so its evidence and review may be untrustworthy">?</span>';
+  if (s.precondition === "unchecked") return '<span class="vwho" title="Precondition unchecked (model error)">·?</span>';
+  return "";
+}
 function verifyWhoMark(s) {
   // 🤖 marks model evaluation; 👤 an owner answer; automation has no marker.
   if (s.evaluator === "owner" || s.evaluator === "preset") {
@@ -1248,7 +1270,7 @@ function renderVerifyTimeline(run, host, selectedStep) {
     mark.className = "vmark";
     const text = document.createElement("div");
     text.className = "vtext";
-    text.innerHTML = `<div>${s.number ? `<span class="vnum">${esc(s.number)}</span>` : ""}${esc(s.label || s.id)} ${verifyWho(s)}</div><div class="vid">${esc(s.id)}${s.choice_id ? " · choice=" + esc(s.choice_id) : ""}${s.status === "deferred" ? " · deferred" : ""}</div>`;
+    text.innerHTML = `<div>${verifyUntrusted(s)}${s.number ? `<span class="vnum">${esc(s.number)}</span>` : ""}${esc(s.label || s.id)} ${verifyWho(s)}</div><div class="vid">${esc(s.id)}${s.choice_id ? " · choice=" + esc(s.choice_id) : ""}${s.status === "deferred" ? " · deferred" : ""}</div>`;
     item.append(mark, text);
     const pick = () => selectVerifyStep(run.run_id, s.id === selectedStep ? null : s.id);
     item.onclick = pick;
@@ -1302,6 +1324,19 @@ async function loadVerifyDetail(run, step, card) {
   if (step.duration_ms) meta.push(step.duration_ms + "ms");
   card.dMeta.textContent = meta.join(" · ");
   const parts = [];
+  const pre = d.precondition;
+  if (pre) {
+    const thumb = (d.precondition_images || []).find(i => i.data_uri);
+    const img = thumb ? `<img class="vdetail-img vpre-thumb" src="${esc(thumb.data_uri)}" alt="Frame the precondition check saw">` : "";
+    if (pre.status === "not_met") {
+      parts.push(`<div class="vpre bad"><span class="vpre-mark">?</span><div><b>Precondition not met: this review may not be trustworthy.</b>
+        <div>Expected: ${esc(pre.expected)}</div><div class="muted">Model: ${esc(pre.reason || "the screen did not match")} (${pre.attempts} checks)</div></div>${img}</div>`);
+    } else if (pre.status === "met") {
+      parts.push(`<div class="vpre good">✓ Precondition met: ${esc(pre.expected)}${img}</div>`);
+    } else {
+      parts.push(`<div class="vpre muted">Precondition unchecked${pre.reason ? " (" + esc(pre.reason) + ")" : ""}: ${esc(pre.expected)}${img}</div>`);
+    }
+  }
   if (d.prompt) {
     parts.push(`<p class="vq">${esc(d.prompt)}</p>`);
     if (d.hint) parts.push(`<p class="muted">${esc(d.hint)}</p>`);
@@ -1367,8 +1402,8 @@ function renderVerifyReview(runID, step, d) {
   const draft = verifyReviewDrafts.get(key);
   const state = {finding: draft ? draft.finding : (saved.finding || ""), notes: draft ? draft.notes : (saved.notes || "")};
   const box = document.createElement("section");
-  box.className = "vreview";
-  box.innerHTML = `<h2>Your review${step.number ? " of " + esc(step.number) : ""}</h2>
+  box.className = "vreview" + (step.precondition === "not_met" ? " untrusted" : "");
+  box.innerHTML = `<h2>${step.precondition === "not_met" ? '<span class="vpre-mark" title="Precondition not met: the screen may not have been right">?</span> ' : ""}Your review${step.number ? " of " + esc(step.number) : ""}</h2>
     ${step.stageable ? `<div class="vnow" data-now-run="${esc(runID)}" data-now-step="${esc(step.id)}">
       <button type="button" class="vnow-btn" title="Put the app back into this entry's state on the device, without reassessing anything">▶ Verify now</button>
       <span class="vnow-status muted"></span></div>` : ""}
@@ -1547,6 +1582,12 @@ function renderVerifyGate(gate, card) {
   if (gate.step_id) meta.push((gateStep && gateStep.number ? gateStep.number + " " : "") + gate.step_id);
   card.gateMeta.textContent = meta.join(" · ");
   card.gateHint.textContent = gate.hint || "";
+  const p = gate.precondition;
+  card.gatePrecondition.classList.toggle("hidden", !(p && p.status === "not_met"));
+  if (p && p.status === "not_met") {
+    card.gatePrecondition.innerHTML = `<span class="vpre-mark">?</span><div><b>The model thinks this may not be the expected screen.</b>
+      <div>Expected: ${esc(p.expected)}</div><div class="muted">${esc(p.reason || "")}</div></div>`;
+  }
   const a = gate.appraisal;
   card.gateAppraisal.classList.toggle("hidden", !a);
   if (a) {
