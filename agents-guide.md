@@ -1549,7 +1549,8 @@ section in the step pane (finding plus multiline notes), saved as the owner
 types, Nagle-style (one save in flight; later edits coalesce into the next).
 Every entry also offers the finding `in_game` ("Check in game"): the owner
 cannot judge it without seeing it running. It settles the entry for this
-review and is counted in `needs_in_game`. `verify_now` restages such an entry
+review and is counted in `needs_in_game`. Every entry also offers `other`
+("Other", notes required) when none of the offered findings fits. `verify_now` restages such an entry
 for the owner without reassessing anything.
 To act on the owner's findings, fetch `verify_report(run_id)` (CLI:
 `spyder verify-report --run ID`) and read each step's `review`. A finding is

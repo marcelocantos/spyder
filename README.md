@@ -200,7 +200,7 @@ the model's verdict, full report, model identity, and the images it reviewed.
 Each model result and each pending owner gate has a review section in that
 pane: pick a finding (the gate's own choices, or pass/fail/unclear for a model
 step) and write notes. Every entry also offers **Check in game** when you cannot judge it without
-seeing it running, and entries with staging have **▶ Verify now**: it replays
+seeing it running, and **Other** (with notes) when no finding fits, and entries with staging have **▶ Verify now**: it replays
 only that entry's staging scripts from the saved run (no builds, checks, gates
 or cleanup, nothing reassessed) and leaves the app in that state for you.
 It saves as you type to `~/.spyder/verify/reviews.db`,

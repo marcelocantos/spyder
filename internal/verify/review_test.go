@@ -56,7 +56,7 @@ func TestOwnerReviewSavesAsTypedAndSurvivesRestart(t *testing.T) {
 	if _, err := hub.Review(run.ID, "build", "pass", ""); err == nil {
 		t.Fatal("an automated step accepted an owner review")
 	}
-	if _, err := hub.Review(run.ID, "looks", "maybe", ""); err == nil || !strings.Contains(err.Error(), "pass, fail, in_game") {
+	if _, err := hub.Review(run.ID, "looks", "maybe", ""); err == nil || !strings.Contains(err.Error(), "pass, fail, in_game, other") {
 		t.Fatalf("unknown finding accepted: %v", err)
 	}
 
@@ -85,6 +85,19 @@ func TestOwnerReviewSavesAsTypedAndSurvivesRestart(t *testing.T) {
 	if v := run.view(); v.PendingReview != 0 || v.NeedsInGame != 1 || !v.Steps[1].Reviewed {
 		t.Fatalf("in-game finding: pending=%d in_game=%d step=%+v", v.PendingReview, v.NeedsInGame, v.Steps[1])
 	}
+	// "Other" needs notes to say what was found.
+	if _, err := hub.Review(run.ID, "screen_check", FindingOther, ""); err != nil {
+		t.Fatal(err)
+	}
+	if v := run.view(); v.PendingReview != 1 || v.Steps[1].Reviewed {
+		t.Fatalf("Other without notes settled the entry: %+v", v.Steps[1])
+	}
+	if _, err := hub.Review(run.ID, "screen_check", FindingOther, "Screen was fine but the HUD flickered"); err != nil {
+		t.Fatal(err)
+	}
+	if v := run.view(); v.PendingReview != 0 || !v.Steps[1].Reviewed {
+		t.Fatalf("Other with notes: %+v", v.Steps[1])
+	}
 	if _, err := hub.Review(run.ID, "screen_check", "unclear", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +116,7 @@ func TestOwnerReviewSavesAsTypedAndSurvivesRestart(t *testing.T) {
 		t.Fatalf("report header: %+v", rep)
 	}
 	looks := rep.Steps[2]
-	if looks.Step.Number != "3" || looks.Prompt != "Does it look right?" || len(looks.Choices) != 2 || len(looks.ReviewOptions) != 3 || looks.ReviewOptions[2].ID != FindingInGame || looks.Review == nil || looks.Review.Notes != "The car clips\nthrough the wall." {
+	if looks.Step.Number != "3" || looks.Prompt != "Does it look right?" || len(looks.Choices) != 2 || len(looks.ReviewOptions) != 4 || looks.ReviewOptions[2].ID != FindingInGame || looks.ReviewOptions[3].ID != FindingOther || looks.Review == nil || looks.Review.Notes != "The car clips\nthrough the wall." {
 		t.Fatalf("report step: %+v", looks)
 	}
 	if a := rep.Steps[1].Appraisal; a == nil || a.Verdict != "accepted" || rep.Steps[1].Review.Finding != "unclear" {
@@ -118,7 +131,7 @@ func TestOwnerReviewSavesAsTypedAndSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Review == nil || d.Review.Finding != "fail" || d.Review.Notes != "The car clips\nthrough the wall." || len(d.ReviewOptions) != 3 {
+	if d.Review == nil || d.Review.Finding != "fail" || d.Review.Notes != "The car clips\nthrough the wall." || len(d.ReviewOptions) != 4 {
 		t.Fatalf("review lost across restart: %+v", d)
 	}
 	if v := restarted.Snapshot().Runs[0]; v.PendingReview != 0 {

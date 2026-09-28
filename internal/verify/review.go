@@ -30,8 +30,16 @@ type OwnerReview struct {
 // is assessed for this review, and counted as needing an in-game check.
 const FindingInGame = "in_game"
 
-// inGameFinding is offered on every reviewable entry after its own choices.
-var inGameFinding = Choice{ID: FindingInGame, Label: "Check in game"}
+// FindingOther is for when none of the offered findings fits. Its notes say
+// what the owner found, so it requires them.
+const FindingOther = "other"
+
+// universalFindings are offered on every reviewable entry after its own
+// choices, unless the entry already defines a choice with the same ID.
+var universalFindings = []Choice{
+	{ID: FindingInGame, Label: "Check in game"},
+	{ID: FindingOther, Label: "Other", Comment: "required"},
+}
 
 // modelStepFindings are the owner's findings on a model step's result.
 var modelStepFindings = []Choice{
@@ -54,12 +62,17 @@ func reviewOptions(s Step, status string) []Choice {
 	default:
 		return nil
 	}
-	for _, c := range options {
-		if c.ID == FindingInGame {
-			return options
+	out := append([]Choice{}, options...)
+	for _, u := range universalFindings {
+		defined := false
+		for _, c := range options {
+			defined = defined || c.ID == u.ID
+		}
+		if !defined {
+			out = append(out, u)
 		}
 	}
-	return append(append([]Choice{}, options...), inGameFinding)
+	return out
 }
 
 // reviewComplete reports whether a review settles its step: it has a finding,

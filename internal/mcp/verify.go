@@ -319,7 +319,7 @@ func verifyDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("cwd", mcpgo.Description("Caller cwd; its basename is the owner when owner is omitted")),
 		),
 		mcpgo.NewTool("verify_review",
-			mcpgo.WithDescription("Save the owner's review of a step awaiting it (a model result or a deferred owner gate): a finding and free-form notes. The dashboard saves as the owner types. Findings are the gate's choices, or pass/fail/unclear for a model step, plus in_game (Check in game) on every entry: the owner cannot judge it without seeing it in the running product. Empty finding and notes clear the review. It is evidence beside the run; the run status does not change."),
+			mcpgo.WithDescription("Save the owner's review of a step awaiting it (a model result or a deferred owner gate): a finding and free-form notes. The dashboard saves as the owner types. Findings are the gate's choices, or pass/fail/unclear for a model step, plus in_game (Check in game: the owner cannot judge it without seeing it in the running product) and other (Other, notes required) on every entry. Empty finding and notes clear the review. It is evidence beside the run; the run status does not change."),
 			mcpgo.WithString("run_id", mcpgo.Required(), mcpgo.Description("Run id")),
 			mcpgo.WithString("step_id", mcpgo.Required(), mcpgo.Description("Step id or outline number (e.g. 1.2.3)")),
 			mcpgo.WithString("finding", mcpgo.Description("Choice id; empty keeps notes as a draft")),
