@@ -254,6 +254,22 @@ func (h *Handler) handleVerifyReport(args map[string]any) (*mcpgo.CallToolResult
 	return toolJSON(report)
 }
 
+func (h *Handler) handleVerifyNow(args map[string]any) (*mcpgo.CallToolResult, error) {
+	runID, err := requireString(args, "run_id")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	stepID, err := requireString(args, "step_id")
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	run, err := h.VerifyHub().VerifyNow(runID, stepID)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(map[string]any{"ok": true, "run_id": run.ID, "source_run_id": runID, "step_id": stepID, "status": "running"})
+}
+
 func nilToEmpty(v any) any {
 	if v == nil {
 		return ""
@@ -308,6 +324,11 @@ func verifyDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("step_id", mcpgo.Required(), mcpgo.Description("Step id or outline number (e.g. 1.2.3)")),
 			mcpgo.WithString("finding", mcpgo.Description("Choice id; empty keeps notes as a draft")),
 			mcpgo.WithString("notes", mcpgo.Description("Free-form notes, multiline")),
+		),
+		mcpgo.NewTool("verify_now",
+			mcpgo.WithDescription("Put the app back into the state an entry awaiting review was judged in, and leave it there for the owner. Replays only the entry's staging scripts from the run's saved workflow and parameters: no builds, checks, gates or cleanup, and nothing is reassessed. Returns the new run's id; it ends 'staged' (or failed, in which case the owner checks by hand). A new request for the same entry replaces the previous one."),
+			mcpgo.WithString("run_id", mcpgo.Required(), mcpgo.Description("Run id holding the entry")),
+			mcpgo.WithString("step_id", mcpgo.Required(), mcpgo.Description("Step id or outline number")),
 		),
 		mcpgo.NewTool("verify_report",
 			mcpgo.WithDescription("A run's full report as one JSON document: run facts and final status, the numbered outline, and every step with its definition, records, model appraisal (verdict, full report, model, image paths) and the owner's review (finding and notes), plus summary counts. Use verify_detail for one step's images inline."),

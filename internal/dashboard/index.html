@@ -121,6 +121,9 @@
   .vreview-next { position: absolute; right: 8px; bottom: 8px; width: 36px; height: 36px; padding: 0;
                   font-size: 18px; line-height: 1; border-radius: 50%; }
   .vreview h2 { margin-bottom: 8px; }
+  .vnow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .vnow-btn { padding: 6px 12px; min-height: 36px; border-color: var(--accent); }
+  .vnow-status { font-size: 12px; overflow-wrap: anywhere; }
   .vreview-findings { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
   .vreview-finding { padding: 6px 12px; min-height: 36px; }
   .vreview-finding.sel { border-color: var(--accent); background: var(--panel); box-shadow: inset 0 0 0 1px var(--accent); }
@@ -951,6 +954,7 @@ $("batt-refresh").onclick = () => loadBattery(true);
 // selected tab or step; a run that needs the owner draws attention through
 // its tab badge. Step evidence loads on demand through verify_detail.
 const verifyRuns = new Map();       // run_id -> latest RunView
+let verifyNowRuns = [];             // Verify Now runs, shown in their entry's review box
 const verifyTabEls = new Map();     // run_id -> tab button
 const verifyStepSel = new Map();    // run_id -> selected step id
 const verifyDrafts = new Map();     // "run:gate" -> unsent owner comment
@@ -972,7 +976,9 @@ function verifyHashRun() {
   return m ? decodeURIComponent(m[1]) : null;
 }
 function applyVerifySnapshot(snap) {
-  const runs = snap.runs || [];
+  const all = snap.runs || [];
+  verifyNowRuns = all.filter(r => r.focus_source);
+  const runs = all.filter(r => !r.focus_source);
   const running = runs.filter(r => r.status === "running");
   const asking = runs.filter(r => r.gate);
   const badge = $("verify-badge");
@@ -1113,6 +1119,7 @@ function renderVerifyRun(run, card) {
     card.log.scrollTop = card.log.scrollHeight;
     card.logKey = logKey;
   }
+  paintVerifyNow(card);
   const gate = run.gate || null;
   let shot = run.screenshot || (gate && gate.screenshot) || "";
   if (!shot && run.status !== "running") {
@@ -1345,11 +1352,22 @@ function renderVerifyReview(runID, step, d) {
   const box = document.createElement("section");
   box.className = "vreview";
   box.innerHTML = `<h2>Your review${step.number ? " of " + esc(step.number) : ""}</h2>
+    ${step.stageable ? `<div class="vnow" data-now-run="${esc(runID)}" data-now-step="${esc(step.id)}">
+      <button type="button" class="vnow-btn" title="Put the app back into this entry's state on the device, without reassessing anything">▶ Verify now</button>
+      <span class="vnow-status muted"></span></div>` : ""}
     <div class="vreview-findings" role="radiogroup" aria-label="Finding"></div>
     <label class="vreview-label">Notes<textarea class="vreview-notes" rows="5" placeholder="What you saw, what should change…"></textarea></label>
     <p class="vreview-status muted"></p>
     <button type="button" class="vreview-next" aria-label="Next unassessed entry" title="Next unassessed entry">↓</button>`;
   box.querySelector(".vreview-next").onclick = () => nextUnassessed(runID, step.id);
+  const nowBtn = box.querySelector(".vnow-btn");
+  if (nowBtn) nowBtn.onclick = async () => {
+    nowBtn.disabled = true;
+    box.querySelector(".vnow-status").textContent = "Starting…";
+    try { await callTool("verify_now", {run_id: runID, step_id: step.id}); }
+    catch (e) { box.querySelector(".vnow-status").textContent = "Could not start: " + e.message; nowBtn.disabled = false; }
+  };
+  setTimeout(() => paintVerifyNow(verifyCard), 0);
   const findings = box.querySelector(".vreview-findings");
   const notes = box.querySelector(".vreview-notes");
   const status = box.querySelector(".vreview-status");
@@ -1389,6 +1407,35 @@ function renderVerifyReview(runID, step, d) {
   status.textContent = draft ? "Saving…" : saved.updated_at ? "Saved " + new Date(saved.updated_at).toLocaleString() : "Not reviewed yet. Changes save as you type.";
   if (hint()) status.textContent += " " + hint();
   return box;
+}
+// paintVerifyNow shows the latest Verify Now attempt for the entry in the
+// open review box. Staging is best effort: on failure, check by hand.
+function paintVerifyNow(card) {
+  if (!card) return;
+  const box = card.dBody.querySelector(".vnow");
+  if (!box) return;
+  const btn = box.querySelector(".vnow-btn");
+  const status = box.querySelector(".vnow-status");
+  const attempts = verifyNowRuns.filter(r => r.focus_source === box.dataset.nowRun && r.focus === box.dataset.nowStep);
+  const run = attempts[attempts.length - 1];
+  if (!run) {
+    // Keep a just-clicked button disabled until its run appears.
+    if (status.textContent !== "Starting…") btn.disabled = false;
+    return;
+  }
+  const device = run.device ? " on " + run.device : "";
+  if (run.status === "running") {
+    const current = (run.steps || []).find(s => s.status === "running");
+    btn.disabled = true;
+    status.textContent = "Staging" + device + "…" + (current ? " (" + (current.label || current.id) + ")" : "");
+  } else if (run.status === "staged") {
+    btn.disabled = false;
+    btn.textContent = "▶ Verify again";
+    status.textContent = "Ready" + device + ": the app is in this state now.";
+  } else {
+    btn.disabled = false;
+    status.textContent = "Staging failed" + (run.reason ? ": " + run.reason : "") + ". Check it by hand.";
+  }
 }
 // nextUnassessed selects the next entry awaiting review that the owner has not
 // settled, in outline order after stepID, wrapping to the top.

@@ -813,6 +813,7 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"verify_detail":  h.handleVerifyDetail,
 		"verify_review":  h.handleVerifyReview,
 		"verify_report":  h.handleVerifyReport,
+		"verify_now":     h.handleVerifyNow,
 	}
 }
 

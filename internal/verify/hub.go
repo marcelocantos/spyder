@@ -102,6 +102,10 @@ type StartArgs struct {
 	// Owner is the creating agent; only it may dismiss the finished run.
 	// Empty means filepath.Base(Cwd).
 	Owner string
+	// Focus runs only this owner gate and its staging chain (Verify Now);
+	// FocusSource is the run whose entry the answer reviews.
+	Focus       string
+	FocusSource string
 }
 
 // Answer is a human_gate response (CLI --answer or REST verify_answer).
@@ -148,6 +152,8 @@ func (h *Hub) Start(ctx context.Context, args StartArgs) (*Run, error) {
 		ReviewDeferred:  args.ReviewDeferred,
 		Prior:           prior,
 		Owner:           args.Owner,
+		Focus:           args.Focus,
+		FocusSource:     args.FocusSource,
 		Ctx:             ctx,
 	})
 	if err := run.persistDefinition(); err != nil {

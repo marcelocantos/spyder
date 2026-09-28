@@ -487,6 +487,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `verify_status()` | Snapshot of active and retained verification runs plus the single in-flight owner gate. | Read-only REST. Finished runs stay until their creator dismisses them; their screenshots are omitted (use `verify_detail`). The dashboard uses `/ws/verify` instead of polling this. |
 | `verify_dismiss(run_id, owner?, cwd?)` | Remove a finished run from the live view; its bundle stays on disk. | Refused while the run is active or when the caller is not its creator (owner defaults to basename(cwd)). CLI: `spyder verify-dismiss --run ID [--as OWNER]`. |
 | `verify_review(run_id, step_id, finding?, notes?)` | Save the owner's review of a model result or deferred gate. `step_id` may be an outline number. | Normally called by the dashboard as the owner types. Findings are the gate's choices, or `pass`/`fail`/`unclear` for a model step; notes alone are a draft; empty finding and notes clear it. Stored in `~/.spyder/verify/reviews.db`, exported to the bundle's `owner-reviews.json`. The run status does not change. |
+| `verify_now(run_id, step_id)` | Put the app back into the state an entry awaiting review was judged in, and leave it there for the owner. | Replays only the entry's staging scripts (`spyder_script` ancestors, walking through model and `review_replay` checks, stopping at owner gates and builds) from the run's saved workflow and parameters. No checks, gates or cleanup run and nothing is reassessed; the new run ends `staged`, or failed (owner checks by hand). It never touches the resume record. The dashboard's **▶ Verify now** button calls it and shows progress in the entry's review box; such runs carry `focus`/`focus_source` and are not shown as tabs. A repeat request for the entry replaces the previous run; dismissing the source run dismisses them. |
 | `verify_report(run_id)` | The full run report as one JSON document: run facts, final status and STATUS block, the numbered outline, and every step with definition, records, model appraisal (image paths) and the owner's review, plus summary counts (`by_status`, `reviewable`, `reviewed`, `pending_review`, `model_verdicts`, `owner_findings`). | CLI: `spyder verify-report --run ID`. Read this to act on the owner's findings. |
 | `verify_detail(run_id, step_id?)` | One step's evidence: records, model appraisal (verdict, report, model), and every reviewed image as a data URI. Without `step_id`, the run's latest screenshot. | Images are served only from inside the run bundle. |
 | `verify_answer(run_id, gate_id, choice_id, comment?)` | Answer the in-flight `human_gate`. | Same path the dashboard gate buttons use. |
@@ -1546,6 +1547,10 @@ so owner review does not disturb the app.
 Owner review: each model result and each deferred owner gate has a review
 section in the step pane (finding plus multiline notes), saved as the owner
 types, Nagle-style (one save in flight; later edits coalesce into the next).
+Every entry also offers the finding `in_game` ("Check in game"): the owner
+cannot judge it without seeing it running. It settles the entry for this
+review and is counted in `needs_in_game`. `verify_now` restages such an entry
+for the owner without reassessing anything.
 To act on the owner's findings, fetch `verify_report(run_id)` (CLI:
 `spyder verify-report --run ID`) and read each step's `review`. A finding is
 review evidence; it does not change the run status or the resume record.

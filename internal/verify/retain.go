@@ -113,6 +113,8 @@ func loadRetained(h *Hub, dir string) (*Run, error) {
 		params:          params,
 		deferHuman:      meta.Unattended,
 		reviewDeferred:  meta.ReviewDeferred,
+		focus:           meta.Focus,
+		focusSource:     meta.FocusSource,
 		owner:           meta.Owner,
 		startedAt:       meta.StartedAt,
 		ctx:             ctx,
@@ -225,7 +227,8 @@ func (h *Hub) Dismiss(runID, owner string) error {
 	delete(h.runs, runID)
 	h.saveRetainedLocked()
 	h.mu.Unlock()
-	h.notify()
+	// Its Verify Now runs go with it.
+	h.dismissFocusRuns(runID, "", true)
 	return nil
 }
 

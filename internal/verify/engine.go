@@ -32,8 +32,12 @@ type Run struct {
 	prior          *Record
 	owner          string
 	startedAt      time.Time
-	ctx            context.Context
-	cancel         context.CancelFunc
+	// focus is the entry a Verify Now run stages for the owner; focusSource
+	// is the run it belongs to. Empty for ordinary runs.
+	focus       string
+	focusSource string
+	ctx         context.Context
+	cancel      context.CancelFunc
 
 	mu           sync.Mutex
 	okIDs        map[string]bool
@@ -81,6 +85,8 @@ type RunOpts struct {
 	ReviewDeferred  bool
 	Prior           *Record
 	Owner           string
+	Focus           string
+	FocusSource     string
 	Ctx             context.Context
 }
 
@@ -111,6 +117,8 @@ func newRun(h *Hub, wf *Workflow, opts RunOpts) *Run {
 		prior:          opts.Prior,
 		owner:          owner,
 		startedAt:      started,
+		focus:          opts.Focus,
+		focusSource:    opts.FocusSource,
 		ctx:            ctx,
 		cancel:         cancel,
 		okIDs:          map[string]bool{},
@@ -159,6 +167,8 @@ func (r *Run) persistDefinition() error {
 		StartedAt:      r.startedAt,
 		Unattended:     r.deferHuman,
 		ReviewDeferred: r.reviewDeferred,
+		Focus:          r.focus,
+		FocusSource:    r.focusSource,
 	}, "", "  ")
 	if err != nil {
 		return err
@@ -179,6 +189,8 @@ type runMeta struct {
 	StartedAt      time.Time `json:"started_at"`
 	Unattended     bool      `json:"unattended,omitempty"`
 	ReviewDeferred bool      `json:"review_deferred,omitempty"`
+	Focus          string    `json:"focus,omitempty"`
+	FocusSource    string    `json:"focus_source,omitempty"`
 }
 
 // Wait blocks until the run ends.
@@ -228,24 +240,28 @@ type GateView struct {
 // RunView is one graph in verify_status. Screenshot is sent only while the
 // run is active; a finished run's images load on demand (verify_detail).
 type RunView struct {
-	RunID          string     `json:"run_id"`
-	Workflow       string     `json:"workflow"`
-	Status         string     `json:"status"`
-	Reason         string     `json:"reason,omitempty"`
-	Owner          string     `json:"owner,omitempty"`
-	StartedAt      time.Time  `json:"started_at"`
-	Unattended     bool       `json:"unattended,omitempty"`
-	ReviewDeferred bool       `json:"review_deferred,omitempty"`
-	PendingReview  int        `json:"pending_review,omitempty"`
-	NeedsInGame    int        `json:"needs_in_game,omitempty"`
-	Cwd            string     `json:"cwd"`
-	Device         string     `json:"device,omitempty"`
-	Groups         []Group    `json:"groups"`
-	Steps          []StepView `json:"steps"`
-	Log            []string   `json:"log"`
-	Gate           *GateView  `json:"gate,omitempty"`
-	Screenshot     string     `json:"screenshot,omitempty"`
-	ReportDir      string     `json:"report_dir"`
+	RunID          string    `json:"run_id"`
+	Workflow       string    `json:"workflow"`
+	Status         string    `json:"status"`
+	Reason         string    `json:"reason,omitempty"`
+	Owner          string    `json:"owner,omitempty"`
+	StartedAt      time.Time `json:"started_at"`
+	Unattended     bool      `json:"unattended,omitempty"`
+	ReviewDeferred bool      `json:"review_deferred,omitempty"`
+	PendingReview  int       `json:"pending_review,omitempty"`
+	// Focus and FocusSource mark a Verify Now run: the entry it stages and
+	// the run it belongs to.
+	Focus       string     `json:"focus,omitempty"`
+	FocusSource string     `json:"focus_source,omitempty"`
+	NeedsInGame int        `json:"needs_in_game,omitempty"`
+	Cwd         string     `json:"cwd"`
+	Device      string     `json:"device,omitempty"`
+	Groups      []Group    `json:"groups"`
+	Steps       []StepView `json:"steps"`
+	Log         []string   `json:"log"`
+	Gate        *GateView  `json:"gate,omitempty"`
+	Screenshot  string     `json:"screenshot,omitempty"`
+	ReportDir   string     `json:"report_dir"`
 }
 
 // StepView is a dashboard step row. Evaluator says who judged the step:
@@ -264,7 +280,9 @@ type StepView struct {
 	Judgment   string `json:"judgment,omitempty"`
 	// Reviewable steps await the owner's review; Review is the owner's
 	// saved finding and Reviewed says it settles the step.
-	Reviewable  bool   `json:"reviewable,omitempty"`
+	Reviewable bool `json:"reviewable,omitempty"`
+	// Stageable reviewable steps have staging scripts Verify Now can replay.
+	Stageable   bool   `json:"stageable,omitempty"`
 	Review      string `json:"review,omitempty"`
 	Reviewed    bool   `json:"reviewed,omitempty"`
 	Evaluator   string `json:"evaluator,omitempty"`
@@ -321,6 +339,7 @@ func (r *Run) view() RunView {
 		if options := reviewOptions(s, st); options != nil {
 			rev := r.reviews[s.ID]
 			sv.Reviewable = true
+			sv.Stageable = len(StagingChain(r.wf, s.ID)) > 0
 			sv.Review = findingOf(rev)
 			sv.Reviewed = reviewComplete(rev, options)
 			if !sv.Reviewed {
@@ -357,6 +376,8 @@ func (r *Run) view() RunView {
 		ReviewDeferred: r.reviewDeferred,
 		PendingReview:  pending,
 		NeedsInGame:    inGame,
+		Focus:          r.focus,
+		FocusSource:    r.focusSource,
 		Cwd:            r.cwd,
 		Device:         r.params["device"],
 		Groups:         groups,
@@ -511,8 +532,17 @@ func (r *Run) drive() {
 	go r.watchIdle()
 
 	prior := r.prior
-	if prior == nil {
+	if prior == nil && r.focus == "" {
 		prior = LoadRecord(r.cwd, r.wf.Name)
+	}
+	if r.focus != "" {
+		chain := StagingChain(r.wf, r.focus)
+		for _, s := range r.wf.Steps {
+			if !chain[s.ID] {
+				r.skipIDs[s.ID] = true
+			}
+		}
+		r.emit("", fmt.Sprintf("verify now %s: staging %d steps; nothing is reassessed", r.focus, len(chain)))
 	}
 	// A normal run after unattended preparation must restage the whole graph.
 	// Reusing its automated passes is reserved for the explicit review mode.
@@ -559,7 +589,9 @@ func (r *Run) drive() {
 		r.okIDs[id] = true
 		r.passed[id] = true
 		r.setStatus(id, StepSkipped, 0)
-		r.emit(id, "skip "+id+"  already passed")
+		if r.focus == "" {
+			r.emit(id, "skip "+id+"  already passed")
+		}
 	}
 
 	type finished struct {
@@ -729,6 +761,10 @@ func (r *Run) drive() {
 		}
 	}
 
+	if r.focus != "" {
+		finishRun(StatusStaged, ExitPassed, "", "")
+		return
+	}
 	if len(r.deferred) > 0 {
 		finishRun(StatusPrepared, ExitPrepared, "owner judgments deferred", "")
 		return
@@ -992,6 +1028,9 @@ func (r *Run) record(rec StepRecord) {
 }
 
 func (r *Run) rememberPass(id string) {
+	if r.focus != "" {
+		return // Verify Now runs never touch the workflow's resume record
+	}
 	r.mu.Lock()
 	r.passed[id] = true
 	passed := keys(r.passed)
@@ -1159,7 +1198,16 @@ func (r *Run) runCleanup() (string, string) {
 
 func (r *Run) finish(status string, code int, reason, stepID string) {
 	r.cancel()
-	cleanupID, cleanupReason := r.runCleanup()
+	var cleanupID, cleanupReason string
+	if r.focus == "" {
+		cleanupID, cleanupReason = r.runCleanup()
+	} else {
+		// Verify Now leaves the app in the staged state for the owner.
+		for _, step := range r.wf.Cleanup {
+			r.setStatus(step.ID, StepSkipped, 0)
+		}
+		r.emit("", "verify now: app left in this state for review; cleanup skipped")
+	}
 	if cleanupID != "" {
 		if status == StatusPassed || status == StatusPrepared {
 			status, code, stepID, reason = StatusInvestigate, ExitInvestigate, cleanupID, cleanupReason
@@ -1270,7 +1318,9 @@ func (r *Run) finish(status string, code int, reason, stepID string) {
 	if status != StatusPassed {
 		rec.FailedStepID = failed
 	}
-	_ = SaveRecord(r.cwd, r.wf.Name, rec)
+	if r.focus == "" {
+		_ = SaveRecord(r.cwd, r.wf.Name, rec)
+	}
 
 	if reason != "" {
 		r.emit("", status+" "+r.wf.Name+"  "+reason)

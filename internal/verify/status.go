@@ -14,6 +14,9 @@ const (
 	StatusFailed      = "failed"
 	StatusAborted     = "aborted"
 	StatusPrepared    = "prepared"
+	// StatusStaged is a finished Verify Now run: the app is in the entry's
+	// state for the owner, and nothing was assessed.
+	StatusStaged = "staged"
 
 	StepOK       = "ok"
 	StepFailed   = "failed"
