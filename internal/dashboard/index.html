@@ -196,6 +196,15 @@
   .gate-choice { display: block; width: 100%; text-align: left; margin: 6px 0; padding: 10px 12px; min-height: 44px; }
   .verify-gate-comment { width: 100%; min-height: 64px; background: var(--panel); border: 1px solid var(--line);
                          color: var(--fg); border-radius: 6px; padding: 8px; font: inherit; }
+  /* Side by side, the steps list and the right-hand panel scroll
+     independently within the window; the page itself does not scroll. */
+  @media (min-width: 721px) {
+    #tab-verify:not(.hidden) { display: flex; flex-direction: column; height: 100%; }
+    #tab-verify .verify-runs { flex: 1; min-height: 0; }
+    #tab-verify .verify-run { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+    #tab-verify .verify-grid { flex: 1; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+    #tab-verify .vcol { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding-right: 6px; }
+  }
   @media (max-width: 720px) {
     body { flex-direction: column; height: auto; min-height: 100vh; }
     .sidebar { width: 100%; flex: none; max-height: 180px; }
@@ -1066,8 +1075,8 @@ function createVerifyCard() {
   el.innerHTML = `<div class="verify-run-head"><h3 data-v="title"></h3><span data-v="status" class="vstatus"></span><span data-v="device" class="muted"></span><span data-v="owner" class="muted"></span></div>
     <p data-v="reason" class="muted vreason hidden"></p>
     <div data-v="gate-banner" class="gate-banner hidden"><span>This run is asking you a question.</span><button data-v="to-gate" class="sm" type="button">Show the question</button></div>
-    <div class="verify-grid"><div><h2>Steps</h2><div data-v="timeline"></div></div>
-    <div data-v="live"><h2>Live</h2><p data-v="shot-empty" class="muted">No screenshot yet.</p>
+    <div class="verify-grid"><div class="vcol" data-v="steps-col"><h2>Steps</h2><div data-v="timeline"></div></div>
+    <div data-v="live" class="vcol"><h2>Live</h2><p data-v="shot-empty" class="muted">No screenshot yet.</p>
     <img data-v="shot" class="verify-shot hidden" alt="Latest screenshot from this run">
     <h2>Log</h2><div data-v="log" class="verify-log"></div>
     <div data-v="gate" class="gate-sheet hidden" role="dialog" aria-label="Owner verification question">
@@ -1078,7 +1087,7 @@ function createVerifyCard() {
       <label data-v="comment-wrap" class="hidden">Comment<textarea data-v="comment" class="verify-gate-comment"></textarea></label>
       <p data-v="gate-error" class="muted"></p><button data-v="abort" class="sm" type="button">Abort the run</button>
     </div></div>
-    <div data-v="detail" class="vdetail hidden"><div class="row"><button data-v="back" class="sm" type="button">← Live view</button></div>
+    <div data-v="detail" class="vcol vdetail hidden"><div class="row"><button data-v="back" class="sm" type="button">← Live view</button></div>
       <h3 data-v="d-title"></h3><p data-v="d-meta" class="muted"></p><div data-v="d-body"></div></div>
     </div>`;
   const get = name => el.querySelector(`[data-v="${name}"]`);
@@ -1155,7 +1164,8 @@ function selectVerifyStep(runID, stepID) {
   renderVerifyRun(verifyRuns.get(runID), verifyCard);
   // On a phone the detail pane stacks below the steps; bring it into view.
   // Step detail loads asynchronously, so it scrolls once it has rendered.
-  verifyScrollToDetail = !!stepID && (verifyScrollToDetail || verifyPhone());
+  verifyScrollToDetail = !!stepID && verifyPhone();
+  if (!verifyPhone()) (stepID ? verifyCard.detail : verifyCard.live).scrollTop = 0;
   if (!stepID && verifyPhone()) verifyCard.live.scrollIntoView({block: "start"});
 }
 let verifyScrollToDetail = false;
@@ -1448,7 +1458,6 @@ function nextUnassessed(runID, stepID) {
   for (let i = 1; i < steps.length; i++) {
     const s = steps[(here + i) % steps.length];
     if (s.reviewable && !s.reviewed) {
-      verifyScrollToDetail = true;
       selectVerifyStep(runID, s.id);
       const row = document.querySelector(`.vstep[data-step-id="${CSS.escape(s.id)}"]`);
       if (row) row.scrollIntoView({block: "nearest"});
