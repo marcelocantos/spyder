@@ -1,0 +1,42 @@
+# Reinstall an iOS development build from scratch and get it to the app
+# channel with no one at the device (🎯T154). A fresh install asks for Local
+# Network access on first launch; the app cannot reach spyder until someone
+# answers, so a Verify step answers it.
+#
+#   spyder verify workflows/ios-fresh-install.yaml --device Jevons \
+#     --set app=/path/to/App.app --set bundle_id=com.example.app
+#
+# Tapping needs the alert runner on the device (make alert-runner) and iOS
+# UI automation allowed (Touch ID once after a reboot, or Settings >
+# Developer > Enable UI Automation).
+name: ios-fresh-install
+params:
+  device: Jevons
+  app: ""
+  bundle_id: ""
+  owner: ios-fresh-install
+steps:
+  - id: reinstall
+    type: spyder_script
+    label: Uninstall, then deploy the development build
+    timeout_sec: 600
+    script: scripts/fresh_install.star
+    params: {device: "${device}", app: "${app}", bundle_id: "${bundle_id}", owner: "${owner}"}
+  - id: allow_local_network
+    type: spyder_script
+    label: Accept the Local Network alert
+    requires: [reinstall]
+    timeout_sec: 240
+    script: scripts/answer_system_alert.star
+    params: {device: "${device}", button: Allow, title: local network, owner: "${owner}"}
+  - id: app_channel
+    type: spyder_script
+    label: The app channel connects
+    requires: [allow_local_network]
+    timeout_sec: 120
+    script: scripts/await_app_channel.star
+    params: {device: "${device}", bundle_id: "${bundle_id}"}
+cleanup:
+  - id: release
+    type: shell
+    argv: [spyder, release, "${device}", --as, "${owner}"]
