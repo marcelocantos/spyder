@@ -81,6 +81,7 @@ func init() {
 		{"perf-fps", "spyder perf-fps <device> --package PKG [--window-sec N] [--as OWNER] [--json]", runPerfFPS},
 		{"port-forward", "spyder port-forward <device> start --device-port P [--local-port P] | stop --local-port P | list [--as OWNER] [--json]", runPortForward},
 		{"input-tap", "spyder input-tap <device> --x N --y N [--as OWNER]", runInputTap},
+		{"system-alert", "spyder system-alert <device> [--tap LABEL [--wait-ms N]] [--as OWNER] [--json]", runSystemAlert},
 		{"input-swipe", "spyder input-swipe <device> --x1 N --y1 N --x2 N --y2 N [--duration-ms N] [--as OWNER]", runInputSwipe},
 		{"app-perf-get", "spyder app-perf-get [--session-id ID] [--json]  (app-channel perfEmit counters)", runAppPerfGet},
 		{"wait-state", "spyder wait-state [--session-id ID | --device D --bundle-id B] --slice S [--select JQ] [--timeout-ms N] [--poll-ms N] [--json]", runWaitState},
@@ -1448,6 +1449,32 @@ func runInputTap(args []string) {
 		"y":      float64(yi),
 		"owner":  deriveOwner(pf.flags["--as"]),
 	}, false, !verbose(pf))
+}
+
+// runSystemAlert reads the iOS system alert showing on a device, or taps one
+// of its buttons with --tap (🎯T154).
+func runSystemAlert(args []string) {
+	pf, ctx, cancel := setupCommand("system-alert", args,
+		[]string{"--tap", "--wait-ms", "--as"}, []string{"--json"}, clitimeout.DefaultRun)
+	defer cancel()
+	requirePositional("system-alert", pf, 1)
+	button := pf.flags["--tap"]
+	if button == "" {
+		if pf.flags["--wait-ms"] != "" {
+			fatalUsage("system-alert", fmt.Errorf("--wait-ms needs --tap"))
+		}
+		dispatchAndExit(ctx, "system_alert", map[string]any{"device": pf.positional[0]}, pf.bools["--json"], false)
+		return
+	}
+	a := map[string]any{"device": pf.positional[0], "button": button, "owner": deriveOwner(pf.flags["--as"])}
+	if w := pf.flags["--wait-ms"]; w != "" {
+		ms, err := strconv.Atoi(w)
+		if err != nil || ms < 0 {
+			fatalUsage("system-alert", fmt.Errorf("--wait-ms: non-negative integer"))
+		}
+		a["wait_ms"] = float64(ms)
+	}
+	dispatchAndExit(ctx, "system_alert_tap", a, pf.bools["--json"], false)
 }
 
 func runInputSwipe(args []string) {

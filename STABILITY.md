@@ -116,6 +116,8 @@ builtin). `log_stream` is REST SSE only and is not in the verb table.
 | `port_forward_start` | `{device, device_port, local_port?, owner?}`. | JSON `{device, platform, local_port, device_port, spec, host_url}`. Android adb; iOS usbmux. | Stable (🎯T111/T112) |
 | `port_forward_stop` | `{device, local_port, owner?}`. | JSON `{device, platform, local_port, removed}`. | Stable (🎯T111/T112) |
 | `port_forward_list` | `{device, owner?}`. | JSON `{device, platform, forwards:[…]}`. | Stable (🎯T111/T112) |
+| `system_alert` | `{device}`. | JSON `{device, alert: {showing, owner?, title?, message?, buttons?}}`. iOS only. | Beta (🎯T154) |
+| `system_alert_tap` | `{device, button, wait_ms?, owner?}`. | JSON `{device, tapped, before, after}`; errors when no alert shows or the button is absent. iOS only; needs the alert runner installed. | Beta (🎯T154) |
 | `input_tap` | `{device, x, y, owner?}`. | Android: injected. iOS: clear error → app_input/mobile-mcp. | Stable (🎯T111/T112) |
 | `input_swipe` | `{device, x1, y1, x2, y2, duration_ms?, owner?}`. | Same Android/iOS split as tap. | Stable (🎯T111/T112) |
 | `device_setting` | `{device, key, value?, restore?, get?, owner?}`. Allowlist: `refresh_rate` (Android peak+min). | Android: JSON `{device, platform, result}` with action set/restore/get and current values. Restore **deletes** the pin. Unknown keys rejected (no adb shell). iOS: `"not supported"`. | Stable (🎯T130 / 🎯T112) — platform-honest |
@@ -276,6 +278,7 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder log <device> [--bundle-id ID \| --process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow \| --capture …] [--json]` | Without `--follow`: REST proxy to `logs` (bounded JSON array). With `--follow`: SSE live stream via `POST /api/v1/log_stream`. `--capture` / `--capture-get` / `--capture-stop` / `--capture-list` proxy `log_capture_*`. | Needs review — iOS range quirks; live streaming is REST-only |
 | `spyder perf-fps <device> --package PKG [--window-sec N] [--as OWNER] [--json]` | REST proxy to `perf_fps`. | Stable (🎯T111/T112) |
 | `spyder port-forward <device> start\|stop\|list …` | REST proxy to `port_forward_*`. | Stable (🎯T111/T112) |
+| `spyder system-alert <device> [--tap LABEL [--wait-ms N]] [--as OWNER] [--json]` | REST proxy to `system_alert` / `system_alert_tap`. | Beta (🎯T154) |
 | `spyder input-tap <device> --x N --y N [--as OWNER]` | REST proxy to `input_tap`. Android only; iOS fails closed. | Stable (🎯T111/T112) |
 | `spyder input-swipe <device> --x1 N --y1 N --x2 N --y2 N [--duration-ms N] [--as OWNER]` | REST proxy to `input_swipe`. | Stable (🎯T111/T112) |
 | `spyder app-perf-get [--session-id ID] [--json]` | REST proxy to `app_perf_get`. | Stable (🎯T110) |

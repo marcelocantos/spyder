@@ -106,7 +106,13 @@ run_script(path="deploy_and_sid",
            params={"device": "Jevons", "path": "/path/to/MyApp.app"})
 
 # stop it again
-terminate_app(device="Jevons", bundle_id="com.example.app")`,
+terminate_app(device="Jevons", bundle_id="com.example.app")
+
+# a fresh iOS install asks for permissions (Local Network, notifications,
+# tracking): read the alert, or tap a button once it appears (🎯T154;
+# tapping needs the alert runner: make alert-runner DEVICE=<udid> TEAM=<id>)
+emit(system_alert(device="Jevons"))
+system_alert_tap(device="Jevons", button="Allow", wait_ms=30000)`,
 
 	"capture": `capture — timeseries, metrics, and log collection
 

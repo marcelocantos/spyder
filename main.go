@@ -92,6 +92,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   port-forward  Host↔device TCP (Android adb; iOS usbmux; start|stop|list)
   input-tap     OS-level tap (Android; iOS → app_input/mobile-mcp)
   input-swipe   OS-level swipe (Android; iOS → app_input/mobile-mcp)
+  system-alert  Read an iOS system alert, or --tap a button (e.g. Allow)
   app-perf-get  Drain app-channel perfEmit counters (ge cooperative gauges)
   wait-state    Poll an app-channel slice until a jq select is truthy
   device-setting Set/restore/get allowlisted Android settings (iOS: not supported)

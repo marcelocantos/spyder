@@ -1,0 +1,40 @@
+# Spyder's system-alert runner (🎯T154): a minimal XCUITest bundle whose one
+# test taps a named button on an OS-owned alert (SpringBoard), such as the
+# Local Network, notification or tracking permission prompts. Spyder runs the
+# installed runner in-process through go-ios testmanagerd.
+#
+# Build and install on a device once (needs xcodegen and a signing team):
+#   make alert-runner DEVICE=<udid> TEAM=<team id>
+name: AlertRunner
+options:
+  bundleIdPrefix: com.marcelocantos.spyder
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+targets:
+  AlertHost:
+    type: application
+    platform: iOS
+    sources: [Host]
+    info:
+      path: Host/Info.plist
+      properties:
+        UILaunchScreen: {}
+        CFBundleDisplayName: Spyder Alerts
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.marcelocantos.spyder.AlertHost
+  AlertRunner:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: AlertHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.marcelocantos.spyder.AlertRunner
+        TEST_TARGET_NAME: AlertHost
+        GENERATE_INFOPLIST_FILE: YES

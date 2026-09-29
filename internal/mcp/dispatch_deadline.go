@@ -45,6 +45,11 @@ func toolDeadlineClass(name string) time.Duration {
 	case "verify":
 		// Owner gates and long shell graphs; no extra wall-clock cap.
 		return 0
+	case "system_alert_tap":
+		// Optional wait for the alert, then the XCUITest runner (🎯T154).
+		return 5 * time.Minute
+	case "system_alert":
+		return DeadlineDeviceOp
 	case "verify_status", "verify_answer", "verify_abort", "verify_dismiss", "verify_detail", "verify_review", "verify_report", "verify_now":
 		return DeadlineFastRead
 	case "app_exec", "run_script", "list_scripts":

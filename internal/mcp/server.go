@@ -732,6 +732,8 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"port_forward_stop":      h.handlePortForwardStop,
 		"port_forward_list":      h.handlePortForwardList,
 		"input_tap":              h.handleInputTap,
+		"system_alert":           h.handleSystemAlert,
+		"system_alert_tap":       h.handleSystemAlertTap,
 		"input_swipe":            h.handleInputSwipe,
 		"input_key":              h.handleInputKey,
 		"notification_shade":     h.handleNotificationShade,
@@ -836,6 +838,7 @@ func legacyDefinitions() []mcpgo.Tool {
 	defs := append(allBaseDefinitions(), visualDefinitions()...)
 	defs = append(defs, logCaptureDefinitions()...)
 	defs = append(defs, appChannelDefinitions()...)
+	defs = append(defs, systemAlertDefinitions()...)
 	return append(defs, verifyDefinitions()...)
 }
 

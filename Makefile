@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web sign release-dist release-tap release
+.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web alert-runner sign release-dist release-tap release
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -6,6 +6,19 @@ build: bin/spyder bin/ios bin/spyder-killusbmuxd
 # speaks the GE wire over spyder's relay — no link against the ge engine.
 player:
 	$(MAKE) -C player
+
+# iOS system-alert runner (🎯T154): builds ios/AlertRunner for a device and
+# installs it with spyder, so system_alert_tap can press SpringBoard alert
+# buttons. DEVICE is the device UDID; TEAM a development team that can sign
+# for it. Needs xcodegen. The dSYM stays out of the runner, because a file
+# added after signing fails install verification.
+alert-runner:
+	@test -n "$(DEVICE)" -a -n "$(TEAM)" || { echo "usage: make alert-runner DEVICE=<udid> TEAM=<team id>"; exit 2; }
+	cd ios/AlertRunner && xcodegen generate --quiet && xcodebuild build-for-testing \
+		-project AlertRunner.xcodeproj -scheme AlertRunner -destination 'id=$(DEVICE)' \
+		-derivedDataPath build DEVELOPMENT_TEAM=$(TEAM) DEBUG_INFORMATION_FORMAT=dwarf -allowProvisioningUpdates -quiet
+	bin/spyder install $(DEVICE) $(CURDIR)/ios/AlertRunner/build/Build/Products/Debug-iphoneos/AlertHost.app
+	bin/spyder install $(DEVICE) $(CURDIR)/ios/AlertRunner/build/Build/Products/Debug-iphoneos/AlertRunner-Runner.app
 
 # Browser player (🎯T101/🎯T106): same tree compiled to wasm; the daemon
 # serves player/web/dist at /player/.
