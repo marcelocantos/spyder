@@ -25,7 +25,9 @@ func (c LaneClass) NeedsConfirm() bool {
 }
 
 // ClassifyLane maps fastlane argv (after spyder flags) to a lane class.
-// The first non-flag token is treated as the action / lane name.
+// The first non-flag token is the action, except for Fastlane's optional
+// ios/android platform prefix (fastlane ios <lane>). Unknown lanes retain
+// their existing test_publish fallback.
 func ClassifyLane(fastlaneArgs []string) (LaneClass, string, error) {
 	action := firstAction(fastlaneArgs)
 	if action == "" {
@@ -40,6 +42,12 @@ func ClassifyLane(fastlaneArgs []string) (LaneClass, string, error) {
 		return ClassIrreversible, action, nil
 	case strings.Contains(joined, "upload_key_reset") || strings.Contains(joined, "request_upload_key"):
 		return ClassIrreversible, action, nil
+	case low == "submit_release":
+		return ClassProdPublish, action, nil
+	case low == "upload_testflight" && hasArgValue(fastlaneArgs, "external", "true"):
+		return ClassProdPublish, action, nil
+	case low == "upload_testflight":
+		return ClassTestPublish, action, nil
 	case low == "deliver" && (strings.Contains(joined, "submit_for_review") ||
 		strings.Contains(joined, "submit_for_review:true") ||
 		hasFlag(fastlaneArgs, "--submit_for_review")):
@@ -73,9 +81,13 @@ func ClassifyLane(fastlaneArgs []string) (LaneClass, string, error) {
 }
 
 func firstAction(args []string) string {
-	for _, a := range args {
+	for i, a := range args {
 		if a == "" || strings.HasPrefix(a, "-") {
 			continue
+		}
+		if (a == "ios" || a == "android") && i+1 < len(args) &&
+			args[i+1] != "" && !strings.HasPrefix(args[i+1], "-") {
+			return args[i+1]
 		}
 		return a
 	}

@@ -207,3 +207,82 @@ func TestCheckStudioMatchfile(t *testing.T) {
 		t.Fatal("expected team mismatch")
 	}
 }
+
+// T155: test the actual prepare/execute seam with a fake child. No signing,
+// keychain, bundle, store API or production credentials are involved.
+func TestGeReleaseConfirmBeforeChild(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		args         []string
+		needsConfirm bool
+	}{
+		{"submit", []string{"submit_release", "project:Game.xcodeproj"}, true},
+		{"platform-submit", []string{"ios", "submit_release"}, true},
+		{"external", []string{"upload_testflight", "external:true"}, true},
+		{"external-flag", []string{"ios", "upload_testflight", "--external=true"}, true},
+		{"external-split", []string{"upload_testflight", "--external", "true"}, true},
+		{"internal", []string{"upload_testflight"}, false},
+		{"false", []string{"upload_testflight", "external:false"}, false},
+		{"false-flag", []string{"ios", "upload_testflight", "--external=false"}, false},
+		{"false-split", []string{"upload_testflight", "--external", "false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := t.TempDir()
+			marker := filepath.Join(cwd, "launched")
+			fakeBundle := filepath.Join(cwd, "bundle")
+			if err := os.WriteFile(fakeBundle, []byte("#!/bin/sh\nprintf 'child\\n' >> '"+marker+"'\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			oldAudit := AuditRoot
+			AuditRoot = func() string { return filepath.Join(cwd, "audit") }
+			t.Cleanup(func() { AuditRoot = oldAudit })
+			makeOpts := func(confirm, dryRun bool) FastlaneOpts {
+				return FastlaneOpts{
+					Studio: StudioSquz, Args: tc.args, Confirm: confirm, DryRun: dryRun,
+					Cwd: cwd, LookPath: func(string) (string, error) { return fakeBundle, nil },
+					Environ: []string{"PATH=/usr/bin:/bin", "HOME=" + cwd},
+				}
+			}
+			prepare := func(opts FastlaneOpts) (*FastlanePlan, error) {
+				return prepareFastlaneFromEnv(StudioSquz, &Envelope{Version: EnvelopeVersion}, opts, cwd)
+			}
+			if tc.needsConfirm {
+				plan, err := prepare(makeOpts(false, false))
+				if plan != nil {
+					WipeTemps(plan.TempFiles)
+				}
+				if err == nil || !strings.Contains(err.Error(), "--confirm") {
+					t.Fatalf("missing --confirm must refuse before child: plan=%v err=%v", plan, err)
+				}
+				if _, err := os.Stat(marker); !os.IsNotExist(err) {
+					t.Fatalf("child ran on denial: %v", err)
+				}
+			}
+			dryOpts := makeOpts(false, true)
+			dryPlan, err := prepare(dryOpts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if code, err := executeFastlanePlan(dryPlan, dryOpts); err != nil || code != 0 {
+				t.Fatalf("dry-run: %d %v", code, err)
+			}
+			WipeTemps(dryPlan.TempFiles)
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("child ran on dry-run: %v", err)
+			}
+
+			confirmed := makeOpts(true, false)
+			plan, err := prepare(confirmed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer WipeTemps(plan.TempFiles)
+			if code, err := executeFastlanePlan(plan, confirmed); err != nil || code != 0 {
+				t.Fatalf("confirmed: %d %v", code, err)
+			}
+			if body, err := os.ReadFile(marker); err != nil || string(body) != "child\n" {
+				t.Fatalf("fake child not run: %q %v", body, err)
+			}
+		})
+	}
+}

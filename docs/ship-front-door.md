@@ -275,19 +275,25 @@ applies a **lane class**, not a consumer recipe name.
 |---|---|---|
 | `read` | `sync_certs` (readonly match), `precheck` | none |
 | `build` | `gym`, `build_ipa` | none (no store mutation) |
-| `test_publish` | `pilot` internal, `supply` track internal/alpha/beta | audit only |
-| `prod_publish` | `deliver` submit, `supply` production, `pilot` external if treated as store-visible | `--confirm` |
+| `test_publish` | `pilot` internal, `upload_testflight` with `external:false` or no external option, `supply` track internal/alpha/beta | audit only |
+| `prod_publish` | `submit_release`, `upload_testflight external:true`, `deliver` submit, `supply` production, `pilot` external if treated as store-visible | `--confirm` |
 | `irreversible` | `match nuke`, upload-key reset, `deliver` metadata overwrite if consumer opts in | `--confirm` + explicit action allowlist |
 
 Spyder does not decide “this is ge alpha.” The consumer’s
 `make ship-release` is responsible for `CONFIRM=1` *and* must
-pass `--confirm` into `spyder fastlane deliver …`. Either gate
-failing is a hard stop.
+pass `--confirm` into `spyder fastlane --studio squz --confirm -- submit_release`
+(or `upload_testflight external:true`). Spyder refuses these production
+lanes without `--confirm` **before launching the fastlane child**. The
+consumer gate is additional: either gate failing is a hard stop.
+The supported argv shapes are `submit_release`, `ios submit_release`,
+`upload_testflight external:true|false`, and `ios upload_testflight
+--external=true|false`; `external` absent/false stays `test_publish`.
+`--confirm` is a spyder option *before* `--`, not an option passed to
+the Fastfile. Unknown lanes retain their current fallback policy.
 
 `--dry-run`: spyder resolves secrets, writes temps, prints the
 exact argv and **redacted** env keys (not values), does not exec
-fastlane (or execs with fastlane’s own `--dry-run` where the
-action supports it). Used in CI-of-the-laptop (`make test`) and
+fastlane. Used in CI-of-the-laptop (`make test`) and
 before a first live `test_publish`.
 
 Match file / team: the **consumer** Matchfile already contains
@@ -321,7 +327,20 @@ does not vendor their Fastfiles or execute their recipes.
 - Android: `make android-bundle` asks spyder to materialise
   the upload PKCS12 for Gradle (or `spyder fastlane` a supply
   lane after the AAB exists).
-- Fastfile stays in `ge/fastlane/`; spyder does not vendor it.
+- Fastfile stays in `ge/fastlane/`; spyder does not vendor it. The
+  consumer must pass `project:<path-to-xcodeproj>` explicitly to
+  `build_ipa` (along with `scheme:` and `output_directory:`), rather than
+  relying on parent `SHIP_PROJECT`: that variable is not passed into
+  spyder’s fastlane child. For example:
+
+  ```bash
+  spyder fastlane --studio squz -- build_ipa project:Game.xcodeproj scheme:Game output_directory:build
+  spyder fastlane --studio squz -- upload_testflight external:false
+  spyder fastlane --studio squz --confirm -- upload_testflight external:true
+  spyder fastlane --studio squz --confirm -- submit_release
+  spyder fastlane --studio squz --dry-run -- submit_release # no child launch
+  ```
+
 
 **Follow-up (filed outside spyder):** ge 🎯T183 — “ship Make invokes
 `spyder fastlane` / `spyder secret missing`; parent env has no
