@@ -38,6 +38,10 @@ import (
 // maxFrameBytes bounds a single wire message (H.264 access unit or input).
 const maxFrameBytes = 16 << 20
 
+// A server must open the wire after player_attached promptly. A missing wire
+// must not leave an accepted player and catalogue entry alive indefinitely.
+const wireAttachTimeout = 3 * time.Second
+
 // Relay orchestrates server/player pairing and byte-piping.
 type Relay struct {
 	mu       sync.Mutex
@@ -157,6 +161,8 @@ type session struct {
 	playerRemote string
 	wireRemote   string // set when the server opens the per-session wire
 	wireCh       chan *websocket.Conn
+	cancel       context.CancelFunc // ends the wire wait and both relay handlers
+	done         <-chan struct{}
 	started      time.Time
 
 	s2p hopRates // server → player (video messages)
@@ -346,12 +352,12 @@ func (r *Relay) HandleServerSideband(w http.ResponseWriter, req *http.Request) {
 
 	r.mu.Lock()
 	old := r.servers[name]
-	var playersToClose []*websocket.Conn
+	var sessionsToClose []*session
 	if old != nil {
 		for id, s := range r.sessions {
 			if s.server == old {
 				if s.player != nil {
-					playersToClose = append(playersToClose, s.player)
+					sessionsToClose = append(sessionsToClose, s)
 				}
 				// Drop from catalogue immediately so GET /stream/sessions
 				// reflects replace before player teardown finishes.
@@ -366,20 +372,21 @@ func (r *Relay) HandleServerSideband(w http.ResponseWriter, req *http.Request) {
 		// Close players + old sideband asynchronously: player Close can
 		// wait for servePlayer teardown which itself writes player_detached
 		// on the old sideband — doing this synchronously deadlocks replace.
-		go func(old *serverConn, players []*websocket.Conn) {
-			for _, p := range players {
-				_ = p.Close(websocket.StatusGoingAway, "server replaced")
+		go func(old *serverConn, sessions []*session) {
+			for _, s := range sessions {
+				s.cancel()
+				_ = s.player.CloseNow()
 			}
 			if old.cancel != nil {
 				old.cancel()
 			}
 			_ = old.sideband.Close(websocket.StatusGoingAway, "replaced")
-		}(old, playersToClose)
+		}(old, sessionsToClose)
 		slog.Info("streamrelay: server replaced",
 			"name", name,
 			"old_remote", old.remote,
 			"new_remote", remote,
-			"sessions_evicted", len(playersToClose),
+			"sessions_evicted", len(sessionsToClose),
 			"path_class", ClassifyRemote(remote),
 		)
 	} else {
@@ -409,10 +416,21 @@ func (r *Relay) HandleServerSideband(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	r.mu.Lock()
+	var abandoned []*session
 	if r.servers[name] == sc {
 		delete(r.servers, name)
+		for id, s := range r.sessions {
+			if s.server == sc {
+				delete(r.sessions, id)
+				abandoned = append(abandoned, s)
+			}
+		}
 	}
 	r.mu.Unlock()
+	for _, s := range abandoned {
+		s.cancel()
+		_ = s.player.CloseNow()
+	}
 	slog.Info("streamrelay: server disconnected",
 		"name", name,
 		"remote", remote,
@@ -443,8 +461,12 @@ func (r *Relay) HandleServerWire(w http.ResponseWriter, req *http.Request) {
 	}
 	c.SetReadLimit(maxFrameBytes)
 	r.mu.Lock()
-	if s := r.sessions[id]; s != nil {
-		s.wireRemote = req.RemoteAddr
+	if r.sessions[id] == sess && r.servers[sess.server.name] == sess.server {
+		sess.wireRemote = req.RemoteAddr
+	} else {
+		r.mu.Unlock()
+		_ = c.CloseNow()
+		return
 	}
 	r.mu.Unlock()
 	slog.Info("streamrelay: wire open",
@@ -456,11 +478,18 @@ func (r *Relay) HandleServerWire(w http.ResponseWriter, req *http.Request) {
 	// (closing here would tear the wire down).
 	select {
 	case sess.wireCh <- c:
+	case <-sess.done:
+		_ = c.CloseNow()
+		return
 	case <-req.Context().Done():
-		_ = c.Close(websocket.StatusNormalClosure, "")
+		_ = c.CloseNow()
 		return
 	}
-	<-req.Context().Done()
+	select {
+	case <-sess.done:
+	case <-req.Context().Done():
+	}
+	_ = c.CloseNow()
 }
 
 // HandlePlayerConnect handles GET /stream/player/<name>: a browser attaching to
@@ -509,7 +538,15 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 	c.SetReadLimit(maxFrameBytes)
 
 	playerRemote := req.RemoteAddr
+	ctx, cancel := context.WithCancel(req.Context())
 	r.mu.Lock()
+	// The catalogue may have changed while the WebSocket handshake ran.
+	if r.servers[name] != sc {
+		r.mu.Unlock()
+		cancel()
+		_ = c.CloseNow()
+		return
+	}
 	r.seq++
 	id := fmt.Sprintf("s%d", r.seq)
 	sess := &session{
@@ -518,6 +555,8 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 		player:       c,
 		playerRemote: playerRemote,
 		wireCh:       make(chan *websocket.Conn, 1),
+		cancel:       cancel,
+		done:         ctx.Done(),
 		started:      time.Now(),
 	}
 	r.sessions[id] = sess
@@ -531,8 +570,8 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 		"server_path_class", ClassifyRemote(sc.remote),
 	)
 
-	ctx := req.Context()
 	defer func() {
+		cancel()
 		var (
 			framesS2P, bytesS2P, maxS2P uint64
 			framesP2S, bytesP2S         uint64
@@ -551,7 +590,16 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 		}
 		delete(r.sessions, id)
 		r.mu.Unlock()
-		_ = sc.send(context.Background(), map[string]any{"type": "player_detached", "session_id": id})
+		// A dead/replaced sideband does not need a detach (and writing to it
+		// with Background could strand cleanup forever).
+		r.mu.Lock()
+		active := r.servers[name] == sc
+		r.mu.Unlock()
+		if active {
+			writeCtx, stop := context.WithTimeout(context.Background(), time.Second)
+			_ = sc.send(writeCtx, map[string]any{"type": "player_detached", "session_id": id})
+			stop()
+		}
 		_ = c.Close(websocket.StatusNormalClosure, "")
 		slog.Info("streamrelay: player detached",
 			"server", name,
@@ -570,14 +618,22 @@ func (r *Relay) servePlayer(w http.ResponseWriter, req *http.Request, name strin
 	}()
 
 	// Ask the server to open the wire for this session.
-	if err := sc.send(ctx, map[string]any{"type": "player_attached", "session_id": id}); err != nil {
+	sendCtx, stopSend := context.WithTimeout(ctx, wireAttachTimeout)
+	err = sc.send(sendCtx, map[string]any{"type": "player_attached", "session_id": id})
+	stopSend()
+	if err != nil {
 		return
 	}
 
 	// Wait for the server's wire.
 	var wire *websocket.Conn
+	attachTimer := time.NewTimer(wireAttachTimeout)
+	defer attachTimer.Stop()
 	select {
 	case wire = <-sess.wireCh:
+	case <-attachTimer.C:
+		slog.Warn("streamrelay: wire attach timed out", "server", name, "session", id)
+		return
 	case <-ctx.Done():
 		return
 	}
