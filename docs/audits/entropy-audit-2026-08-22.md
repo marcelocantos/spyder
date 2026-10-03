@@ -323,32 +323,12 @@ The dispatch deadline and execution behavior were not changed.
 - **Ratchet candidate:** extend `TestDefinitions_SingleEntryPoint` with a
   file assert on `STABILITY.md`, or a small `docs_parity_test.go`.
 
-### ENT-004: Bundled Starlark has an unenforced repo mirror
+### ENT-004: Bundled Starlark has an enforced repo mirror
 
 - **Priority:** P2
-- **Dimensions:** Redundancy / sources of truth; Change amplification
-- **Status:** observed fact (two trees); inference (will drift)
-- **Evidence:**
-  - Shipped embed: `internal/scriptlib/lib.go:21-22`
-    `//go:embed recipes/*.star`.
-  - Documented mirror: `agents-guide.md:277-278`, `README.md` (`scripts/lib/`).
-  - `diff -rq scripts/lib internal/scriptlib/recipes` — identical (14 files)
-    on this snapshot.
-  - `internal/scriptlib/lib_test.go` loads `skeleton` from the embed only;
-    no test compares the two directories.
-- **Mechanism:** Editing `scripts/lib` (the path the agent guide tells a
-  human to version) does not change the binary. Editing `recipes/` without
-  copying to `scripts/lib` makes the repo lie about what ships.
-- **Blast radius:** 14 durable recipes (`deploy_and_sid`, `yw_mode_smoke`,
-  explore/collect/regress set).
-- **Counterevidence checked:** user overrides under `~/.spyder/scripts/`
-  are a *third* layer by design (user wins). That layer is not the
-  problem; the two in-repo copies are.
-- **Smallest coherent remediation:** either embed `scripts/lib` directly,
-  or add `TestRecipesMatchRepoMirror` that byte-compares the two dirs.
-- **Verification:** that test fails if either side is edited alone.
-- **Ratchet candidate:** `internal/scriptlib` test; optional
-  `make_target` once hygiene is declared.
+- **Status:** closed by `TestRecipesMatchRepoMirror` in `internal/scriptlib/recipes_mirror_test.go`.
+- **Shipped path:** `//go:embed recipes/*.star` still bundles `internal/scriptlib/recipes/*.star`; `scripts/lib/*.star` remains the documented repo mirror. The test compares both sets of filenames and their bytes, failing on a missing, extra, or edited recipe on either side. It runs with `go test ./internal/scriptlib` and requires no user script directory or device.
+- **Scope:** user overrides in `~/.spyder/scripts/` remain deliberately independent; this guard only enforces the two in-repo copies.
 
 ### ENT-005: `internal/mcp` is the change-amplification hub
 
