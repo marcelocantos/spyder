@@ -4,30 +4,97 @@
 package main
 
 import (
+	"context"
+	"net"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/daemon"
+	"github.com/marcelocantos/spyder/internal/listenaddr"
+	"github.com/marcelocantos/spyder/internal/paths"
 )
 
 func TestParseServeAddr(t *testing.T) {
-	got, err := parseServeAddr(nil, "", "")
-	if err != nil || got != defaultAddr {
-		t.Fatalf("default: got %q err %v", got, err)
+	for _, tc := range []struct {
+		name                 string
+		args                 []string
+		env, persisted, want string
+		explicit             bool
+	}{
+		{"default", nil, "", "", defaultAddr, false},
+		{"persisted", nil, "", ":3030", ":3030", false},
+		{"env", nil, ":4040", ":3030", ":4040", false},
+		{"flag", []string{"--addr", ":5050"}, ":4040", ":3030", ":5050", true},
+		{"short flag", []string{"-a", ":5050"}, "", ":3030", ":5050", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, explicit, err := parseServeAddr(tc.args, tc.env, tc.persisted)
+			if err != nil || got != tc.want || explicit != tc.explicit {
+				t.Fatalf("got %q explicit=%v err=%v; want %q explicit=%v", got, explicit, err, tc.want, tc.explicit)
+			}
+		})
 	}
-	got, err = parseServeAddr(nil, "", ":3030")
-	if err != nil || got != ":3030" {
-		t.Fatalf("persisted: got %q err %v", got, err)
-	}
-	got, err = parseServeAddr(nil, ":4040", ":3030")
-	if err != nil || got != ":4040" {
-		t.Fatalf("env: got %q err %v", got, err)
-	}
-	got, err = parseServeAddr([]string{"--addr", ":5050"}, ":4040", ":3030")
-	if err != nil || got != ":5050" {
-		t.Fatalf("flag: got %q err %v", got, err)
-	}
-	if _, err := parseServeAddr([]string{"--addr"}, "", ""); err == nil {
+	if _, _, err := parseServeAddr([]string{"--addr"}, "", ""); err == nil {
 		t.Fatal("missing --addr value should error")
+	}
+}
+
+// Regression for 🎯T151: a test-port --addr must not steal the
+// supervisor's persisted address. Run only on a local ephemeral port and
+// redirect HOME, never touch the actual daemon or ~/.spyder.
+func TestServeExplicitAddrLeavesRememberedAddr(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := paths.ListenAddrPath()
+	if err := listenaddr.Save(path, ":3030"); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().String()
+	ln.Close()
+	addr, explicit, err := parseServeAddr([]string{"--addr", port}, "", listenaddr.Load(path))
+	if err != nil || !explicit || addr != port {
+		t.Fatalf("explicit resolution: addr=%q explicit=%v err=%v", addr, explicit, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- daemon.Run(ctx, daemon.Config{Addr: addr, ExplicitAddr: explicit, Version: "test"}) }()
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		conn, dialErr := net.DialTimeout("tcp", port, 100*time.Millisecond)
+		if dialErr == nil {
+			conn.Close()
+			break
+		}
+		select {
+		case runErr := <-errCh:
+			t.Fatalf("test server stopped before listening: %v", runErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("test server did not listen at %s: %v", port, dialErr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case runErr := <-errCh:
+		if runErr != nil {
+			t.Fatalf("test server: %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("test server did not stop")
+	}
+	if got := listenaddr.Load(path); got != ":3030" {
+		t.Fatalf("--addr replaced supervisor remembered address with %q", got)
+	}
+	got, override, err := parseServeAddr(nil, "", listenaddr.Load(path))
+	if err != nil || override || got != ":3030" {
+		t.Fatalf("no-flag restart: addr=%q explicit=%v err=%v; want :3030", got, override, err)
 	}
 }
 

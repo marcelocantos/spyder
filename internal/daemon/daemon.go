@@ -55,9 +55,10 @@ const (
 
 // Config configures a spyder server instance.
 type Config struct {
-	Addr        string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
-	Version     string // emitted in serverInfo
-	TunneldAddr string // Deprecated: tunneld is no longer used; field retained for backward compat.
+	Addr         string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
+	ExplicitAddr bool   // --addr override: do not replace the supervised daemon's remembered address.
+	Version      string // emitted in serverInfo
+	TunneldAddr  string // Deprecated: tunneld is no longer used; field retained for backward compat.
 }
 
 // Start creates the MCP server, registers all spyder tools, wraps it in
@@ -150,8 +151,10 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("http listen %s: %w", cfg.Addr, err)
 	}
-	if perr := listenaddr.Save(paths.ListenAddrPath(), cfg.Addr); perr != nil {
-		slog.Warn("listen-addr persist failed", "path", paths.ListenAddrPath(), "error", perr)
+	if !cfg.ExplicitAddr {
+		if perr := listenaddr.Save(paths.ListenAddrPath(), cfg.Addr); perr != nil {
+			slog.Warn("listen-addr persist failed", "path", paths.ListenAddrPath(), "error", perr)
+		}
 	}
 
 	slog.Info("spyder listening",

@@ -177,12 +177,12 @@ func main() {
 
 // runServe parses optional --addr and starts the HTTP MCP server.
 func runServe(args []string) {
-	addr, err := parseServeAddr(args, os.Getenv("SPYDER_ADDR"), listenaddr.Load(paths.ListenAddrPath()))
+	addr, explicit, err := parseServeAddr(args, os.Getenv("SPYDER_ADDR"), listenaddr.Load(paths.ListenAddrPath()))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	if err := daemon.Start(daemon.Config{Addr: addr, Version: version}); err != nil {
+	if err := daemon.Start(daemon.Config{Addr: addr, Version: version, ExplicitAddr: explicit}); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 		os.Exit(1)
 	}
@@ -190,21 +190,21 @@ func runServe(args []string) {
 
 // parseServeAddr resolves the HTTP bind: --addr, then env (SPYDER_ADDR),
 // then the last successful persist, then the loopback default (🎯T103).
-func parseServeAddr(args []string, env, persisted string) (string, error) {
+func parseServeAddr(args []string, env, persisted string) (string, bool, error) {
 	explicit := ""
 	for len(args) > 0 {
 		switch args[0] {
 		case "--addr", "-a":
 			if len(args) < 2 {
-				return "", errors.New("serve: --addr requires a value")
+				return "", false, errors.New("serve: --addr requires a value")
 			}
 			explicit = args[1]
 			args = args[2:]
 		default:
-			return "", fmt.Errorf("serve: unknown flag %q", args[0])
+			return "", false, fmt.Errorf("serve: unknown flag %q", args[0])
 		}
 	}
-	return listenaddr.Resolve(explicit, env, persisted, defaultAddr), nil
+	return listenaddr.Resolve(explicit, env, persisted, defaultAddr), explicit != "", nil
 }
 
 // runArgs are the parsed CLI flags for `spyder run`.
