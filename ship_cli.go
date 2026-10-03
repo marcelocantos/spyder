@@ -332,7 +332,14 @@ func runSecretImport(args []string) {
 
 // runFastlane is the consumer front door (🎯T133.4/T133.5).
 func runFastlane(args []string) {
-	if err := ship.RequireSecretsAccess(); err != nil {
+	runFastlaneWith(args, ship.RequireSecretsAccess, ship.RunFastlane)
+}
+
+// runFastlaneWith keeps the production access check and executor explicit,
+// allowing a test subprocess to drive the same argument parser and dispatch
+// against a synthetic envelope and fake child, without touching Keychain.
+func runFastlaneWith(args []string, requireAccess func() error, execute func(ship.FastlaneOpts) (int, error)) {
+	if err := requireAccess(); err != nil {
 		fmt.Fprintf(os.Stderr, "fastlane: %v\n", err)
 		os.Exit(1)
 	}
@@ -373,7 +380,7 @@ func runFastlane(args []string) {
 		fatalUsage("fastlane", fmt.Errorf("missing fastlane action (e.g. spyder fastlane --studio squz pilot)"))
 	}
 	ship.SpyderVersion = version
-	code, err := ship.RunFastlane(opts)
+	code, err := execute(opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fastlane: %v\n", err)
 		if code == 0 {

@@ -28,6 +28,9 @@ type FastlaneOpts struct {
 	LookPath func(file string) (string, error)
 	// Environ is the parent process env (default os.Environ).
 	Environ []string
+	// LoadEnvelope is an in-process dependency for hermetic CLI tests. The
+	// actual CLI leaves it nil and always reads the studio keychain.
+	LoadEnvelope func(string) (*Envelope, error)
 }
 
 // FastlanePlan is the resolved exec plan (also used for --dry-run output).
@@ -72,7 +75,11 @@ func PrepareFastlane(opts FastlaneOpts) (*FastlanePlan, error) {
 	if err := CheckStudioMatchfile(studio, cwd); err != nil {
 		return nil, err
 	}
-	env, err := LoadStudio(studio)
+	load := opts.LoadEnvelope
+	if load == nil {
+		load = LoadStudio
+	}
+	env, err := load(studio)
 	if err != nil {
 		return nil, err
 	}
