@@ -396,6 +396,28 @@ against real apps.
   builds (`SPYDER_ALLOW_UNSIGNED_SECRETS=1` for unit tests
   only).
 
+### 9.1.1 ge CLI regression identity (🎯T155)
+
+`TestFastlaneCLI_GeConsumer` runs the **Go test executable**, not an installed
+`spyder`. It drives the production fastlane argument handler in a subprocess,
+with an in-process synthetic empty envelope and a fake `bundle` script confined
+to a temporary directory. Its assertions cover no-`--confirm` denial before
+launch, dry-run zero launches, confirmed fake-child argv (`project:...` included),
+and the supported `ios`-prefixed shapes. It does **not** sign, access studio
+Keychain items, call a store API, or prove an installed CLI is updated. Run
+`go version -m <actual CLI path>` and compare its `vcs.revision` to the
+classifier commit before making an installed-runtime claim. At scout time,
+`/Users/marcelo/go/bin/spyder` printed `0.88.0-hybrid` with build revision
+`7729d73be95d08c9b62be321736ff7749286d85d` and `vcs.modified=true`;
+that revision predates classifier commit `42a7f988`. The Homebrew `v0.97.0`
+binary did not advertise a `vcs.revision` in its build info. Neither identity
+is evidence of the ge classifier in an installed executable.
+
+Executable oracle: `go test . -run '^TestFastlaneCLI_GeConsumer$' -count=1 -v`.
+The clean-tree gate must use the default gate store:
+`/Users/marcelo/work/github.com/marcelocantos/jevons/bin/gate -clean -- go test . -run '^TestFastlaneCLI_GeConsumer$' -count=1 -v`.
+Do not point the gate at a temporary store or cite this as an installed check.
+
 ### 9.2 Rehearsal (laptop, no store mutation)
 
 - `spyder secret status` / `missing` against the real
