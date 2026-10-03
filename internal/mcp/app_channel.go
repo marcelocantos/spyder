@@ -1516,7 +1516,7 @@ func appChannelDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("path", mcpgo.Description("Script name or path (alias: name).")),
 			mcpgo.WithString("name", mcpgo.Description("Alias for path.")),
 			mcpgo.WithObject("params", mcpgo.Description("Optional string map injected as Starlark global params.")),
-			mcpgo.WithNumber("max_duration_ms", mcpgo.Description("Wall-clock budget ms (default 30000, max 600000).")),
+			mcpgo.WithNumber("max_duration_ms", mcpgo.Description(fmt.Sprintf("Wall-clock budget ms (default %d, max %d).", int64(defaultExecDuration/time.Millisecond), int64(maxExecDuration/time.Millisecond)))),
 		),
 	}
 }

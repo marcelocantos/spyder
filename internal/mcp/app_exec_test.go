@@ -6,6 +6,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -325,6 +328,69 @@ func TestDefinitions_SingleEntryPoint(t *testing.T) {
 			names[i] = d.Name
 		}
 		t.Fatalf("Definitions() must expose only app_exec, got %v", names)
+	}
+}
+
+// The executable cap is the authority for both wire-facing app_exec prose
+// and the retained run_script arg schema (which backs Starlark/REST help).
+// Keep the agent guide on that same bound rather than trusting old prose.
+func TestExec_AdvertisedDurationCapMatchesRuntime(t *testing.T) {
+	capMS := int64(maxExecDuration / time.Millisecond)
+	capSeconds := int64(maxExecDuration / time.Second)
+	defaultMS := int64(defaultExecDuration / time.Millisecond)
+	tool := appExecDefinition()
+	if !strings.Contains(tool.Description, fmt.Sprintf("max %ds", capSeconds)) || strings.Contains(tool.Description, "max 120s") {
+		t.Errorf("app_exec prose disagrees with %dms runtime cap: %q", capMS, tool.Description)
+	}
+	checkSchema := func(name string, tool mcpgo.Tool) {
+		t.Helper()
+		raw, ok := tool.InputSchema.Properties["max_duration_ms"].(map[string]any)
+		if !ok {
+			t.Fatalf("%s lacks max_duration_ms schema: %#v", name, tool.InputSchema.Properties)
+		}
+		desc, _ := raw["description"].(string)
+		if !strings.Contains(desc, fmt.Sprint(capMS)) || !strings.Contains(desc, fmt.Sprint(defaultMS)) {
+			t.Errorf("%s max_duration_ms schema disagrees with runtime %dms / default %dms: %q", name, capMS, defaultMS, desc)
+		}
+		// Detect a contradictory second cap even if the correct number is present.
+		caps := regexp.MustCompile(`(?:max|capped at)\s+(\d+)`).FindAllStringSubmatch(desc, -1)
+		if len(caps) != 1 || caps[0][1] != fmt.Sprint(capMS) {
+			t.Errorf("%s must advertise exactly one cap of %dms: %q", name, capMS, desc)
+		}
+	}
+	checkSchema("app_exec", tool)
+	found := false
+	for _, legacy := range legacyDefinitions() {
+		if legacy.Name == "run_script" {
+			checkSchema("run_script", legacy)
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("run_script legacy definition missing")
+	}
+	guide, err := os.ReadFile("../../agents-guide.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only inspect duration rows, not unrelated 120-second timeouts or pool linger.
+	capPattern := regexp.MustCompile(`(?:max|capped at)\s+([0-9][0-9 ]*)`)
+	checked := 0
+	for _, line := range strings.Split(string(guide), "\n") {
+		if !strings.Contains(line, "max_duration_ms") {
+			continue
+		}
+		matches := capPattern.FindAllStringSubmatch(line, -1)
+		for _, match := range matches {
+			advertised := strings.ReplaceAll(strings.TrimSpace(match[1]), " ", "")
+			if advertised != fmt.Sprint(capMS) {
+				t.Errorf("agents-guide.md duration cap %s != %d: %q", advertised, capMS, line)
+			}
+			checked++
+		}
+	}
+	if checked < 3 {
+		t.Fatalf("only %d duration caps found in agents-guide.md; expected app_exec, script and run_script prose", checked)
 	}
 }
 

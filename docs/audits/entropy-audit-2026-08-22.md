@@ -226,6 +226,15 @@ Do not collapse this vector to a score.
 - **Ratchet candidate:** that test in `internal/mcp/app_exec_test.go`
   (already owns `TestExec_BuiltinCoversEveryAdvertisedVerb`).
 
+**Resolution (2026-10-03, T132.1):** The shipped `app_exec` description now
+formats its seconds ceiling from `maxExecDuration`; the `app_exec` parameter
+and retained `run_script` schema format their millisecond ceilings from the
+same constant. `TestExec_AdvertisedDurationCapMatchesRuntime` reads both
+schemas and all `max_duration_ms` guide cap lines, rejecting mismatches.
+`agents-guide.md` already showed 600 000 ms before this fix; the line numbers
+and 120 000 ms claim above are historical audit evidence, not current text.
+The dispatch deadline and execution behavior were not changed.
+
 ### ENT-002: Shipped hermetic suite is red on HEAD; attestation still green
 
 - **Priority:** P1
