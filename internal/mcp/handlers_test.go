@@ -1029,6 +1029,42 @@ func TestHandleDeployApp_Success(t *testing.T) {
 	}
 }
 
+// 🎯T152: the iOS process-list channel may return one DTX decode error
+// during the terminate step. Exercise the same retry primitive AppPID uses
+// inside the full deploy pipeline; the failed channel must be discarded and
+// installation must still run after the transient clears.
+func TestHandleDeployApp_OneShotListProcessesDecodeFailure(t *testing.T) {
+	appPath := filepath.Join(t.TempDir(), "MyApp.app")
+	if err := os.MkdirAll(appPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	reads, invalidations, installs := 0, 0, 0
+	ios := &stubAdapter{
+		terminateApp: func(id, bundle string) error {
+			_, err := device.RetryIOSProcessList(func() (int, error) {
+				reads++
+				if reads == 1 {
+					return 0, errors.New("listProcesses receive: ReceiveOnServerClientStream: DecodeMessage: failed to decode wrapper")
+				}
+				if invalidations != 1 {
+					return 0, errors.New("retry reused bad DTX channel")
+				}
+				return 42, nil
+			}, func() { invalidations++ })
+			return err
+		},
+		installApp: func(id, path string) error { installs++; return nil },
+		appPID:     func(id, bundle string) (int, error) { return 99, nil },
+	}
+	h := newHandlerWithStubs(t, ios, nil)
+	r := dispatchJSON(t, h, "deploy_app", map[string]any{
+		"device": "iPad", "path": appPath, "bundle_id": "com.example.app",
+	})
+	if r.IsError || reads != 2 || invalidations != 1 || installs != 1 || !strings.Contains(resultText(t, &r), `"pid": 99`) {
+		t.Fatalf("deploy: body=%s reads=%d invalidations=%d installs=%d", resultText(t, &r), reads, invalidations, installs)
+	}
+}
+
 func TestHandleDeployApp_InstallFailFast(t *testing.T) {
 	tmp := t.TempDir()
 	appPath := filepath.Join(tmp, "MyApp.app")

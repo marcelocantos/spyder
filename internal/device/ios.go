@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	goios_ios "github.com/danielpaulus/go-ios/ios"
@@ -1117,17 +1119,19 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	}
 	needle := "/" + appBase + "/"
 	if major != 0 && major < 17 {
-		dev, _, err := a.goios.SessionWithVersion(id)
-		if err != nil {
-			return 0, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, err)
-		}
-		di, err := instruments.NewDeviceInfoService(dev)
-		if err != nil {
-			a.goios.Invalidate(id)
-			return 0, wrapMissingDDI(fmt.Errorf("AppPID for %s on %s: instruments.DeviceInfoService: %w", bundleID, id, err))
-		}
-		defer di.Close()
-		procs, err := di.ProcessList()
+		procs, err := RetryIOSProcessList(func() ([]instruments.ProcessInfo, error) {
+			dev, _, err := a.goios.SessionWithVersion(id)
+			if err != nil {
+				return nil, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, err)
+			}
+			di, err := instruments.NewDeviceInfoService(dev)
+			if err != nil {
+				a.goios.Invalidate(id)
+				return nil, wrapMissingDDI(fmt.Errorf("AppPID for %s on %s: instruments.DeviceInfoService: %w", bundleID, id, err))
+			}
+			defer di.Close()
+			return di.ProcessList()
+		}, func() { a.goios.Invalidate(id) })
 		if err != nil {
 			return 0, fmt.Errorf("list processes on %s: %w", id, err)
 		}
@@ -1144,15 +1148,16 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 		}
 		return 0, fmt.Errorf("app not running: %s", bundleID)
 	}
-	asConn, release, err := a.asPool.Acquire(id)
+	procs, err := RetryIOSProcessList(func() ([]appservice.Process, error) {
+		asConn, release, err := a.asPool.Acquire(id)
+		if err != nil {
+			a.goios.Invalidate(id)
+			return nil, fmt.Errorf("appservice on %s: %w", id, err)
+		}
+		defer release() // release before invalidation so retry acquires a fresh DTX channel
+		return asConn.ListProcesses()
+	}, func() { a.asPool.Invalidate(id) })
 	if err != nil {
-		a.goios.Invalidate(id)
-		return 0, fmt.Errorf("appservice on %s: %w", id, err)
-	}
-	defer release()
-	procs, err := asConn.ListProcesses()
-	if err != nil {
-		a.asPool.Invalidate(id)
 		return 0, fmt.Errorf("list processes on %s: %w", id, err)
 	}
 	for _, p := range procs {
@@ -1161,6 +1166,44 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("app not running: %s", bundleID)
+}
+
+// RetryIOSProcessList retries a transient DTX transport/decode failure once.
+// read must acquire and RELEASE its connection before returning; invalidate
+// then discards that connection so the second call opens a fresh channel.
+// Do not retry semantic RPC errors or a successful empty process list.
+func RetryIOSProcessList[T any](read func() (T, error), invalidate func()) (T, error) {
+	result, err := read()
+	if err == nil || !retryableIOSProcessListError(err) {
+		return result, err
+	}
+	invalidate()
+	result, err = read()
+	if err != nil && retryableIOSProcessListError(err) {
+		invalidate()
+	}
+	return result, err
+}
+
+func retryableIOSProcessListError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	var netErr interface{ Timeout() bool }
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	s := strings.ToLower(err.Error())
+	for _, marker := range []string{"decodemessage", "failed to decode wrapper", "broken pipe", "connection reset", "closed network connection", "unexpected eof", "transport is closing"} {
+		if strings.Contains(s, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // installedAppFolder returns the basename of the .app folder
