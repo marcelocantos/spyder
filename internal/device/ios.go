@@ -92,6 +92,33 @@ type IOSAdapter struct {
 
 	// fwdStore tracks live usbmux TCP forwards (🎯T112 port_forward_*).
 	fwdStore iosForwardStore
+
+	// pidProbe replaces only the AppPID discovery/connection seam in
+	// hermetic deploy tests. Production adapters leave it nil.
+	pidProbe *IOSProcessProbe
+}
+
+// IOSProcessListConn is the appservice ListProcesses subset used by AppPID.
+// A test probe can implement it without opening a physical DTX channel.
+type IOSProcessListConn interface {
+	ListProcesses() ([]appservice.Process, error)
+}
+
+// IOSProcessProbe provides a hermetic iOS-17+ AppPID connection seam.
+// Acquire must return a release function; Invalidate runs after release so
+// the next Acquire creates a fresh connection. Intended for test adapters.
+type IOSProcessProbe struct {
+	InstalledFolder func(id, bundleID string) (string, error)
+	MajorVersion    func(id string) (int, error)
+	Acquire         func(id string) (IOSProcessListConn, func(), error)
+	Invalidate      func(id string)
+}
+
+// NewIOSProcessProbeAdapter makes an AppPID/TerminateApp test adapter without
+// touching go-ios. The caller supplies every probe function; the adapter is
+// only suitable for flows that do not need a real KillProcess RPC.
+func NewIOSProcessProbeAdapter(probe IOSProcessProbe) *IOSAdapter {
+	return &IOSAdapter{pidProbe: &probe}
 }
 
 type cachedState struct {
@@ -1105,21 +1132,32 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
-	appBase, err := a.installedAppFolder(id, bundleID)
+	folder := a.installedAppFolder
+	majorVersion := func(id string) (int, error) {
+		_, major, err := a.goios.SessionWithVersion(id)
+		return major, err
+	}
+	if a.pidProbe != nil {
+		folder = a.pidProbe.InstalledFolder
+		majorVersion = a.pidProbe.MajorVersion
+	}
+	appBase, err := folder(id, bundleID)
 	if err != nil {
-		a.goios.Invalidate(id)
+		if a.pidProbe == nil {
+			a.goios.Invalidate(id)
+		}
 		return 0, err
 	}
 	if appBase == "" {
 		return 0, fmt.Errorf("app not installed: %s", bundleID)
 	}
-	_, major, sErr := a.goios.SessionWithVersion(id)
+	major, sErr := majorVersion(id)
 	if sErr != nil {
 		return 0, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, sErr)
 	}
 	needle := "/" + appBase + "/"
 	if major != 0 && major < 17 {
-		procs, err := RetryIOSProcessList(func() ([]instruments.ProcessInfo, error) {
+		procs, err := retryIOSProcessList(func() ([]instruments.ProcessInfo, error) {
 			dev, _, err := a.goios.SessionWithVersion(id)
 			if err != nil {
 				return nil, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, err)
@@ -1148,15 +1186,25 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 		}
 		return 0, fmt.Errorf("app not running: %s", bundleID)
 	}
-	procs, err := RetryIOSProcessList(func() ([]appservice.Process, error) {
-		asConn, release, err := a.asPool.Acquire(id)
+	acquire := func(id string) (IOSProcessListConn, func(), error) {
+		conn, release, err := a.asPool.Acquire(id)
 		if err != nil {
 			a.goios.Invalidate(id)
+		}
+		return conn, release, err
+	}
+	invalidate := func(id string) { a.asPool.Invalidate(id) }
+	if a.pidProbe != nil {
+		acquire, invalidate = a.pidProbe.Acquire, a.pidProbe.Invalidate
+	}
+	procs, err := retryIOSProcessList(func() ([]appservice.Process, error) {
+		asConn, release, err := acquire(id)
+		if err != nil {
 			return nil, fmt.Errorf("appservice on %s: %w", id, err)
 		}
 		defer release() // release before invalidation so retry acquires a fresh DTX channel
 		return asConn.ListProcesses()
-	}, func() { a.asPool.Invalidate(id) })
+	}, func() { invalidate(id) })
 	if err != nil {
 		return 0, fmt.Errorf("list processes on %s: %w", id, err)
 	}
@@ -1168,11 +1216,11 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	return 0, fmt.Errorf("app not running: %s", bundleID)
 }
 
-// RetryIOSProcessList retries a transient DTX transport/decode failure once.
+// retryIOSProcessList retries a transient DTX transport/decode failure once.
 // read must acquire and RELEASE its connection before returning; invalidate
 // then discards that connection so the second call opens a fresh channel.
 // Do not retry semantic RPC errors or a successful empty process list.
-func RetryIOSProcessList[T any](read func() (T, error), invalidate func()) (T, error) {
+func retryIOSProcessList[T any](read func() (T, error), invalidate func()) (T, error) {
 	result, err := read()
 	if err == nil || !retryableIOSProcessListError(err) {
 		return result, err

@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielpaulus/go-ios/ios/appservice"
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -1029,39 +1030,66 @@ func TestHandleDeployApp_Success(t *testing.T) {
 	}
 }
 
-// 🎯T152: the iOS process-list channel may return one DTX decode error
-// during the terminate step. Exercise the same retry primitive AppPID uses
-// inside the full deploy pipeline; the failed channel must be discarded and
-// installation must still run after the transient clears.
+// A physical appservice connection is injected at IOSAdapter.AppPID's
+// connection seam. This is the same AppPID called by TerminateApp during
+// deploy, not a retry implemented in the MCP stub.
+type processListProbeConn struct {
+	read func() ([]appservice.Process, error)
+}
+
+func (c processListProbeConn) ListProcesses() ([]appservice.Process, error) { return c.read() }
+
 func TestHandleDeployApp_OneShotListProcessesDecodeFailure(t *testing.T) {
 	appPath := filepath.Join(t.TempDir(), "MyApp.app")
 	if err := os.MkdirAll(appPath, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	reads, invalidations, installs := 0, 0, 0
-	ios := &stubAdapter{
-		terminateApp: func(id, bundle string) error {
-			_, err := device.RetryIOSProcessList(func() (int, error) {
+	connection, held := 0, false
+	launched := false
+	ios := device.NewIOSProcessProbeAdapter(device.IOSProcessProbe{
+		InstalledFolder: func(id, bundle string) (string, error) { return "MyApp.app", nil },
+		MajorVersion:    func(id string) (int, error) { return 17, nil },
+		Acquire: func(id string) (device.IOSProcessListConn, func(), error) {
+			if held {
+				return nil, nil, errors.New("connection acquired while still held")
+			}
+			held = true
+			gen := connection
+			return processListProbeConn{read: func() ([]appservice.Process, error) {
 				reads++
-				if reads == 1 {
-					return 0, errors.New("listProcesses receive: ReceiveOnServerClientStream: DecodeMessage: failed to decode wrapper")
+				if gen == 0 && reads == 2 {
+					return nil, errors.New("listProcesses receive: ReceiveOnServerClientStream: DecodeMessage: failed to decode wrapper")
 				}
-				if invalidations != 1 {
-					return 0, errors.New("retry reused bad DTX channel")
+				if gen == 0 && reads > 2 {
+					return nil, errors.New("reused failed DTX connection")
 				}
-				return 42, nil
-			}, func() { invalidations++ })
-			return err
+				if launched {
+					return []appservice.Process{{Pid: 99, Path: "/Applications/MyApp.app/MyApp"}}, nil
+				}
+				return nil, nil // not running before install
+			}}, func() { held = false }, nil
 		},
-		installApp: func(id, path string) error { installs++; return nil },
-		appPID:     func(id, bundle string) (int, error) { return 99, nil },
+		Invalidate: func(id string) {
+			if held {
+				t.Fatal("DTX invalidated before release")
+			}
+			invalidations++
+			connection++
+		},
+	})
+	stub := &stubAdapter{
+		terminateApp: ios.TerminateApp,
+		appPID:       ios.AppPID,
+		installApp:   func(id, path string) error { installs++; return nil },
+		launchApp:    func(id, bundle string, env map[string]string) error { launched = true; return nil },
 	}
-	h := newHandlerWithStubs(t, ios, nil)
+	h := newHandlerWithStubs(t, stub, nil)
 	r := dispatchJSON(t, h, "deploy_app", map[string]any{
 		"device": "iPad", "path": appPath, "bundle_id": "com.example.app",
 	})
-	if r.IsError || reads != 2 || invalidations != 1 || installs != 1 || !strings.Contains(resultText(t, &r), `"pid": 99`) {
-		t.Fatalf("deploy: body=%s reads=%d invalidations=%d installs=%d", resultText(t, &r), reads, invalidations, installs)
+	if r.IsError || reads < 4 || invalidations != 1 || connection != 1 || installs != 1 || !strings.Contains(resultText(t, &r), `"pid": 99`) {
+		t.Fatalf("deploy: body=%s reads=%d invalidations=%d connection=%d installs=%d", resultText(t, &r), reads, invalidations, connection, installs)
 	}
 }
 

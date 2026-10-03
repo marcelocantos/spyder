@@ -27,7 +27,7 @@ func TestRetryIOSProcessList_OneShotDecodeOpensFreshConnection(t *testing.T) {
 		}
 		return []appservice.Process{{Pid: 42, Path: "/Applications/StockCars.app/StockCars"}}, nil
 	}
-	got, err := RetryIOSProcessList(read, func() { invalidations++; connection++ })
+	got, err := retryIOSProcessList(read, func() { invalidations++; connection++ })
 	if err != nil || len(got) != 1 || got[0].Pid != 42 || calls != 2 || invalidations != 1 {
 		t.Fatalf("processes=%v err=%v calls=%d invalidations=%d", got, err, calls, invalidations)
 	}
@@ -36,7 +36,7 @@ func TestRetryIOSProcessList_OneShotDecodeOpensFreshConnection(t *testing.T) {
 func TestRetryIOSProcessList_Exhausted(t *testing.T) {
 	var calls, invalidations int
 	decode := errors.New("DecodeMessage: failed to decode wrapper")
-	_, err := RetryIOSProcessList(func() ([]appservice.Process, error) {
+	_, err := retryIOSProcessList(func() ([]appservice.Process, error) {
 		calls++
 		return nil, decode
 	}, func() { invalidations++ })
@@ -56,7 +56,7 @@ func TestRetryIOSProcessList_NonretryableAndNotRunning(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls, invalidations := 0, 0
-			got, err := RetryIOSProcessList(func() ([]appservice.Process, error) {
+			got, err := retryIOSProcessList(func() ([]appservice.Process, error) {
 				calls++
 				return tc.processes, tc.err
 			}, func() { invalidations++ })
