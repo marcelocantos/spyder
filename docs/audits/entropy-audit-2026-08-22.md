@@ -22,8 +22,9 @@ validation. Production code was not modified.
   path. The package DAG is acyclic and the REST/MCP dispatch seam is
   sound; entropy sits in competing documents and in a hub package that
   every new verb must edit.
-- **Highest-consequence findings:** ENT-001 (`max_duration_ms` 120 s vs
-  10 min), ENT-002 (`go test ./...` failed on this snapshot while
+- **Highest-consequence findings at the snapshot:** ENT-001 (`max_duration_ms`
+  advertised as 120 s vs 10 min at runtime; closed 2026-10-03),
+  ENT-002 (`go test ./...` failed on this snapshot while
   `TEST-REPORT.json` still says pass), ENT-003 (`STABILITY.md` still
   catalogues per-verb MCP tools after 🎯T88 made `app_exec` the only
   advertised MCP tool).
@@ -190,12 +191,14 @@ Do not collapse this vector to a score.
 
 ## Findings
 
-### ENT-001: `max_duration_ms` has three disagreeing authorities
+### ENT-001: `max_duration_ms` had three disagreeing authorities
 
 - **Priority:** P1
 - **Dimensions:** Redundancy / sources of truth; Documentation / governance; Correctness / verification
-- **Status:** observed fact
-- **Evidence:**
+- **Status:** closed in source and test (2026-10-03, `668a1d84`);
+  evidence below describes the 2026-08-22 snapshot, not current advertised
+  text. Released daemon/client activation was not observed.
+- **Evidence (historical):**
   - `internal/mcp/app_exec.go:46` `maxExecDuration = 10 * time.Minute`
   - `internal/mcp/app_exec.go:74-75` caps caller `max_duration_ms` at that constant
   - `internal/mcp/app_exec.go:613` MCP tool description: “Caps: wall-clock timeout (default 30s, **max 120s**)”
@@ -226,14 +229,19 @@ Do not collapse this vector to a score.
 - **Ratchet candidate:** that test in `internal/mcp/app_exec_test.go`
   (already owns `TestExec_BuiltinCoversEveryAdvertisedVerb`).
 
-**Resolution (2026-10-03, T132.1):** The shipped `app_exec` description now
+**Resolution (2026-10-03, T132.1; code commit `668a1d84`):** The source
+`app_exec` description now
 formats its seconds ceiling from `maxExecDuration`; the `app_exec` parameter
 and retained `run_script` schema format their millisecond ceilings from the
 same constant. `TestExec_AdvertisedDurationCapMatchesRuntime` reads both
 schemas and all `max_duration_ms` guide cap lines, rejecting mismatches.
 `agents-guide.md` already showed 600 000 ms before this fix; the line numbers
 and 120 000 ms claim above are historical audit evidence, not current text.
-The dispatch deadline and execution behavior were not changed.
+The dispatch deadline and execution behavior were not changed. The regression
+test checks the `app_exec` description, both schemas, and three guide cap lines
+against the runtime ceiling; it does not prove a deployed daemon has been
+restarted or a released MCP catalogue has refreshed. The 2026-08-22 findings
+elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 ### ENT-002: Shipped hermetic suite is red on HEAD; attestation still green
 
@@ -568,7 +576,7 @@ The dispatch deadline and execution behavior were not changed.
 | Fact | Authorities | Drift? |
 |---|---|---|
 | Verb set | `toolHandlers()` (runtime), `legacyDefinitions()` (schema, tested), CLI list (subset, untested), `STABILITY.md` MCP table (stale), `agents-guide.md` | Yes — STABILITY/MCP |
-| `app_exec` duration cap | `maxExecDuration`, MCP description, MCP param desc, agents-guide | **Yes (ENT-001)** |
+| `app_exec` duration cap | `maxExecDuration`, MCP description, MCP param desc, agents-guide | Historical yes; source/test closed (ENT-001), released surface unobserved |
 | Durable recipes | embed `recipes/`, repo `scripts/lib/`, user `~/.spyder/scripts/` | Mirror unenforced (ENT-004); user layer deliberate |
 | Device health | `health.Model`, `wedge.DoctorFinding`, `spyder doctor` CLI | Bridged on purpose (T99.6); doctor CLI can run without daemon |
 | Stream protocol | ge `Protocol.h`, spyder `player/include/wire/Protocol.h` | Copied; local sizeof oracle only (ENT-006) |
@@ -651,14 +659,16 @@ drift the moment those make targets were declared `state: enforced`.
 | Player wire layout | `make -C player check-wire` | **not run** |
 | Browser player render | none in this repo’s Go tests; `playerweb` has no tests | **not run** (journeys: owner-visible `/player/` and `/dashboard` have no journey harness here) |
 | Recipe mirror identity | none | identical by manual `diff` |
-| Duration cap consistency | none | drifted (ENT-001) |
+| Duration cap consistency | none on audit date | drifted on 2026-08-22; source/test closed by `668a1d84`, released surface unobserved |
 | Vulnerability scan | none (`govulncheck` unavailable) | unknown |
 | Hygiene floors | undeclared | n/a |
 
 **Owner residue (intent, not mechanical follow-up)**
 
-1. Should `max_duration_ms` be 120 s (protect the agent slot) or 10 min
-   (Unity recipes)? Code comments argue 10 min.
+1. `max_duration_ms` was resolved to 10 min in source and advertised
+   metadata (`668a1d84`); whether a released daemon/client serves that
+   metadata remains unobserved. The former 120 s vs 10 min choice is no
+   longer an open source-level decision.
 2. Should `scripts/lib` remain a documented duplicate of `recipes/`?
 3. Stay with player-in-spyder, or split once 🎯T102 exists?
 4. Accept unauthenticated `SPYDER_ADDR=:3030` on brew indefinitely
@@ -677,10 +687,10 @@ was instructed not to install.
    serialize the desktop LogRange race; `gofmt -w` the eight files;
    regenerate `TEST-REPORT.json` on that commit. Until `make test` and
    `make fmt-check` are green, other ratchets will lie.
-2. **Converge duration and MCP catalogue (ENT-001, ENT-003).** One
-   constant for `max_duration_ms`; rewrite `STABILITY.md` MCP section
-   to `app_exec` + REST/Starlark verbs; fix the `Definitions()`
-   comment.
+2. **Converge MCP catalogue (ENT-003).** ENT-001 source/test convergence
+   landed in `668a1d84`; released-surface activation is unobserved. Rewrite
+   `STABILITY.md` MCP section to `app_exec` + REST/Starlark verbs; fix the
+   `Definitions()` comment.
 3. **Lock remaining duplicates (ENT-004, ENT-011, ENT-006).** Recipe
    mirror test; deadline-name subset test; `check-wire` in
    `test-report.sh`.
