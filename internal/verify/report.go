@@ -33,6 +33,11 @@ type Report struct {
 	Groups         []Group           `json:"groups,omitempty"`
 	Steps          []StepDetail      `json:"steps"`
 	StatusBlock    string            `json:"status_block,omitempty"`
+	// Log is the run's event log tail, and Screenshot its latest shot (a
+	// data URI), so a direct link to the report carries everything the
+	// dashboard shows for a run without a second round trip (🎯T147).
+	Log        []string `json:"log,omitempty"`
+	Screenshot string   `json:"screenshot,omitempty"`
 }
 
 // ReportSummary counts steps by status and owner review progress.
@@ -122,6 +127,8 @@ func (r *Run) Report() *Report {
 		out.StatusBlock = r.statusBlock
 	}
 	r.mu.Unlock()
+	out.Log = view.Log
+	out.Screenshot = r.latestShot()
 	for i := range view.Steps {
 		sv := view.Steps[i]
 		step := StepDetail{RunID: r.ID, StepID: sv.ID, Step: &sv}

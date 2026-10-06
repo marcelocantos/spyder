@@ -63,6 +63,9 @@ func TestDashboard_VerifyTabMarkup(t *testing.T) {
 		`verify_detail`,
 		`gate.run_id !== verifySelected`,
 		`card.comment.value = ""`,
+		`verifyLinkedRuns`,
+		`maybeOpenHashRun`,
+		`/verify/runs/`,
 	} {
 		if !bytes.Contains(body, []byte(want)) {
 			t.Errorf("dashboard HTML missing %q", want)

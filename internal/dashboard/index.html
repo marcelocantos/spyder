@@ -1006,29 +1006,44 @@ function verifyHashRun() {
   const m = /^#verify\/(.+)$/.exec(location.hash);
   return m ? decodeURIComponent(m[1]) : null;
 }
+// verifyLinkedRuns holds runs opened by a direct #verify/<run_id> link that
+// are not (or no longer) on the live dashboard: dismissed runs, or runs from
+// a previous daemon lifetime (🎯T147). They are read from
+// /verify/runs/<id>/report.json on demand, rendered read-only alongside the
+// live tabs, and never sent back to the hub — opening one does not retain
+// it there. verifyLinkedMisses remembers an id that was not found, so a
+// stale link does not refetch on every live snapshot.
+const verifyLinkedRuns = new Map();  // run_id -> RunView-shaped, read-only
+const verifyLinkedMisses = new Set();
+let lastLiveRuns = [];
 function applyVerifySnapshot(snap) {
   const all = snap.runs || [];
   verifyNowRuns = all.filter(r => r.focus_source);
-  const runs = all.filter(r => !r.focus_source);
-  const running = runs.filter(r => r.status === "running");
-  const asking = runs.filter(r => r.gate);
+  lastLiveRuns = all.filter(r => !r.focus_source);
+  renderVerifyAll(lastLiveRuns);
+}
+function renderVerifyAll(liveRuns) {
+  const linked = [...verifyLinkedRuns.values()].filter(r => !liveRuns.some(x => x.run_id === r.run_id));
+  const runs = liveRuns.concat(linked);
+  const running = liveRuns.filter(r => r.status === "running");
+  const asking = liveRuns.filter(r => r.gate);
   const badge = $("verify-badge");
   badge.textContent = String(running.length);
   badge.classList.toggle("hidden", running.length === 0);
   if (verifySeen) {
-    for (const r of runs) {
+    for (const r of liveRuns) {
       if (r.run_id && !verifySeen.has(r.run_id)) { blinkVerifyBadge(); break; }
     }
   }
-  verifySeen = new Set(runs.map(r => r.run_id).filter(Boolean));
+  verifySeen = new Set(liveRuns.map(r => r.run_id).filter(Boolean));
   verifyRuns.clear();
   for (const r of runs) verifyRuns.set(r.run_id, r);
-  const review = runs.filter(r => r.status !== "running" && r.pending_review).length;
+  const review = liveRuns.filter(r => r.status !== "running" && r.pending_review).length;
   const stat = [];
   if (running.length) stat.push(`${running.length} active`);
   if (asking.length) stat.push(`${asking.length} asking you`);
   if (review) stat.push(`${review} awaiting review`);
-  if (runs.length > running.length) stat.push(`${runs.length - running.length} finished`);
+  if (liveRuns.length > running.length) stat.push(`${liveRuns.length - running.length} finished`);
   $("verify-stat").textContent = stat.length ? stat.join(" · ") : "no runs";
 
   if (verifySelected && !verifyRuns.has(verifySelected)) verifySelected = null;
@@ -1043,6 +1058,7 @@ function applyVerifySnapshot(snap) {
   if (!runs.length) {
     host.innerHTML = '<div class="empty">No verification runs.</div>';
     verifyCard = null;
+    maybeOpenHashRun();
     return;
   }
   if (!verifyCard) {
@@ -1051,6 +1067,31 @@ function applyVerifySnapshot(snap) {
     host.appendChild(verifyCard.el);
   }
   renderVerifyRun(verifyRuns.get(verifySelected), verifyCard);
+  maybeOpenHashRun();
+}
+function refreshVerifyView() { renderVerifyAll(lastLiveRuns); }
+// A direct link to a run the live snapshot does not carry (dismissed, or
+// from a prior daemon lifetime) is opened read-only from its disk-backed
+// report (🎯T147) instead of falling back to whatever tab happens to be
+// selected.
+async function maybeOpenHashRun() {
+  const id = verifyHashRun();
+  if (!id || verifyRuns.has(id) || verifyLinkedMisses.has(id)) return;
+  let rep;
+  try {
+    const resp = await fetch("/verify/runs/" + encodeURIComponent(id) + "/report.json");
+    if (!resp.ok) { verifyLinkedMisses.add(id); return; }
+    rep = await resp.json();
+  } catch (e) { verifyLinkedMisses.add(id); return; }
+  verifyLinkedRuns.set(id, {
+    run_id: rep.run_id, workflow: rep.workflow, status: rep.status, owner: rep.owner,
+    device: (rep.params || {}).device || "", reason: rep.reason, report_dir: rep.report_dir,
+    log: rep.log || [], groups: rep.groups || [],
+    steps: (rep.steps || []).map(sd => sd.step || {id: sd.step_id}),
+    screenshot: rep.screenshot || "", linked: true,
+  });
+  if (verifyHashRun() === id) verifySelected = id;
+  refreshVerifyView();
 }
 function renderVerifyTabs(runs) {
   const strip = $("verify-tabs");
@@ -1648,7 +1689,10 @@ window.addEventListener("hashchange", () => {
   if (location.hash.startsWith("#verify")) {
     showTab("verify");
     const id = verifyHashRun();
-    if (id && id !== verifySelected) selectVerifyRun(id);
+    if (id && id !== verifySelected) {
+      if (verifyRuns.has(id)) selectVerifyRun(id);
+      else maybeOpenHashRun();
+    }
   } else if (location.hash === "#battery") showTab("battery");
 });
 </script>
