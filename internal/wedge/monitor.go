@@ -111,8 +111,17 @@ type wedgeState struct {
 func RunMonitor(ctx context.Context) {
 	triggers := make(chan string, 8)
 
-	go pollTrigger(ctx, triggers)
-	go logTailTrigger(ctx, triggers)
+	// Join the trigger goroutines before returning: both read package
+	// tunables (pollInterval, debounceDelay) and the recentLogLines ring
+	// without synchronization against the caller, so a caller that
+	// mutates them right after RunMonitor returns (tests restoring
+	// saved values) can otherwise race a trigger goroutine that hasn't
+	// finished unwinding yet (observed under -race -parallel load).
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); pollTrigger(ctx, triggers) }()
+	go func() { defer wg.Done(); logTailTrigger(ctx, triggers) }()
+	defer wg.Wait()
 
 	var st wedgeState
 

@@ -21,6 +21,18 @@ func TestRunMonitor_ExitsOnContextCancel(t *testing.T) {
 		debounceDelay = saveDeb
 	})
 
+	// Stub the reconcile seams: without this, reconcile calls the REAL
+	// IsWedged/AttemptRecovery, which shells out (ioreg, sudo
+	// spyder-killusbmuxd) with unbounded real-world latency. Under full
+	// -parallel/-race load that real exec can outlast this test's 2s
+	// deadline, and it has no business running as a side effect of a
+	// pure context-cancel lifecycle test in the first place.
+	saveW, saveC, saveR := isWedgedFn, captureFn, recoverFn
+	isWedgedFn = func() (bool, int, int, error) { return false, 0, 0, nil }
+	captureFn = func(_, _ string) {}
+	recoverFn = func(_ context.Context) error { return nil }
+	t.Cleanup(func() { isWedgedFn, captureFn, recoverFn = saveW, saveC, saveR })
+
 	ctx, cancel := context.WithCancel(context.Background())
 	finished := make(chan struct{})
 	go func() {
