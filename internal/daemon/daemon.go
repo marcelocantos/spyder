@@ -56,7 +56,7 @@ const (
 // Config configures a spyder server instance.
 type Config struct {
 	Addr         string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
-	ExplicitAddr bool   // --addr override: do not replace the supervised daemon's remembered address.
+	ExplicitAddr bool   // caller override (--addr or SPYDER_ADDR 🎯T151): do not replace the supervised daemon's remembered address.
 	Version      string // emitted in serverInfo
 	TunneldAddr  string // Deprecated: tunneld is no longer used; field retained for backward compat.
 }

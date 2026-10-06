@@ -190,6 +190,14 @@ func runServe(args []string) {
 
 // parseServeAddr resolves the HTTP bind: --addr, then env (SPYDER_ADDR),
 // then the last successful persist, then the loopback default (🎯T103).
+//
+// The second return value reports whether the bind was overridden by the
+// caller (--addr or SPYDER_ADDR) rather than derived from the persisted
+// address or the default. That flag gates persistence in daemon.Start:
+// serving a tree build on another port via --addr or SPYDER_ADDR must
+// not overwrite the supervised daemon's remembered listen address
+// (🎯T151) — only a bind that fell through to persisted/fallback is
+// eligible to be re-persisted unchanged.
 func parseServeAddr(args []string, env, persisted string) (string, bool, error) {
 	explicit := ""
 	for len(args) > 0 {
@@ -204,7 +212,8 @@ func parseServeAddr(args []string, env, persisted string) (string, bool, error) 
 			return "", false, fmt.Errorf("serve: unknown flag %q", args[0])
 		}
 	}
-	return listenaddr.Resolve(explicit, env, persisted, defaultAddr), explicit != "", nil
+	overridden := explicit != "" || env != ""
+	return listenaddr.Resolve(explicit, env, persisted, defaultAddr), overridden, nil
 }
 
 // runArgs are the parsed CLI flags for `spyder run`.
