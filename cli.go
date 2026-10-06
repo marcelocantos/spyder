@@ -61,9 +61,9 @@ func init() {
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
 		{"terminate-app", "spyder terminate-app <device> <bundle-id> [--as OWNER]", runTerminateApp},
 		{"is-running", "spyder is-running <device> <bundle-id> [--json]", runIsRunning},
-		{"install", "spyder install <device> <path> [--as OWNER]", runInstall},
+		{"install", "spyder install (<device>|--all-physical) <path> [--as OWNER]", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
-		{"deploy", "spyder deploy <device> <path> [--bundle-id ID] [--as OWNER]  (refuses stream player — use launch-player)", runDeploy},
+		{"deploy", "spyder deploy (<device>|--all-physical) <path> [--bundle-id ID] [--as OWNER]  (refuses stream player — use launch-player)", runDeploy},
 		{"launch-player", "spyder launch-player <device> [--server NAME] [--path PATH] [--as OWNER]", runLaunchPlayer},
 		{"reserve", "spyder reserve (<device>|--on PREDICATE|--selector JSON|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
@@ -486,6 +486,103 @@ func dispatchAndExit(ctx context.Context, tool string, args map[string]any, json
 	renderResult(res, jsonMode, quietOnSuccess)
 }
 
+// fanOutDevice is the subset of device.Info this CLI needs to decide
+// which attached devices are "physical" for --all-physical fan-out
+// (🎯T98). Duplicated here (rather than importing internal/device)
+// because cli.go only talks to the daemon over its REST/JSON surface.
+type fanOutDevice struct {
+	UUID     string `json:"uuid"`
+	Platform string `json:"platform"`
+	Alias    string `json:"alias,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// looksLikeFanOutSimOrEmu mirrors internal/mcp/tools.go's
+// isSimulatorOrEmulator heuristic: iOS simulator UDIDs are standard
+// 8-4-4-4-12 UUIDs (physical iOS hardware UDIDs are 8+16 hex with a
+// single separator); Android emulator serials start with "emulator-".
+func looksLikeFanOutSimOrEmu(d fanOutDevice) bool {
+	switch strings.ToLower(d.Platform) {
+	case "ios":
+		return len(d.UUID) == 36 && strings.Count(d.UUID, "-") == 4
+	case "android":
+		return strings.HasPrefix(strings.ToLower(d.UUID), "emulator-")
+	}
+	return false
+}
+
+// fanOutPhysical runs `<mcpTool>` (install_app / deploy_app) against
+// every attached physical iOS/Android device (🎯T98 acceptance: "A
+// multi-device install/deploy CLI surface ... reports per-device
+// success/failure"). Simulators, emulators, and the desktop pseudo-device
+// are excluded — only USB/Wi-Fi-attached hardware is a fan-out target.
+// Exits 0 only if every targeted device succeeded; exits ExitGeneric
+// (printing each device's outcome first) if any failed, and if no
+// physical device is attached at all so a silent no-op is never mistaken
+// for success.
+func fanOutPhysical(ctx context.Context, cmdName, mcpTool, path, owner string, extra map[string]any) {
+	devRes, err := postTool(ctx, "devices", map[string]any{"platform": "all"})
+	if err != nil {
+		cliexit.Errorf(daemonExitCode(err), "spyder %s --all-physical: list devices: %v", cmdName, err)
+	}
+	if devRes.IsError {
+		cliexit.Errorf(cliexit.MapDaemonError(0, "", devRes.firstText()), "spyder %s --all-physical: %s", cmdName, devRes.firstText())
+	}
+	var parsed struct {
+		Devices []fanOutDevice `json:"devices"`
+	}
+	text := devRes.firstText()
+	if err := json.Unmarshal([]byte(text), &parsed.Devices); err != nil {
+		// handleDevices wraps in {"devices":[...],"errors":[...]} only
+		// when platform=all hit a partial adapter error; try that shape too.
+		if err2 := json.Unmarshal([]byte(text), &parsed); err2 != nil {
+			cliexit.Errorf(cliexit.ExitGeneric, "spyder %s --all-physical: parse devices response: %v", cmdName, err)
+		}
+	}
+	var physical []fanOutDevice
+	for _, d := range parsed.Devices {
+		if strings.ToLower(d.Platform) != "ios" && strings.ToLower(d.Platform) != "android" {
+			continue
+		}
+		if looksLikeFanOutSimOrEmu(d) {
+			continue
+		}
+		physical = append(physical, d)
+	}
+	if len(physical) == 0 {
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder %s --all-physical: no attached physical device found", cmdName)
+	}
+	failed := 0
+	for _, d := range physical {
+		ref := d.UUID
+		if d.Alias != "" {
+			ref = d.Alias
+		}
+		a := map[string]any{
+			"device": d.UUID,
+			"path":   path,
+			"owner":  owner,
+		}
+		for k, v := range extra {
+			a[k] = v
+		}
+		res, err := postTool(ctx, mcpTool, a)
+		switch {
+		case err != nil:
+			failed++
+			fmt.Printf("%s: FAIL %v\n", ref, err)
+		case res.IsError:
+			failed++
+			fmt.Printf("%s: FAIL %s\n", ref, res.firstText())
+		default:
+			fmt.Printf("%s: OK\n", ref)
+		}
+	}
+	if failed > 0 {
+		cliexit.Errorf(cliexit.ExitGeneric, "spyder %s --all-physical: %d/%d device(s) failed", cmdName, failed, len(physical))
+	}
+}
+
 // daemonExitCode maps a postTool error to a cliexit code. *daemonError
 // goes through cliexit.MapDaemonError; everything else is generic.
 func daemonExitCode(err error) int {
@@ -800,17 +897,22 @@ func runTerminateApp(args []string) {
 }
 
 func runInstall(args []string) {
-	pf, ctx, cancel := setupCommand("install", args, []string{"--as"}, nil, clitimeout.DefaultInstall)
+	pf, ctx, cancel := setupCommand("install", args, []string{"--as"}, []string{"--all-physical"}, clitimeout.DefaultInstall)
 	defer cancel()
+	owner := pf.flags["--as"]
+	if owner == "" {
+		owner = deriveOwner("")
+	}
+	if pf.bools["--all-physical"] {
+		requirePositional("install", pf, 1)
+		fanOutPhysical(ctx, "install", "install_app", pf.positional[0], owner, nil)
+		return
+	}
 	requirePositional("install", pf, 2)
 	a := map[string]any{
 		"device": pf.positional[0],
 		"path":   pf.positional[1],
-	}
-	if o := pf.flags["--as"]; o != "" {
-		a["owner"] = o
-	} else {
-		a["owner"] = deriveOwner("")
+		"owner":  owner,
 	}
 	dispatchAndExit(ctx, "install_app", a, false, !verbose(pf))
 }
@@ -832,20 +934,29 @@ func runUninstall(args []string) {
 }
 
 func runDeploy(args []string) {
-	pf, ctx, cancel := setupCommand("deploy", args, []string{"--as", "--bundle-id"}, nil, clitimeout.DefaultDeploy)
+	pf, ctx, cancel := setupCommand("deploy", args, []string{"--as", "--bundle-id"}, []string{"--all-physical"}, clitimeout.DefaultDeploy)
 	defer cancel()
+	owner := pf.flags["--as"]
+	if owner == "" {
+		owner = deriveOwner("")
+	}
+	extra := map[string]any{}
+	if bid := pf.flags["--bundle-id"]; bid != "" {
+		extra["bundle_id"] = bid
+	}
+	if pf.bools["--all-physical"] {
+		requirePositional("deploy", pf, 1)
+		fanOutPhysical(ctx, "deploy", "deploy_app", pf.positional[0], owner, extra)
+		return
+	}
 	requirePositional("deploy", pf, 2)
 	a := map[string]any{
 		"device": pf.positional[0],
 		"path":   pf.positional[1],
+		"owner":  owner,
 	}
-	if o := pf.flags["--as"]; o != "" {
-		a["owner"] = o
-	} else {
-		a["owner"] = deriveOwner("")
-	}
-	if bid := pf.flags["--bundle-id"]; bid != "" {
-		a["bundle_id"] = bid
+	for k, v := range extra {
+		a[k] = v
 	}
 	dispatchAndExit(ctx, "deploy_app", a, false, !verbose(pf))
 }

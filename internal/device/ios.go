@@ -53,9 +53,12 @@ const (
 )
 
 // IOSAdapter talks to iOS devices via in-process go-ios calls.
-// `xcrun devicectl` is still used for install / uninstall (where
-// devicectl's signing and provisioning handling is hard to replace);
-// everything else runs in-process.
+// Install/uninstall go through go-ios's `zipconduit` / `installation_proxy`
+// (🎯T98) — never `xcrun devicectl`, whose CoreDevice installapp capability
+// is incomplete on some devices (🎯T98 origin incident). `xcrun devicectl`
+// is used only for device *listing* (merged with usbmux — see
+// devicectlConnectedIOSDevices) and for the capabilities devicectl alone
+// exposes; everything else runs in-process.
 type IOSAdapter struct {
 	goios *goios.Resolver
 	// ipPool holds one cached installation_proxy connection per UDID.
