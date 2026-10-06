@@ -53,10 +53,39 @@ type ReportSummary struct {
 	OwnerFindings map[string]int `json:"owner_findings,omitempty"`
 }
 
-// Report returns the full report for a run.
+// Report returns the full report for an active or retained run.
 func (h *Hub) Report(runID string) (*Report, error) {
 	run := h.RunByID(runID)
 	if run == nil {
+		return nil, fmt.Errorf("unknown run %s", runID)
+	}
+	return run.Report(), nil
+}
+
+// ReportAny returns a run's full report whether it is live, retained on the
+// dashboard, or long dismissed from it (🎯T147). A dismissed run's bundle is
+// read straight from disk through the all-time run index and is not
+// re-added to the hub's live view: opening a stable link to a finished run
+// never resurrects it onto the dashboard. The run ID comes from the index
+// this hub itself wrote, so no caller-supplied path ever reaches the
+// filesystem.
+func (h *Hub) ReportAny(runID string) (*Report, error) {
+	if report, err := h.Report(runID); err == nil {
+		return report, nil
+	}
+	h.mu.Lock()
+	dir, ok := h.allRuns[runID]
+	h.mu.Unlock()
+	if !ok {
+		return nil, fmt.Errorf("unknown run %s", runID)
+	}
+	run, err := loadRetained(h, dir)
+	if err != nil {
+		return nil, fmt.Errorf("load run %s: %w", runID, err)
+	}
+	if run.ID != runID {
+		// The index is keyed by the run's own reported ID; a mismatch
+		// means the bundle was overwritten or relocated under us.
 		return nil, fmt.Errorf("unknown run %s", runID)
 	}
 	return run.Report(), nil

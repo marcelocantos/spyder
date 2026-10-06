@@ -152,3 +152,78 @@ steps:
 	_ = hub.Abort(run.ID, "test done")
 	run.Wait()
 }
+
+// 🎯T147: a dismissed run is still reachable by its stable run_id link —
+// across a dismissal and a daemon restart alike — read straight from its
+// disk bundle, without putting it back on the live dashboard.
+func TestReportAnyReadsDismissedRunWithoutRetainingIt(t *testing.T) {
+	state := t.TempDir()
+	cwd := t.TempDir()
+	hub := NewHub(HubArgs{StateDir: state})
+	run, err := hub.Start(context.Background(), StartArgs{Workflow: loadWF(t, `
+name: linked-run
+params:
+  device: iPad
+steps:
+  - id: look
+    type: human_gate
+    prompt: Look at ${device}
+    choices: [{id: pass, label: Pass}]
+`), Cwd: cwd, Owner: "agent-a", Answers: map[string]Answer{"look": {ChoiceID: "pass"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := run.Wait()
+	if result.Status != StatusPassed {
+		t.Fatalf("run status = %s", result.Status)
+	}
+
+	if err := hub.Dismiss(run.ID, "agent-a"); err != nil {
+		t.Fatal(err)
+	}
+	if views := hub.Snapshot().Runs; len(views) != 0 {
+		t.Fatalf("dismissed run still on the dashboard: %+v", views)
+	}
+
+	report, err := hub.ReportAny(run.ID)
+	if err != nil {
+		t.Fatalf("ReportAny after dismiss: %v", err)
+	}
+	if report.RunID != run.ID || report.Workflow != "linked-run" || report.Status != StatusPassed {
+		t.Fatalf("report after dismiss: %+v", report)
+	}
+	if len(report.Steps) != 1 || report.Steps[0].Prompt != "Look at iPad" {
+		t.Fatalf("report steps after dismiss: %+v", report.Steps)
+	}
+	// Reading it did not resurrect it onto the live dashboard.
+	if views := hub.Snapshot().Runs; len(views) != 0 {
+		t.Fatalf("ReportAny put the dismissed run back on the dashboard: %+v", views)
+	}
+
+	// The link survives a daemon restart too: a fresh hub on the same
+	// state directory has never loaded this run into its live map, but
+	// its all-time index still finds the bundle.
+	restarted := NewHub(HubArgs{StateDir: state})
+	if views := restarted.Snapshot().Runs; len(views) != 0 {
+		t.Fatalf("restarted hub resurrected the dismissed run: %+v", views)
+	}
+	report, err = restarted.ReportAny(run.ID)
+	if err != nil {
+		t.Fatalf("ReportAny after restart: %v", err)
+	}
+	if report.RunID != run.ID || report.Status != StatusPassed {
+		t.Fatalf("report after restart: %+v", report)
+	}
+	if views := restarted.Snapshot().Runs; len(views) != 0 {
+		t.Fatalf("ReportAny after restart put the run back on the dashboard: %+v", views)
+	}
+
+	// An unknown run ID (or one that was never this hub's) is a plain
+	// not-found — never a path into the filesystem.
+	if _, err := restarted.ReportAny("not-a-real-run-id"); err == nil {
+		t.Fatal("ReportAny found a run that was never started")
+	}
+	if _, err := restarted.ReportAny("../../etc/passwd"); err == nil {
+		t.Fatal("ReportAny must not resolve a path-like run id")
+	}
+}

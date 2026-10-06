@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // Finished runs stay in the hub for owner review until the agent that
@@ -28,6 +29,60 @@ const logTailLines = 300
 type retainedEntry struct {
 	RunID     string `json:"run_id"`
 	ReportDir string `json:"report_dir"`
+}
+
+// runIndexFile is the durable record of every run this hub has ever
+// started, keyed by run ID (🎯T147). Unlike retainedFile, entries are never
+// removed when a run is dismissed from the live dashboard: a direct link to
+// a dismissed run still needs to find its bundle on disk.
+const runIndexFile = "runs-index.json"
+
+// loadRunIndex reads the all-time run index from disk into memory. Missing
+// or unreadable files leave allRuns empty rather than failing the hub.
+func (h *Hub) loadRunIndex() {
+	data, err := os.ReadFile(filepath.Join(h.stateDir, runIndexFile))
+	if err != nil {
+		return
+	}
+	var entries []retainedEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		slog.Warn("verify: run index unreadable", "error", err)
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, e := range entries {
+		h.allRuns[e.RunID] = e.ReportDir
+	}
+}
+
+// saveRunIndexLocked writes the all-time run index. Callers hold h.mu.
+func (h *Hub) saveRunIndexLocked() {
+	if h.stateDir == "" {
+		return
+	}
+	entries := make([]retainedEntry, 0, len(h.allRuns))
+	for id, dir := range h.allRuns {
+		entries = append(entries, retainedEntry{RunID: id, ReportDir: dir})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].RunID < entries[j].RunID })
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return
+	}
+	if err := os.MkdirAll(h.stateDir, 0o755); err != nil {
+		slog.Warn("verify: run index", "error", err)
+		return
+	}
+	path := filepath.Join(h.stateDir, runIndexFile)
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, append(data, '\n'), 0o644); err != nil {
+		slog.Warn("verify: run index", "error", err)
+		return
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		slog.Warn("verify: run index", "error", err)
+	}
 }
 
 // saveRetainedLocked writes the index of runs still on the dashboard.

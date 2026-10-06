@@ -76,7 +76,10 @@ func (h *Hub) writeSnapshot(ctx context.Context, c *websocket.Conn) error {
 // without the REST tool envelope.
 const ReportPathPrefix = "/verify/runs/"
 
-// HandleReport serves GET /verify/runs/<run_id>/report.json.
+// HandleReport serves GET /verify/runs/<run_id>/report.json, for a live,
+// retained, or long-dismissed run alike (🎯T147): a stable link survives a
+// daemon restart and reads a dismissed run's bundle from disk without
+// re-adding it to the live dashboard.
 func (h *Hub) HandleReport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -87,7 +90,7 @@ func (h *Hub) HandleReport(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	report, err := h.Report(runID)
+	report, err := h.ReportAny(runID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return

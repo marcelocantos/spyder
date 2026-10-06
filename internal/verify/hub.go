@@ -32,6 +32,11 @@ type Hub struct {
 	// keeps both in memory only (tests).
 	stateDir string
 	reviews  *reviewStore
+	// allRuns maps every run this hub has ever started to its report
+	// bundle directory, including runs long dismissed from the live view
+	// (🎯T147). Entries are never pruned on dismiss; a bundle that has
+	// since gone missing fails at load time, not at lookup time.
+	allRuns map[string]string
 
 	liveMu sync.Mutex
 	live   map[chan struct{}]struct{}
@@ -73,6 +78,7 @@ func NewHub(args HubArgs) *Hub {
 		sleep:    sleep,
 		now:      now,
 		stateDir: args.StateDir,
+		allRuns:  map[string]string{},
 		live:     map[chan struct{}]struct{}{},
 	}
 	reviews, err := openReviewStore(h.stateDir)
@@ -84,6 +90,7 @@ func NewHub(args HubArgs) *Hub {
 	}
 	h.reviews = reviews
 	if h.stateDir != "" {
+		h.loadRunIndex()
 		h.rehydrate()
 	}
 	return h
@@ -162,7 +169,9 @@ func (h *Hub) Start(ctx context.Context, args StartArgs) (*Run, error) {
 	}
 	h.mu.Lock()
 	h.runs[run.ID] = run
+	h.allRuns[run.ID] = run.reportDir
 	h.saveRetainedLocked()
+	h.saveRunIndexLocked()
 	h.mu.Unlock()
 	h.notify()
 	go run.drive()

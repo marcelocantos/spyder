@@ -204,3 +204,44 @@ func TestHandleReportServesPlainJSON(t *testing.T) {
 		}
 	}
 }
+
+// 🎯T147: GET /verify/runs/<id>/report.json is a stable link — it still
+// serves a dismissed run's bundle from disk, and a path-like run id is a
+// plain 404, never a filesystem read.
+func TestHandleReportServesDismissedRunByLink(t *testing.T) {
+	state := t.TempDir()
+	hub := NewHub(HubArgs{StateDir: state})
+	res := runWF(t, hub, "name: dismissed-report-url\nsteps:\n  - {id: a, type: shell, argv: [/usr/bin/true]}\n", "", nil)
+	if err := hub.Dismiss(res.RunID, res.Owner); err != nil {
+		t.Fatal(err)
+	}
+	if views := hub.Snapshot().Runs; len(views) != 0 {
+		t.Fatalf("dismissed run still live: %+v", views)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(hub.HandleReport))
+	t.Cleanup(srv.Close)
+	resp, err := http.Get(srv.URL + ReportPathPrefix + res.RunID + "/report.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var rep Report
+	if err := json.NewDecoder(resp.Body).Decode(&rep); err != nil || resp.StatusCode != 200 || rep.RunID != res.RunID || rep.Status != StatusPassed {
+		t.Fatalf("status=%d err=%v report=%+v", resp.StatusCode, err, rep)
+	}
+	if views := hub.Snapshot().Runs; len(views) != 0 {
+		t.Fatalf("GET report.json resurrected the dismissed run onto the dashboard: %+v", views)
+	}
+
+	for _, id := range []string{"../../../../etc/passwd", "..%2F..%2Fetc%2Fpasswd", "nonexistent-run-id"} {
+		r, err := http.Get(srv.URL + ReportPathPrefix + id + "/report.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		r.Body.Close()
+		if r.StatusCode != http.StatusNotFound {
+			t.Fatalf("path-like run id %q: status %d", id, r.StatusCode)
+		}
+	}
+}
