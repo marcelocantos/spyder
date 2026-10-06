@@ -24,7 +24,10 @@ func TestParseServeAddr(t *testing.T) {
 	}{
 		{"default", nil, "", "", defaultAddr, false},
 		{"persisted", nil, "", ":3030", ":3030", false},
-		{"env", nil, ":4040", ":3030", ":4040", false},
+		// 🎯T151: SPYDER_ADDR is a caller override too — serving a tree
+		// build on another port via env must not look like a plain
+		// restart that should re-persist the resolved bind.
+		{"env", nil, ":4040", ":3030", ":4040", true},
 		{"flag", []string{"--addr", ":5050"}, ":4040", ":3030", ":5050", true},
 		{"short flag", []string{"-a", ":5050"}, "", ":3030", ":5050", true},
 	} {
@@ -95,6 +98,63 @@ func TestServeExplicitAddrLeavesRememberedAddr(t *testing.T) {
 	got, override, err := parseServeAddr(nil, "", listenaddr.Load(path))
 	if err != nil || override || got != ":3030" {
 		t.Fatalf("no-flag restart: addr=%q explicit=%v err=%v; want :3030", got, override, err)
+	}
+}
+
+// Regression for 🎯T151: SPYDER_ADDR (used to serve a tree build on
+// another port alongside the supervised daemon) must not steal the
+// supervisor's persisted address either — only --addr was covered by
+// TestServeExplicitAddrLeavesRememberedAddr above. Run only on a local
+// ephemeral port and redirect HOME, never touch the actual daemon or
+// ~/.spyder.
+func TestServeEnvAddrLeavesRememberedAddr(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path := paths.ListenAddrPath()
+	if err := listenaddr.Save(path, ":3030"); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := ln.Addr().String()
+	ln.Close()
+	addr, explicit, err := parseServeAddr(nil, port, listenaddr.Load(path))
+	if err != nil || !explicit || addr != port {
+		t.Fatalf("env resolution: addr=%q explicit=%v err=%v", addr, explicit, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- daemon.Run(ctx, daemon.Config{Addr: addr, ExplicitAddr: explicit, Version: "test"}) }()
+	deadline := time.Now().Add(8 * time.Second)
+	for {
+		conn, dialErr := net.DialTimeout("tcp", port, 100*time.Millisecond)
+		if dialErr == nil {
+			conn.Close()
+			break
+		}
+		select {
+		case runErr := <-errCh:
+			t.Fatalf("test server stopped before listening: %v", runErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("test server did not listen at %s: %v", port, dialErr)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case runErr := <-errCh:
+		if runErr != nil {
+			t.Fatalf("test server: %v", runErr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("test server did not stop")
+	}
+	if got := listenaddr.Load(path); got != ":3030" {
+		t.Fatalf("SPYDER_ADDR replaced supervisor remembered address with %q", got)
 	}
 }
 
