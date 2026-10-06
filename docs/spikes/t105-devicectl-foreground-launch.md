@@ -64,7 +64,7 @@ hard-coded `false`. If spyder intends every `LaunchApp` call to foreground
 the app (matching devicectl's own `--activate` default, and matching what a
 human workflow expects — "launch" implies "bring to front"), this is a
 plausibly-real pre-existing bug independent of the devicectl question. Filed
-as 🎯T155 rather than fixed in this spike: fixing launch-path
+as 🎯T158 rather than fixed in this spike: fixing launch-path
 foreground behavior is implementation, not evaluation, and risks conflating
 "does devicectl's CLI replace our launch path" with "is our current
 behavior correct" in one commit.
