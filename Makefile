@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web alert-runner permission-fixture sign release-dist release-tap release
+.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web alert-runner permission-fixture permission-fixture-check sign release-dist release-tap release
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -29,6 +29,13 @@ permission-fixture:
 		-project PermissionFixture.xcodeproj -scheme PermissionFixture -destination 'id=$(DEVICE)' \
 		-derivedDataPath build DEVELOPMENT_TEAM=$(TEAM) DEBUG_INFORMATION_FORMAT=dwarf -allowProvisioningUpdates -quiet
 	bin/spyder install $(DEVICE) $(CURDIR)/ios/PermissionFixture/build/Build/Products/Debug-iphoneos/PermissionFixture.app
+
+# Compile the disposable fixture without credentials; this is not a live
+# physical-device oracle. For that use permission-fixture with a signing team.
+permission-fixture-check:
+	cd ios/PermissionFixture && xcodegen generate --quiet && xcodebuild build \
+		-project PermissionFixture.xcodeproj -scheme PermissionFixture \
+		-destination 'generic/platform=iOS Simulator' -derivedDataPath build CODE_SIGNING_ALLOWED=NO -quiet
 
 # Browser player (🎯T101/🎯T106): same tree compiled to wasm; the daemon
 # serves player/web/dist at /player/.
