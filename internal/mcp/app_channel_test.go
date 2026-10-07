@@ -623,36 +623,43 @@ func TestAppChannel_FullMethodSweep(t *testing.T) {
 	}
 	client.pushPerf(map[string]float64{"frame_ms": 16.6, "alloc": 1024})
 
-	// Drain logs.
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		s, _ := h.appChannel.GetSession(sessionID)
-		if s == nil {
-			t.Fatal("session vanished")
-		}
-		s.HelloInfo() // touch
-		logs, _ := s.DrainLogs()
-		if len(logs) == 3 {
-			break
-		}
-		// Re-stuff the buffer to keep polling.
-		for _, lg := range logs {
-			_ = lg // discard, we'll re-poll
-		}
-		time.Sleep(10 * time.Millisecond)
+	// The push writes complete before the ping request. The session read loop
+	// handles frames in wire order, so a ping response is a barrier: both
+	// buffers have received their pushes before either drain. A sleep or a
+	// shared deadline after draining logs can miss perf on a slow runner.
+	ping := dispatchJSON(t, h, "app_ping", map[string]any{"session_id": sessionID})
+	if ping.IsError {
+		t.Fatalf("push barrier ping failed: %s", resultText(t, &ping))
 	}
-	// Perf push is async like logs; retry app_perf_get until samples land.
-	var body string
-	for time.Now().Before(deadline) {
-		r := dispatchJSON(t, h, "app_perf_get", map[string]any{"session_id": sessionID})
-		body = resultText(t, &r)
-		if strings.Contains(body, "frame_ms") {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
+	logs := dispatchJSON(t, h, "app_log_get", map[string]any{"session_id": sessionID})
+	if logs.IsError {
+		t.Fatalf("log_get failed: %s", resultText(t, &logs))
 	}
-	if !strings.Contains(body, "frame_ms") {
-		t.Errorf("perf_get body missing frame_ms: %s", body)
+	var logBody struct {
+		Lines []json.RawMessage `json:"lines"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, &logs)), &logBody); err != nil {
+		t.Fatalf("decode log_get: %v", err)
+	}
+	if len(logBody.Lines) != 3 {
+		t.Errorf("log_get returned %d lines, want 3: %s", len(logBody.Lines), resultText(t, &logs))
+	}
+
+	perf := dispatchJSON(t, h, "app_perf_get", map[string]any{"session_id": sessionID})
+	if perf.IsError {
+		t.Fatalf("perf_get failed: %s", resultText(t, &perf))
+	}
+	body := resultText(t, &perf)
+	var perfBody struct {
+		Samples []struct {
+			Samples map[string]float64 `json:"samples"`
+		} `json:"samples"`
+	}
+	if err := json.Unmarshal([]byte(body), &perfBody); err != nil {
+		t.Fatalf("decode perf_get: %v: %s", err, body)
+	}
+	if len(perfBody.Samples) != 1 || perfBody.Samples[0].Samples["frame_ms"] != 16.6 {
+		t.Errorf("perf_get missing pushed frame_ms: %s", body)
 	}
 }
 
