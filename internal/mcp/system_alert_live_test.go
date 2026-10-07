@@ -43,7 +43,7 @@ func TestSystemAlertLive(t *testing.T) {
 	if r := dispatchJSON(t, h, "system_alert_tap", map[string]any{"device": dev, "button": "Ask Later"}); !r.IsError || !strings.Contains(resultText(t, &r), "has no button") {
 		t.Fatalf("a missing button must fail clearly: %s", resultText(t, &r))
 	}
-	tap := dispatchJSONMap(t, h, "system_alert_tap", map[string]any{"device": dev, "button": "Allow", "wait_ms": 10000.0})
+	tap := dispatchJSONMap(t, h, "system_alert_tap", map[string]any{"device": dev, "button": "Allow", "title_contains": "local network", "wait_ms": 10000.0})
 	after, _ := tap["after"].(map[string]any)
 	t.Logf("after tap: %v", after)
 	if title, _ := after["title"].(string); after["showing"] == true && strings.Contains(strings.ToLower(title), "local network") {

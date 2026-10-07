@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"errors"
+	"strings"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -72,6 +73,7 @@ func (h *Handler) handleSystemAlertTap(args map[string]any) (*mcpgo.CallToolResu
 	if err != nil {
 		return nil, err
 	}
+	titleContains := optString(args, "title_contains")
 	wait := time.Duration(0)
 	if ms, ok := args["wait_ms"].(float64); ok && ms > 0 {
 		wait = time.Duration(ms) * time.Millisecond
@@ -88,12 +90,12 @@ func (h *Handler) handleSystemAlertTap(args map[string]any) (*mcpgo.CallToolResu
 		if err != nil {
 			return toolErr("system_alert_tap on %s: %v", dev, err)
 		}
-		if alert.Showing && device.AlertHasButton(alert, button) || !time.Now().Before(deadline) {
+		if alert.Showing && device.AlertHasButton(alert, button) && titleMatches(alert.Title, titleContains) || !time.Now().Before(deadline) {
 			break
 		}
 		time.Sleep(systemAlertPoll)
 	}
-	before, after, err := reader.TapSystemAlertButton(id, button)
+	before, after, err := reader.TapSystemAlertButton(id, button, titleContains)
 	if err != nil {
 		if errors.Is(err, device.ErrNoSystemAlert) && wait > 0 {
 			return toolErr("system_alert_tap on %s: no system alert appeared within %s", dev, wait)
@@ -101,6 +103,10 @@ func (h *Handler) handleSystemAlertTap(args map[string]any) (*mcpgo.CallToolResu
 		return toolErr("system_alert_tap on %s: %v", dev, err)
 	}
 	return toolJSON(map[string]any{"device": dev, "tapped": button, "before": before, "after": after})
+}
+
+func titleMatches(title, contains string) bool {
+	return contains == "" || strings.Contains(strings.ToLower(title), strings.ToLower(contains))
 }
 
 func systemAlertDefinitions() []mcpgo.Tool {
@@ -113,6 +119,7 @@ func systemAlertDefinitions() []mcpgo.Tool {
 			mcpgo.WithDescription("Tap a named button on the OS system alert showing on an iOS device, e.g. button=\"Allow\". Matching ignores case and apostrophe style. Fails clearly when no alert shows or it has no such button. Taps through Spyder's alert runner (install once with `make alert-runner`); iOS must allow UI automation on the device. Reservation-gated. (🎯T154)"),
 			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or UDID")),
 			mcpgo.WithString("button", mcpgo.Required(), mcpgo.Description("Button label, e.g. Allow or Don't Allow")),
+			mcpgo.WithString("title_contains", mcpgo.Description("Optional case-insensitive title fragment: fail closed rather than tap an unrelated alert")),
 			mcpgo.WithNumber("wait_ms", mcpgo.Description("Wait up to this long for an alert offering the button to appear (default 0: it must already show)")),
 			mcpgo.WithString("owner", mcpgo.Description("Reservation owner")),
 		),
