@@ -64,3 +64,21 @@ observed accepting a device `nc 127.0.0.1:PORT` connection; an actual
 instrumented Android app and a firewall-blocked-daemon launch are still
 required to close the physical-device acceptance oracle. Do not infer a
 macOS ALF result from a hermetic socket test.
+
+### Physical app attempt (2026-10-07)
+
+`TestUSBAndroidAppChannel_Live` is an opt-in, end-to-end oracle: set
+`SPYDER_LIVE_ANDROID_SERIAL` to a USB-attached serial and
+`SPYDER_LIVE_ANDROID_BUNDLE` to an installed debuggable app that honours the
+channel launch extra. On Samsung A23 `R58T61ER0ZB` with the installed
+`com.squz.tiltbuggy` development build (installed 2026-07-19), the **test
+failed**: the app log said it was dialing `127.0.0.1:56750`, but spyder's
+listener reported `Accepted:0` after 25 seconds. At that same stage `adb
+reverse --list` showed `UsbFfs tcp:56750 tcp:56750`; a device-side `nc` probe
+over that mapping reached the host listener (`Accepted:1`, hello EOF expected).
+The macOS application firewall was enabled. Thus the OS transport works and
+the native app received the injected value, but the actual app handshake has
+**not** been established; the old app build or its dial worker needs diagnosis
+or a current app rebuild. Do not mark T128 achieved from the shell probe. A
+firewall-denied wildcard baseline was not exercised (changing global ALF rules
+is not part of this test).
