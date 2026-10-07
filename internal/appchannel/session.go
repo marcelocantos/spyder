@@ -695,7 +695,7 @@ func (m *Manager) startListener(p StartParams) (*Listener, error) {
 	if p.LAN {
 		host = "0.0.0.0:0"
 	}
-	ln, err := net.Listen("tcp", host)
+	ln, err := net.Listen("tcp4", host)
 	if err != nil {
 		return nil, fmt.Errorf("appchannel: listen: %w", err)
 	}
