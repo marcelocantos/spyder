@@ -28,7 +28,7 @@ type SystemAlertReader interface {
 	SystemAlert(id string) (SystemAlert, error)
 	// TapSystemAlertButton presses the named button of the system alert
 	// showing now and returns what showed before and after the tap.
-	TapSystemAlertButton(id, button string) (before, after SystemAlert, err error)
+	TapSystemAlertButton(id, button, titleContains string) (before, after SystemAlert, err error)
 }
 
 // ErrNoSystemAlert is returned when an alert is required but none shows.

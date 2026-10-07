@@ -33,10 +33,13 @@ func (s *alertStub) SystemAlert(string) (device.SystemAlert, error) {
 	return device.SystemAlert{}, nil
 }
 
-func (s *alertStub) TapSystemAlertButton(_ string, button string) (device.SystemAlert, device.SystemAlert, error) {
+func (s *alertStub) TapSystemAlertButton(_ string, button, titleContains string) (device.SystemAlert, device.SystemAlert, error) {
 	before, _ := s.SystemAlert("")
 	if !before.Showing {
 		return before, device.SystemAlert{}, device.ErrNoSystemAlert
+	}
+	if !titleMatches(before.Title, titleContains) {
+		return before, device.SystemAlert{}, errors.New("system alert title does not contain " + titleContains)
 	}
 	if !device.AlertHasButton(before, button) {
 		return before, device.SystemAlert{}, errors.New("system alert has no button " + button)
@@ -91,6 +94,15 @@ func TestSystemAlertTapFailsClearly(t *testing.T) {
 				t.Fatalf("got %q (error=%v), want %q", resultText(t, &r), r.IsError, tc.want)
 			}
 		})
+	}
+}
+
+func TestSystemAlertTapRejectsUnrelatedPrompt(t *testing.T) {
+	stub := &alertStub{stubAdapter: &stubAdapter{}, appearsAt: 1}
+	h := NewHandlerWithAdapters(stub, nil)
+	r := dispatchJSON(t, h, "system_alert_tap", map[string]any{"device": alertUDID, "button": "Allow", "title_contains": "notifications"})
+	if !r.IsError || !strings.Contains(resultText(t, &r), "title does not contain") || len(stub.tapped) != 0 {
+		t.Fatalf("unrelated prompt was not rejected: %s taps=%v", resultText(t, &r), stub.tapped)
 	}
 }
 

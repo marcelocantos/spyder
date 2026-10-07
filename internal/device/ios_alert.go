@@ -85,7 +85,7 @@ func (a *IOSAdapter) SystemAlert(id string) (SystemAlert, error) {
 
 // TapSystemAlertButton presses the named button of the system alert that is
 // showing, then confirms that alert went away (a different alert may follow).
-func (a *IOSAdapter) TapSystemAlertButton(id, button string) (SystemAlert, SystemAlert, error) {
+func (a *IOSAdapter) TapSystemAlertButton(id, button, titleContains string) (SystemAlert, SystemAlert, error) {
 	var before SystemAlert
 	err := a.withAccessibility(id, func(ax *accessibility.ControlInterface, owners map[int]string) error {
 		elems, closed, err := axWalk(ax)
@@ -95,6 +95,9 @@ func (a *IOSAdapter) TapSystemAlertButton(id, button string) (SystemAlert, Syste
 		before = classifyAlert(elems, closed, owners)
 		if !before.Showing {
 			return ErrNoSystemAlert
+		}
+		if titleContains != "" && !strings.Contains(strings.ToLower(before.Title), strings.ToLower(titleContains)) {
+			return fmt.Errorf("system alert title %q does not contain %q", before.Title, titleContains)
 		}
 		target, ok := findButton(elems, owners, button)
 		if !ok {
