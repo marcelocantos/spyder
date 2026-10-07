@@ -3,6 +3,7 @@ module github.com/marcelocantos/spyder
 go 1.26.1
 
 require (
+	github.com/chromedp/chromedp v0.20.1
 	github.com/coder/websocket v1.8.15
 	github.com/danielpaulus/go-ios v1.0.213
 	github.com/google/uuid v1.6.0
@@ -36,7 +37,9 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.3 // indirect
 	github.com/aws/smithy-go v1.27.6 // indirect
 	github.com/cenkalti/backoff v2.2.1+incompatible // indirect
+	github.com/chromedp/cdproto v0.157.8 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260213210345-44df1a37e875 // indirect
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/grandcat/zeroconf v1.0.0 // indirect
