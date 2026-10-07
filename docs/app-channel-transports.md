@@ -82,3 +82,25 @@ the native app received the injected value, but the actual app handshake has
 or a current app rebuild. Do not mark T128 achieved from the shell probe. A
 firewall-denied wildcard baseline was not exercised (changing global ALF rules
 is not part of this test).
+
+### Successful end-to-end device run (2026-10-07)
+
+On USB-attached Samsung Galaxy S21 (`R5CR112X76K`), the installed
+`com.squz.tiltbuggy` debug app received `SPYDER_APP_CHANNEL=127.0.0.1:57916`,
+connected to the host listener via `adb reverse`, completed Hello
+(`app=tiltbuggy`, 19 methods), and answered `ping`. The test asserted that
+no host LAN interface could connect to that port. macOS Application Firewall
+was enabled (`socketfilterfw --getglobalstate` reported `State = 1`), though
+an explicit ALF block of the test executable was **not** established: system
+firewall mutation requires an administrator and is not an unattended test
+side effect. Clean-checkout oracle: `TestUSBAndroidAppChannel_Live`,
+`GATE spyder-t128-usb-real-app exit=0 GREEN id=860c57b6`, commit `f6251c47`.
+
+The contrasting A23 run above is device-specific, not a universal reverse
+failure: shell-UID `nc` reaches the mapped listener, but `run-as
+com.squz.tiltbuggy /system/bin/nc` times out from that app's UID. The same
+app-UID probe succeeds on the S21 and on Samsung Tab A9. This points to an
+Android per-UID/OEM network restriction on the A23; do not claim the USB
+route works for *every* Android device, and do not silently open a LAN
+listener in response to a missing handshake. Diagnose the device policy or
+choose an explicit LAN transport if USB reverse cannot serve that peer.
