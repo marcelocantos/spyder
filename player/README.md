@@ -56,3 +56,23 @@ When the stream wire changes, update **both**:
 
 `make -C player check-wire` is the player's layout oracle. Magics are
 ASCII `SP2x` and must stay identical on both sides.
+
+### Submodule object-store independence
+
+The four `vendor/github.com/` source submodules must not borrow Git objects
+from ge or another checkout. After `git submodule update --init` (a fresh
+clone has no alternates by default), audit the module stores with
+`./scripts/check-player-submodules.sh` from the spyder root. This checks the
+shared Git module stores even when invoked from a worktree that has not
+checked out the submodules. It fails on missing stores, any alternate, or
+`git fsck` errors.
+
+For a checkout that was seeded with `git clone --shared` / `--reference` or
+borrowed ge's object store, run `./scripts/check-player-submodules.sh --repair`
+**before** removing the ge checkout. Repair repacks reachable objects while
+the borrowed store is still present, removes the alternate, and verifies
+with `git fsck`; it restores the pointer if verification fails. A missing
+borrowed store needs recovery from the submodule's upstream before repair.
+Do not just delete `objects/info/alternates`: objects reachable only through
+that file would disappear. The fixture regression is
+`./scripts/check-player-submodules-test.sh`.
