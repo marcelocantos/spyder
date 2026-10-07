@@ -89,6 +89,101 @@ func TestResolvePlayerPath_Override(t *testing.T) {
 	}
 }
 
+// TestPlayerLibexecDir_CellarLayout verifies the Homebrew/Cellar install-
+// layout math used by playerLibexecDir (🎯T102): resolving a flat bin/
+// symlink to the Cellar binary and walking ../libexec/spyder/player from
+// there, mirroring resolveIOSTunnelBinary's ios-binary lookup
+// (internal/daemon/daemon.go) and doctor.go's bundled-binary search.
+func TestPlayerLibexecDir_CellarLayout(t *testing.T) {
+	rawTmp := t.TempDir()
+	tmp, err := filepath.EvalSymlinks(rawTmp)
+	if err != nil {
+		t.Fatalf("EvalSymlinks tmpdir: %v", err)
+	}
+
+	cellarBin := filepath.Join(tmp, "Cellar", "spyder", "1.0.0", "bin")
+	cellarLibexecPlayer := filepath.Join(tmp, "Cellar", "spyder", "1.0.0", "libexec", "spyder", "player")
+	flatBin := filepath.Join(tmp, "bin")
+	for _, dir := range []string{cellarBin, cellarLibexecPlayer, flatBin} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	realExe := filepath.Join(cellarBin, "spyder")
+	if err := os.WriteFile(realExe, []byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("write real exe: %v", err)
+	}
+	symlink := filepath.Join(flatBin, "spyder")
+	if err := os.Symlink(realExe, symlink); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	resolved, err := filepath.EvalSymlinks(symlink)
+	if err != nil {
+		t.Fatalf("EvalSymlinks: %v", err)
+	}
+	candidate := filepath.Clean(filepath.Join(filepath.Dir(resolved), "..", "libexec", "spyder", "player"))
+	if candidate != cellarLibexecPlayer {
+		t.Fatalf("libexec candidate from resolved exe = %q; want %q", candidate, cellarLibexecPlayer)
+	}
+
+	// Sanity: computing from the unresolved symlink's dir would miss
+	// the Cellar libexec sibling (same hazard exePathReal guards against).
+	wrong := filepath.Clean(filepath.Join(filepath.Dir(symlink), "..", "libexec", "spyder", "player"))
+	if _, err := os.Stat(wrong); err == nil {
+		t.Errorf("expected wrong candidate %q to be absent, but it exists", wrong)
+	}
+}
+
+// TestPlayerPathCandidates_OrderEnvThenLibexecThenRepo verifies the
+// resolution order mandated by 🎯T102: path= override (checked by the
+// caller ahead of these), then SPYDER_PLAYER_* env, then the install
+// layout (libexec/spyder/player/...), then repo-relative dev build
+// outputs — for every platform candidate list.
+func TestPlayerPathCandidates_OrderEnvThenLibexecThenRepo(t *testing.T) {
+	t.Setenv(envPlayerDesktopPath, "/env/desktop/player")
+	cs := playerPathCandidates("desktop", "any")
+	if len(cs) < 3 {
+		t.Fatalf("want at least 3 desktop candidates, got %v", cs)
+	}
+	if cs[0] != "/env/desktop/player" {
+		t.Fatalf("want env override first, got %v", cs)
+	}
+	if !strings.Contains(cs[1], filepath.Join("libexec", "spyder", "player", "desktop", "player")) {
+		t.Fatalf("want install-layout candidate second, got %v", cs)
+	}
+	if !strings.HasSuffix(cs[2], filepath.Join("bin", "player")) {
+		t.Fatalf("want repo-relative dev candidate third, got %v", cs)
+	}
+}
+
+func TestPlayerPathCandidates_AndroidIncludesLibexecLayout(t *testing.T) {
+	cs := playerPathCandidates("android", "any")
+	found := false
+	for _, c := range cs {
+		if strings.Contains(c, filepath.Join("libexec", "spyder", "player", "android", "player.apk")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("android candidates missing install-layout path: %v", cs)
+	}
+}
+
+func TestPlayerPathCandidates_IOSIncludesLibexecLayout(t *testing.T) {
+	cs := playerPathCandidates("ios", "any")
+	found := false
+	for _, c := range cs {
+		if strings.Contains(c, filepath.Join("libexec", "spyder", "player", "ios", "Player.app")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("ios candidates missing install-layout path: %v", cs)
+	}
+}
+
 func TestPlayerPathCandidates_DesktopIncludesBin(t *testing.T) {
 	cs := playerPathCandidates("desktop", "any")
 	found := false

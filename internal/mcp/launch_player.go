@@ -238,15 +238,51 @@ func resolvePlayerPath(platform, override, variant string) (string, error) {
 		platform, variant, envPlayerIOSPath, envPlayerAndroidPath)
 }
 
+// playerLibexecDir returns the production install layout's player-artifact
+// directory: <real-exe-dir>/../libexec/spyder/player. Homebrew installs
+// spyder's flat bin/ as a symlink into the Cellar; EvalSymlinks resolves it
+// so the libexec sibling is found relative to the real binary location —
+// same pattern as resolveIOSTunnelBinary's libexec/spyder/ios lookup
+// (internal/daemon/daemon.go) and doctor.go's bundled-binary search.
+// Returns "" when the running binary's location cannot be determined
+// (e.g. under `go test`), so callers fall through to the next candidate.
+func playerLibexecDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return filepath.Join(filepath.Dir(exe), "..", "libexec", "spyder", "player")
+}
+
+// playerPathCandidates returns artifact paths in resolution-order (🎯T102):
+// env override, then the Homebrew/Cellar install layout (libexec/spyder/
+// player/), then repo-relative dev build outputs. resolvePlayerPath's
+// override= parameter is checked ahead of all of these by the caller.
 func playerPathCandidates(platform, variant string) []string {
-	// Prefer env overrides, then repo-relative build outputs.
 	cwd, _ := os.Getwd()
+	libexec := playerLibexecDir()
 	switch strings.ToLower(platform) {
 	case "ios":
 		env := os.Getenv(envPlayerIOSPath)
 		var paths []string
 		if env != "" {
 			paths = append(paths, env)
+		}
+		// Install layout (🎯T102): iOS is excluded from the public Homebrew
+		// formula (per-developer codesign/provisioning is not multi-tenant —
+		// see tapper/formula_includes.rb caveats), but a locally re-signed
+		// drop still resolves here first if present.
+		if libexec != "" {
+			switch variant {
+			case "portrait":
+				paths = append(paths, filepath.Join(libexec, "ios", "PlayerPort.app"))
+			case "landscape":
+				paths = append(paths, filepath.Join(libexec, "ios", "PlayerLand.app"))
+			}
+			paths = append(paths, filepath.Join(libexec, "ios", "Player.app"))
 		}
 		// Orientation variants (🎯T100.4).
 		switch variant {
@@ -276,6 +312,9 @@ func playerPathCandidates(platform, variant string) []string {
 		if env != "" {
 			paths = append(paths, env)
 		}
+		if libexec != "" {
+			paths = append(paths, filepath.Join(libexec, "android", "player.apk"))
+		}
 		paths = append(paths,
 			filepath.Join(cwd, "player/android/app/build/outputs/apk/debug/app-debug.apk"),
 			filepath.Join(cwd, "player/android/app/build/outputs/apk/release/app-release.apk"),
@@ -286,6 +325,9 @@ func playerPathCandidates(platform, variant string) []string {
 		var paths []string
 		if env != "" {
 			paths = append(paths, env)
+		}
+		if libexec != "" {
+			paths = append(paths, filepath.Join(libexec, "desktop", "player"))
 		}
 		paths = append(paths,
 			filepath.Join(cwd, "bin/player"),
