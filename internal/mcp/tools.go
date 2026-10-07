@@ -578,7 +578,14 @@ func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID,
 	if h.appChannel == nil {
 		return env, nil
 	}
-	if _, ok := env["SPYDER_APP_CHANNEL"]; ok {
+	if addr, ok := env["SPYDER_APP_CHANNEL"]; ok {
+		// Even explicit overrides need a keyed diagnostic record. This listener
+		// may not be the endpoint the override points at; diagnose says so.
+		l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID})
+		if err != nil {
+			return nil, fmt.Errorf("appchannel: %w", err)
+		}
+		l.RecordInjectedAddress(addr)
 		return env, nil
 	}
 	host, err := pickAppChannelHost(platform, deviceID)
@@ -593,6 +600,7 @@ func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID,
 		env = map[string]string{}
 	}
 	env["SPYDER_APP_CHANNEL"] = fmt.Sprintf("%s:%d", host, l.Port)
+	l.RecordInjectedAddress(env["SPYDER_APP_CHANNEL"])
 	return env, nil
 }
 

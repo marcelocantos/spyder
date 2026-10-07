@@ -13,6 +13,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/vmihailenco/msgpack/v5"
@@ -597,9 +598,14 @@ type Listener struct {
 	cancel   context.CancelFunc
 	done     chan struct{}
 
-	mu          sync.Mutex
-	sessions    []*Session // sessions accepted on this listener
-	lastTouched time.Time
+	mu                sync.Mutex
+	sessions          []*Session // sessions accepted on this listener
+	lastTouched       time.Time
+	injectedAddress   string // last SPYDER_APP_CHANNEL passed to a launch for this key
+	accepted          int64  // established TCP connections returned by Accept (not raw SYNs)
+	handshakeFailures int64
+	lastRemote        string
+	lastAttempt       time.Time
 }
 
 // GetOrCreateListener returns the keyed listener for `key`, creating
@@ -696,6 +702,54 @@ func (m *Manager) startListener(p StartParams) (*Listener, error) {
 	return l, nil
 }
 
+// RecordInjectedAddress tracks the actual launch value, including explicit overrides.
+func (l *Listener) RecordInjectedAddress(addr string) {
+	l.mu.Lock()
+	l.injectedAddress = addr
+	l.mu.Unlock()
+}
+
+// Connectivity is a race-safe snapshot of the listener's observable transport state.
+// Accept only sees established connections; a firewall-dropped SYN is invisible here.
+type Connectivity struct {
+	ListenAddress     string `json:"listen_address"`
+	BindFamily        string `json:"bind_family"`
+	InjectedAddress   string `json:"injected_address,omitempty"`
+	Accepted          int64  `json:"accepted_tcp"`
+	HandshakeFailures int64  `json:"handshake_failures"`
+	LastRemote        string `json:"last_remote,omitempty"`
+	LastAttempt       string `json:"last_attempt,omitempty"`
+}
+
+func (l *Listener) Connectivity() Connectivity {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	addr := l.listener.Addr().String()
+	family := "unknown"
+	if tcp, ok := l.listener.Addr().(*net.TCPAddr); ok {
+		if tcp.IP.To4() != nil {
+			family = "v4"
+		} else if tcp.IP.To16() != nil {
+			family = "v6"
+			if ln, ok := l.listener.(*net.TCPListener); ok {
+				if raw, err := ln.SyscallConn(); err == nil {
+					_ = raw.Control(func(fd uintptr) {
+						if only, err := syscall.GetsockoptInt(int(fd), syscall.IPPROTO_IPV6, syscall.IPV6_V6ONLY); err == nil && only == 0 {
+							family = "dual"
+						}
+					})
+				}
+			}
+		}
+	}
+	c := Connectivity{ListenAddress: addr, BindFamily: family, InjectedAddress: l.injectedAddress,
+		Accepted: l.accepted, HandshakeFailures: l.handshakeFailures, LastRemote: l.lastRemote}
+	if !l.lastAttempt.IsZero() {
+		c.LastAttempt = l.lastAttempt.Format(time.RFC3339Nano)
+	}
+	return c
+}
+
 // Touch updates the listener's last-activity timestamp; the idle reaper
 // uses this to decide whether a listener with zero live sessions has
 // been quiet long enough to drop.
@@ -759,6 +813,11 @@ func (l *Listener) acceptLoop(ctx context.Context) {
 			}
 			return
 		}
+		l.mu.Lock()
+		l.accepted++
+		l.lastAttempt = time.Now()
+		l.lastRemote = conn.RemoteAddr().String()
+		l.mu.Unlock()
 		go l.handleConn(ctx, conn)
 	}
 }
@@ -785,6 +844,9 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	}
 
 	if err := s.handshake(); err != nil {
+		l.mu.Lock()
+		l.handshakeFailures++
+		l.mu.Unlock()
 		slog.Warn("appchannel: handshake failed",
 			"session_id", id, "remote", conn.RemoteAddr().String(), "error", err)
 		_ = conn.Close()

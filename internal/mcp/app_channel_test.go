@@ -856,7 +856,7 @@ func TestAppChannel_StopDoesNotDeadlockOnSilentPeer(t *testing.T) {
 func TestAppChannel_DispatchSurfaceCoverage(t *testing.T) {
 	h := startAppChannelHandler(t)
 	expected := []string{
-		"app_channel_stop", "app_channel_list",
+		"app_channel_stop", "app_channel_list", "app_channel_diagnose",
 		"app_ping", "app_quit", "app_flush",
 		"app_background", "app_foreground", "app_low_memory",
 		"app_pause", "app_resume", "app_step", "app_speed",
