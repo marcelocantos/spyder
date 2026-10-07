@@ -1,0 +1,27 @@
+# Disposable fixture for 🎯T154. Installs under its own bundle ID and asks
+# for Local Network permission via Bonjour browse on first launch; never
+# uninstall or redeploy another team's app to reset an OS prompt.
+name: PermissionFixture
+options:
+  bundleIdPrefix: com.marcelocantos.spyder
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+targets:
+  PermissionFixture:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: Spyder Permission Fixture
+        NSLocalNetworkUsageDescription: Spyder tests the system Local Network permission alert with this disposable app.
+        NSBonjourServices: ["_spyderfixture._tcp"]
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.marcelocantos.spyder.PermissionFixture

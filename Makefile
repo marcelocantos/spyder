@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web alert-runner sign release-dist release-tap release
+.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web alert-runner permission-fixture sign release-dist release-tap release
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -19,6 +19,16 @@ alert-runner:
 		-derivedDataPath build DEVELOPMENT_TEAM=$(TEAM) DEBUG_INFORMATION_FORMAT=dwarf -allowProvisioningUpdates -quiet
 	bin/spyder install $(DEVICE) $(CURDIR)/ios/AlertRunner/build/Build/Products/Debug-iphoneos/AlertHost.app
 	bin/spyder install $(DEVICE) $(CURDIR)/ios/AlertRunner/build/Build/Products/Debug-iphoneos/AlertRunner-Runner.app
+
+# Safe standalone permission fixture: distinct bundle; no Jevons/Stock Cars
+# uninstall required. Run on a test device, then use system_alert to inspect
+# and system_alert_tap with title_contains="local network" to answer.
+permission-fixture:
+	@test -n "$(DEVICE)" -a -n "$(TEAM)" || { echo "usage: make permission-fixture DEVICE=<udid> TEAM=<team id>"; exit 2; }
+	cd ios/PermissionFixture && xcodegen generate --quiet && xcodebuild build \
+		-project PermissionFixture.xcodeproj -scheme PermissionFixture -destination 'id=$(DEVICE)' \
+		-derivedDataPath build DEVELOPMENT_TEAM=$(TEAM) DEBUG_INFORMATION_FORMAT=dwarf -allowProvisioningUpdates -quiet
+	bin/spyder install $(DEVICE) $(CURDIR)/ios/PermissionFixture/build/Build/Products/Debug-iphoneos/PermissionFixture.app
 
 # Browser player (🎯T101/🎯T106): same tree compiled to wasm; the daemon
 # serves player/web/dist at /player/.

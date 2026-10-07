@@ -15,12 +15,17 @@ import (
 // at the device. Needs the alert runner installed (make alert-runner) and
 // UI automation allowed on the device.
 //
-//	SPYDER_LIVE_ALERT_DEVICE=Jevons SPYDER_LIVE_ALERT_APP=/path/StockCars.app \
-//	SPYDER_LIVE_ALERT_BUNDLE=com.minicades.stockcars go test -run TestSystemAlertLive ./internal/mcp/
+//	SPYDER_LIVE_ALERT_DEVICE="test device" SPYDER_LIVE_ALERT_APP=/path/PermissionFixture.app \
+//	SPYDER_LIVE_ALERT_BUNDLE=com.marcelocantos.spyder.PermissionFixture go test -run TestSystemAlertLive ./internal/mcp/
 func TestSystemAlertLive(t *testing.T) {
 	dev, app, bundle := os.Getenv("SPYDER_LIVE_ALERT_DEVICE"), os.Getenv("SPYDER_LIVE_ALERT_APP"), os.Getenv("SPYDER_LIVE_ALERT_BUNDLE")
 	if dev == "" || app == "" || bundle == "" {
-		t.Skip("set SPYDER_LIVE_ALERT_DEVICE, SPYDER_LIVE_ALERT_APP and SPYDER_LIVE_ALERT_BUNDLE (an app that asks for Local Network access)")
+		t.Skip("set SPYDER_LIVE_ALERT_DEVICE, SPYDER_LIVE_ALERT_APP and SPYDER_LIVE_ALERT_BUNDLE for the disposable permission fixture")
+	}
+	// This test uninstalls the named bundle. Refuse any real app regardless
+	// of environment variables, especially an installed Jevons build.
+	if bundle != "com.marcelocantos.spyder.PermissionFixture" {
+		t.Fatalf("refusing to uninstall non-disposable bundle %q", bundle)
 	}
 	h := NewHandler()
 	_ = dispatchJSON(t, h, "uninstall_app", map[string]any{"device": dev, "bundle_id": bundle})
