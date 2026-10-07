@@ -379,3 +379,45 @@ func TestStateCache_MissDialsBattery(t *testing.T) {
 		t.Errorf("State err = %v; want UDID/Device-related error", err)
 	}
 }
+
+// --- appservice LaunchApp terminateExisting (🎯T158) ----------------------
+
+// fakeAppserviceLaunch records the terminateExisting flag go-ios would see.
+type fakeAppserviceLaunch struct {
+	bundleID          string
+	terminateExisting bool
+	called            bool
+}
+
+func (f *fakeAppserviceLaunch) LaunchApp(bundleID string, args []interface{}, env map[string]interface{}, options map[string]interface{}, terminateExisting bool) (int, error) {
+	f.called = true
+	f.bundleID = bundleID
+	f.terminateExisting = terminateExisting
+	return 42, nil
+}
+
+func TestLaunchViaAppservice_DoesNotTerminateExisting(t *testing.T) {
+	// 🎯T158: the 5th LaunchApp arg is terminateExisting, not activate.
+	// Flipping it to true would kill a running instance on every launch —
+	// CoreDevice --terminate-existing, not --activate. Keep false.
+	if appserviceTerminateExisting {
+		t.Fatal("appserviceTerminateExisting is true; that would kill a running instance on every LaunchApp (CoreDevice --terminate-existing), not foreground the app")
+	}
+	f := &fakeAppserviceLaunch{}
+	pid, err := launchViaAppservice(f, "com.example.app", nil, nil)
+	if err != nil {
+		t.Fatalf("launchViaAppservice: %v", err)
+	}
+	if pid != 42 {
+		t.Errorf("pid = %d; want 42", pid)
+	}
+	if !f.called {
+		t.Fatal("LaunchApp was not called")
+	}
+	if f.bundleID != "com.example.app" {
+		t.Errorf("bundleID = %q; want com.example.app", f.bundleID)
+	}
+	if f.terminateExisting {
+		t.Error("terminateExisting = true; want false (not an activate/foreground flag)")
+	}
+}

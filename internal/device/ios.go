@@ -978,6 +978,27 @@ func (a *IOSAdapter) writeAppStreamConfig(id, bundleID string, env map[string]st
 	return nil
 }
 
+// appserviceTerminateExisting is the last argument of go-ios
+// appservice.Connection.LaunchApp. That parameter is terminateExisting
+// (CoreDevice --terminate-existing), not --activate. 🎯T105's spike
+// misread it as an activate/foreground flag. Keep false: LaunchApp
+// must not kill a running instance; callers that need a clean relaunch
+// (deploy_app) already TerminateApp first. go-ios does not expose
+// CoreDevice's --activate; its launch payload hard-codes
+// user.active=true (the active *user*, matching --user, not foreground).
+// iOS State() currently reports "foreground app detection unavailable",
+// so a hermetic check cannot observe foregrounding on a physical device.
+const appserviceTerminateExisting = false
+
+// appserviceLaunchConn is the LaunchApp subset of appservice.Connection.
+type appserviceLaunchConn interface {
+	LaunchApp(bundleID string, args []interface{}, env map[string]interface{}, options map[string]interface{}, terminateExisting bool) (int, error)
+}
+
+func launchViaAppservice(conn appserviceLaunchConn, bundleID string, args []interface{}, env map[string]interface{}) (int, error) {
+	return conn.LaunchApp(bundleID, args, env, nil, appserviceTerminateExisting)
+}
+
 // launchAppAppservice is the iOS-17+ path (CoreDevice/RemoteXPC).
 func (a *IOSAdapter) launchAppAppservice(id, bundleID string, env map[string]string) error {
 	conn, release, err := a.asPool.Acquire(id)
@@ -994,7 +1015,7 @@ func (a *IOSAdapter) launchAppAppservice(id, bundleID string, env map[string]str
 		}
 	}
 	args := launchArgsFromEnv(env)
-	if _, err := conn.LaunchApp(bundleID, args, envArg, nil, false); err != nil {
+	if _, err := launchViaAppservice(conn, bundleID, args, envArg); err != nil {
 		// Map "app not installed"-shaped errors to the spyder convention.
 		msg := err.Error()
 		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {

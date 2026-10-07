@@ -53,7 +53,7 @@ Relevant flags from `xcrun devicectl device process launch --help`:
 | Session/connection cost | Pooled per-UDID connection (`asPool`), amortized across launch/pid-verify/terminate | New process + new CoreDevice/RemoteXPC handshake every invocation (devicectl doesn't expose a persistent-connection mode to callers); this is the same reason the install/terminate call sites wrap it in a 30s timeout — devicectl invocations are known to be slow/occasionally wedge |
 | Reliability | In-process error returned directly; typed errors already mapped to spyder's "app not installed" convention | Must parse devicectl's stdout/stderr/exit code (or `--json-output <path>` + read a temp file) to detect the same failure classes; more string-matching surface, another place for a devicectl hang to need its own timeout+kill plumbing (duplicating what `runDevicectlCtx`/`devicectlTimeout` already does for install/terminate) |
 | pid-verify support | `AppPID` already does a *separate* appservice `ListProcesses()` call after launch, independent of which launch path was used — this isn't entangled with the launch call itself | Same: `AppPID` would be unchanged; `devicectl`'s own `--json-output` *does* return the launched pid directly in principle, which would let launch+pid-verify collapse into one call — a real minor win, but not one that outweighs the connection-cost regression below |
-| Foreground guarantee | go-ios's `appservice.LaunchApp(..., activate bool)` call already takes an `activate`-equivalent bool (currently passed `false` in the call at ios.go:994, i.e. launched *not* activated/foregrounded — worth separately flagging, see below) | `--activate` is the devicectl default |
+| Foreground guarantee | go-ios's `appservice.LaunchApp` last bool is `terminateExisting` (not activate; see Correction under the side finding). `--activate` is not exposed by go-ios. | `--activate` is the devicectl default |
 | Process cost per device roundtrip | None beyond the pooled XPC call | New `xcrun devicectl` subprocess fork/exec, argv/env marshalling, JSON output parse — measurably slower than an in-process pooled XPC call, and this cost repeats on every single launch (spyder launches apps frequently during session churn, pool recycling, and test loops) |
 
 ## Side finding (not in scope for this spike's acceptance, filed separately)
@@ -68,6 +68,25 @@ as 🎯T158 rather than fixed in this spike: fixing launch-path
 foreground behavior is implementation, not evaluation, and risks conflating
 "does devicectl's CLI replace our launch path" with "is our current
 behavior correct" in one commit.
+
+### Correction (🎯T158)
+
+The spike misidentified the trailing bool. go-ios
+`appservice.Connection.LaunchApp` is:
+
+```
+LaunchApp(bundleId, args, env, options, terminateExisting bool) (int, error)
+```
+
+The last argument is CoreDevice `--terminate-existing`, not `--activate`.
+Keeping `false` is correct: `LaunchApp` must not kill a running instance
+(`deploy_app` already `TerminateApp`s first). go-ios does not expose
+`--activate`; its launch payload hard-codes `user.active=true` (the
+active *user*, matching `--user`, not foreground). Spyder's LaunchApp
+contract still promises foregrounding; that is not wired through this
+bool. iOS `State()` currently reports "foreground app detection
+unavailable", so a hermetic test cannot observe foregrounding on a
+physical device.
 
 ## Decision: **reject** (do not replace the in-process appservice launch
 path with a `devicectl` CLI shell-out)
