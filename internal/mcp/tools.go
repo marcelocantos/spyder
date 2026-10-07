@@ -592,7 +592,17 @@ func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID,
 		l.RecordInjectedAddress(addr)
 		return env, nil
 	}
-	usbAndroid := platform == "android" && !strings.HasPrefix(deviceID, "emulator-") && !strings.Contains(deviceID, ":")
+	// An explicitly diagnosed USB reverse failure can opt one serial into
+	// LAN transport; never let a global iOS host override expose every USB
+	// listener. The exception list names peers, not an all-devices switch.
+	lanException := false
+	for _, serial := range strings.Split(os.Getenv("SPYDER_APP_CHANNEL_ANDROID_LAN_SERIALS"), ",") {
+		if strings.TrimSpace(serial) != "" && strings.TrimSpace(serial) == deviceID {
+			lanException = true
+			break
+		}
+	}
+	usbAndroid := platform == "android" && !strings.HasPrefix(deviceID, "emulator-") && !strings.Contains(deviceID, ":") && !lanException
 	host := "127.0.0.1"
 	var err error
 	if !usbAndroid {

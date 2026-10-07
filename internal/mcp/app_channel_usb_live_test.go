@@ -19,7 +19,19 @@ import (
 // installed, debuggable, appchannel-enabled app. It proves a *real app* dials
 // back over the USB reverse mapping and answers an RPC, not just a socket
 // probe. The caller owns the device; the test force-stops the app afterward.
-func TestUSBAndroidAppChannel_Live(t *testing.T) {
+func TestUSBAndroidAppChannel_Live(t *testing.T) { liveAndroidAppChannel(t, false) }
+
+// TestAndroidLANException_Live verifies an explicit serial exception on a
+// device whose app UID cannot use adb reverse. Requires both the live-device
+// env and SPYDER_APP_CHANNEL_ANDROID_LAN_SERIALS naming that device.
+func TestAndroidLANException_Live(t *testing.T) {
+	if os.Getenv("SPYDER_LIVE_ANDROID_LAN_EXCEPTION") != "1" {
+		t.Skip("opt in with SPYDER_LIVE_ANDROID_LAN_EXCEPTION=1")
+	}
+	liveAndroidAppChannel(t, true)
+}
+
+func liveAndroidAppChannel(t *testing.T, expectLAN bool) {
 	serial := os.Getenv("SPYDER_LIVE_ANDROID_SERIAL")
 	bundle := os.Getenv("SPYDER_LIVE_ANDROID_BUNDLE")
 	if serial == "" || bundle == "" {
@@ -41,12 +53,18 @@ func TestUSBAndroidAppChannel_Live(t *testing.T) {
 		t.Fatal("keyed listener missing")
 	}
 	defer l.Stop()
-	if want := fmt.Sprintf("127.0.0.1:%d", l.Port); env["SPYDER_APP_CHANNEL"] != want {
-		t.Fatalf("channel=%s want %s", env["SPYDER_APP_CHANNEL"], want)
-	}
-	assertNotLANReachable(t, l.Port)
-	if out, err := exec.Command("adb", "-s", serial, "reverse", "--list").CombinedOutput(); err == nil {
-		t.Logf("reverse list: %s", out)
+	if expectLAN {
+		if strings.HasPrefix(env["SPYDER_APP_CHANNEL"], "127.0.0.1:") {
+			t.Fatalf("LAN exception did not select LAN: %s", env["SPYDER_APP_CHANNEL"])
+		}
+	} else {
+		if want := fmt.Sprintf("127.0.0.1:%d", l.Port); env["SPYDER_APP_CHANNEL"] != want {
+			t.Fatalf("channel=%s want %s", env["SPYDER_APP_CHANNEL"], want)
+		}
+		assertNotLANReachable(t, l.Port)
+		if out, err := exec.Command("adb", "-s", serial, "reverse", "--list").CombinedOutput(); err == nil {
+			t.Logf("reverse list: %s", out)
+		}
 	}
 	if err := ad.LaunchApp(serial, bundle, env); err != nil {
 		t.Fatal(err)
@@ -66,7 +84,7 @@ func TestUSBAndroidAppChannel_Live(t *testing.T) {
 				if err != nil {
 					t.Fatalf("app hello %s but ping failed: %v", hello.AppName, err)
 				}
-				t.Logf("USB appchannel handshake and ping: app=%s addr=%s", hello.AppName, env["SPYDER_APP_CHANNEL"])
+				t.Logf("appchannel handshake and ping: app=%s addr=%s", hello.AppName, env["SPYDER_APP_CHANNEL"])
 				return
 			}
 		}

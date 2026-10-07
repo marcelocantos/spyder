@@ -137,3 +137,29 @@ func TestPhysicalIOSAppChannelIsLANBound(t *testing.T) {
 	}
 	conn.Close()
 }
+
+func TestAndroidLANExceptionIsPerSerial(t *testing.T) {
+	t.Setenv("SPYDER_APP_CHANNEL_ANDROID_LAN_SERIALS", " A23, OTHER ")
+	t.Setenv("SPYDER_APP_CHANNEL_HOST", "192.168.1.217")
+	old := reverseAppChannel
+	t.Cleanup(func() { reverseAppChannel = old })
+	mapped := 0
+	reverseAppChannel = func(_ string, _ int) error { mapped++; return nil }
+	h := newHandlerWithStubs(t, nil, nil)
+	h.appChannel = appchannel.NewManager()
+	t.Cleanup(h.appChannel.Close)
+	lan, err := h.ensureAppChannelEnv(nil, "android", "A23", "com.example.app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(lan["SPYDER_APP_CHANNEL"], "192.168.1.217:") || mapped != 0 {
+		t.Fatalf("LAN exception=%v reverse=%d", lan, mapped)
+	}
+	usb, err := h.ensureAppChannelEnv(nil, "android", "USB_GOOD", "com.example.app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(usb["SPYDER_APP_CHANNEL"], "127.0.0.1:") || mapped != 1 {
+		t.Fatalf("USB unaffected=%v reverse=%d", usb, mapped)
+	}
+}

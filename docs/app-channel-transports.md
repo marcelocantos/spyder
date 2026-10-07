@@ -104,3 +104,20 @@ Android per-UID/OEM network restriction on the A23; do not claim the USB
 route works for *every* Android device, and do not silently open a LAN
 listener in response to a missing handshake. Diagnose the device policy or
 choose an explicit LAN transport if USB reverse cannot serve that peer.
+
+For a USB-attached Android device *proven* unable to serve app-UID connections
+through `adb reverse` (such as the A23 above), set
+`SPYDER_APP_CHANNEL_ANDROID_LAN_SERIALS=R58T61ER0ZB` on spyder. Only that
+serial uses the LAN host and a wildcard listener; other USB serials continue
+to use reverse and loopback. The optional `SPYDER_APP_CHANNEL_HOST` chooses
+the LAN IPv4 as for physical iOS. This is an explicit firewall-dependent
+exception, not an automatic fallback on a missed handshake. Remove the serial
+from the exception list if device policy changes and USB reverse works again.
+
+The A23 LAN exception was exercised on 2026-10-07 with
+`TestAndroidLANException_Live`: it selected `192.168.1.217:58343` and an
+all-interfaces listener, but saw `Accepted:0` and no handshake after 25s.
+The macOS firewall was enabled; **this is not a passing LAN fallback**. ALF
+permission for the test binary or another device-policy investigation is
+needed before claiming the A23 can be served. Do not turn on the exception
+in production assuming that selection alone proves connectivity.
