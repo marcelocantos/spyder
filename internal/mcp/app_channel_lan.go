@@ -18,7 +18,7 @@ import (
 //
 //   - iOS simulator       → "127.0.0.1" (simulator shares the host loopback)
 //   - Android emulator    → "10.0.2.2" (the emulator's alias for the host)
-//   - Physical iOS/Android → SPYDER_APP_CHANNEL_HOST, then the default-route
+//   - Physical iOS / LAN-only Android → SPYDER_APP_CHANNEL_HOST, then the default-route
 //     interface's IPv4, then the first available LAN IPv4
 //
 // Returns an error when the device is physical and no LAN address is

@@ -560,6 +560,10 @@ func (h *Handler) launchAppLocked(dev, bundleID, owner string, env map[string]st
 	return id, nil
 }
 
+// replaceable at the command boundary for hermetic transport tests.
+var reverseAppChannel = func(id string, port int) error { return device.NewAndroidAdapter().ReverseTCP(id, port) }
+var unreverseAppChannel = func(id string, port int) error { return device.NewAndroidAdapter().UnreverseTCP(id, port) }
+
 // ensureAppChannelEnv injects SPYDER_APP_CHANNEL=host:port into the
 // env map unless the caller already supplied a value (caller wins so
 // an explicit override or opt-out remains possible). The listener is
@@ -588,13 +592,25 @@ func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID,
 		l.RecordInjectedAddress(addr)
 		return env, nil
 	}
-	host, err := pickAppChannelHost(platform, deviceID)
+	usbAndroid := platform == "android" && !strings.HasPrefix(deviceID, "emulator-") && !strings.Contains(deviceID, ":")
+	host := "127.0.0.1"
+	var err error
+	if !usbAndroid {
+		host, err = pickAppChannelHost(platform, deviceID)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("appchannel: %w", err)
 	}
-	l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID})
+	l, err := h.appChannel.GetOrCreateListenerAt(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID}, host != "127.0.0.1" && host != "10.0.2.2")
 	if err != nil {
 		return nil, fmt.Errorf("appchannel: %w", err)
+	}
+	if usbAndroid {
+		if err := reverseAppChannel(deviceID, l.Port); err != nil {
+			// Never fall back to an exposed LAN socket on a failed USB mapping.
+			return nil, fmt.Errorf("appchannel: USB reverse: %w", err)
+		}
+		l.SetCleanup(func() { _ = unreverseAppChannel(deviceID, l.Port) })
 	}
 	if env == nil {
 		env = map[string]string{}
