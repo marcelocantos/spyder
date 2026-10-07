@@ -248,9 +248,9 @@ func TestHandleDeployApp_StaleChannelDoesNotProveLaunch(t *testing.T) {
 	h := newHandlerWithStubs(t, ios, nil)
 	h.appChannel = appchannel.NewManager()
 	t.Cleanup(h.appChannel.Close)
-	l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{
+	l, err := h.appChannel.GetOrCreateListenerAt(appchannel.AppKey{
 		DeviceID: "00008103-001122334455667A", BundleID: "com.example.app",
-	})
+	}, true)
 	if err != nil {
 		t.Fatal(err)
 	}

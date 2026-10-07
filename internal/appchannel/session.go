@@ -582,6 +582,7 @@ func (m *Manager) progressHook() func() {
 type StartParams struct {
 	Owner string
 	Key   AppKey // when non-zero, the listener is registered under this key
+	LAN   bool   // expose to LAN only for peers without a loopback transport
 }
 
 // Listener is the sentinel returned by GetOrCreateListener; the
@@ -606,6 +607,10 @@ type Listener struct {
 	handshakeFailures int64
 	lastRemote        string
 	lastAttempt       time.Time
+	cleanup           func() // transport mapping, run once on Stop
+	stopOnce          sync.Once
+	stopped           bool
+	lan               bool
 }
 
 // GetOrCreateListener returns the keyed listener for `key`, creating
@@ -615,6 +620,12 @@ type Listener struct {
 // port. The listener is reaped by the sweeper after
 // `KeyedListenerIdleTTL` with no live session and no Touch.
 func (m *Manager) GetOrCreateListener(key AppKey) (*Listener, error) {
+	return m.GetOrCreateListenerAt(key, false)
+}
+
+// GetOrCreateListenerAt binds to LAN only for peers whose app cannot reach
+// host loopback. A key cannot silently change exposure while active.
+func (m *Manager) GetOrCreateListenerAt(key AppKey, lan bool) (*Listener, error) {
 	if key.DeviceID == "" || key.BundleID == "" {
 		return nil, fmt.Errorf("appchannel: GetOrCreateListener: key.DeviceID and key.BundleID are required")
 	}
@@ -622,11 +633,14 @@ func (m *Manager) GetOrCreateListener(key AppKey) (*Listener, error) {
 	if l, ok := m.keyed[key]; ok {
 		m.mu.Unlock()
 		l.Touch()
+		if l.lan != lan {
+			return nil, fmt.Errorf("appchannel: listener %v already uses LAN=%t", key, l.lan)
+		}
 		return l, nil
 	}
 	m.mu.Unlock()
 
-	l, err := m.startListener(StartParams{Key: key})
+	l, err := m.startListener(StartParams{Key: key, LAN: lan})
 	if err != nil {
 		return nil, err
 	}
@@ -637,6 +651,9 @@ func (m *Manager) GetOrCreateListener(key AppKey) (*Listener, error) {
 		// We lost the race; tear down the duplicate.
 		l.Stop()
 		existing.Touch()
+		if existing.lan != lan {
+			return nil, fmt.Errorf("appchannel: listener %v already uses LAN=%t", key, existing.lan)
+		}
 		return existing, nil
 	}
 	m.keyed[key] = l
@@ -674,7 +691,11 @@ func (m *Manager) Start(p StartParams) (*Listener, error) {
 // startListener binds a port and starts the accept loop. Internal —
 // public callers go through GetOrCreateListener or Start.
 func (m *Manager) startListener(p StartParams) (*Listener, error) {
-	ln, err := net.Listen("tcp", "0.0.0.0:0")
+	host := "127.0.0.1:0"
+	if p.LAN {
+		host = "0.0.0.0:0"
+	}
+	ln, err := net.Listen("tcp", host)
 	if err != nil {
 		return nil, fmt.Errorf("appchannel: listen: %w", err)
 	}
@@ -694,6 +715,7 @@ func (m *Manager) startListener(p StartParams) (*Listener, error) {
 		cancel:      cancel,
 		done:        make(chan struct{}),
 		lastTouched: time.Now(),
+		lan:         p.LAN,
 	}
 	go l.acceptLoop(ctx)
 	slog.Info("appchannel: listener started",
@@ -770,12 +792,36 @@ func (l *Listener) LastTouched() time.Time {
 // listener was keyed, it is also removed from the manager's keyed
 // registry.
 func (l *Listener) Stop() {
+	l.stopOnce.Do(l.stop)
+}
+
+// SetCleanup registers a transport teardown before the injected address is
+// given to the app. The callback runs after the listener is closed.
+func (l *Listener) SetCleanup(fn func()) {
+	l.mu.Lock()
+	if l.stopped {
+		l.mu.Unlock()
+		fn()
+		return
+	}
+	l.cleanup = fn
+	l.mu.Unlock()
+}
+
+func (l *Listener) stop() {
 	l.cancel()
 	_ = l.listener.Close()
 	<-l.done
+	l.mu.Lock()
+	cleanup := l.cleanup
+	l.stopped = true
+	l.mu.Unlock()
+	if cleanup != nil {
+		cleanup()
+	}
 
 	l.mu.Lock()
-	sessions := l.sessions
+	sessions := append([]*Session(nil), l.sessions...)
 	l.mu.Unlock()
 	for _, s := range sessions {
 		_ = s.Close()
