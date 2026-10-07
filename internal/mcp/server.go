@@ -748,6 +748,7 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		// --- bidirectional app channel (🎯T75, 🎯T83) ---
 		"app_channel_stop":        h.handleAppChannelStop,
 		"app_channel_list":        h.handleAppChannelList,
+		"app_channel_diagnose":    h.handleAppChannelDiagnose,
 		"app_ping":                h.handleAppPing,
 		"app_quit":                h.handleAppQuit,
 		"app_flush":               h.handleAppFlush,

@@ -56,6 +56,54 @@ func (h *Handler) handleAppChannelList(_ map[string]any) (*mcpgo.CallToolResult,
 	return toolJSON(map[string]any{"listeners": out})
 }
 
+// handleAppChannelDiagnose reports only observations made by this process.
+// No accepted TCP cannot distinguish an app that never dialled from a SYN
+// dropped by the network before the kernel accepted it.
+func (h *Handler) handleAppChannelDiagnose(args map[string]any) (*mcpgo.CallToolResult, error) {
+	if h.appChannel == nil {
+		return toolErr("app channel not configured")
+	}
+	id := optString(args, "listener_id")
+	deviceID := optString(args, "device_id")
+	bundleID := optString(args, "bundle_id")
+	if (deviceID == "") != (bundleID == "") {
+		return toolErr("app_channel_diagnose: device_id and bundle_id must be supplied together")
+	}
+	var listeners []*appchannel.Listener
+	for _, l := range h.appChannel.KeyedListeners() {
+		if id != "" && l.ID != id {
+			continue
+		}
+		if deviceID != "" && (l.Key.DeviceID != deviceID || l.Key.BundleID != bundleID) {
+			continue
+		}
+		listeners = append(listeners, l)
+	}
+	if len(listeners) == 0 {
+		return toolJSON(map[string]any{"listeners": []any{}, "next_check": "Launch the app with SPYDER_APP_CHANNEL; no keyed listener exists in this daemon for the requested app (or it was reaped)."})
+	}
+	sort.Slice(listeners, func(i, j int) bool { return listeners[i].ID < listeners[j].ID })
+	out := make([]map[string]any, 0, len(listeners))
+	for _, l := range listeners {
+		c := l.Connectivity()
+		next := "Session connected; inspect app_channel_list and app_methods."
+		if len(l.Sessions()) == 0 {
+			switch {
+			case c.Accepted == 0:
+				next = "Check device reachability to SPYDER_APP_CHANNEL and the host firewall/route; no established TCP reached Accept. This does not prove the app never dialled: dropped SYNs are invisible to this process."
+			case c.HandshakeFailures > 0:
+				next = "Check the app-channel hello handshake and app logs; TCP reached the listener but at least one handshake failed."
+			default:
+				next = "Check the app-channel hello handshake and app logs; TCP reached the listener but no session is connected now."
+			}
+		}
+		out = append(out, map[string]any{"listener_id": l.ID, "device_id": l.Key.DeviceID,
+			"bundle_id": l.Key.BundleID, "port": l.Port, "connectivity": c,
+			"sessions": listenerInfoFrom(l).Sessions, "next_check": next})
+	}
+	return toolJSON(map[string]any{"listeners": out})
+}
+
 type listenerInfo struct {
 	ListenerID string        `json:"listener_id"`
 	DeviceID   string        `json:"device_id"`
@@ -1197,6 +1245,12 @@ func appChannelDefinitions() []mcpgo.Tool {
 		mcpgo.NewTool("app_channel_stop",
 			mcpgo.WithDescription("Manually stop a per-(device, bundle_id) appchannel listener and tear down its sessions. Routine cleanup happens automatically — listeners with no live session and no recent activity are reaped after 24h. Use this when you want to force a teardown sooner (e.g. before swapping the app's binary)."),
 			mcpgo.WithString("listener_id", mcpgo.Required(), mcpgo.Description("listener_id as reported by app_channel_list")),
+		),
+		mcpgo.NewTool("app_channel_diagnose",
+			mcpgo.WithDescription("Diagnose a missing app-channel session in one call: listener bind address/family, last injected SPYDER_APP_CHANNEL, accepted TCP attempts and handshake failures, with an actionable next check. Zero accepted TCP does not rule out device dials dropped by firewall before Accept. Optionally filter by listener_id or device_id + bundle_id; omitted filters show every keyed listener."),
+			mcpgo.WithString("listener_id", mcpgo.Description("Filter by listener_id")),
+			mcpgo.WithString("device_id", mcpgo.Description("Filter by exact device ID (with bundle_id)")),
+			mcpgo.WithString("bundle_id", mcpgo.Description("Filter by bundle ID (with device_id)")),
 		),
 		mcpgo.NewTool("app_channel_list",
 			mcpgo.WithDescription("List active per-(device, bundle_id) appchannel listeners and the sessions accepted on each. Each entry has listener_id, device_id, bundle_id, port, owner, idle_since (only when no session is currently connected), and a sessions array (session_id, started_at, app_name, app_version, methods advertised in hello). Listeners are created automatically by `launch_app` and `deploy_app`."),

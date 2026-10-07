@@ -59,7 +59,7 @@ func toolDeadlineClass(name string) time.Duration {
 		return maxExecDuration + 5*time.Second
 	case "devices", "resolve", "device_state", "battery_history", "list_apps", "is_running",
 		"reservations", "runs_list", "runs_show", "runs_artefacts",
-		"app_channel_list", "health":
+		"app_channel_list", "app_channel_diagnose", "health":
 		return DeadlineFastRead
 	case "screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",
