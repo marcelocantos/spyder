@@ -1384,3 +1384,42 @@ func TestHandleNetwork_ClearedOnRelease(t *testing.T) {
 		t.Error("networkByDevice entry should be gone after clear")
 	}
 }
+
+// Termination must not mistake a transient DTX decode failure for a fatal
+// lookup when the next process list confirms the app has already exited.
+func TestHandleTerminateApp_OneShotListProcessesDecodeFailure(t *testing.T) {
+	reads, invalidations, generation := 0, 0, 0
+	held := false
+	ios := device.NewIOSProcessProbeAdapter(device.IOSProcessProbe{
+		InstalledFolder: func(id, bundle string) (string, error) { return "MyApp.app", nil },
+		MajorVersion:    func(id string) (int, error) { return 17, nil },
+		Acquire: func(id string) (device.IOSProcessListConn, func(), error) {
+			if held {
+				return nil, nil, errors.New("connection acquired while still held")
+			}
+			held = true
+			opened := generation
+			return processListProbeConn{read: func() ([]appservice.Process, error) {
+				reads++
+				if opened == 0 {
+					return nil, errors.New("listProcesses receive: ReceiveOnServerClientStream: DecodeMessage: failed to decode wrapper")
+				}
+				return nil, nil // app already exited; terminate is an idempotent no-op
+			}}, func() { held = false }, nil
+		},
+		Invalidate: func(id string) {
+			if held {
+				t.Fatal("DTX invalidated before release")
+			}
+			invalidations++
+			generation++
+		},
+	})
+	h := newHandlerWithStubs(t, &stubAdapter{terminateApp: ios.TerminateApp, appPID: ios.AppPID}, nil)
+	r := dispatchJSON(t, h, "terminate_app", map[string]any{
+		"device": "iPad", "bundle_id": "com.example.app",
+	})
+	if r.IsError || reads != 3 || invalidations != 1 || generation != 1 {
+		t.Fatalf("terminate: body=%s reads=%d invalidations=%d generation=%d", resultText(t, &r), reads, invalidations, generation)
+	}
+}
