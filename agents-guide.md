@@ -2252,6 +2252,26 @@ reinstate work), use the device's OS-level **never-lock** setting:
 - **`alerter`** — persistent macOS notifications for the locked-device prompt
   (fallbacks: `terminal-notifier`, `osascript`).
 
+### Stream-player artifact locations (🎯T102)
+
+`launch_player` resolves the player binary/app/apk in this order:
+`path=` override → `SPYDER_PLAYER_IOS`/`SPYDER_PLAYER_ANDROID`/
+`SPYDER_PLAYER_DESKTOP` env → the Homebrew install layout
+(`$(brew --prefix)/libexec/spyder/player/{desktop/player,android/player.apk}`,
+resolved relative to the real spyder binary the same way the bundled
+`ios` tunnel binary is) → repo-relative dev build outputs
+(`bin/player`, `player/android/app/build/outputs/apk/debug/app-debug.apk`,
+`player/ios/build/xcode/...`).
+
+The Homebrew formula ships the desktop binary always, and the Android
+debug APK when the release build was able to produce one (the native
+Android build is not yet ported to sokol_gfx — see 🎯T34). **iOS is not
+shipped** in the public formula: a Development/Ad Hoc signed Player.app
+from one team fails `ApplicationVerificationFailed` on every other
+developer's device, so a single pre-signed binary can't serve all brew
+users. Build and codesign `player/ios` locally, or set
+`SPYDER_PLAYER_IOS` to a re-signed `.app`.
+
 ## Configuration
 
 ```bash
