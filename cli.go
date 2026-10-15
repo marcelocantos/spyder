@@ -58,6 +58,7 @@ func init() {
 		{"battery-history", "spyder battery-history [--since -24h] [--until now] [--device ALIAS] [--bucket-s N] [--sample] [--json]", runBatteryHistory},
 		{"screenshot", "spyder screenshot <device> [--output FILE] [--as OWNER]", runScreenshot},
 		{"list-apps", "spyder list-apps <device> [--json]", runListApps},
+		{"dev-policy", "spyder dev-policy <show|set FILE|clear> [--bundle-id ID] [--as OWNER]", runDevPolicy},
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
 		{"terminate-app", "spyder terminate-app <device> <bundle-id> [--as OWNER]", runTerminateApp},
 		{"is-running", "spyder is-running <device> <bundle-id> [--json]", runIsRunning},
@@ -2210,4 +2211,47 @@ func parsePositiveInt(s string) (int, error) {
 func sanitizeFilenameComponent(s string) string {
 	s = filepath.Base(s)
 	return strings.NewReplacer("/", "_", "\\", "_").Replace(s)
+}
+
+// runDevPolicy inspects or replaces the host-local scoped development policy.
+func runDevPolicy(args []string) {
+	pf, ctx, cancel := setupCommand("dev-policy", args, []string{"--as", "--bundle-id"}, nil, clitimeout.DefaultRead)
+	defer cancel()
+	if len(pf.positional) == 0 {
+		fatalUsage("dev-policy", fmt.Errorf("expected show, set FILE, or clear"))
+	}
+	a := map[string]any{"op": "get"}
+	switch pf.positional[0] {
+	case "clear":
+		if len(pf.positional) != 1 {
+			fatalUsage("dev-policy", fmt.Errorf("clear takes no positional arguments"))
+		}
+		a["op"] = "clear"
+		a["owner"] = deriveOwner(pf.flags["--as"])
+	case "show":
+		if len(pf.positional) != 1 {
+			fatalUsage("dev-policy", fmt.Errorf("expected show, set FILE, or clear"))
+		}
+	case "set":
+		if len(pf.positional) != 2 {
+			fatalUsage("dev-policy", fmt.Errorf("expected show, set FILE, or clear"))
+		}
+		b, err := os.ReadFile(pf.positional[1])
+		if err != nil {
+			cliexit.Errorf(1, "dev-policy: %v", err)
+		}
+		var config map[string]any
+		if err = json.Unmarshal(b, &config); err != nil {
+			cliexit.Errorf(1, "dev-policy: %v", err)
+		}
+		a["op"] = "set"
+		a["config"] = config
+		a["owner"] = deriveOwner(pf.flags["--as"])
+	default:
+		fatalUsage("dev-policy", fmt.Errorf("expected show, set FILE, or clear"))
+	}
+	if id := pf.flags["--bundle-id"]; id != "" {
+		a["bundle_id"] = id
+	}
+	dispatchAndExit(ctx, "dev_policy", a, true, false)
 }

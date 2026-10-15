@@ -72,6 +72,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   screenshot    Capture a PNG to a file (--output FILE, --as OWNER)
   list-apps     List installed third-party apps
   launch-app    Launch an app by bundle id (--as OWNER)
+  dev-policy    Inspect/set/clear scoped host development flags
   terminate-app Terminate an app by bundle id (--as OWNER)
   is-running    Report whether an app is currently running (exit 0/20/22)
   rotate        Rotate a simulator/emulator (--to <orientation>, --as OWNER)
@@ -105,6 +106,9 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
 
 Serve:
   spyder serve [--addr :3030]
+
+  SPYDER_DATA_DIR overrides Spyder state (default ~/.spyder), without
+  changing HOME or device authentication keys.
 
   Default bind is 127.0.0.1:3030 (loopback). Precedence: --addr, then
   SPYDER_ADDR, then the last successful bind (~/.spyder/listen-addr),

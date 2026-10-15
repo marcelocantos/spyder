@@ -80,13 +80,29 @@ func (e *Envelope) IsResponse() bool { return e.Method == "" && e.ID != 0 }
 // The 4-byte length is little-endian; the body is the MessagePack
 // encoding of env.
 func WriteFrame(w io.Writer, env *Envelope) error {
+	body, err := encodeFrameBody(env)
+	if err != nil {
+		return err
+	}
+	return writeFrameBody(w, body)
+}
+
+// Validate the complete frame before touching a session's writer or socket.
+// Local encoding/size failures leave the stream usable for the next request.
+func encodeFrameBody(env *Envelope) ([]byte, error) {
 	body, err := msgpack.Marshal(env)
 	if err != nil {
-		return fmt.Errorf("appchannel: marshal: %w", err)
+		return nil, fmt.Errorf("appchannel: marshal: %w", err)
 	}
 	if len(body) > MaxFrameBytes {
-		return fmt.Errorf("appchannel: outgoing frame %d bytes exceeds max %d", len(body), MaxFrameBytes)
+		return nil, fmt.Errorf("appchannel: outgoing frame %d bytes exceeds max %d", len(body), MaxFrameBytes)
 	}
+	return body, nil
+}
+
+// Only I/O remains after encodeFrameBody succeeds. Any failure here may have
+// written a partial frame, so a session must discard its socket on error.
+func writeFrameBody(w io.Writer, body []byte) error {
 	var hdr [4]byte
 	binary.LittleEndian.PutUint32(hdr[:], uint32(len(body)))
 	if _, err := w.Write(hdr[:]); err != nil {

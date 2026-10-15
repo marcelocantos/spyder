@@ -101,7 +101,7 @@ type Session struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 
-	writeMu sync.Mutex // serialises Envelope writes onto conn
+	writeGate chan struct{} // serialises writes; initialized under mu
 
 	nextID uint64 // atomic
 
@@ -224,7 +224,7 @@ func (s *Session) Call(ctx context.Context, method string, params any, timeout t
 	// that answers just inside idle still works without a prior beat.
 	s.noteProgress()
 
-	if err := s.writeEnvelope(&Envelope{ID: id, Method: method, Params: raw}); err != nil {
+	if err := s.writeEnvelopeContext(ctx, &Envelope{ID: id, Method: method, Params: raw}); err != nil {
 		return nil, err
 	}
 
@@ -349,9 +349,55 @@ func (s *Session) supportsLocked(method string) bool {
 }
 
 func (s *Session) writeEnvelope(env *Envelope) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return WriteFrame(s.conn, env)
+	return s.writeEnvelopeContext(context.Background(), env)
+}
+
+// Context bounds both waiting behind another writer and the actual TCP write.
+// A timed-out frame must never sit queued and apply a stale development lease.
+func (s *Session) writeEnvelopeContext(ctx context.Context, env *Envelope) error {
+	body, err := encodeFrameBody(env)
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if s.writeGate == nil {
+		s.writeGate = make(chan struct{}, 1)
+	}
+	gate := s.writeGate
+	s.mu.Unlock()
+	select {
+	case gate <- struct{}{}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	defer func() { <-gate }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := s.conn.SetWriteDeadline(deadline); err != nil {
+			return err
+		}
+	}
+	if ctx.Done() != nil {
+		aborted := make(chan struct{})
+		stop := context.AfterFunc(ctx, func() { _ = s.conn.SetWriteDeadline(time.Now()); close(aborted) })
+		defer func() {
+			if !stop() {
+				<-aborted
+			}
+			// The next writer owns a new deadline; a closed connection is already
+			// unusable, so failure to clear its deadline needs no further recovery.
+			_ = s.conn.SetWriteDeadline(time.Time{})
+		}()
+	}
+	if err := writeFrameBody(s.conn, body); err != nil {
+		// A partial frame corrupts framing. Closing wakes all pending calls and
+		// prevents later requests from completing that timed-out frame.
+		_ = s.conn.Close()
+		return err
+	}
+	return nil
 }
 
 // readLoop pumps frames from conn, routing requests/responses/pushes

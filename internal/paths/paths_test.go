@@ -4,63 +4,46 @@
 package paths
 
 import (
+	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func TestBase_HomeDir(t *testing.T) {
-	t.Setenv("HOME", "/custom/home")
-	got := Base()
-	want := filepath.Join("/custom/home", ".spyder")
-	if got != want {
-		t.Errorf("Base() = %q; want %q", got, want)
+func TestPathsDefaultAndDataDirectoryOverride(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestInventoryPath(t *testing.T) {
-	t.Setenv("HOME", "/custom/home")
-	got := InventoryPath()
-	if !strings.HasSuffix(got, filepath.Join(".spyder", "inventory.json")) {
-		t.Errorf("InventoryPath() = %q; want …/.spyder/inventory.json", got)
+	originalHome := os.Getenv("HOME")
+	locations := []struct {
+		name   string
+		get    func() string
+		suffix string
+	}{
+		{"base", Base, ""}, {"inventory", InventoryPath, "inventory.json"},
+		{"runs", RunsBase, "runs"}, {"baselines", BaselinesBase, "baselines"},
+		{"pool", PoolConfigPath, "pool.yaml"}, {"screenshots", ScreenshotsBase, "screenshots"},
+		{"usb", USBSpeedPath, "usb-speed.json"}, {"listen", ListenAddrPath, "listen-addr"},
+		{"audit", ShipAuditBase, "ship-audit"}, {"verify", VerifyDir, "verify"}, {"battery", BatteryDir, "battery"},
 	}
-	if !strings.HasPrefix(got, "/custom/home") {
-		t.Errorf("InventoryPath() = %q; expected /custom/home prefix", got)
-	}
-}
-
-func TestListenAddrPath(t *testing.T) {
-	t.Setenv("HOME", "/custom/home")
-	got := ListenAddrPath()
-	want := filepath.Join("/custom/home", ".spyder", "listen-addr")
-	if got != want {
-		t.Errorf("ListenAddrPath() = %q; want %q", got, want)
-	}
-}
-
-func TestBatteryDir(t *testing.T) {
-	t.Setenv("HOME", "/custom/home")
-	got := BatteryDir()
-	want := filepath.Join("/custom/home", ".spyder", "battery")
-	if got != want {
-		t.Errorf("BatteryDir() = %q; want %q", got, want)
-	}
-}
-
-func TestRunsBase(t *testing.T) {
-	t.Setenv("HOME", "/custom/home")
-	got := RunsBase()
-	want := filepath.Join("/custom/home", ".spyder", "runs")
-	if got != want {
-		t.Errorf("RunsBase() = %q; want %q", got, want)
-	}
-}
-
-func TestUSBSpeedPath(t *testing.T) {
-	t.Setenv("HOME", "/custom/home")
-	got := USBSpeedPath()
-	want := filepath.Join("/custom/home", ".spyder", "usb-speed.json")
-	if got != want {
-		t.Errorf("USBSpeedPath() = %q; want %q", got, want)
-	}
+	t.Run("default", func(t *testing.T) {
+		t.Setenv(DataDirEnv, "")
+		for _, loc := range locations {
+			if got, want := loc.get(), filepath.Join(home, ".spyder", loc.suffix); got != want {
+				t.Errorf("%s: got %q want %q", loc.name, got, want)
+			}
+		}
+	})
+	t.Run("isolated", func(t *testing.T) {
+		root := t.TempDir()
+		t.Setenv(DataDirEnv, root+string(filepath.Separator))
+		for _, loc := range locations {
+			if got, want := loc.get(), filepath.Join(root, loc.suffix); got != want {
+				t.Errorf("%s: got %q want %q", loc.name, got, want)
+			}
+		}
+		if got := os.Getenv("HOME"); got != originalHome {
+			t.Fatalf("data override changed home: %q", got)
+		}
+	})
 }

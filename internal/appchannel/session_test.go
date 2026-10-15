@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -439,5 +440,61 @@ func TestRejectsNonHelloFirstMessage(t *testing.T) {
 	}
 	if ack.Error == nil || ack.Error.Code != ErrCodeInvalidRequest {
 		t.Errorf("ack = %+v; want InvalidRequest error", ack)
+	}
+}
+
+func TestCallDeadlineBoundsQueuedAndBlockedWrites(t *testing.T) {
+	for _, queued := range []bool{true, false} {
+		t.Run(fmt.Sprint(queued), func(t *testing.T) {
+			host, peer := net.Pipe()
+			defer host.Close()
+			defer peer.Close()
+			s := &Session{conn: host, pending: map[uint64]*pending{}, done: make(chan struct{}), writeGate: make(chan struct{}, 1)}
+			if queued {
+				s.writeGate <- struct{}{}
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := s.Call(ctx, "dev_session_configure", map[string]any{"flags": map[string]string{"orientation": "landscapeRight"}}, time.Second)
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("write unexpectedly succeeded")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Call deadline did not bound request write")
+			}
+			if queued {
+				<-s.writeGate
+				_ = peer.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+				if env, err := ReadFrame(peer); err == nil {
+					t.Fatal("expired queued request was sent", env)
+				}
+			}
+		})
+	}
+}
+
+func TestOversizedRequestLeavesSessionUsable(t *testing.T) {
+	_, listener := startManagerAndListener(t)
+	app := newFakeApp(t, fmt.Sprintf("127.0.0.1:%d", listener.Port), []string{MethodPing})
+	defer app.close()
+	app.on(MethodPing, func(_ []byte) (any, error) { return map[string]bool{"ok": true}, nil })
+	s := waitForSession(t, listener)
+	_, err := s.Call(context.Background(), MethodPing, map[string]any{"oversized": make([]byte, MaxFrameBytes)}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "exceeds max") {
+		t.Fatalf("expected local frame-size rejection, got %v", err)
+	}
+	reply, err := s.Call(context.Background(), MethodPing, nil, time.Second)
+	if err != nil {
+		t.Fatalf("valid request on same session after local rejection: %v", err)
+	}
+	var result map[string]bool
+	if err = UnpackParams(reply, &result); err != nil || !result["ok"] {
+		t.Fatalf("valid reply=%v err=%v", result, err)
 	}
 }

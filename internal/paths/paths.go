@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package paths computes central storage paths for spyder data.
-// All persistent state lives under ~/.spyder/.
+// Persistent state lives under ~/.spyder/ unless SPYDER_DATA_DIR overrides it.
 package paths
 
 import (
@@ -10,8 +10,15 @@ import (
 	"path/filepath"
 )
 
-// Base returns the spyder data directory (~/.spyder).
+// DataDirEnv overrides Spyder state without moving the user's home or
+// changing authentication keys used by child tools such as adb.
+const DataDirEnv = "SPYDER_DATA_DIR"
+
+// Base returns SPYDER_DATA_DIR when set, otherwise ~/.spyder.
 func Base() string {
+	if dir := os.Getenv(DataDirEnv); dir != "" {
+		return filepath.Clean(dir)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".spyder"

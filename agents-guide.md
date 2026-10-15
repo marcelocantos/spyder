@@ -2240,6 +2240,12 @@ reinstate work), use the device's OS-level **never-lock** setting:
 
 ## Environment and dependencies
 
+`SPYDER_DATA_DIR` selects the Spyder state directory (inventory, reservations,
+policies, run artifacts and other state normally under `~/.spyder`). The
+default is unchanged when it is unset or empty. Use an absolute scratch path
+plus `serve --addr :3131` for an isolated local daemon. Keep `HOME` unchanged
+so ADB and Apple pairing/authentication retain their normal identities.
+
 - **macOS host.** macOS 15+ / Apple Silicon only. Spyder's value is iOS device
   orchestration via macOS-specific tooling (`xcrun simctl` for simulators,
   the bundled go-ios CLI / tunnel for real devices); Linux is not a release

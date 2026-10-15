@@ -21,6 +21,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/battery"
 	"github.com/marcelocantos/spyder/internal/device"
+	"github.com/marcelocantos/spyder/internal/devpolicy"
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/logcapture"
@@ -56,6 +57,7 @@ type PoolManager interface {
 
 // Handler implements the spyder tool handler.
 type Handler struct {
+	devPolicy    *devpolicy.Controller
 	mu           sync.Mutex
 	inventory    *inventory.Store
 	ios          device.Adapter
@@ -685,6 +687,7 @@ func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolRes
 // the definitions use.
 func (h *Handler) toolHandlers() map[string]toolFunc {
 	return map[string]toolFunc{
+		"dev_policy":      h.handleDevPolicy,
 		"devices":         h.handleDevices,
 		"resolve":         h.handleResolve,
 		"device_state":    h.handleDeviceState,
@@ -846,6 +849,8 @@ func legacyDefinitions() []mcpgo.Tool {
 // allBaseDefinitions returns the core (non-visual) tool definitions.
 func allBaseDefinitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
+		mcpgo.NewTool("dev_policy", mcpgo.WithDescription("Inspect, replace, or clear host-local scoped development flags. Only opted-in live apps on freshly verified physical USB receive renewable 10-second leases. Precedence: global, matching groups in list order, exact bundle. Returns configured/applied flags, acknowledgements, errors and provenance."), mcpgo.WithString("op", mcpgo.Description("get (default), set, or clear")), mcpgo.WithObject("config", mcpgo.Description("set: complete version=1 JSON configuration with global, groups and apps")), mcpgo.WithString("owner", mcpgo.Description("Required for set/clear; policy yields to another reservation owner")), mcpgo.WithString("bundle_id", mcpgo.Description("Optional exact app identity to resolve"))),
+
 		mcpgo.NewTool("devices",
 			mcpgo.WithDescription("List connected mobile devices across platforms, with alias, platform, model, and OS version. USB-attached physical phones/tablets include usb_speed, usb_ceiling, and usb_anomaly (live < ceiling)."),
 			mcpgo.WithString("platform",

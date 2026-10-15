@@ -108,6 +108,7 @@ func Run(ctx context.Context, cfg Config) error {
 		// iOS/Android device. First tick is immediate so /dashboard#battery
 		// is not empty for a full interval after serve.
 		go mcpHandler.StartBatterySampler(ctx)
+		go mcpHandler.StartDevelopmentPolicy(ctx)
 		// 🎯T99.3: ProgressWatchdog on entity "spyder" (timeout = device-op
 		// deadline) + rate-limited self-restart after grace; dumps before exit.
 		mcpHandler.EnableSelfHeal(0, 5*time.Second) // 0 → DeadlineDeviceOp
