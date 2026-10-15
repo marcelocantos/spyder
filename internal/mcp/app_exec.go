@@ -97,6 +97,15 @@ func (h *Handler) handleAppExecContext(parent context.Context, args map[string]a
 
 	ctx, cancel := context.WithTimeout(parent, dur)
 	defer cancel()
+	// Builtins call handlers directly; share Dispatch's per-device lifecycle
+	// gate with this interpreter's cancellation context.
+	for name, fn := range verbs {
+		if lifecycleTool(name) {
+			verbs[name] = func(callArgs map[string]any) (*mcpgo.CallToolResult, error) {
+				return h.withLifecycle(ctx, name, callArgs, fn)
+			}
+		}
+	}
 	// h.Health() is always non-nil (NewHandler seeds a default supervisor),
 	// so the health() builtin can read the live unified report in-process.
 	return runExec(ctx, script, verbs, h.Health().Model(), h.HealthReport, execLimits{

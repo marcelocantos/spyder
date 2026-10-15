@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -92,6 +93,9 @@ type Handler struct {
 
 	// ops tracks in-flight tool calls for spyder status (🎯T99.5).
 	ops *opRegistry
+
+	lifecycleMu    sync.Mutex
+	lifecycleGates map[string]*lifecycleGate
 
 	// onDeviceTimeout is an optional hook tests can set; production
 	// uses invalidateDeviceSession when a dispatch times out (🎯T99.1).
@@ -496,8 +500,12 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 	// finished is closed when the handler goroutine returns (even after
 	// we've already timed out the caller).
 	finished := make(chan struct{})
+	var executing atomic.Bool
 	go func() {
-		res, err := h.dispatch(name, args)
+		res, err := h.withLifecycle(ctx, name, args, func(callArgs map[string]any) (*mcpgo.CallToolResult, error) {
+			executing.Store(true)
+			return h.dispatch(name, callArgs)
+		})
 		ch <- outcome{res, err}
 		close(finished)
 	}()
@@ -511,7 +519,11 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 		// Best-effort: let the handler goroutine finish in the background;
 		// we still return a structured timeout so the agent can proceed.
 		elapsed := time.Since(started)
-		h.invalidateOnTimeout(dev)
+		// Invalidation may need the same mutex/provider connection as the
+		// stalled handler. It must never delay this response or self-recovery.
+		if executing.Load() {
+			go h.invalidateOnTimeout(dev)
+		}
 		close(done)
 		msg := formatTimeoutError(name, dev, elapsed)
 		slog.Error("mcp dispatch timeout",

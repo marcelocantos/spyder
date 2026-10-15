@@ -130,37 +130,34 @@ func (h *Handler) spawnOnDevice(dev, bundleID string, args map[string]any) (*mcp
 	owner := optString(args, "owner")
 	env := optStringMap(args, "env")
 
-	// Launch under h.mu like launch_app; released before the session wait
-	// so a slow app start doesn't wedge unrelated tool calls.
+	// Resolve/authorize under h.mu; provider I/O and session waits must not
+	// block unrelated devices on the shared state lock.
 	h.mu.Lock()
 	if res := h.authorize(dev, owner); res != nil {
 		h.mu.Unlock()
 		return res, nil
 	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
-		h.mu.Unlock()
 		return toolErr("%v", err)
 	}
 	// The bundle must already be installed — the device's installed
 	// bundles ARE the mobile game catalog (🎯T117); deploy_app is the
 	// install path.
 	if _, installed, rerr := adapter.ResolveExecutable(id, bundleID); rerr != nil {
-		h.mu.Unlock()
 		return toolErr("app_spawn: check %s on %s: %v", bundleID, dev, rerr)
 	} else if !installed {
-		h.mu.Unlock()
 		return toolErr("app_spawn: %s is not installed on %s — deploy_app it first (games(device=%q) lists installed bundles)", bundleID, dev, dev)
 	}
 	env, err = h.ensureAppChannelEnv(env, platform, id, bundleID)
 	if err != nil {
-		h.mu.Unlock()
 		return toolErr("app_spawn %s on %s: %v", bundleID, dev, err)
 	}
 	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
-		h.mu.Unlock()
 		return toolErr("app_spawn %s on %s: %v", bundleID, dev, err)
 	}
+	h.mu.Lock()
 	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
 	h.mu.Unlock()
 
@@ -262,12 +259,11 @@ func (h *Handler) handleGames(args map[string]any) (*mcpgo.CallToolResult, error
 	if dev := optString(args, "device"); dev != "" {
 		h.mu.Lock()
 		adapter, _, id, err := h.resolveAdapter(dev)
+		h.mu.Unlock()
 		if err != nil {
-			h.mu.Unlock()
 			return toolErr("games: %v", err)
 		}
 		apps, err := adapter.ListApps(id)
-		h.mu.Unlock()
 		if err != nil {
 			return toolErr("games: list apps on %s: %v", dev, err)
 		}

@@ -59,12 +59,17 @@ func TestDispatch_TimeoutReturnsStructuredError(t *testing.T) {
 	if elapsed > 500*time.Millisecond {
 		t.Fatalf("timeout took too long: %v", elapsed)
 	}
-	if invalidated.Load() != 1 {
-		t.Fatalf("device session invalidate count = %d want 1", invalidated.Load())
+	// Recovery runs outside the response path and may be scheduled later.
+	deadline := time.After(500 * time.Millisecond)
+	for invalidated.Load() != 1 {
+		select {
+		case <-deadline:
+			t.Fatalf("device session invalidate count = %d want 1", invalidated.Load())
+		case <-time.After(time.Millisecond):
+		}
 	}
 
 	// Subsequent call on a normal tool succeeds without process kill.
-	h.testHandlers = nil
 	res2, err := h.Dispatch(context.Background(), "devices", map[string]any{})
 	if err != nil {
 		t.Fatalf("subsequent Dispatch: %v", err)
@@ -87,10 +92,9 @@ func TestDispatch_StuckTriggersSelfRestart(t *testing.T) {
 
 	h := NewHandler()
 	h.EnableSelfHeal(time.Hour, 20*time.Millisecond) // long watchdog: only ForceStall path
-	dumps := 0
-	exits := 0
-	h.selfRestart = health.NewSelfRestartLimiterForTest(3, time.Hour, func(int) { exits++ })
-	h.selfRestart.SetBeforeExit(func(string) { dumps++ })
+	var dumps, exits atomic.Int32
+	h.selfRestart = health.NewSelfRestartLimiterForTest(3, time.Hour, func(int) { exits.Add(1) })
+	h.selfRestart.SetBeforeExit(func(string) { dumps.Add(1) })
 
 	h.testHandlers = map[string]toolFunc{
 		"screenshot": func(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -110,13 +114,13 @@ func TestDispatch_StuckTriggersSelfRestart(t *testing.T) {
 	// Allow grace + completeStuckDispatch (ForceStall + Request).
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if exits >= 1 && dumps >= 1 && spyderNeedsAttention(h) {
+		if exits.Load() >= 1 && dumps.Load() >= 1 && spyderNeedsAttention(h) {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("shipped stuck path incomplete: exits=%d dumps=%d needs_attention=%v entities=%+v",
-		exits, dumps, spyderNeedsAttention(h), h.Health().Model().Snapshot().Entities)
+		exits.Load(), dumps.Load(), spyderNeedsAttention(h), h.Health().Model().Snapshot().Entities)
 }
 
 func spyderNeedsAttention(h *Handler) bool {

@@ -198,9 +198,6 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 		platform = "all"
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	var devices []device.Info
 	var perAdapterErrors []string
 
@@ -267,10 +264,13 @@ func (h *Handler) annotateUSB(devices []device.Info) {
 	if err != nil {
 		return
 	}
+	h.mu.Lock()
 	if h.usbCeilings == nil {
 		h.usbCeilings = usbspeed.Open(paths.USBSpeedPath())
 	}
-	usbspeed.Enrich(devices, raw, h.usbCeilings, usbMaxSeeds(h.inventory))
+	ceilings := h.usbCeilings
+	h.mu.Unlock()
+	usbspeed.Enrich(devices, raw, ceilings, usbMaxSeeds(h.inventory))
 }
 
 func usbMaxSeeds(inv *inventory.Store) map[string]string {
@@ -361,9 +361,9 @@ func (h *Handler) handleDeviceState(args map[string]any) (*mcpgo.CallToolResult,
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	adapter, _, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -383,9 +383,9 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 	outPath := optString(args, "path")
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	adapter, _, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -489,8 +489,8 @@ func (h *Handler) handleListApps(args map[string]any) (*mcpgo.CallToolResult, er
 		return nil, err
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	adapter, _, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -534,15 +534,16 @@ func (h *Handler) handleLaunchApp(args map[string]any) (*mcpgo.CallToolResult, e
 	return toolJSON(out)
 }
 
-// launchAppLocked runs the mutating part of launch_app under h.mu and
-// returns the resolved device id for the post-launch session wait.
+// launchAppLocked resolves/authorizes under h.mu; provider I/O runs outside
+// the shared lock. It returns the id for the post-launch session wait.
 func (h *Handler) launchAppLocked(dev, bundleID, owner string, env map[string]string) (string, *mcpgo.CallToolResult) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if res := h.authorize(dev, owner); res != nil {
+		h.mu.Unlock()
 		return "", res
 	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		res, _ := toolErr("%v", err)
 		return "", res
@@ -556,7 +557,9 @@ func (h *Handler) launchAppLocked(dev, bundleID, owner string, env map[string]st
 		res, _ := toolErr("launch_app %s on %s: %v", bundleID, dev, err)
 		return "", res
 	}
+	h.mu.Lock()
 	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
+	h.mu.Unlock()
 	return id, nil
 }
 
@@ -651,9 +654,11 @@ func (h *Handler) handleIsRunning(args map[string]any) (*mcpgo.CallToolResult, e
 	if err != nil {
 		return nil, err
 	}
+	// Only inventory/adapter resolution needs the handler lock. A stalled
+	// device provider must not block reads or cleanup on other devices.
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	adapter, _, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -690,11 +695,12 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 	}
 	owner := optString(args, "owner")
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if res := h.authorize(dev, owner); res != nil {
+		h.mu.Unlock()
 		return res, nil
 	}
 	adapter, _, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -1692,12 +1698,13 @@ func (h *Handler) handleInstallApp(args map[string]any) (*mcpgo.CallToolResult, 
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	if res := h.authorize(dev, owner); res != nil {
+		h.mu.Unlock()
 		return res, nil
 	}
 	adapter, _, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -1719,12 +1726,13 @@ func (h *Handler) handleUninstallApp(args map[string]any) (*mcpgo.CallToolResult
 	owner := optString(args, "owner")
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	if res := h.authorize(dev, owner); res != nil {
+		h.mu.Unlock()
 		return res, nil
 	}
 	adapter, _, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -1800,12 +1808,10 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 	return toolJSON(out)
 }
 
-// deployAppLocked runs the mutating deploy pipeline under h.mu and
-// returns the structured result plus the resolved device id for the
-// post-launch session wait.
+// deployAppLocked resolves/authorizes under h.mu, then runs the provider
+// pipeline without blocking unrelated devices on the shared state lock.
 func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[string]string, allowPlayer bool) (deployResult, string, *mcpgo.CallToolResult) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 
 	fail := func(format string, a ...any) (deployResult, string, *mcpgo.CallToolResult) {
 		res, _ := toolErr(format, a...)
@@ -1813,9 +1819,11 @@ func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[str
 	}
 
 	if res := h.authorize(dev, owner); res != nil {
+		h.mu.Unlock()
 		return deployResult{}, "", res
 	}
 	adapter, platform, id, err := h.resolveAdapter(dev)
+	h.mu.Unlock()
 	if err != nil {
 		return fail("%v", err)
 	}

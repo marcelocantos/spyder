@@ -109,9 +109,10 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 	var pid int
 	errRes := func() *mcpgo.CallToolResult {
 		h.mu.Lock()
-		defer h.mu.Unlock()
-		if res := h.authorize(dev, owner); res != nil {
-			return res
+		authorized := h.authorize(dev, owner)
+		h.mu.Unlock()
+		if authorized != nil {
+			return authorized
 		}
 		if path != "" {
 			vpath, verr := validateAppPath(path)
@@ -157,7 +158,9 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 			return res
 		}
 		launched = true
+		h.mu.Lock()
 		h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
+		h.mu.Unlock()
 		var perr error
 		pid, perr = waitForAppPID(adapter, id, bundleID, 3*time.Second)
 		if perr != nil {

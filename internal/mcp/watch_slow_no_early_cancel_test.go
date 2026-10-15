@@ -25,8 +25,15 @@ func TestWatchSlowDispatch_DoesNotCancelEarly(t *testing.T) {
 		cancel()
 	}
 
-	done := make(chan struct{})
-	go watchSlowDispatch("app_exec", "A23", time.Now(), done, wrapped)
+	done, finished := make(chan struct{}), make(chan struct{})
+	go func() {
+		watchSlowDispatch("app_exec", "A23", time.Now(), done, wrapped)
+		close(finished)
+	}()
+	t.Cleanup(func() {
+		close(done)
+		<-finished // join before restoring the package timeout variables
+	})
 
 	// Wait well past threshold+several intervals.
 	time.Sleep(120 * time.Millisecond)
@@ -36,5 +43,4 @@ func TestWatchSlowDispatch_DoesNotCancelEarly(t *testing.T) {
 	if ctx.Err() != nil {
 		t.Fatalf("context cancelled: %v", ctx.Err())
 	}
-	close(done)
 }
