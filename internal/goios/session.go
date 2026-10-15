@@ -186,6 +186,14 @@ func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error)
 	}
 }
 
+// InvalidateSession drops only resolution metadata. A context-owned service
+// failure must not blanket-close a newer connection leased by another call.
+func (r *Resolver) InvalidateSession(udid string) {
+	r.mu.Lock()
+	delete(r.cache, udid)
+	r.mu.Unlock()
+}
+
 // Invalidate drops any cached DeviceEntry for udid. Call after a
 // transport-level failure or when the tunnel daemon restarts.
 func (r *Resolver) Invalidate(udid string) {

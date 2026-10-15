@@ -484,6 +484,10 @@ func (h *Handler) canonicalDevice(ref string) string {
 }
 
 func (h *Handler) handleListApps(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleListAppsContext(context.Background(), args)
+}
+
+func (h *Handler) handleListAppsContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -494,7 +498,7 @@ func (h *Handler) handleListApps(args map[string]any) (*mcpgo.CallToolResult, er
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	apps, err := adapter.ListApps(id)
+	apps, err := device.ListAppsContext(ctx, adapter, id)
 	if err != nil {
 		return toolErr("list_apps on %s: %v", dev, err)
 	}
@@ -646,6 +650,10 @@ type isRunningResult struct {
 // Read-only; not subject to reservations. Used by ge's smoke-test
 // scripts to passively check app state. (🎯T38.1)
 func (h *Handler) handleIsRunning(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleIsRunningContext(context.Background(), args)
+}
+
+func (h *Handler) handleIsRunningContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -664,7 +672,7 @@ func (h *Handler) handleIsRunning(args map[string]any) (*mcpgo.CallToolResult, e
 	}
 
 	// Try AppPID first — fast and authoritative for "running".
-	if pid, pidErr := adapter.AppPID(id, bundleID); pidErr == nil && pid > 0 {
+	if pid, pidErr := device.AppPIDContext(ctx, adapter, id, bundleID); pidErr == nil && pid > 0 {
 		return toolJSON(isRunningResult{State: "running", PID: pid})
 	}
 
@@ -672,7 +680,7 @@ func (h *Handler) handleIsRunning(args map[string]any) (*mcpgo.CallToolResult, e
 	// ListApps. Some adapters return errors that already indicate
 	// installation state; the ListApps cross-check is the universal
 	// source of truth.
-	apps, listErr := adapter.ListApps(id)
+	apps, listErr := device.ListAppsContext(ctx, adapter, id)
 	if listErr != nil {
 		return toolErr("is_running: list_apps on %s: %v", dev, listErr)
 	}
@@ -685,6 +693,10 @@ func (h *Handler) handleIsRunning(args map[string]any) (*mcpgo.CallToolResult, e
 }
 
 func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleTerminateAppContext(context.Background(), args)
+}
+
+func (h *Handler) handleTerminateAppContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -704,7 +716,7 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	if err := adapter.TerminateApp(id, bundleID); err != nil {
+	if err := device.TerminateAppContext(ctx, adapter, id, bundleID); err != nil {
 		return toolErr("terminate_app %s on %s: %v", bundleID, dev, err)
 	}
 	// A successful kill request does not mean the process has exited yet.
@@ -713,7 +725,7 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 	// cleanup report success until the app is actually gone.
 	const stopChecks = 10
 	for check := range stopChecks {
-		pid, pidErr := adapter.AppPID(id, bundleID)
+		pid, pidErr := device.AppPIDContext(ctx, adapter, id, bundleID)
 		if pidErr != nil {
 			if strings.HasPrefix(pidErr.Error(), "app not running") {
 				return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
@@ -724,11 +736,15 @@ func (h *Handler) handleTerminateApp(args map[string]any) (*mcpgo.CallToolResult
 			return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
 		}
 		if check == stopChecks/2 {
-			if err := adapter.TerminateApp(id, bundleID); err != nil {
+			if err := device.TerminateAppContext(ctx, adapter, id, bundleID); err != nil {
 				return toolErr("retry termination of %s on %s: %v", bundleID, dev, err)
 			}
 		}
-		time.Sleep(200 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return toolErr("termination cancelled: %v", ctx.Err())
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 	return toolErr("terminate_app %s on %s: process is still running", bundleID, dev)
 }
@@ -1771,6 +1787,10 @@ func (h *Handler) handleDeployApp(args map[string]any) (*mcpgo.CallToolResult, e
 // internal call — the player doesn't use the app channel, so that path
 // skips the session wait.
 func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallToolResult, error) {
+	return h.deployAppContext(context.Background(), args, allowPlayer)
+}
+
+func (h *Handler) deployAppContext(ctx context.Context, args map[string]any, allowPlayer bool) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -1788,7 +1808,7 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 		return toolErr("%v", err)
 	}
 
-	out, deviceID, errRes := h.deployAppLocked(dev, path, bundleID, owner, env, allowPlayer)
+	out, deviceID, errRes := h.deployAppLockedContext(ctx, dev, path, bundleID, owner, env, allowPlayer)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -1797,9 +1817,12 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 		if out.pidErr != nil && wait < 5*time.Second {
 			wait = 5 * time.Second
 		}
-		if s, ok := h.waitForChannelSession(appchannel.AppKey{DeviceID: deviceID, BundleID: out.BundleID}, out.launchedAt, wait); ok {
+		if s, ok := h.waitForChannelSessionContext(ctx, appchannel.AppKey{DeviceID: deviceID, BundleID: out.BundleID}, out.launchedAt, wait); ok {
 			out.SessionID = s.ID
 			out.ChannelPort = s.Port
+		}
+		if ctx.Err() != nil {
+			return toolErr("deploy_app cancelled: %v", ctx.Err())
 		}
 		if out.pidErr != nil && out.SessionID == "" {
 			return toolErr("deploy_app: verify pid for %s on %s: %v; no fresh app-channel session connected", out.BundleID, dev, out.pidErr)
@@ -1811,6 +1834,10 @@ func (h *Handler) deployApp(args map[string]any, allowPlayer bool) (*mcpgo.CallT
 // deployAppLocked resolves/authorizes under h.mu, then runs the provider
 // pipeline without blocking unrelated devices on the shared state lock.
 func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[string]string, allowPlayer bool) (deployResult, string, *mcpgo.CallToolResult) {
+	return h.deployAppLockedContext(context.Background(), dev, path, bundleID, owner, env, allowPlayer)
+}
+
+func (h *Handler) deployAppLockedContext(ctx context.Context, dev, path, bundleID, owner string, env map[string]string, allowPlayer bool) (deployResult, string, *mcpgo.CallToolResult) {
 	h.mu.Lock()
 
 	fail := func(format string, a ...any) (deployResult, string, *mcpgo.CallToolResult) {
@@ -1849,7 +1876,7 @@ func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[str
 	// ListApps failure must not fail the deploy — it only degrades the
 	// replaced signal to false.
 	replaced := false
-	if apps, listErr := adapter.ListApps(id); listErr == nil {
+	if apps, listErr := device.ListAppsContext(ctx, adapter, id); listErr == nil {
 		for _, app := range apps {
 			if app.BundleID == bundleID {
 				replaced = true
@@ -1862,24 +1889,33 @@ func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[str
 	// can run destructors (Audio, GPU) and exit 0. Hard terminate is only a
 	// backstop — SIGKILL mid-frame was showing up as yourworld SIGABRT
 	// crash reports during redeploy.
-	h.softQuitRunningApp(id, bundleID)
-	h.waitUntilNotRunning(adapter, id, bundleID, 2*time.Second)
-	if termErr := adapter.TerminateApp(id, bundleID); termErr != nil {
+	h.softQuitRunningAppContext(ctx, id, bundleID)
+	h.waitUntilNotRunningContext(ctx, adapter, id, bundleID, 2*time.Second)
+	if termErr := device.TerminateAppContext(ctx, adapter, id, bundleID); termErr != nil {
 		// Only propagate if the error is not "not running" or "not found".
 		if !isNotRunningError(termErr) {
 			return fail("deploy_app: terminate %s on %s: %v", bundleID, dev, termErr)
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		return fail("deploy_app cancelled: %v", err)
+	}
 	// Step 2: install (fail fast on error).
 	if err := h.installOn(adapter, id, path); err != nil {
 		return fail("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
 	}
 
+	if err := ctx.Err(); err != nil {
+		return fail("deploy_app cancelled: %v", err)
+	}
 	// Step 3: launch.
 	env, err = h.ensureAppChannelEnv(env, platform, id, bundleID)
 	if err != nil {
 		return fail("deploy_app: launch %s on %s: %v", bundleID, dev, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return fail("deploy_app cancelled: %v", err)
 	}
 	launchedAt := time.Now()
 	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
@@ -1889,7 +1925,7 @@ func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[str
 	// Step 4: verify new PID. Android (and cold iOS launches) can take a
 	// beat after am start / appservice launch before pidof / ListProcesses
 	// sees the process — poll briefly so deploy does not false-fail.
-	pid, err := waitForAppPID(adapter, id, bundleID, 3*time.Second)
+	pid, err := waitForAppPIDContext(ctx, adapter, id, bundleID, 3*time.Second)
 	if err != nil {
 		if allowPlayer {
 			return fail("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
@@ -1935,7 +1971,7 @@ func waitForAppPIDContext(ctx context.Context, adapter device.Adapter, id, bundl
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		pid, err := adapter.AppPID(id, bundleID)
+		pid, err := device.AppPIDContext(ctx, adapter, id, bundleID)
 		if err == nil && pid > 0 {
 			return pid, nil
 		}
@@ -1999,7 +2035,7 @@ func (h *Handler) waitUntilNotRunningContext(ctx context.Context, adapter device
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := adapter.AppPID(deviceID, bundleID); err != nil {
+		if _, err := device.AppPIDContext(ctx, adapter, deviceID, bundleID); err != nil {
 			return nil
 		}
 		if time.Now().After(deadline) {

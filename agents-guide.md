@@ -2408,3 +2408,17 @@ holder).
 - `README.md` — human-facing install and feature overview.
 - `STABILITY.md` — pre-1.0 interaction-surface catalogue and gaps.
 - `docs/audit-log.md` — release audit trail.
+
+
+### Cancelling iOS process-service reads
+
+Caller cancellation reaches acquired installationproxy/appservice connections
+used by `is_running`, `list_apps`, `terminate_app` and process checks inside
+`ensure_session`/`deploy_app`. The exact leased connection is retired and
+closed; waiting callers do not close another operation's connection. This does
+not cancel opaque go-ios service-construction/Resolver handshakes or every
+provider RPC. A timeout is still an outage, never proof that the app stopped.
+Use independent native process identity/stop proof for cleanup when transport
+fails. For the standing read-only hardware gate, reserve the canonical UDID
+before `make test-live-process-cancel SPYDER_LIVE_UDID=<UDID>`; the gate changes
+only its own loopback transport and does not launch/stop apps.

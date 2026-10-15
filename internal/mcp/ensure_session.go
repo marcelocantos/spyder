@@ -18,6 +18,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/marcelocantos/spyder/internal/appchannel"
+	"github.com/marcelocantos/spyder/internal/device"
 )
 
 // postLaunchSessionWait bounds how long launch_app / deploy_app wait for
@@ -141,7 +142,7 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 				return res
 			}
 			installed := false
-			if apps, listErr := adapter.ListApps(id); listErr == nil {
+			if apps, listErr := device.ListAppsContext(ctx, adapter, id); listErr == nil {
 				for _, app := range apps {
 					if app.BundleID == bundleID {
 						installed = true
@@ -165,7 +166,7 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 		}
 		// A running instance can't adopt the channel env after the fact —
 		// soft-quit then hard-terminate so the relaunch picks up SPYDER_APP_CHANNEL.
-		if p, perr := adapter.AppPID(id, bundleID); perr == nil && p > 0 {
+		if p, perr := device.AppPIDContext(ctx, adapter, id, bundleID); perr == nil && p > 0 {
 			if res := cancelled(); res != nil {
 				return res
 			}
@@ -174,7 +175,7 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 			if res := cancelled(); res != nil {
 				return res
 			}
-			if terr := adapter.TerminateApp(id, bundleID); terr != nil && !isNotRunningError(terr) {
+			if terr := device.TerminateAppContext(ctx, adapter, id, bundleID); terr != nil && !isNotRunningError(terr) {
 				res, _ := toolErr("ensure_session: terminate %s on %s: %v", bundleID, dev, terr)
 				return res
 			}

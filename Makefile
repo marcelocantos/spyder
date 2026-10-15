@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-live-session-cancel test-report test-integration vet fmt-check clean player player-web alert-runner permission-fixture permission-fixture-check sign release-dist release-tap release
+.PHONY: bullseye pre-release build test test-live-session-cancel test-live-process-cancel test-report test-integration vet fmt-check clean player player-web alert-runner permission-fixture permission-fixture-check sign release-dist release-tap release
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -154,3 +154,10 @@ clean:
 test-live-session-cancel:
 	@test -x "$(SPYDER_LIVE_BINARY)" || { echo "set SPYDER_LIVE_BINARY to a built tree binary"; exit 2; }
 	SPYDER_LIVE_BINARY="$(SPYDER_LIVE_BINARY)" go test -v ./internal/daemon -run '^TestEnsureSessionCancellationDesktop_Live$$' -count=1
+
+# Read-only hardware-bound cancellation gate: reserve the selected iOS device
+# first. It forwards a real process-list request, holds its response, cancels
+# the owned channel, and verifies a fresh query. No apps are launched/stopped.
+test-live-process-cancel:
+	@test -n "$(SPYDER_LIVE_UDID)" || { echo "set SPYDER_LIVE_UDID to the reserved canonical iOS hardware UDID"; exit 2; }
+	SPYDER_LIVE_UDID="$(SPYDER_LIVE_UDID)" SPYDER_LIVE_PROCESS_CANCEL=1 go test -v ./internal/device -run '^TestIOSAcquiredProcessReadCancellation_Live$$' -count=1 -timeout 90s

@@ -620,5 +620,24 @@ builds. **Stable.**
 | SIGQUIT → `~/.spyder/goroutine-*.txt` | Full goroutine dump without process exit (🎯T99.5). | **Stable** |
 | Tool-class dispatch deadlines | Fast read ≤15s, device op ≤60s, install ≤5m (tunable); structured timeout + session invalidate (🎯T99.1). | **Stable** |
 | Cancelled session setup | Caller cancellation stops Spyder-owned `ensure_session` handshake/health/readiness/PID waits and releases the device lifecycle gate. Underlying adapter RPC cancellation remains separate (🎯T160.2). | **Stable** (🎯T160.3; desktop REST live gate) |
+| Acquired iOS process-service cancellation | Context-aware PID/list/terminate and ensure/deploy process reads retire only their leased connection on cancellation or error; a queued caller never closes another owner's channel. New-service/Resolver handshakes and other opaque provider calls remain 🎯T160.2 residue. | **Stable for acquired iOS17+ services** (🎯T160.2.1; real Jevons cancellation gate) |
 
 In-flight tool calls are tracked for diagnosis (`Handler.InFlightOps`); wedge snapshots continue under `~/.spyder/wedge-snapshots/`. The dispatch watchdog (60s no-progress) beats from `app_exec` verb enter/exit, `sleep()` ticks, app-channel frames (🎯T103.1), and `InstallApp` (🎯T103) — a long script or cold install is not `needs_attention` while it is advancing. Scripts do not inject heartbeats. `launch_player` uses the install deadline class (5m).
+
+
+`make test-live-process-cancel SPYDER_LIVE_UDID=<reserved-hardware-UDID>`
+activates the read-only physical iOS gate. It uses a loopback-only byte relay
+through the existing userspace tunnel, observes a complete real go-ios
+`listprocesses` request forwarded to that device, holds the response, cancels
+the acquired connection and verifies a fresh process query. It never launches
+or stops apps. The ordinary Go suites exercise actual XPC/socket reads and the
+REST lifecycle gate, but are not hardware cancellation evidence. Opaque
+service construction is checked for cancellation before/after; it cannot be
+interrupted until go-ios returns an owned connection. The stuck-call watchdog
+therefore remains necessary for those paths. Context-owned process operations
+do not schedule blanket per-device invalidation after cancellation, because
+that could evict a healthy replacement channel after lifecycle release.
+
+The unpooled legacy iOS≤16 instruments process-control path is not covered by
+this acquired installationproxy/appservice cancellation claim. Its underlying
+DTX connection setup/reads remain part of the provider cancellation residue.

@@ -114,6 +114,7 @@ type IOSProcessProbe struct {
 	InstalledFolder func(id, bundleID string) (string, error)
 	MajorVersion    func(id string) (int, error)
 	Acquire         func(id string) (IOSProcessListConn, func(), error)
+	AcquireContext  func(ctx context.Context, id string) (IOSProcessListConn, func(), func(), error)
 	Invalidate      func(id string)
 }
 
@@ -140,7 +141,7 @@ func (a *IOSAdapter) Resolver() *goios.Resolver {
 // usbmux watcher (🎯T89.2). Routes through Resolver.Invalidate so the
 // onInvalidate hook (pools) fires once.
 func (a *IOSAdapter) InvalidateDevice(udid string) {
-	if a == nil || udid == "" {
+	if a == nil || a.goios == nil || udid == "" {
 		return
 	}
 	a.goios.Invalidate(udid)
@@ -778,7 +779,11 @@ func runCaptureCtx(ctx context.Context, name string, args ...string) (stdout, st
 // CommandContext deadline fires. Always use this for
 // `xcrun devicectl ...` calls — never `runCapture` directly.
 func runDevicectl(args ...string) (stdout, stderr []byte, err error) {
-	ctx, cancel := context.WithTimeout(context.Background(), devicectlTimeout)
+	return runDevicectlContext(context.Background(), args...)
+}
+
+func runDevicectlContext(parent context.Context, args ...string) (stdout, stderr []byte, err error) {
+	ctx, cancel := context.WithTimeout(parent, devicectlTimeout)
 	defer cancel()
 	full := append([]string{"devicectl", "--timeout",
 		fmt.Sprintf("%d", devicectlTimeoutSeconds)}, args...)
@@ -816,18 +821,29 @@ func (a *IOSAdapter) Screenshot(id string) ([]byte, error) {
 // ListApps returns installed user apps via go-ios's installation_proxy.
 // Sorted by bundle id for stable output.
 func (a *IOSAdapter) ListApps(id string) ([]AppInfo, error) {
+	return a.ListAppsContext(context.Background(), id)
+}
+
+func (a *IOSAdapter) ListAppsContext(ctx context.Context, id string) ([]AppInfo, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	conn, release, err := a.ipPool.Acquire(id)
+	lease, err := a.ipPool.AcquireLease(ctx, id)
 	if err != nil {
-		a.goios.Invalidate(id)
+		if ctx.Err() == nil {
+			a.goios.InvalidateSession(id)
+		}
 		return nil, fmt.Errorf("installation_proxy on %s: %w", id, err)
 	}
-	defer release()
-	raw, err := conn.BrowseUserApps()
+	defer lease.Release()
+	raw, err := lease.Conn.BrowseUserApps()
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	if err != nil {
-		a.ipPool.Invalidate(id)
+		if ctx.Err() == nil {
+			lease.Invalidate()
+		}
 		return nil, fmt.Errorf("list_apps on %s: %w", id, err)
 	}
 	apps := make([]AppInfo, 0, len(raw))
@@ -1081,10 +1097,14 @@ func wrapMissingDDI(err error) error {
 // uses appservice.KillProcess; iOS ≤16 uses
 // instruments.ProcessControl.KillProcess.
 func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
+	return a.TerminateAppContext(context.Background(), id, bundleID)
+}
+
+func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	pid, err := a.AppPID(id, bundleID)
+	pid, err := a.AppPIDContext(ctx, id, bundleID)
 	if err != nil {
 		// "app not running" is the no-op success: nothing to terminate.
 		if strings.HasPrefix(err.Error(), "app not running") {
@@ -1092,9 +1112,15 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 		}
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	_, major, sErr := a.goios.SessionWithVersion(id)
 	if sErr != nil {
 		return fmt.Errorf("terminate %s on %s: %w", bundleID, id, sErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	if major != 0 && major < 17 {
 		dev, _, err := a.goios.SessionWithVersion(id)
@@ -1103,7 +1129,9 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 		}
 		pc, err := instruments.NewProcessControl(dev)
 		if err != nil {
-			a.goios.Invalidate(id)
+			if ctx.Err() == nil {
+				a.goios.InvalidateSession(id)
+			}
 			return wrapMissingDDI(fmt.Errorf("terminate %s on %s: instruments.ProcessControl: %w", bundleID, id, err))
 		}
 		defer pc.Close()
@@ -1112,32 +1140,42 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 		}
 		return nil
 	}
-	// CoreDevice's graceful termination prevents iOS from immediately
-	// relaunching some apps after a SIGKILL (observed with Stock Cars on
-	// Jevons). Prefer it when Xcode is available; keep go-ios as the
-	// transport-independent fallback for hosts without devicectl.
+	// Prefer CoreDevice's graceful termination for normal application teardown
+	// and resource cleanup when Xcode is available. Keep go-ios SIGKILL as
+	// the transport-independent fallback. Later iOS prewarm/relaunch requests
+	// are a separate OS/actor question, not prevented by this preference.
 	if _, lookErr := exec.LookPath("xcrun"); lookErr == nil {
-		_, stderr, termErr := runDevicectl("device", "process", "terminate",
+		_, stderr, termErr := runDevicectlContext(ctx, "device", "process", "terminate",
 			"--device", id, "--pid", fmt.Sprintf("%d", pid))
 		if termErr == nil {
 			slog.Info("iOS app terminated gracefully", "device", id, "bundle_id", bundleID, "pid", pid)
 			return nil
 		}
-		if _, pidErr := a.AppPID(id, bundleID); pidErr != nil && strings.HasPrefix(pidErr.Error(), "app not running") {
+		if _, pidErr := a.AppPIDContext(ctx, id, bundleID); pidErr != nil && strings.HasPrefix(pidErr.Error(), "app not running") {
 			return nil
 		}
 		slog.Warn("iOS graceful termination failed; falling back to go-ios SIGKILL",
 			"device", id, "bundle_id", bundleID, "pid", pid,
 			"error", termErr, "stderr", truncate(string(stderr), 200))
 	}
-	conn, release, err := a.asPool.Acquire(id)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lease, err := a.asPool.AcquireLease(ctx, id)
 	if err != nil {
-		a.goios.Invalidate(id)
+		if ctx.Err() == nil {
+			a.goios.InvalidateSession(id)
+		}
 		return fmt.Errorf("appservice on %s: %w", id, err)
 	}
-	defer release()
-	if err := conn.KillProcess(pid); err != nil {
-		a.asPool.Invalidate(id)
+	defer lease.Release()
+	if err := lease.Conn.KillProcess(pid); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if ctx.Err() == nil {
+			lease.Invalidate()
+		}
 		return fmt.Errorf("terminate %s (pid %d) on %s: %w", bundleID, pid, id, err)
 	}
 	return nil
@@ -1153,10 +1191,14 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 // that the deploy_app handler keys off when verify-pid runs
 // immediately after a launch.
 func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
+	return a.AppPIDContext(context.Background(), id, bundleID)
+}
+
+func (a *IOSAdapter) AppPIDContext(ctx context.Context, id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
-	folder := a.installedAppFolder
+	folder := func(id, bundleID string) (string, error) { return a.installedAppFolderContext(ctx, id, bundleID) }
 	majorVersion := func(id string) (int, error) {
 		_, major, err := a.goios.SessionWithVersion(id)
 		return major, err
@@ -1168,32 +1210,46 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 	appBase, err := folder(id, bundleID)
 	if err != nil {
 		if a.pidProbe == nil {
-			a.goios.Invalidate(id)
+			if ctx.Err() == nil {
+				a.goios.InvalidateSession(id)
+			}
 		}
 		return 0, err
 	}
 	if appBase == "" {
 		return 0, fmt.Errorf("app not installed: %s", bundleID)
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	major, sErr := majorVersion(id)
 	if sErr != nil {
 		return 0, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, sErr)
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 	needle := "/" + appBase + "/"
 	if major != 0 && major < 17 {
-		procs, err := retryIOSProcessList(func() ([]instruments.ProcessInfo, error) {
+		procs, err := retryIOSProcessListContext(ctx, func() ([]instruments.ProcessInfo, error) {
 			dev, _, err := a.goios.SessionWithVersion(id)
 			if err != nil {
 				return nil, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, err)
 			}
 			di, err := instruments.NewDeviceInfoService(dev)
 			if err != nil {
-				a.goios.Invalidate(id)
+				if ctx.Err() == nil {
+					a.goios.InvalidateSession(id)
+				}
 				return nil, wrapMissingDDI(fmt.Errorf("AppPID for %s on %s: instruments.DeviceInfoService: %w", bundleID, id, err))
 			}
 			defer di.Close()
 			return di.ProcessList()
-		}, func() { a.goios.Invalidate(id) })
+		}, func() {
+			if ctx.Err() == nil {
+				a.goios.InvalidateSession(id)
+			}
+		})
 		if err != nil {
 			return 0, fmt.Errorf("list processes on %s: %w", id, err)
 		}
@@ -1210,25 +1266,34 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 		}
 		return 0, fmt.Errorf("app not running: %s", bundleID)
 	}
-	acquire := func(id string) (IOSProcessListConn, func(), error) {
-		conn, release, err := a.asPool.Acquire(id)
+	acquire := func(id string) (IOSProcessListConn, func(), func(), error) {
+		lease, err := a.asPool.AcquireLease(ctx, id)
 		if err != nil {
-			a.goios.Invalidate(id)
+			a.goios.InvalidateSession(id)
+			return nil, func() {}, func() {}, err
 		}
-		return conn, release, err
+		return lease.Conn, lease.Release, lease.Invalidate, nil
 	}
-	invalidate := func(id string) { a.asPool.Invalidate(id) }
 	if a.pidProbe != nil {
-		acquire, invalidate = a.pidProbe.Acquire, a.pidProbe.Invalidate
+		if a.pidProbe.AcquireContext != nil {
+			acquire = func(id string) (IOSProcessListConn, func(), func(), error) { return a.pidProbe.AcquireContext(ctx, id) }
+		} else {
+			acquire = func(id string) (IOSProcessListConn, func(), func(), error) {
+				c, release, err := a.pidProbe.Acquire(id)
+				return c, release, func() { a.pidProbe.Invalidate(id) }, err
+			}
+		}
 	}
-	procs, err := retryIOSProcessList(func() ([]appservice.Process, error) {
-		asConn, release, err := acquire(id)
+	invalidate := func() {}
+	procs, err := retryIOSProcessListContext(ctx, func() ([]appservice.Process, error) {
+		conn, release, retire, err := acquire(id)
 		if err != nil {
 			return nil, fmt.Errorf("appservice on %s: %w", id, err)
 		}
-		defer release() // release before invalidation so retry acquires a fresh DTX channel
-		return asConn.ListProcesses()
-	}, func() { invalidate(id) })
+		invalidate = retire
+		defer release()
+		return conn.ListProcesses()
+	}, func() { invalidate() })
 	if err != nil {
 		return 0, fmt.Errorf("list processes on %s: %w", id, err)
 	}
@@ -1245,12 +1310,29 @@ func (a *IOSAdapter) AppPID(id, bundleID string) (int, error) {
 // then discards that connection so the second call opens a fresh channel.
 // Do not retry semantic RPC errors or a successful empty process list.
 func retryIOSProcessList[T any](read func() (T, error), invalidate func()) (T, error) {
+	return retryIOSProcessListContext(context.Background(), read, invalidate)
+}
+
+func retryIOSProcessListContext[T any](ctx context.Context, read func() (T, error), invalidate func()) (T, error) {
+	var zero T
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
 	result, err := read()
+	if ctx.Err() != nil {
+		return zero, ctx.Err()
+	}
 	if err == nil || !retryableIOSProcessListError(err) {
 		return result, err
 	}
 	invalidate()
+	if err := ctx.Err(); err != nil {
+		return zero, err
+	}
 	result, err = read()
+	if ctx.Err() != nil {
+		return zero, ctx.Err()
+	}
 	if err != nil && retryableIOSProcessListError(err) {
 		invalidate()
 	}
@@ -1258,7 +1340,7 @@ func retryIOSProcessList[T any](read func() (T, error), invalidate func()) (T, e
 }
 
 func retryableIOSProcessListError(err error) bool {
-	if err == nil {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
@@ -1283,14 +1365,23 @@ func retryableIOSProcessListError(err error) bool {
 // installation_proxy through the pooled connection. Returns "" when
 // the bundle isn't installed.
 func (a *IOSAdapter) installedAppFolder(id, bundleID string) (string, error) {
-	conn, release, err := a.ipPool.Acquire(id)
+	return a.installedAppFolderContext(context.Background(), id, bundleID)
+}
+
+func (a *IOSAdapter) installedAppFolderContext(ctx context.Context, id, bundleID string) (string, error) {
+	lease, err := a.ipPool.AcquireLease(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("installation_proxy: %w", err)
 	}
-	defer release()
-	apps, err := conn.BrowseAllApps()
+	defer lease.Release()
+	apps, err := lease.Conn.BrowseAllApps()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	if err != nil {
-		a.ipPool.Invalidate(id)
+		if ctx.Err() == nil {
+			lease.Invalidate()
+		}
 		return "", fmt.Errorf("browse apps: %w", err)
 	}
 	for _, app := range apps {

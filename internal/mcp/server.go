@@ -529,7 +529,7 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 		// Invalidation may need the same mutex/provider connection as the
 		// stalled handler. It must never delay this response or self-recovery.
 		if executing.Load() {
-			go h.invalidateOnTimeout(dev)
+			go h.invalidateOnTimeout(name, dev)
 		}
 		close(done)
 		msg := formatTimeoutError(name, dev, elapsed)
@@ -602,7 +602,7 @@ func (h *Handler) InFlightOps() []InFlightOp {
 
 // invalidateOnTimeout drops cached device sessions after a dispatch timeout
 // so the next call re-resolves rather than reusing a wedged connection.
-func (h *Handler) invalidateOnTimeout(dev string) {
+func (h *Handler) invalidateOnTimeout(tool, dev string) {
 	if dev == "" {
 		return
 	}
@@ -616,6 +616,16 @@ func (h *Handler) invalidateOnTimeout(dev string) {
 	h.mu.Unlock()
 	if err != nil || id == "" {
 		return
+	}
+	// These operations retire their exact leased connection on cancellation.
+	// A delayed blanket invalidation could instead close a healthy replacement
+	// acquired after their lifecycle gate was released. Setup which has not yet
+	// produced an owned connection remains subject to the stuck-call watchdog.
+	if _, owns := adapter.(device.ContextProcessAdapter); owns {
+		switch tool {
+		case "is_running", "list_apps", "terminate_app", "ensure_session", "deploy_app":
+			return
+		}
 	}
 	type invalidator interface {
 		InvalidateDevice(udid string)
@@ -699,6 +709,14 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 		return h.handleEnsureSessionContext(ctx, args)
 	case "app_exec":
 		return h.handleAppExecContext(ctx, args)
+	case "is_running":
+		return h.handleIsRunningContext(ctx, args)
+	case "list_apps":
+		return h.handleListAppsContext(ctx, args)
+	case "terminate_app":
+		return h.handleTerminateAppContext(ctx, args)
+	case "deploy_app":
+		return h.deployAppContext(ctx, args, false)
 	}
 	fn, ok := h.toolHandlers()[name]
 	if !ok {

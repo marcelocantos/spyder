@@ -4,6 +4,7 @@
 package goios
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -11,12 +12,19 @@ import (
 )
 
 // poolEntry is one cached service connection. The conn is held open
-// across operations; the per-entry mutex serialises operations on it
+// across operations; the per-entry permit serialises operations on it
 // (most go-ios service connections are not safe for concurrent use).
 type poolEntry[T any] struct {
-	conn     T
-	mu       sync.Mutex
-	lastUsed time.Time
+	conn      T
+	permit    chan struct{}
+	lastUsed  time.Time // guarded by ServicePool.mu
+	busy      bool      // guarded by ServicePool.mu
+	retired   bool      // guarded by ServicePool.mu
+	closeOnce sync.Once
+}
+
+type serviceSessionResolver interface {
+	Session(string) (ios.DeviceEntry, error)
 }
 
 // ServicePool caches one go-ios service connection per (UDID, service)
@@ -26,7 +34,7 @@ type poolEntry[T any] struct {
 // device appears to wedge usbmuxd's per-device session table (🎯T67).
 //
 // Concurrency: ServicePool is safe for concurrent use. Acquire blocks
-// only on the per-entry mutex while another caller holds the same
+// only on the per-entry permit while another caller holds the same
 // connection; different (UDID, service) tuples are independent.
 //
 // Generic over the connection type so each service (installationproxy,
@@ -34,7 +42,7 @@ type poolEntry[T any] struct {
 // reflection. The factory + closer functions handle the type-specific
 // open/close plumbing.
 type ServicePool[T any] struct {
-	resolver *Resolver
+	resolver serviceSessionResolver
 	newConn  func(ios.DeviceEntry) (T, error)
 	closeFn  func(T) error
 	idleTTL  time.Duration
@@ -54,7 +62,7 @@ type ServicePool[T any] struct {
 // NewServicePool constructs a pool wrapping the per-device service
 // open/close pair. idleTTL bounds how long an idle connection is kept
 // alive; a sweeper goroutine evicts older entries every TTL/2.
-func NewServicePool[T any](r *Resolver, newConn func(ios.DeviceEntry) (T, error), closeFn func(T) error, idleTTL time.Duration) *ServicePool[T] {
+func NewServicePool[T any](r serviceSessionResolver, newConn func(ios.DeviceEntry) (T, error), closeFn func(T) error, idleTTL time.Duration) *ServicePool[T] {
 	if idleTTL <= 0 {
 		idleTTL = 60 * time.Second
 	}
@@ -72,82 +80,151 @@ func NewServicePool[T any](r *Resolver, newConn func(ios.DeviceEntry) (T, error)
 
 // Acquire returns a connection for the given UDID together with a
 // release function. The caller MUST call release when done; the
-// per-entry mutex is held until release fires. The returned T is
+// per-entry permit is held until release fires. The returned T is
 // safe to use until release.
 //
 // On first use for a UDID (or after an Invalidate or TTL eviction),
 // Acquire opens a new connection via the pool's newConn factory.
 // Session resolve + newConn run WITHOUT holding the pool mutex so a
 // wedged handshake for one UDID cannot stall Acquire for others (🎯T99.2).
-func (p *ServicePool[T]) Acquire(udid string) (conn T, release func(), err error) {
-	var zero T
-	p.mu.Lock()
-	if p.stopped {
-		p.mu.Unlock()
-		return zero, func() {}, errPoolClosed
+func (p *ServicePool[T]) Acquire(udid string) (T, func(), error) {
+	return p.AcquireContext(context.Background(), udid)
+}
+
+// ServiceLease owns one exact connection generation. Invalidate may be used
+// after an RPC error even if cancellation already retired/replaced the entry.
+type ServiceLease[T any] struct {
+	Conn       T
+	Release    func()
+	Invalidate func()
+}
+
+// AcquireContext is AcquireLease with only its connection/release exposed.
+func (p *ServicePool[T]) AcquireContext(ctx context.Context, udid string) (T, func(), error) {
+	lease, err := p.AcquireLease(ctx, udid)
+	if err != nil {
+		var zero T
+		return zero, func() {}, err
 	}
-	if e, ok := p.entries[udid]; ok {
+	return lease.Conn, lease.Release, nil
+}
+
+// AcquireLease cancels an entry wait without disturbing its current owner.
+// After acquisition, cancellation retires and closes exactly that connection
+// generation to unblock an established RPC read. Resolver/service construction
+// remains upstream synchronous I/O: cancellation is checked around, but cannot
+// interrupt, those opaque setup calls.
+func (p *ServicePool[T]) AcquireLease(ctx context.Context, udid string) (*ServiceLease[T], error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		p.mu.Lock()
+		if p.stopped {
+			p.mu.Unlock()
+			return nil, errPoolClosed
+		}
+		e := p.entries[udid]
 		p.mu.Unlock()
-		e.mu.Lock()
+		if e == nil {
+			dev, err := p.resolver.Session(udid)
+			if err != nil {
+				return nil, err
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			c, err := p.newConn(dev)
+			if err != nil {
+				return nil, err
+			}
+			if err := ctx.Err(); err != nil {
+				_ = p.closeFn(c)
+				return nil, err
+			}
+			candidate := &poolEntry[T]{conn: c, lastUsed: time.Now(), permit: make(chan struct{}, 1)}
+			candidate.permit <- struct{}{}
+			p.mu.Lock()
+			if p.stopped {
+				p.mu.Unlock()
+				_ = p.closeFn(c)
+				return nil, errPoolClosed
+			}
+			e = p.entries[udid]
+			if e == nil {
+				e = candidate
+				p.entries[udid] = e
+				p.opens++
+			}
+			p.mu.Unlock()
+			if e != candidate {
+				_ = p.closeFn(c)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-e.permit:
+		}
+		p.mu.Lock()
+		if e.retired {
+			p.mu.Unlock()
+			e.permit <- struct{}{}
+			continue
+		}
+		e.busy = true
 		e.lastUsed = time.Now()
-		return e.conn, func() {
-			e.lastUsed = time.Now()
-			e.mu.Unlock()
-		}, nil
+		p.mu.Unlock()
+		cancelFinished := make(chan struct{})
+		stopCancel := context.AfterFunc(ctx, func() {
+			defer close(cancelFinished)
+			p.retire(udid, e)
+		})
+		var once sync.Once
+		release := func() {
+			once.Do(func() {
+				// Join only our lightweight close callback, never an RPC handler.
+				// It must finish before another caller can own this entry.
+				if !stopCancel() {
+					<-cancelFinished
+				}
+				p.mu.Lock()
+				e.busy = false
+				e.lastUsed = time.Now()
+				p.mu.Unlock()
+				e.permit <- struct{}{}
+			})
+		}
+		if err := ctx.Err(); err != nil {
+			release()
+			return nil, err
+		}
+		return &ServiceLease[T]{Conn: e.conn, Release: release, Invalidate: func() { p.retire(udid, e) }}, nil
+	}
+}
+
+func (p *ServicePool[T]) retire(udid string, e *poolEntry[T]) {
+	p.mu.Lock()
+	e.retired = true
+	if p.entries[udid] == e {
+		delete(p.entries, udid)
 	}
 	p.mu.Unlock()
-
-	// Handshake outside p.mu (🎯T99.2).
-	dev, derr := p.resolver.Session(udid)
-	if derr != nil {
-		return zero, func() {}, derr
-	}
-	c, cerr := p.newConn(dev)
-	if cerr != nil {
-		return zero, func() {}, cerr
-	}
-
-	p.mu.Lock()
-	if p.stopped {
-		p.mu.Unlock()
-		_ = p.closeFn(c)
-		return zero, func() {}, errPoolClosed
-	}
-	// Race: another Acquire may have installed an entry while we handshook.
-	if e, ok := p.entries[udid]; ok {
-		p.mu.Unlock()
-		_ = p.closeFn(c)
-		e.mu.Lock()
-		e.lastUsed = time.Now()
-		return e.conn, func() {
-			e.lastUsed = time.Now()
-			e.mu.Unlock()
-		}, nil
-	}
-	p.opens++
-	e := &poolEntry[T]{conn: c, lastUsed: time.Now()}
-	p.entries[udid] = e
-	p.mu.Unlock()
-
-	e.mu.Lock()
-	e.lastUsed = time.Now()
-	return e.conn, func() {
-		e.lastUsed = time.Now()
-		e.mu.Unlock()
-	}, nil
+	e.closeOnce.Do(func() { _ = p.closeFn(e.conn) })
 }
 
 // Invalidate drops the cached connection for udid (closing it). Call
 // after a transport-level error so the next Acquire re-handshakes.
 func (p *ServicePool[T]) Invalidate(udid string) {
 	p.mu.Lock()
-	e, ok := p.entries[udid]
-	if ok {
+	e := p.entries[udid]
+	if e != nil {
+		e.retired = true
 		delete(p.entries, udid)
 	}
 	p.mu.Unlock()
-	if ok {
-		_ = p.closeFn(e.conn)
+	if e != nil {
+		e.closeOnce.Do(func() { _ = p.closeFn(e.conn) })
 	}
 }
 
@@ -162,9 +239,12 @@ func (p *ServicePool[T]) Close() error {
 	close(p.stop)
 	entries := p.entries
 	p.entries = map[string]*poolEntry[T]{}
+	for _, e := range entries {
+		e.retired = true
+	}
 	p.mu.Unlock()
 	for _, e := range entries {
-		_ = p.closeFn(e.conn)
+		e.closeOnce.Do(func() { _ = p.closeFn(e.conn) })
 	}
 	return nil
 }
@@ -195,14 +275,15 @@ func (p *ServicePool[T]) sweep() {
 			p.mu.Lock()
 			var stale []*poolEntry[T]
 			for udid, e := range p.entries {
-				if now.Sub(e.lastUsed) >= p.idleTTL {
+				if !e.busy && now.Sub(e.lastUsed) >= p.idleTTL {
+					e.retired = true
 					stale = append(stale, e)
 					delete(p.entries, udid)
 				}
 			}
 			p.mu.Unlock()
 			for _, e := range stale {
-				_ = p.closeFn(e.conn)
+				e.closeOnce.Do(func() { _ = p.closeFn(e.conn) })
 			}
 		}
 	}
