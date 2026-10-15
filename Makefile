@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-report test-integration vet fmt-check clean player player-web alert-runner permission-fixture permission-fixture-check sign release-dist release-tap release
+.PHONY: bullseye pre-release build test test-live-session-cancel test-report test-integration vet fmt-check clean player player-web alert-runner permission-fixture permission-fixture-check sign release-dist release-tap release
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -148,3 +148,9 @@ release: pre-release release-dist
 clean:
 	rm -rf bin/
 	$(MAKE) -C player clean
+
+# Explicit local whole-daemon cancellation gate, using only disposable desktop
+# processes. A supplied tree binary and an unused loopback port are required.
+test-live-session-cancel:
+	@test -x "$(SPYDER_LIVE_BINARY)" || { echo "set SPYDER_LIVE_BINARY to a built tree binary"; exit 2; }
+	SPYDER_LIVE_BINARY="$(SPYDER_LIVE_BINARY)" go test -v ./internal/daemon -run '^TestEnsureSessionCancellationDesktop_Live$$' -count=1

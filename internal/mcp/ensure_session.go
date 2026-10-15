@@ -54,6 +54,20 @@ type ensureSessionResult struct {
 }
 
 func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleEnsureSessionContext(context.Background(), args)
+}
+
+func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+	cancelled := func() *mcpgo.CallToolResult {
+		if err := ctx.Err(); err != nil {
+			res, _ := toolErr("ensure_session cancelled: %v", err)
+			return res
+		}
+		return nil
+	}
+	if res := cancelled(); res != nil {
+		return res, nil
+	}
 	if h.appChannel == nil {
 		return toolErr("app channel not configured")
 	}
@@ -91,14 +105,17 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 	key := appchannel.AppKey{DeviceID: id, BundleID: bundleID}
 
 	// Fast path: a healthy session already exists — return it untouched.
-	if s, ok := h.waitForChannelSession(key, time.Time{}, 0); ok {
-		if sessionHealthy(s) {
+	if s, ok := h.waitForChannelSessionContext(ctx, key, time.Time{}, 0); ok {
+		if sessionHealthy(ctx, s) {
 			return toolJSON(ensureSessionResult{
 				Device:      dev,
 				BundleID:    bundleID,
 				SessionID:   s.ID,
 				ChannelPort: s.Port,
 			})
+		}
+		if res := cancelled(); res != nil {
+			return res, nil
 		}
 		// Wedged session (open TCP conn, unresponsive app) — drop it so
 		// the relaunch below forms a fresh one.
@@ -113,6 +130,9 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 		h.mu.Unlock()
 		if authorized != nil {
 			return authorized
+		}
+		if res := cancelled(); res != nil {
+			return res
 		}
 		if path != "" {
 			vpath, verr := validateAppPath(path)
@@ -129,6 +149,9 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 					}
 				}
 			}
+			if res := cancelled(); res != nil {
+				return res
+			}
 			if !installed {
 				if ierr := h.installOn(adapter, id, vpath); ierr != nil {
 					res, _ := toolErr("ensure_session: install %s on %s: %v", filepath.Base(vpath), dev, ierr)
@@ -137,20 +160,35 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 				deployed = true
 			}
 		}
+		if res := cancelled(); res != nil {
+			return res
+		}
 		// A running instance can't adopt the channel env after the fact —
 		// soft-quit then hard-terminate so the relaunch picks up SPYDER_APP_CHANNEL.
 		if p, perr := adapter.AppPID(id, bundleID); perr == nil && p > 0 {
-			h.softQuitRunningApp(id, bundleID)
-			h.waitUntilNotRunning(adapter, id, bundleID, 2*time.Second)
+			if res := cancelled(); res != nil {
+				return res
+			}
+			h.softQuitRunningAppContext(ctx, id, bundleID)
+			_ = h.waitUntilNotRunningContext(ctx, adapter, id, bundleID, 2*time.Second)
+			if res := cancelled(); res != nil {
+				return res
+			}
 			if terr := adapter.TerminateApp(id, bundleID); terr != nil && !isNotRunningError(terr) {
 				res, _ := toolErr("ensure_session: terminate %s on %s: %v", bundleID, dev, terr)
 				return res
 			}
 		}
+		if res := cancelled(); res != nil {
+			return res
+		}
 		var eerr error
 		env, eerr = h.ensureAppChannelEnv(env, platform, id, bundleID)
 		if eerr != nil {
 			res, _ := toolErr("ensure_session: %v", eerr)
+			return res
+		}
+		if res := cancelled(); res != nil {
 			return res
 		}
 		if lerr := adapter.LaunchApp(id, bundleID, env); lerr != nil {
@@ -162,7 +200,7 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 		h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
 		h.mu.Unlock()
 		var perr error
-		pid, perr = waitForAppPID(adapter, id, bundleID, 3*time.Second)
+		pid, perr = waitForAppPIDContext(ctx, adapter, id, bundleID, 3*time.Second)
 		if perr != nil {
 			res, _ := toolErr("ensure_session: verify pid for %s on %s: %v", bundleID, dev, perr)
 			return res
@@ -173,13 +211,19 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 		return errRes, nil
 	}
 
-	s, ok := h.waitForChannelSession(key, time.Time{}, wait)
+	s, ok := h.waitForChannelSessionContext(ctx, key, time.Time{}, wait)
 	if !ok {
+		if res := cancelled(); res != nil {
+			return res, nil
+		}
 		return toolErr("ensure_session: %s launched on %s (pid %d) but no app-channel session formed within %s — the app may not support SPYDER_APP_CHANNEL; check app_channel_list()", bundleID, dev, pid, wait)
 	}
 	// After hello, wait until the app can answer a main-thread slice.
 	// Channel connect ≠ main pump free (Unity cold load).
-	if !waitForSessionReady(s, defaultReadyWait) {
+	if !waitForSessionReady(ctx, s, defaultReadyWait) {
+		if res := cancelled(); res != nil {
+			return res, nil
+		}
 		return toolErr("ensure_session: session %s formed but app never answered state_query within %s (main thread stalled?)", s.ID, defaultReadyWait)
 	}
 	return toolJSON(ensureSessionResult{
@@ -200,6 +244,10 @@ func (h *Handler) handleEnsureSession(args map[string]any) (*mcpgo.CallToolResul
 // listener means the launch never wired SPYDER_APP_CHANNEL, so nothing
 // can ever connect.
 func (h *Handler) waitForChannelSession(key appchannel.AppKey, after time.Time, timeout time.Duration) (*appchannel.Session, bool) {
+	return h.waitForChannelSessionContext(context.Background(), key, after, timeout)
+}
+
+func (h *Handler) waitForChannelSessionContext(ctx context.Context, key appchannel.AppKey, after time.Time, timeout time.Duration) (*appchannel.Session, bool) {
 	if h.appChannel == nil {
 		return nil, false
 	}
@@ -207,8 +255,14 @@ func (h *Handler) waitForChannelSession(key appchannel.AppKey, after time.Time, 
 	if !ok {
 		return nil, false
 	}
-	deadline := time.Now().Add(timeout)
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(sessionPollInterval)
+	defer ticker.Stop()
 	for {
+		if ctx.Err() != nil {
+			return nil, false
+		}
 		if sessions := l.Sessions(); len(sessions) > 0 {
 			// Most recent fresh session — a predecessor may still be draining.
 			for i := len(sessions) - 1; i >= 0; i-- {
@@ -217,18 +271,21 @@ func (h *Handler) waitForChannelSession(key appchannel.AppKey, after time.Time, 
 				}
 			}
 		}
-		if !time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
 			return nil, false
+		case <-timer.C:
+			return nil, false
+		case <-ticker.C:
 		}
-		time.Sleep(sessionPollInterval)
 	}
 }
 
 // sessionHealthy verifies the app still answers on the channel. The
 // point is to detect a dead peer behind an open TCP connection, not
 // capability — an app that doesn't advertise ping counts as healthy.
-func sessionHealthy(s *appchannel.Session) bool {
-	_, err := s.Call(context.Background(), appchannel.MethodPing, nil, 2*time.Second)
+func sessionHealthy(ctx context.Context, s *appchannel.Session) bool {
+	_, err := s.Call(ctx, appchannel.MethodPing, nil, 2*time.Second)
 	if err == nil {
 		return true
 	}
@@ -243,11 +300,11 @@ func sessionHealthy(s *appchannel.Session) bool {
 // Uses progress-aware Call (idle silence, not wall-clock from t0) with an
 // absolute outer bound on ctx. Kit progress heartbeats keep the call alive
 // while main work is queued; true silence fails after DefaultIdleSilence.
-func waitForSessionReady(s *appchannel.Session, absolute time.Duration) bool {
+func waitForSessionReady(parent context.Context, s *appchannel.Session, absolute time.Duration) bool {
 	if s == nil || absolute <= 0 {
 		return false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), absolute)
+	ctx, cancel := context.WithTimeout(parent, absolute)
 	defer cancel()
 	_, err := s.Call(ctx, appchannel.MethodStateQuery,
 		map[string]string{"slice": "session"}, 0)

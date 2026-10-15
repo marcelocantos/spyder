@@ -490,7 +490,14 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 	defer cancel()
 
 	done := make(chan struct{})
-	go watchSlowDispatch(name, dev, started, done, cancel)
+	watchFinished := make(chan struct{})
+	go func() {
+		defer close(watchFinished)
+		watchSlowDispatch(name, dev, started, done, cancel)
+	}()
+	// Closing done stops the watchdog on both return paths. Join it so a
+	// completed dispatch cannot leave a timing/logging goroutine behind.
+	defer func() { <-watchFinished }()
 
 	type outcome struct {
 		result *mcpgo.CallToolResult
@@ -504,7 +511,7 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 	go func() {
 		res, err := h.withLifecycle(ctx, name, args, func(callArgs map[string]any) (*mcpgo.CallToolResult, error) {
 			executing.Store(true)
-			return h.dispatch(name, callArgs)
+			return h.dispatch(ctx, name, callArgs)
 		})
 		ch <- outcome{res, err}
 		close(finished)
@@ -680,11 +687,18 @@ func deviceArg(args map[string]any) string {
 	return ""
 }
 
-func (h *Handler) dispatch(name string, args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any) (*mcpgo.CallToolResult, error) {
 	if h.testHandlers != nil {
 		if fn, ok := h.testHandlers[name]; ok {
 			return fn(args)
 		}
+	}
+	// These handlers own cancellable waits beyond the lifecycle gate.
+	switch name {
+	case "ensure_session":
+		return h.handleEnsureSessionContext(ctx, args)
+	case "app_exec":
+		return h.handleAppExecContext(ctx, args)
 	}
 	fn, ok := h.toolHandlers()[name]
 	if !ok {

@@ -512,7 +512,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 
 `spyder install --all-physical <path>` and `spyder deploy --all-physical <path> [--bundle-id ID]` (🎯T98) fan `install_app`/`deploy_app` out over every attached **physical** iOS/Android device (simulators, emulators, and desktop are excluded), printing one `<device>: OK` or `<device>: FAIL <reason>` line per device and exiting non-zero if any device failed or none were attached — the multi-device "deploy to all physical" operation.
 | `launch_player(device, server?, path?, owner?)` | Deploy/launch the spyder stream glass with `STREAM_ADDR` and server name injected (🎯T100.3). Returns `{device, platform, server, stream_addr, bundle_id, pid?, path?, variant?}`. | Picks the sole registered stream server when `server` is omitted; errors if zero or multiple. Optional `path` overrides the platform player artifact. Reservation-gated. CLI: `spyder launch-player`. |
-| `ensure_session(device, bundle_id?, path?, owner?, env?, timeout_ms?)` | One verb from device+bundle to a **ready app-channel session** (🎯T118): installs `path` if the bundle isn't on the device, launches with `SPYDER_APP_CHANNEL` wired, waits for the app's `hello`, and returns `{session_id, channel_port, pid, deployed, launched}`. Idempotent — a healthy existing session is returned untouched (`deployed=false, launched=false`) with no reservation needed. | Replaces the manual `deploy_app` → `launch_app` → `sleep` → `app_channel_list` dance. `bundle_id` optional when `path` is given (derived). Default handshake wait 15 s (`timeout_ms`, max 60 000). |
+| `ensure_session(device, bundle_id?, path?, owner?, env?, timeout_ms?)` | One verb from device+bundle to a **ready app-channel session** (🎯T118): installs `path` if the bundle isn't on the device, launches with `SPYDER_APP_CHANNEL` wired, waits for the app's `hello`, and returns `{session_id, channel_port, pid, deployed, launched}`. Idempotent — a healthy existing session is returned untouched (`deployed=false, launched=false`) with no reservation needed. | Replaces the manual `deploy_app` → `launch_app` → `sleep` → `app_channel_list` dance. `bundle_id` optional when `path` is given (derived). Default handshake wait 15 s (`timeout_ms`, max 90 000). |
 | `reserve(device?, selector?, owner, ttl_seconds?, note?)` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
 | `release(device, owner)` | Free a reservation. | Non-owner releases conflict. Also stops any active recording owned by the releaser. Any applied network profile is cleared automatically. |
 | `renew(device, owner, ttl_seconds?)` | Extend a reservation's TTL. | |
@@ -777,6 +777,8 @@ more leverage.
 The one-verb path (🎯T118) — `ensure_session` deploys if needed, launches,
 waits for the handshake, and hands back the session id. This replaces the
 manual deploy → launch → sleep → `app_channel_list` dance:
+
+Caller cancellation stops Spyder's handshake, health/readiness and PID-polling waits and releases the device lifecycle gate (🎯T160.3). This does not make an adapter's underlying transport RPC cancellable: stalled go-ios provider calls remain a separate limitation (🎯T160.2).
 
 ```starlark
 # 1. One call: install if missing, launch with SPYDER_APP_CHANNEL wired,

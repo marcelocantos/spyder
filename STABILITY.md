@@ -619,5 +619,6 @@ builds. **Stable.**
 | `spyder doctor --install-sudoers` | Installs sudoers for `spyder-killusbmuxd` (usbmuxd wedge recovery). Documented agent path. | **Stable** |
 | SIGQUIT → `~/.spyder/goroutine-*.txt` | Full goroutine dump without process exit (🎯T99.5). | **Stable** |
 | Tool-class dispatch deadlines | Fast read ≤15s, device op ≤60s, install ≤5m (tunable); structured timeout + session invalidate (🎯T99.1). | **Stable** |
+| Cancelled session setup | Caller cancellation stops Spyder-owned `ensure_session` handshake/health/readiness/PID waits and releases the device lifecycle gate. Underlying adapter RPC cancellation remains separate (🎯T160.2). | **Stable** (🎯T160.3; desktop REST live gate) |
 
 In-flight tool calls are tracked for diagnosis (`Handler.InFlightOps`); wedge snapshots continue under `~/.spyder/wedge-snapshots/`. The dispatch watchdog (60s no-progress) beats from `app_exec` verb enter/exit, `sleep()` ticks, app-channel frames (🎯T103.1), and `InstallApp` (🎯T103) — a long script or cold install is not `needs_attention` while it is advancing. Scripts do not inject heartbeats. `launch_player` uses the install deadline class (5m).

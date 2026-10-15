@@ -1925,9 +1925,16 @@ func isSpyderPlayerTarget(bundleID, path string) bool {
 // waitForAppPID polls adapter.AppPID until a positive pid appears or
 // deadline elapses. Returns the last error if still not running.
 func waitForAppPID(adapter device.Adapter, id, bundleID string, timeout time.Duration) (int, error) {
+	return waitForAppPIDContext(context.Background(), adapter, id, bundleID, timeout)
+}
+
+func waitForAppPIDContext(ctx context.Context, adapter device.Adapter, id, bundleID string, timeout time.Duration) (int, error) {
 	deadline := time.Now().Add(timeout)
 	var last error
 	for {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		pid, err := adapter.AppPID(id, bundleID)
 		if err == nil && pid > 0 {
 			return pid, nil
@@ -1939,7 +1946,11 @@ func waitForAppPID(adapter device.Adapter, id, bundleID string, timeout time.Dur
 			}
 			return 0, last
 		}
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
 	}
 }
 
@@ -1947,6 +1958,10 @@ func waitForAppPID(adapter device.Adapter, id, bundleID string, timeout time.Dur
 // process can tear down cleanly (SDL_QUIT → exit 0). Best-effort: any failure
 // is ignored; the caller must still hard-terminate as a backstop.
 func (h *Handler) softQuitRunningApp(deviceID, bundleID string) {
+	h.softQuitRunningAppContext(context.Background(), deviceID, bundleID)
+}
+
+func (h *Handler) softQuitRunningAppContext(ctx context.Context, deviceID, bundleID string) {
 	if h.appChannel == nil || deviceID == "" || bundleID == "" {
 		return
 	}
@@ -1964,7 +1979,6 @@ func (h *Handler) softQuitRunningApp(deviceID, bundleID string) {
 	if s == nil || !s.Supports(appchannel.MethodQuit) {
 		return
 	}
-	ctx := context.Background()
 	if s.Supports(appchannel.MethodFlush) {
 		_, _ = s.Call(ctx, appchannel.MethodFlush, nil, 2*time.Second)
 	}
@@ -1973,18 +1987,29 @@ func (h *Handler) softQuitRunningApp(deviceID, bundleID string) {
 
 // waitUntilNotRunning polls AppPID until the process is gone or timeout.
 func (h *Handler) waitUntilNotRunning(adapter device.Adapter, deviceID, bundleID string, timeout time.Duration) {
+	_ = h.waitUntilNotRunningContext(context.Background(), adapter, deviceID, bundleID, timeout)
+}
+
+func (h *Handler) waitUntilNotRunningContext(ctx context.Context, adapter device.Adapter, deviceID, bundleID string, timeout time.Duration) error {
 	if adapter == nil || timeout <= 0 {
-		return
+		return nil
 	}
 	deadline := time.Now().Add(timeout)
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := adapter.AppPID(deviceID, bundleID); err != nil {
-			return
+			return nil
 		}
 		if time.Now().After(deadline) {
-			return
+			return nil
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 
