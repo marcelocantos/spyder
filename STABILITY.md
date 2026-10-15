@@ -527,6 +527,23 @@ Package-level variable `version` in `main.go`, injected at build time via
 `-ldflags "-X main.version=<tag>"`. Defaults to `"dev"` for non-release
 builds. **Stable.**
 
+### Physical iOS test-runner startup residue (🎯T161)
+
+The packaged `ios runwda` CLI failed initial RSD/XPC negotiation on a
+physical iOS 27 iPad on 2026-10-16 with `STREAM_CLOSED`, before runner
+launch or game input. The userspace tunnel registry contained the reported
+endpoint; a separate in-process RSD resolution succeeded 12 seconds later.
+The packaged CLI and current library use different fork/dependency pins,
+but their CLI, RSD, HTTP2/XPC and userspace dialing source is identical.
+Neither stale metadata nor version incompatibility is established.
+
+This remains an unresolved startup/provider outage, separate from acquired
+process-read cancellation (🎯T160.2.1). Do not infer that changing versions,
+restarting a shared tunnel or relaxing device-identity guards repairs it.
+Any correction needs a named mechanism and a fresh packaged-CLI physical
+startup/cleanup gate. Private incident receipts are referenced in 🎯T161;
+no additional startup retry was performed during diagnosis.
+
 ## Gaps and prerequisites for 1.0
 
 - **iOS foreground-app detection.** Not currently surfaced — the
