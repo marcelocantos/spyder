@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -131,7 +132,7 @@ func TestPhysicalIOSAppChannelIsLANBound(t *testing.T) {
 	if len(hosts) == 0 {
 		t.Skip("no LAN interface available")
 	}
-	conn, err := net.Dial("tcp", fmt.Sprintf("%s:%d", hosts[0], l.Port))
+	conn, err := net.Dial("tcp", net.JoinHostPort(hosts[0], strconv.Itoa(l.Port)))
 	if err != nil {
 		t.Fatalf("iOS listener not reachable on LAN interface: %v", err)
 	}
