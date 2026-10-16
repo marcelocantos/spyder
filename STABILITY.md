@@ -531,18 +531,26 @@ builds. **Stable.**
 
 The packaged `ios runwda` CLI failed initial RSD/XPC negotiation on a
 physical iOS 27 iPad on 2026-10-16 with `STREAM_CLOSED`, before runner
-launch or game input. The userspace tunnel registry contained the reported
-endpoint; a separate in-process RSD resolution succeeded 12 seconds later.
+launch or game input. A coordinated pair of read-only `ios rsd ls`
+initializers reproduced the same failure: starts 1.2 ms apart, one reset
+and one successful 84-service response, with unchanged tunnel metadata.
+Five serial initializers all succeeded. The original activation started
+syslog immediately before the runner, creating this overlapping startup.
+
+The narrow caller repair under verification is to establish strict runner
+readiness before starting optional syslog. The reusable bounded startup,
+hardware identity, passive-routing and cleanup gate belongs to the consumer
+of the runner. The serialized task-local CLI passed RSD and launched the
+signed runner, but did not reach readiness within its budget while XCTest
+waited for automation mode. Session authorization is not readiness proof.
+
 The packaged CLI and current library use different fork/dependency pins,
 but their CLI, RSD, HTTP2/XPC and userspace dialing source is identical.
-Neither stale metadata nor version incompatibility is established.
-
-This remains an unresolved startup/provider outage, separate from acquired
-process-read cancellation (🎯T160.2.1). Do not infer that changing versions,
-restarting a shared tunnel or relaxing device-identity guards repairs it.
-Any correction needs a named mechanism and a fresh packaged-CLI physical
-startup/cleanup gate. Private incident receipts are referenced in 🎯T161;
-no additional startup retry was performed during diagnosis.
+The remote implementation reason for rejecting overlapping initialization
+and any version-specific effect remain undecided. This startup residue is
+separate from acquired process-read cancellation (🎯T160.2.1); it does not
+justify a speculative protocol patch or shared-tunnel restart. Private
+incident and controlled-probe receipts are referenced in 🎯T161.
 
 ## Gaps and prerequisites for 1.0
 
