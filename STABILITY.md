@@ -543,6 +543,10 @@ hardware identity, passive-routing and cleanup gate belongs to the consumer
 of the runner. The serialized task-local CLI passed RSD and launched the
 signed runner, but did not reach readiness within its budget while XCTest
 waited for automation mode. Session authorization is not readiness proof.
+An independent native Xcode attempt showed the actual OS prompt, "Enable UI
+Automation — Touch ID to continue with XCTest." An unlocked-device query
+cannot establish this separate consent. No credential or prompt bypass was
+attempted; the readiness gate remains unavailable until consent is completed.
 
 The packaged CLI and current library use different fork/dependency pins,
 but their CLI, RSD, HTTP2/XPC and userspace dialing source is identical.
