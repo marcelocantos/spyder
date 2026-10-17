@@ -100,16 +100,25 @@ func (c *Controller) Reconcile(ctx context.Context) {
 	if c.Now != nil {
 		now = c.Now()
 	}
-	next := map[string]Status{}
+	// Keep the previous ACK for present peers while their next call is pending.
+	// Publish each completed result independently: a slow sibling must not hide
+	// a healthy ACK until its USB observation is already stale. Reconcile's
+	// existing lock still prevents a token clear from racing older dispatch.
+	c.mu.Lock()
+	previous := c.statuses
+	c.statuses = make(map[string]Status, len(peers))
+	for _, p := range peers {
+		if status, ok := previous[p.ID]; ok {
+			c.statuses[p.ID] = status
+		}
+	}
+	c.mu.Unlock()
 	var pending sync.WaitGroup
-	var nextMu sync.Mutex
 	for _, p := range peers {
 		pending.Add(1)
 		go func(p Peer) {
 			defer pending.Done()
-			c.mu.Lock()
-			prev, seen := c.statuses[p.ID]
-			c.mu.Unlock()
+			prev, seen := previous[p.ID]
 			s := Status{SessionID: p.ID, DeviceID: p.DeviceID, BundleID: p.BundleID, Capable: p.Capable, AdsCapable: p.AdsCapable, USB: (usb[p.DeviceID] || usb[strings.ToUpper(strings.ReplaceAll(p.DeviceID, "-", ""))]) && proofErr == nil, Configured: cfg.Resolve(p.BundleID, nil), Applied: maps.Clone(prev.Applied), Ack: prev.Ack, LeaseExpiresAt: prev.LeaseExpiresAt, CheckedAt: now}
 			if !now.Before(s.LeaseExpiresAt) {
 				s.Applied = Flags{}
@@ -157,7 +166,11 @@ func (c *Controller) Reconcile(ctx context.Context) {
 					desired = Flags{}
 				}
 			}
-			defer func() { nextMu.Lock(); next[p.ID] = s; nextMu.Unlock() }()
+			defer func() {
+				c.mu.Lock()
+				c.statuses[p.ID] = s
+				c.mu.Unlock()
+			}()
 			if !p.Capable {
 				return
 			}
@@ -206,7 +219,4 @@ func (c *Controller) Reconcile(ctx context.Context) {
 		}(p)
 	}
 	pending.Wait()
-	c.mu.Lock()
-	c.statuses = next
-	c.mu.Unlock()
 }
