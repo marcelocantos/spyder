@@ -1048,8 +1048,8 @@ func TestHandleDeployApp_OneShotListProcessesDecodeFailure(t *testing.T) {
 	connection, held := 0, false
 	launched := false
 	ios := device.NewIOSProcessProbeAdapter(device.IOSProcessProbe{
-		InstalledFolder: func(id, bundle string) (string, error) { return "MyApp.app", nil },
-		MajorVersion:    func(id string) (int, error) { return 17, nil },
+		InstalledExecutable: func(id, bundle string) (string, error) { return "/Applications/MyApp.app/MyApp", nil },
+		MajorVersion:        func(id string) (int, error) { return 17, nil },
 		Acquire: func(id string) (device.IOSProcessListConn, func(), error) {
 			if held {
 				return nil, nil, errors.New("connection acquired while still held")
@@ -1391,8 +1391,8 @@ func TestHandleTerminateApp_OneShotListProcessesDecodeFailure(t *testing.T) {
 	reads, invalidations, generation := 0, 0, 0
 	held := false
 	ios := device.NewIOSProcessProbeAdapter(device.IOSProcessProbe{
-		InstalledFolder: func(id, bundle string) (string, error) { return "MyApp.app", nil },
-		MajorVersion:    func(id string) (int, error) { return 17, nil },
+		InstalledExecutable: func(id, bundle string) (string, error) { return "/Applications/MyApp.app/MyApp", nil },
+		MajorVersion:        func(id string) (int, error) { return 17, nil },
 		Acquire: func(id string) (device.IOSProcessListConn, func(), error) {
 			if held {
 				return nil, nil, errors.New("connection acquired while still held")

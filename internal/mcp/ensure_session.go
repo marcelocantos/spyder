@@ -19,6 +19,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/device"
+	"github.com/marcelocantos/spyder/internal/goios"
 )
 
 // postLaunchSessionWait bounds how long launch_app / deploy_app wait for
@@ -107,7 +108,14 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 
 	// Fast path: a healthy session already exists — return it untouched.
 	if s, ok := h.waitForChannelSessionContext(ctx, key, time.Time{}, 0); ok {
-		if sessionHealthy(ctx, s) {
+		pingEnded := goios.LifecyclePhase(ctx, "ensure.healthy_ping", "device_id", id)
+		healthy := sessionHealthy(ctx, s)
+		if healthy {
+			pingEnded(nil)
+		} else {
+			pingEnded(errors.New("existing channel unhealthy"))
+		}
+		if healthy {
 			return toolJSON(ensureSessionResult{
 				Device:      dev,
 				BundleID:    bundleID,
@@ -192,7 +200,10 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 		if res := cancelled(); res != nil {
 			return res
 		}
-		if lerr := adapter.LaunchApp(id, bundleID, env); lerr != nil {
+		launchEnded := goios.LifecyclePhase(ctx, "ensure.launch", "device_id", id)
+		lerr := adapter.LaunchApp(id, bundleID, env)
+		launchEnded(lerr)
+		if lerr != nil {
 			res, _ := toolErr("ensure_session: launch %s on %s: %v", bundleID, dev, lerr)
 			return res
 		}
@@ -212,7 +223,13 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 		return errRes, nil
 	}
 
+	channelEnded := goios.LifecyclePhase(ctx, "ensure.channel_hello", "device_id", id)
 	s, ok := h.waitForChannelSessionContext(ctx, key, time.Time{}, wait)
+	if ok {
+		channelEnded(nil)
+	} else {
+		channelEnded(errors.New("channel unavailable"))
+	}
 	if !ok {
 		if res := cancelled(); res != nil {
 			return res, nil
@@ -221,7 +238,14 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 	}
 	// After hello, wait until the app can answer a main-thread slice.
 	// Channel connect ≠ main pump free (Unity cold load).
-	if !waitForSessionReady(ctx, s, defaultReadyWait) {
+	readyEnded := goios.LifecyclePhase(ctx, "ensure.channel_ready", "device_id", id)
+	ready := waitForSessionReady(ctx, s, defaultReadyWait)
+	if ready {
+		readyEnded(nil)
+	} else {
+		readyEnded(errors.New("channel not ready"))
+	}
+	if !ready {
 		if res := cancelled(); res != nil {
 			return res, nil
 		}

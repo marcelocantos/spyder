@@ -20,6 +20,7 @@
 package goios
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -143,17 +144,36 @@ func (r *Resolver) Session(udid string) (ios.DeviceEntry, error) {
 	return dev, err
 }
 
+// SessionContext cancels a queued same-device resolve wait. Opaque owned
+// resolve I/O remains synchronous; this does not claim to cancel its setup.
+func (r *Resolver) SessionContext(ctx context.Context, udid string) (ios.DeviceEntry, error) {
+	dev, _, err := r.SessionWithVersionContext(ctx, udid)
+	return dev, err
+}
+
 // SessionWithVersion is like Session but also returns the device's iOS
 // major version (e.g. 16, 17). Major == 0 means "unknown" — callers
 // should treat that as "assume the modern path", since not knowing the
 // version is more likely a fresh-device timing issue than an iOS ≤16
 // device that's been online long enough to enumerate.
 func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error) {
+	return r.SessionWithVersionContext(context.Background(), udid)
+}
+
+// SessionWithVersionContext makes only interruptible queue waits cancellable.
+// The resolving owner still waits for the existing opaque provider boundary.
+func (r *Resolver) SessionWithVersionContext(ctx context.Context, udid string) (ios.DeviceEntry, int, error) {
+	if err := ctx.Err(); err != nil {
+		return ios.DeviceEntry{}, 0, err
+	}
 	if udid == "" {
 		return ios.DeviceEntry{}, 0, errors.New("goios: empty UDID")
 	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return ios.DeviceEntry{}, 0, err
+		}
 		r.mu.Lock()
 		if e, ok := r.cache[udid]; ok && time.Since(e.resolved) < cacheTTL {
 			dev, major := e.dev, e.major
@@ -164,7 +184,14 @@ func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error)
 		// it to finish, then re-check the cache.
 		if wait, busy := r.inflight[udid]; busy {
 			r.mu.Unlock()
-			<-wait
+			ended := LifecyclePhase(ctx, "resolver.wait", "device_id", udid)
+			select {
+			case <-ctx.Done():
+				ended(ctx.Err())
+				return ios.DeviceEntry{}, 0, ctx.Err()
+			case <-wait:
+				ended(nil)
+			}
 			continue
 		}
 		// We're the resolver. Mark inflight and drop the lock for the
@@ -173,7 +200,9 @@ func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error)
 		r.inflight[udid] = done
 		r.mu.Unlock()
 
-		dev, major, err := r.resolveWithRecovery(udid)
+		ended := LifecyclePhase(ctx, "resolver.result_wait", "device_id", udid)
+		dev, major, err := r.resolveWithRecoveryContext(ctx, udid)
+		ended(err)
 
 		r.mu.Lock()
 		delete(r.inflight, udid)
@@ -182,6 +211,9 @@ func (r *Resolver) SessionWithVersion(udid string) (ios.DeviceEntry, int, error)
 			r.cache[udid] = &entry{dev: dev, major: major, resolved: time.Now()}
 		}
 		r.mu.Unlock()
+		if ctx.Err() != nil {
+			return ios.DeviceEntry{}, 0, ctx.Err()
+		}
 		return dev, major, err
 	}
 }
@@ -276,17 +308,32 @@ func (r *Resolver) tunnelInfoWithRetry(udid string) (tunnel.Tunnel, error) {
 // are returned as-is: those are not the "force-drop and let the daemon
 // rebuild" failure mode, and retrying them here would only add latency.
 func (r *Resolver) resolveWithRecovery(udid string) (ios.DeviceEntry, int, error) {
-	dev, major, err := r.resolveWithTimeout(udid)
+	return r.resolveWithRecoveryContext(context.Background(), udid)
+}
+func (r *Resolver) resolveWithRecoveryContext(ctx context.Context, udid string) (ios.DeviceEntry, int, error) {
+	if err := ctx.Err(); err != nil {
+		return ios.DeviceEntry{}, 0, err
+	}
+	dev, major, err := r.resolveWithTimeoutContext(ctx, udid)
 	if err == nil || !errors.Is(err, ErrStaleTunnel) {
 		return dev, major, err
 	}
 	slog.Warn("goios: stale tunnel detected; re-establishing and retrying once", "udid", udid)
-	if reErr := r.reestablishFn(udid); reErr != nil {
+	if ctx.Err() != nil {
+		return ios.DeviceEntry{}, 0, ctx.Err()
+	}
+	ended := LifecyclePhase(ctx, "resolver.reestablish", "device_id", udid)
+	reErr := r.reestablishFn(udid)
+	ended(reErr)
+	if reErr != nil {
 		slog.Error("goios: tunnel re-establish failed; surfacing original error",
 			"udid", udid, "error", reErr.Error())
 		return dev, major, err
 	}
-	return r.resolveWithTimeout(udid)
+	if ctx.Err() != nil {
+		return ios.DeviceEntry{}, 0, ctx.Err()
+	}
+	return r.resolveWithTimeoutContext(ctx, udid)
 }
 
 // resolveWithTimeout runs resolve under resolveTimeout. go-ios's RSD dial
@@ -295,6 +342,9 @@ func (r *Resolver) resolveWithRecovery(udid string) (ios.DeviceEntry, int, error
 // — it sends to a buffered channel that's discarded, and resolve's own
 // deferred Close cleans up the RSD service when (if) it finally unblocks.
 func (r *Resolver) resolveWithTimeout(udid string) (ios.DeviceEntry, int, error) {
+	return r.resolveWithTimeoutContext(context.Background(), udid)
+}
+func (r *Resolver) resolveWithTimeoutContext(ctx context.Context, udid string) (ios.DeviceEntry, int, error) {
 	type result struct {
 		dev   ios.DeviceEntry
 		major int
@@ -302,7 +352,9 @@ func (r *Resolver) resolveWithTimeout(udid string) (ios.DeviceEntry, int, error)
 	}
 	ch := make(chan result, 1)
 	go func() {
+		ended := LifecyclePhase(ctx, "resolver.provider_setup", "device_id", udid)
 		dev, major, err := r.resolveFn(udid)
+		ended(err)
 		ch <- result{dev, major, err}
 	}()
 	select {

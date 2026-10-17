@@ -111,11 +111,12 @@ type IOSProcessListConn interface {
 // Acquire must return a release function; Invalidate runs after release so
 // the next Acquire creates a fresh connection. Intended for test adapters.
 type IOSProcessProbe struct {
-	InstalledFolder func(id, bundleID string) (string, error)
-	MajorVersion    func(id string) (int, error)
-	Acquire         func(id string) (IOSProcessListConn, func(), error)
-	AcquireContext  func(ctx context.Context, id string) (IOSProcessListConn, func(), func(), error)
-	Invalidate      func(id string)
+	InstalledFolder     func(id, bundleID string) (string, error) // legacy iOS<=16 only
+	InstalledExecutable func(id, bundleID string) (string, error) // modern exact full path
+	MajorVersion        func(id string) (int, error)
+	Acquire             func(id string) (IOSProcessListConn, func(), error)
+	AcquireContext      func(ctx context.Context, id string) (IOSProcessListConn, func(), func(), error)
+	Invalidate          func(id string)
 }
 
 // NewIOSProcessProbeAdapter makes an AppPID/TerminateApp test adapter without
@@ -1100,7 +1101,9 @@ func (a *IOSAdapter) TerminateApp(id, bundleID string) error {
 	return a.TerminateAppContext(context.Background(), id, bundleID)
 }
 
-func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID string) error {
+func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID string) (resultErr error) {
+	operationEnded := goios.LifecyclePhase(ctx, "terminate.operation", "device_id", id)
+	defer func() { operationEnded(resultErr) }()
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
@@ -1115,7 +1118,7 @@ func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID strin
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	_, major, sErr := a.goios.SessionWithVersion(id)
+	_, major, sErr := a.goios.SessionWithVersionContext(ctx, id)
 	if sErr != nil {
 		return fmt.Errorf("terminate %s on %s: %w", bundleID, id, sErr)
 	}
@@ -1123,7 +1126,7 @@ func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID strin
 		return err
 	}
 	if major != 0 && major < 17 {
-		dev, _, err := a.goios.SessionWithVersion(id)
+		dev, _, err := a.goios.SessionWithVersionContext(ctx, id)
 		if err != nil {
 			return fmt.Errorf("terminate %s on %s: %w", bundleID, id, err)
 		}
@@ -1145,8 +1148,10 @@ func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID strin
 	// the transport-independent fallback. Later iOS prewarm/relaunch requests
 	// are a separate OS/actor question, not prevented by this preference.
 	if _, lookErr := exec.LookPath("xcrun"); lookErr == nil {
+		ended := goios.LifecyclePhase(ctx, "terminate.coredevice", "device_id", id)
 		_, stderr, termErr := runDevicectlContext(ctx, "device", "process", "terminate",
 			"--device", id, "--pid", fmt.Sprintf("%d", pid))
+		ended(termErr)
 		if termErr == nil {
 			slog.Info("iOS app terminated gracefully", "device", id, "bundle_id", bundleID, "pid", pid)
 			return nil
@@ -1169,7 +1174,10 @@ func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID strin
 		return fmt.Errorf("appservice on %s: %w", id, err)
 	}
 	defer lease.Release()
-	if err := lease.Conn.KillProcess(pid); err != nil {
+	ended := goios.LifecyclePhase(ctx, "terminate.kill_process", "device_id", id)
+	err = lease.Conn.KillProcess(pid)
+	ended(err)
+	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -1184,7 +1192,8 @@ func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID strin
 // AppPID returns the pid of a running app by bundle id. Implemented
 // in two RPCs: installation_proxy resolves the bundle id to its
 // installed .app folder, and a process-list RPC scans live processes
-// for one whose path contains that .app folder. The process-list path
+// for the unique exact installed main executable. Legacy iOS<=16 retains
+// its documented limited name/path compatibility below. The process-list path
 // branches per iOS major version: appservice.ListProcesses on iOS-17+
 // (RemoteXPC), instruments.NewDeviceInfoService.ProcessList on iOS ≤16
 // (DTX-over-lockdown). Returns the "app not running" error sentinel
@@ -1198,41 +1207,58 @@ func (a *IOSAdapter) AppPIDContext(ctx context.Context, id, bundleID string) (in
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
-	folder := func(id, bundleID string) (string, error) { return a.installedAppFolderContext(ctx, id, bundleID) }
 	majorVersion := func(id string) (int, error) {
-		_, major, err := a.goios.SessionWithVersion(id)
+		_, major, err := a.goios.SessionWithVersionContext(ctx, id)
 		return major, err
 	}
 	if a.pidProbe != nil {
-		folder = a.pidProbe.InstalledFolder
 		majorVersion = a.pidProbe.MajorVersion
 	}
-	appBase, err := folder(id, bundleID)
-	if err != nil {
-		if a.pidProbe == nil {
-			if ctx.Err() == nil {
-				a.goios.InvalidateSession(id)
-			}
-		}
-		return 0, err
-	}
-	if appBase == "" {
-		return 0, fmt.Errorf("app not installed: %s", bundleID)
-	}
-	if err := ctx.Err(); err != nil {
-		return 0, err
-	}
+	versionEnded := goios.LifecyclePhase(ctx, "pid.version", "device_id", id)
 	major, sErr := majorVersion(id)
+	versionEnded(sErr)
 	if sErr != nil {
 		return 0, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, sErr)
 	}
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	legacy := major != 0 && major < 17
+	lookup := func(id, bundleID string) (string, error) {
+		if legacy {
+			return a.installedAppFolderContext(ctx, id, bundleID)
+		}
+		return a.installedAppExecutableContext(ctx, id, bundleID)
+	}
+	if a.pidProbe != nil {
+		lookup = a.pidProbe.InstalledExecutable
+		if legacy {
+			lookup = a.pidProbe.InstalledFolder
+		}
+		if lookup == nil {
+			return 0, errors.New("AppPID installed executable identity probe unavailable")
+		}
+	}
+	installedEnded := goios.LifecyclePhase(ctx, "pid.installed_identity", "device_id", id)
+	appPath, err := lookup(id, bundleID)
+	installedEnded(err)
+	if err != nil {
+		if a.pidProbe == nil && ctx.Err() == nil {
+			a.goios.InvalidateSession(id)
+		}
+		return 0, err
+	}
+	if appPath == "" {
+		return 0, fmt.Errorf("app not installed: %s", bundleID)
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	appBase := appPath // Legacy name-only compatibility is unchanged.
 	needle := "/" + appBase + "/"
 	if major != 0 && major < 17 {
 		procs, err := retryIOSProcessListContext(ctx, func() ([]instruments.ProcessInfo, error) {
-			dev, _, err := a.goios.SessionWithVersion(id)
+			dev, _, err := a.goios.SessionWithVersionContext(ctx, id)
 			if err != nil {
 				return nil, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, err)
 			}
@@ -1292,17 +1318,22 @@ func (a *IOSAdapter) AppPIDContext(ctx context.Context, id, bundleID string) (in
 		}
 		invalidate = retire
 		defer release()
-		return conn.ListProcesses()
+		ended := goios.LifecyclePhase(ctx, "pid.list_processes", "device_id", id)
+		processes, err := conn.ListProcesses()
+		ended(err)
+		return processes, err
 	}, func() { invalidate() })
 	if err != nil {
 		return 0, fmt.Errorf("list processes on %s: %w", id, err)
 	}
-	for _, p := range procs {
-		if strings.Contains(p.Path, needle) {
-			return p.Pid, nil
-		}
+	pid, err := exactIOSAppPID(procs, appPath)
+	if err != nil {
+		return 0, fmt.Errorf("AppPID for %s on %s: %w", bundleID, id, err)
 	}
-	return 0, fmt.Errorf("app not running: %s", bundleID)
+	if pid == 0 {
+		return 0, fmt.Errorf("app not running: %s", bundleID)
+	}
+	return pid, nil
 }
 
 // retryIOSProcessList retries a transient DTX transport/decode failure once.

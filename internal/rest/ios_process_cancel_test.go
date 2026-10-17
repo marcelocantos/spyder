@@ -57,8 +57,8 @@ func TestRESTIOSProcessCancellation_AfterSocketWrite(t *testing.T) {
 	received, returned := make(chan struct{}), make(chan struct{})
 	var acquisitions atomic.Int32
 	adapter := device.NewIOSProcessProbeAdapter(device.IOSProcessProbe{
-		InstalledFolder: func(_, _ string) (string, error) { return "Fixture.app", nil },
-		MajorVersion:    func(string) (int, error) { return 27, nil },
+		InstalledExecutable: func(_, _ string) (string, error) { return "/Applications/Fixture.app/Fixture", nil },
+		MajorVersion:        func(string) (int, error) { return 27, nil },
 		AcquireContext: func(ctx context.Context, _ string) (device.IOSProcessListConn, func(), func(), error) {
 			if acquisitions.Add(1) > 1 {
 				return noRestProcesses{}, func() {}, func() {}, nil

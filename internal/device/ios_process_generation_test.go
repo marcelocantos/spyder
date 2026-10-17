@@ -48,7 +48,7 @@ func TestIOSAdapter_LateReadErrorInvalidationPreservesReplacement(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	adapter := NewIOSProcessProbeAdapter(IOSProcessProbe{
-		InstalledFolder: func(_, _ string) (string, error) { return "Fixture.app", nil }, MajorVersion: func(string) (int, error) { return 27, nil },
+		InstalledExecutable: func(_, _ string) (string, error) { return "/Applications/Fixture.app/Fixture", nil }, MajorVersion: func(string) (int, error) { return 27, nil },
 		AcquireContext: func(ctx context.Context, id string) (IOSProcessListConn, func(), func(), error) {
 			lease, err := pool.AcquireLease(ctx, id)
 			if err != nil {

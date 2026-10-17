@@ -61,8 +61,8 @@ func TestIOSProcessCancellation_RetiresReadAndReleasesLifecycle(t *testing.T) {
 	received, returned := make(chan struct{}), make(chan struct{})
 	var acquisitions, invalidations atomic.Int32
 	ios := device.NewIOSProcessProbeAdapter(device.IOSProcessProbe{
-		InstalledFolder: func(_, _ string) (string, error) { return "StockCars.app", nil },
-		MajorVersion:    func(string) (int, error) { return 27, nil },
+		InstalledExecutable: func(_, _ string) (string, error) { return "/Applications/StockCars.app/StockCars", nil },
+		MajorVersion:        func(string) (int, error) { return 27, nil },
 		AcquireContext: func(ctx context.Context, _ string) (device.IOSProcessListConn, func(), func(), error) {
 			if acquisitions.Add(1) > 1 {
 				return emptyProcesses{}, func() {}, func() {}, nil

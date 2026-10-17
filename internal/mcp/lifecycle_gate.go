@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"github.com/marcelocantos/spyder/internal/goios"
 	"sync"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -70,11 +71,14 @@ func (h *Handler) withLifecycle(ctx context.Context, name string, args map[strin
 		})
 	}
 	defer release()
+	ended := goios.LifecyclePhase(ctx, "lifecycle.device_wait", "device_id", id)
 	select {
 	case <-ctx.Done():
+		ended(ctx.Err())
 		return toolErr("lifecycle cancelled waiting for %s on %s: %v", name, ref, ctx.Err())
 	case <-gate.permit:
 		acquired = true
+		ended(nil)
 	}
 	if err := ctx.Err(); err != nil {
 		return toolErr("lifecycle cancelled before %s on %s: %v", name, ref, err)

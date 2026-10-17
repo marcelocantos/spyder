@@ -23,6 +23,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/battery"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/devpolicy"
+	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/logcapture"
@@ -475,6 +476,7 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 		h.ops = newOpRegistry()
 	}
 	opID := h.ops.begin(name, dev)
+	ctx = goios.LifecycleOperation(ctx, opID, name, dev)
 	defer h.ops.end(opID)
 
 	if h.dispatchWatch != nil {
@@ -707,6 +709,17 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 	switch name {
 	case "ensure_session":
 		return h.handleEnsureSessionContext(ctx, args)
+	case "launch_app":
+		// Legacy launch has no context-capable adapter yet. Keep that fact
+		// explicit: this span ends only when the actual handler returns.
+		ended := goios.LifecyclePhase(ctx, "launch.contextless_handler")
+		result, err := h.handleLaunchApp(args)
+		phaseErr := err
+		if phaseErr == nil && result != nil && result.IsError {
+			phaseErr = fmt.Errorf("launch tool returned failure")
+		}
+		ended(phaseErr)
+		return result, err
 	case "app_exec":
 		return h.handleAppExecContext(ctx, args)
 	case "is_running":

@@ -5,6 +5,7 @@ package goios
 
 import (
 	"context"
+	"reflect"
 	"sync"
 	"time"
 
@@ -15,12 +16,13 @@ import (
 // across operations; the per-entry permit serialises operations on it
 // (most go-ios service connections are not safe for concurrent use).
 type poolEntry[T any] struct {
-	conn      T
-	permit    chan struct{}
-	lastUsed  time.Time // guarded by ServicePool.mu
-	busy      bool      // guarded by ServicePool.mu
-	retired   bool      // guarded by ServicePool.mu
-	closeOnce sync.Once
+	conn       T
+	generation uint64
+	permit     chan struct{}
+	lastUsed   time.Time // guarded by ServicePool.mu
+	busy       bool      // guarded by ServicePool.mu
+	retired    bool      // guarded by ServicePool.mu
+	closeOnce  sync.Once
 }
 
 type serviceSessionResolver interface {
@@ -56,7 +58,8 @@ type ServicePool[T any] struct {
 	// Exposed for tests that want to assert the pool is actually
 	// amortising opens (🎯T67's acceptance is about reducing usbmuxd
 	// session churn; this is the direct signal).
-	opens int64
+	opens          int64
+	nextGeneration uint64
 }
 
 // NewServicePool constructs a pool wrapping the per-device service
@@ -127,22 +130,40 @@ func (p *ServicePool[T]) AcquireLease(ctx context.Context, udid string) (*Servic
 		e := p.entries[udid]
 		p.mu.Unlock()
 		if e == nil {
-			dev, err := p.resolver.Session(udid)
+			p.mu.Lock()
+			p.nextGeneration++
+			generation := p.nextGeneration
+			p.mu.Unlock()
+			ended := LifecyclePhase(ctx, "service.resolve", "service", reflect.TypeFor[T]().String(), "device_id", udid, "setup_attempt", generation)
+			var dev ios.DeviceEntry
+			var err error
+			if resolver, ok := p.resolver.(interface {
+				SessionContext(context.Context, string) (ios.DeviceEntry, error)
+			}); ok {
+				dev, err = resolver.SessionContext(ctx, udid)
+			} else {
+				dev, err = p.resolver.Session(udid)
+			}
+			ended(err)
 			if err != nil {
 				return nil, err
 			}
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
+			ended = LifecyclePhase(ctx, "service.factory", "service", reflect.TypeFor[T]().String(), "device_id", udid, "setup_attempt", generation)
 			c, err := p.newConn(dev)
+			ended(err)
 			if err != nil {
 				return nil, err
 			}
 			if err := ctx.Err(); err != nil {
-				_ = p.closeFn(c)
+				ended = LifecyclePhase(ctx, "service.late_cancel_close", "service", reflect.TypeFor[T]().String(), "device_id", udid, "setup_attempt", generation)
+				closeErr := p.closeFn(c)
+				ended(closeErr)
 				return nil, err
 			}
-			candidate := &poolEntry[T]{conn: c, lastUsed: time.Now(), permit: make(chan struct{}, 1)}
+			candidate := &poolEntry[T]{conn: c, generation: generation, lastUsed: time.Now(), permit: make(chan struct{}, 1)}
 			candidate.permit <- struct{}{}
 			p.mu.Lock()
 			if p.stopped {
@@ -161,10 +182,13 @@ func (p *ServicePool[T]) AcquireLease(ctx context.Context, udid string) (*Servic
 				_ = p.closeFn(c)
 			}
 		}
+		ended := LifecyclePhase(ctx, "service.permit_wait", "service", reflect.TypeFor[T]().String(), "device_id", udid, "connection_generation", e.generation)
 		select {
 		case <-ctx.Done():
+			ended(ctx.Err())
 			return nil, ctx.Err()
 		case <-e.permit:
+			ended(nil)
 		}
 		p.mu.Lock()
 		if e.retired {
@@ -175,10 +199,13 @@ func (p *ServicePool[T]) AcquireLease(ctx context.Context, udid string) (*Servic
 		e.busy = true
 		e.lastUsed = time.Now()
 		p.mu.Unlock()
+		leaseEnded := LifecyclePhase(ctx, "service.lease", "service", reflect.TypeFor[T]().String(), "device_id", udid, "connection_generation", e.generation)
 		cancelFinished := make(chan struct{})
 		stopCancel := context.AfterFunc(ctx, func() {
 			defer close(cancelFinished)
+			ended := LifecyclePhase(ctx, "service.cancel_close", "service", reflect.TypeFor[T]().String(), "device_id", udid, "connection_generation", e.generation)
 			p.retire(udid, e)
+			ended(ctx.Err())
 		})
 		var once sync.Once
 		release := func() {
@@ -193,6 +220,7 @@ func (p *ServicePool[T]) AcquireLease(ctx context.Context, udid string) (*Servic
 				e.lastUsed = time.Now()
 				p.mu.Unlock()
 				e.permit <- struct{}{}
+				leaseEnded(ctx.Err())
 			})
 		}
 		if err := ctx.Err(); err != nil {
