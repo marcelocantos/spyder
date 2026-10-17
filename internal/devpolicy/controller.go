@@ -19,30 +19,37 @@ const MaxProofAge = PollInterval
 type Peer struct {
 	ID, DeviceID, BundleID string
 	Capable                bool
+	AdsCapable             bool
 }
 type Status struct {
-	SessionID      string     `json:"session_id"`
-	DeviceID       string     `json:"device_id"`
-	BundleID       string     `json:"bundle_id"`
-	Capable        bool       `json:"capable"`
-	USB            bool       `json:"physical_usb"`
-	Configured     Resolution `json:"configured"`
-	Applied        Flags      `json:"applied"`
-	Ack            any        `json:"ack,omitempty"`
-	Error          string     `json:"error,omitempty"`
-	LeaseExpiresAt time.Time  `json:"lease_expires_at,omitempty"`
-	CheckedAt      time.Time  `json:"checked_at"`
+	SessionID        string     `json:"session_id"`
+	DeviceID         string     `json:"device_id"`
+	BundleID         string     `json:"bundle_id"`
+	Capable          bool       `json:"capable"`
+	AdsCapable       bool       `json:"ads_capable"`
+	UnsupportedFlags Flags      `json:"unsupported_flags,omitempty"`
+	RunToken         string     `json:"run_token,omitempty"`
+	USB              bool       `json:"physical_usb"`
+	Configured       Resolution `json:"configured"`
+	Applied          Flags      `json:"applied"`
+	Ack              any        `json:"ack,omitempty"`
+	Error            string     `json:"error,omitempty"`
+	LeaseExpiresAt   time.Time  `json:"lease_expires_at,omitempty"`
+	CheckedAt        time.Time  `json:"checked_at"`
 }
 
 type Controller struct {
-	Store     *Store
-	Peers     func() []Peer
-	USB       func(context.Context) (map[string]bool, error)
-	Authorize func(device, owner string) error
-	Call      func(context.Context, Peer, Flags, time.Duration) (any, error)
-	Now       func() time.Time
-	mu        sync.Mutex
-	statuses  map[string]Status
+	Store            *Store
+	Peers            func() []Peer
+	USB              func(context.Context) (map[string]bool, error)
+	Authorize        func(device, owner string) error
+	AuthorizeSession func(device, owner string) error
+	Call             func(context.Context, Peer, Flags, time.Duration) (any, error)
+	Now              func() time.Time
+	reconcileMu      sync.Mutex
+	mu               sync.Mutex
+	sessions         map[sessionKey]SessionOverride
+	statuses         map[string]Status
 }
 
 func (c *Controller) Statuses() []Status {
@@ -51,6 +58,8 @@ func (c *Controller) Statuses() []Status {
 	out := make([]Status, 0, len(c.statuses))
 	for _, s := range c.statuses {
 		s.Applied = maps.Clone(s.Applied)
+		s.UnsupportedFlags = maps.Clone(s.UnsupportedFlags)
+		s.Configured = Resolution{Flags: maps.Clone(s.Configured.Flags), Provenance: maps.Clone(s.Configured.Provenance)}
 		out = append(out, s)
 	}
 	return out
@@ -73,6 +82,8 @@ func (c *Controller) Run(ctx context.Context) {
 // Reconcile never trusts a cached USB observation. Failure prevents renewal;
 // a reachable peer is explicitly revoked, and an unreachable lease expires.
 func (c *Controller) Reconcile(ctx context.Context) {
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
 	cfg, configErr := c.Store.Load()
 	peers := c.Peers()
 	if len(peers) == 0 {
@@ -99,12 +110,28 @@ func (c *Controller) Reconcile(ctx context.Context) {
 			c.mu.Lock()
 			prev, seen := c.statuses[p.ID]
 			c.mu.Unlock()
-			s := Status{SessionID: p.ID, DeviceID: p.DeviceID, BundleID: p.BundleID, Capable: p.Capable, USB: (usb[p.DeviceID] || usb[strings.ToUpper(strings.ReplaceAll(p.DeviceID, "-", ""))]) && proofErr == nil, Configured: cfg.Resolve(p.BundleID, nil), Applied: maps.Clone(prev.Applied), Ack: prev.Ack, LeaseExpiresAt: prev.LeaseExpiresAt, CheckedAt: now}
+			s := Status{SessionID: p.ID, DeviceID: p.DeviceID, BundleID: p.BundleID, Capable: p.Capable, AdsCapable: p.AdsCapable, USB: (usb[p.DeviceID] || usb[strings.ToUpper(strings.ReplaceAll(p.DeviceID, "-", ""))]) && proofErr == nil, Configured: cfg.Resolve(p.BundleID, nil), Applied: maps.Clone(prev.Applied), Ack: prev.Ack, LeaseExpiresAt: prev.LeaseExpiresAt, CheckedAt: now}
 			if !now.Before(s.LeaseExpiresAt) {
 				s.Applied = Flags{}
 				s.LeaseExpiresAt = time.Time{}
 			}
-			desired := s.Configured.Flags
+			owner := cfg.Owner
+			c.mu.Lock()
+			c.pruneSessions(c.clock())
+			override, overridden := c.sessions[sessionKey{p.DeviceID, p.BundleID}]
+			c.mu.Unlock()
+			if overridden {
+				owner = override.Owner
+				s.RunToken = override.RunToken
+				s.Configured = cfg.Resolve(p.BundleID, override.Flags)
+			}
+			desired := maps.Clone(s.Configured.Flags)
+			if !p.AdsCapable {
+				if ads, ok := desired["ads"]; ok {
+					s.UnsupportedFlags = Flags{"ads": ads}
+					delete(desired, "ads") // Preserve older SDK orientation renewals.
+				}
+			}
 			if configErr != nil {
 				s.Error = "policy: " + configErr.Error()
 				desired = Flags{}
@@ -116,8 +143,16 @@ func (c *Controller) Reconcile(ctx context.Context) {
 			if !s.USB {
 				desired = Flags{}
 			}
-			if c.Authorize != nil {
-				if err := c.Authorize(p.DeviceID, cfg.Owner); err != nil {
+			authorize := c.Authorize
+			if overridden {
+				authorize = c.AuthorizeSession
+			}
+			if overridden && authorize == nil {
+				s.Error = "session reservation authorization unavailable"
+				desired = Flags{}
+			}
+			if authorize != nil {
+				if err := authorize(p.DeviceID, owner); err != nil {
 					s.Error = err.Error()
 					desired = Flags{}
 				}
@@ -145,7 +180,16 @@ func (c *Controller) Reconcile(ctx context.Context) {
 					deadline = proofDeadline
 				}
 				callCtx, stop := context.WithDeadline(ctx, deadline)
-				ack, err := c.Call(callCtx, p, desired, Lease)
+				lease := Lease
+				if overridden && len(desired) > 0 {
+					remaining := override.ExpiresAt.Sub(c.clock()).Truncate(time.Millisecond)
+					if remaining <= 0 {
+						desired = Flags{}
+					} else if remaining < lease {
+						lease = remaining
+					}
+				}
+				ack, err := c.Call(callCtx, p, desired, lease)
 				stop()
 				if err != nil {
 					s.Error = "configure: " + err.Error()
@@ -153,7 +197,7 @@ func (c *Controller) Reconcile(ctx context.Context) {
 					s.Ack = ack
 					s.Applied = maps.Clone(desired)
 					if len(desired) > 0 {
-						s.LeaseExpiresAt = now.Add(Lease)
+						s.LeaseExpiresAt = now.Add(lease)
 					} else {
 						s.LeaseExpiresAt = time.Time{}
 					}
