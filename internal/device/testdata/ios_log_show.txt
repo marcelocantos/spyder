@@ -1,0 +1,2 @@
+2026-10-17 07:59:01.123456+1100 0x1a2b     Info        0x0                  4321   0    StockCars: fresh marker
+garbage from a torn record

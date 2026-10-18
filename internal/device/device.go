@@ -62,12 +62,20 @@ type LogFilter struct {
 }
 
 // LogLine is a single parsed log entry from a device.
+//
+// Timestamp, Process, Level, Tag, and Message remain the legacy fields.
+// Diagnostic is the versioned capture contract (schema 1): device event
+// time and host receipt are separate, raw text is retained, and a zero
+// Diagnostic means a producer that has not been updated. Capture sessions
+// fill Diagnostic before the line is buffered.
 type LogLine struct {
 	Timestamp time.Time `json:"timestamp"`
 	Process   string    `json:"process,omitempty"`
 	Level     string    `json:"level,omitempty"`
 	Tag       string    `json:"tag,omitempty"`
 	Message   string    `json:"message"`
+
+	Diagnostic *Diagnostic `json:"diagnostic,omitempty"`
 }
 
 // State reports device runtime state. Fields are optional: nil pointers

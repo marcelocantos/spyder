@@ -122,10 +122,10 @@ builtin). `log_stream` is REST SSE only and is not in the verb table.
 | `input_swipe` | `{device, x1, y1, x2, y2, duration_ms?, owner?}`. | Same Android/iOS split as tap. | Stable (🎯T111/T112) |
 | `device_setting` | `{device, key, value?, restore?, get?, owner?}`. Allowlist: `refresh_rate` (Android peak+min). | Android: JSON `{device, platform, result}` with action set/restore/get and current values. Restore **deletes** the pin. Unknown keys rejected (no adb shell). iOS: `"not supported"`. | Stable (🎯T130 / 🎯T112) — platform-honest |
 | `wait_state` | `{session_id? \| device+bundle_id?, slice, select?, timeout_ms?, poll_ms?}`. | JSON `{slice, select, value, attempts, elapsed_ms}` where `value` is the jq result that became truthy. Timeout error includes **last observed** value. | Stable (🎯T129) |
-| `logs` | `{device: string, since?: RFC3339\|duration\|"launch"\|"now", until?: RFC3339\|duration\|"now", bundle_id?: string, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). `bundle_id` and `process` are mutually exclusive. | JSON array of `device.LogLine` (`timestamp`, `process?`, `level?`, `tag?`, `message`). Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); see *iOS log live-window contract* below. Field set and timestamp precision may evolve |
-| `log_capture_start` | `{device: string, owner?, bundle_id?, process?, subsystem?, tag?, regex?, ttl_sec?, max_bytes?, max_lines?}`. | JSON `{session_id, started_at, expires_at}`. | Needs review (🎯T60) |
-| `log_capture_get` | `{session_id: string}`. | Buffered lines since start or last get; capture continues. | Needs review |
-| `log_capture_stop` | `{session_id: string}`. | Remaining lines; session is gone. | Needs review |
+| `logs` | `{device: string, since?: RFC3339\|duration\|"launch"\|"now", until?: RFC3339\|duration\|"now", bundle_id?: string, process?: string, subsystem?: string, tag?: string, regex?: string}` (device required). `bundle_id` and `process` are mutually exclusive. | JSON array of `device.LogLine`. Legacy fields `timestamp`, `process?`, `level?`, `tag?`, `message` stay. Each line may include `diagnostic` (schema 1, 🎯T162). Unparsed records are retained. Empty array when no lines match. | Needs review — iOS range is live-window based (not true archived-log query); see *iOS log live-window contract* and *Diagnostic capture contract* below. |
+| `log_capture_start` | `{device: string, owner?, bundle_id?, process?, subsystem?, tag?, regex?, ttl_sec?, max_bytes?, max_lines?, marker?, marker_tag?}`. | JSON `{schema_version, session_id, device, started_at, expires_at, unsupported_crash_channels}`. `marker` records a fresh-run anchor by capture sequence. | Needs review (🎯T60, schema 🎯T162) |
+| `log_capture_get` | `{session_id: string}`. | Buffered lines since start or last get, plus `integrity` (dropped, durable path, truncation, transport error, parse errors, fresh anchor, unsupported crash channels). Capture continues. | Needs review |
+| `log_capture_stop` | `{session_id: string}`. | Remaining lines and the same `integrity` object as get. The reader is reaped. The durable file is left in place. | Needs review |
 | `log_capture_list` | (no args). | Metadata for every live capture session. | Needs review |
 | `app_channel_stop` | `{listener_id: string}`. | Text confirmation. Tears down the listener and its sessions. | Needs review |
 | `app_channel_list` | (no args). | JSON listeners + sessions (listener_id, device_id, bundle_id, port, owner, idle_since, sessions[]). | Needs review |
@@ -222,6 +222,33 @@ iOS simulators and Android devices do not share these constraints —
 simulators read from the host's unified-log store via `xcrun simctl
 spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 
+### Diagnostic capture contract (🎯T162)
+
+Android and iOS log lines share schema version 1 in `diagnostic`. Legacy
+`timestamp` / `process` / `level` / `tag` / `message` remain. The schema
+adds:
+
+- Separate `device_time` and `host_receipt` clocks, each with source,
+  timezone, precision, and whether that reading is verified. Ordering
+  inside a capture is `seq`, not a comparison of those clocks.
+- Identities for app, process, and thread, plus pid/tid. Each is
+  `observed`, `unavailable`, or `unverified`. A PID seen without a
+  process-start event in the same capture is unverified, because both
+  platforms reuse PIDs.
+- `raw` text (and base64 when the bytes were not UTF-8), format, and
+  byte offset into the durable capture. Multiline Android `long` records
+  point at their header via `parent_seq`. Unparsed lines stay in the
+  stream with `parse.status=unparsed`.
+- Capture `integrity`: dropped lines, durable truncation, transport
+  error, parse errors, cancellation, and whether the owned reader was
+  reaped. Unsupported crash channels (`android_tombstone`, `ios_ips`)
+  are listed on start, get, and stop. Tombstones and `.ips` reports are
+  not part of this stream.
+
+`spyder log parse --platform android|ios` is the parser Stock Car Racing's
+regression harness uses. The harness still decides fresh-run and
+exact-package crash evidence; it does not keep its own logcat grammar.
+
 ### CLI subcommands
 
 | Invocation | Behaviour | Stability |
@@ -275,7 +302,7 @@ spawn ... log`, and Android's `adb logcat` has its own ring buffer.
 | `spyder emu delete <name>` | REST proxy to `emu_delete`. | Needs review |
 | `spyder record <device> --start \| --stop [--as OWNER]` | REST proxy to `record_start` / `record_stop`. Starts or stops a screen recording on an iOS simulator or Android device. | Needs review |
 | `spyder net <device> [--profile NAME\|--clear] [--as OWNER]` | REST proxy to `network`. Requires exactly one of `--profile` or `--clear`. | Beta — Android emulator only. |
-| `spyder log <device> [--bundle-id ID \| --process P] [--subsystem S] [--tag T] [--regex R] [--since TS] [--until TS] [--follow \| --capture …] [--json]` | Without `--follow`: REST proxy to `logs` (bounded JSON array). With `--follow`: SSE live stream via `POST /api/v1/log_stream`. `--capture` / `--capture-get` / `--capture-stop` / `--capture-list` proxy `log_capture_*`. | Needs review — iOS range quirks; live streaming is REST-only |
+| `spyder log <device> […]` and `spyder log parse --platform android\|ios` | Device form proxies `logs`, `log_stream`, or `log_capture_*` (`--marker` / `--marker-tag` on `--capture`). `parse` reads raw log text on stdin and writes schema-1 JSON lines. It does not use the daemon. `--channels` prints supported and unsupported crash sources. | Needs review — iOS range quirks; live streaming is REST-only. Parse is local (🎯T162). |
 | `spyder perf-fps <device> --package PKG [--window-sec N] [--as OWNER] [--json]` | REST proxy to `perf_fps`. | Stable (🎯T111/T112) |
 | `spyder port-forward <device> start\|stop\|list …` | REST proxy to `port_forward_*`. | Stable (🎯T111/T112) |
 | `spyder system-alert <device> [--tap LABEL [--title-contains TEXT] [--wait-ms N]] [--as OWNER] [--json]` | REST proxy to `system_alert` / `system_alert_tap`. | Beta (🎯T154) |

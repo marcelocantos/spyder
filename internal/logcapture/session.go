@@ -32,6 +32,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sync"
 	"time"
 
@@ -75,6 +76,9 @@ type Session struct {
 	TTL       time.Duration
 	MaxBytes  int
 	MaxLines  int
+	platform  string
+	marker    string
+	markerTag string
 
 	// cancel terminates the consumer goroutine.
 	cancel context.CancelFunc
@@ -87,6 +91,21 @@ type Session struct {
 	bufBytes int
 	dropped  int
 	lastUsed time.Time
+
+	raw              *os.File
+	rawPath          string
+	rawBytes         int64
+	durableTruncated bool
+	durableDropped   int
+	durableErr       string
+	transportErr     string
+	incomplete       bool
+	cancelled        bool
+	readerReaped     bool
+	parseErrors      int
+	unparsed         int
+	anchor           *FreshAnchor
+	seq              uint64
 }
 
 // approxLineBytes is the conservative per-line accounting used to
@@ -101,6 +120,7 @@ func approxLineBytes(ll device.LogLine) int {
 func (s *Session) append(ll device.LogLine) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	ll = s.annotateLocked(ll)
 
 	sz := approxLineBytes(ll)
 	s.buf = append(s.buf, ll)
@@ -120,7 +140,7 @@ func (s *Session) append(ll device.LogLine) {
 // eviction since the last drain, not since the session started.
 // The returned slice is always non-nil so JSON marshalling produces
 // `[]` for an empty drain rather than `null`.
-func (s *Session) drain() (lines []device.LogLine, dropped int) {
+func (s *Session) drain() (lines []device.LogLine, dropped int, integrity CaptureIntegrity) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.buf == nil {
@@ -129,6 +149,7 @@ func (s *Session) drain() (lines []device.LogLine, dropped int) {
 		lines = s.buf
 	}
 	dropped = s.dropped
+	integrity = s.integrityLocked(dropped)
 	s.buf = nil
 	s.bufBytes = 0
 	s.dropped = 0
@@ -186,13 +207,16 @@ func NewManager() *Manager {
 
 // StartParams are the inputs to Manager.Start.
 type StartParams struct {
-	Device   string
-	DeviceID string
-	Filter   device.LogFilter
-	Owner    string
-	TTL      time.Duration // 0 → DefaultTTL
-	MaxBytes int           // 0 → DefaultMaxBytes
-	MaxLines int           // 0 → DefaultMaxLines
+	Device    string
+	DeviceID  string
+	Filter    device.LogFilter
+	Owner     string
+	TTL       time.Duration // 0 → DefaultTTL
+	MaxBytes  int           // 0 → DefaultMaxBytes
+	MaxLines  int           // 0 → DefaultMaxLines
+	Platform  string
+	Marker    string
+	MarkerTag string
 }
 
 // Start launches a new session that drains adapter.LogStream into a
@@ -237,10 +261,14 @@ func (m *Manager) Start(ctx context.Context, ad Adapter, p StartParams) (*Sessio
 		TTL:       ttl,
 		MaxBytes:  maxBytes,
 		MaxLines:  maxLines,
+		platform:  p.Platform,
+		marker:    p.Marker,
+		markerTag: p.MarkerTag,
 		cancel:    cancel,
 		done:      make(chan struct{}),
 		lastUsed:  time.Now(),
 	}
+	s.openDurable()
 
 	// Buffered so the adapter can outrun the consumer briefly without
 	// blocking inside the device read loop. 256 is big enough to soak
@@ -253,8 +281,9 @@ func (m *Manager) Start(ctx context.Context, ad Adapter, p StartParams) (*Sessio
 
 	go func() {
 		err := ad.LogStream(streamCtx, p.DeviceID, p.Filter, ch)
+		s.noteStreamEnd(streamCtx, err)
 		close(ch)
-		if err != nil && !errors.Is(err, context.Canceled) {
+		if err != nil && !errors.Is(err, context.Canceled) && streamCtx.Err() == nil {
 			slog.Error("logcapture: LogStream ended with error",
 				"session_id", id, "device_id", p.DeviceID, "error", err)
 		}
@@ -284,12 +313,13 @@ func (m *Manager) Get(id string) (*GetResult, error) {
 	if !ok {
 		return nil, fmt.Errorf("logcapture: no such session: %s", id)
 	}
-	lines, dropped := s.drain()
+	lines, dropped, integrity := s.drain()
 	return &GetResult{
 		SessionID:    id,
 		CapturedAt:   time.Now(),
 		Lines:        lines,
 		DroppedLines: dropped,
+		Integrity:    integrity,
 	}, nil
 }
 
@@ -308,7 +338,8 @@ func (m *Manager) Stop(id string) (*StopResult, error) {
 	}
 	s.cancel()
 	<-s.done
-	lines, dropped := s.drain()
+	lines, dropped, integrity := s.drain()
+	s.closeDurable()
 	slog.Info("logcapture: session stopped",
 		"session_id", id, "lines", len(lines), "dropped", dropped)
 	return &StopResult{
@@ -316,6 +347,7 @@ func (m *Manager) Stop(id string) (*StopResult, error) {
 		StoppedAt:    time.Now(),
 		Lines:        lines,
 		DroppedLines: dropped,
+		Integrity:    integrity,
 	}, nil
 }
 
@@ -391,6 +423,7 @@ type GetResult struct {
 	CapturedAt   time.Time        `json:"captured_at"`
 	Lines        []device.LogLine `json:"lines"`
 	DroppedLines int              `json:"dropped_lines,omitempty"`
+	Integrity    CaptureIntegrity `json:"integrity"`
 }
 
 // StopResult is the payload returned by Manager.Stop.
@@ -399,6 +432,7 @@ type StopResult struct {
 	StoppedAt    time.Time        `json:"stopped_at"`
 	Lines        []device.LogLine `json:"lines"`
 	DroppedLines int              `json:"dropped_lines,omitempty"`
+	Integrity    CaptureIntegrity `json:"integrity"`
 }
 
 // SessionInfo is the per-session record returned by Manager.List.

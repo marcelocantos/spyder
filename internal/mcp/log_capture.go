@@ -40,7 +40,7 @@ func (h *Handler) handleLogCaptureStart(args map[string]any) (*mcpgo.CallToolRes
 	}
 
 	h.mu.Lock()
-	adapter, _, id, adapterErr := h.resolveAdapter(dev)
+	adapter, platform, id, adapterErr := h.resolveAdapter(dev)
 	h.mu.Unlock()
 	if adapterErr != nil {
 		return toolErr("%v", adapterErr)
@@ -66,29 +66,36 @@ func (h *Handler) handleLogCaptureStart(args map[string]any) (*mcpgo.CallToolRes
 	maxLines, _ := args["max_lines"].(float64)
 
 	sess, err := h.logCapture.Start(context.Background(), adapter, logcapture.StartParams{
-		Device:   dev,
-		DeviceID: id,
-		Filter:   filter,
-		Owner:    optString(args, "owner"),
-		TTL:      ttl,
-		MaxBytes: int(maxBytes),
-		MaxLines: int(maxLines),
+		Device:    dev,
+		DeviceID:  id,
+		Filter:    filter,
+		Owner:     optString(args, "owner"),
+		TTL:       ttl,
+		MaxBytes:  int(maxBytes),
+		MaxLines:  int(maxLines),
+		Platform:  platform,
+		Marker:    optString(args, "marker"),
+		MarkerTag: optString(args, "marker_tag"),
 	})
 	if err != nil {
 		return toolErr("log_capture_start: %v", err)
 	}
 	return toolJSON(struct {
-		SessionID string    `json:"session_id"`
-		Device    string    `json:"device"`
-		Owner     string    `json:"owner,omitempty"`
-		StartedAt time.Time `json:"started_at"`
-		ExpiresAt time.Time `json:"expires_at"`
+		SchemaVersion            int                   `json:"schema_version"`
+		SessionID                string                `json:"session_id"`
+		Device                   string                `json:"device"`
+		Owner                    string                `json:"owner,omitempty"`
+		StartedAt                time.Time             `json:"started_at"`
+		ExpiresAt                time.Time             `json:"expires_at"`
+		UnsupportedCrashChannels []device.CrashChannel `json:"unsupported_crash_channels"`
 	}{
-		SessionID: sess.ID,
-		Device:    dev,
-		Owner:     sess.Owner,
-		StartedAt: sess.StartedAt,
-		ExpiresAt: sess.StartedAt.Add(sess.TTL),
+		SchemaVersion:            device.DiagnosticSchemaVersion,
+		SessionID:                sess.ID,
+		Device:                   dev,
+		Owner:                    sess.Owner,
+		StartedAt:                sess.StartedAt,
+		ExpiresAt:                sess.StartedAt.Add(sess.TTL),
+		UnsupportedCrashChannels: device.UnsupportedCrashChannels(),
 	})
 }
 
@@ -177,6 +184,12 @@ func logCaptureDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithNumber("max_lines",
 				mcpgo.Description(fmt.Sprintf("Bound the session buffer at this many lines (default %d). When exceeded, oldest lines are evicted FIFO and counted in dropped_lines.", logcapture.DefaultMaxLines)),
+			),
+			mcpgo.WithString("marker",
+				mcpgo.Description("Fresh-run marker. The first parsed record whose message equals this string becomes integrity.fresh_anchor. Correlation uses the capture sequence, not wall-clock order."),
+			),
+			mcpgo.WithString("marker_tag",
+				mcpgo.Description("Optional Android tag that must also match marker. Empty matches any tag."),
 			),
 		),
 

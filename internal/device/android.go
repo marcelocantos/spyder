@@ -26,6 +26,17 @@ import (
 type AndroidAdapter struct {
 	mu    sync.Mutex
 	cache map[string]cachedState
+	// logcatBin overrides the adb binary used by LogRange and LogStream.
+	// Empty means "adb". Tests point it at a fixture reader so cancellation
+	// can reap that process without a device.
+	logcatBin string
+}
+
+func (a *AndroidAdapter) logcatCommand() string {
+	if a != nil && a.logcatBin != "" {
+		return a.logcatBin
+	}
+	return "adb"
 }
 
 // NewAndroidAdapter returns a new Android adapter.
@@ -967,31 +978,20 @@ func adbEmu(id string, args ...string) error {
 	return nil
 }
 
-// androidLogcatLineRE matches the "threadtime" logcat format:
-//
-//	MM-DD HH:MM:SS.mmm  PID  TID LEVEL TAG  : Message
-//
-// Example:
-//
-//	04-15 14:23:01.123  1234  5678 E MyTag  : something went wrong
-var androidLogcatLineRE = regexp.MustCompile(
-	`^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d+)\s+\d+\s+\d+\s+([A-Z])\s+(\S+)\s*:\s+(.*)$`,
-)
-
-// ParseAndroidLogcatLine parses a single line from `adb logcat --format=threadtime`.
-// Exported for testing.
+// ParseAndroidLogcatLine parses one threadtime or epoch logcat line.
+// Unparsed, partial, and multiline records return ok=false; use
+// AndroidLogDecoder when those records must be retained.
 func ParseAndroidLogcatLine(line string) (LogLine, bool) {
-	m := androidLogcatLineRE.FindStringSubmatch(line)
-	if m == nil {
+	ll := NewAndroidLogDecoder().Push(line, 0)
+	if ll.Diagnostic == nil || ll.Diagnostic.Parse.Status != "ok" {
 		return LogLine{}, false
 	}
-	ts := parseAndroidLogcatTimestamp(m[1])
-	return LogLine{
-		Timestamp: ts,
-		Level:     expandAndroidLevel(m[2]),
-		Tag:       strings.TrimSpace(m[3]),
-		Message:   m[4],
-	}, true
+	switch ll.Diagnostic.Raw.Format {
+	case "android_logcat_threadtime", "android_logcat_epoch":
+		return ll, true
+	default:
+		return LogLine{}, false
+	}
 }
 
 // parseAndroidLogcatTimestamp parses MM-DD HH:MM:SS.mmm (no year, no
@@ -1004,15 +1004,8 @@ func ParseAndroidLogcatLine(line string) (LogLine, bool) {
 // would parse as 08:54 UTC, which is hours ahead of "now Sydney" and
 // would get incorrectly filtered out by an `until = now+3s` window.
 func parseAndroidLogcatTimestamp(s string) time.Time {
-	year := time.Now().Year()
-	t, err := time.ParseInLocation("01-02 15:04:05.000", s, time.Local)
-	if err != nil {
-		t, err = time.ParseInLocation("01-02 15:04:05.99", s, time.Local)
-	}
-	if err != nil {
-		return time.Time{}
-	}
-	return t.AddDate(year, 0, 0)
+	t, _ := parseAndroidLocalTimestamp(s)
+	return t
 }
 
 // expandAndroidLevel converts a single-letter logcat priority to a word.
@@ -1044,7 +1037,8 @@ func (a *AndroidAdapter) LogRange(id string, filter LogFilter, since, until time
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
-	if _, err := exec.LookPath("adb"); err != nil {
+	bin := a.logcatCommand()
+	if _, err := exec.LookPath(bin); err != nil {
 		return nil, fmt.Errorf("adb not found: %w", err)
 	}
 
@@ -1066,29 +1060,27 @@ func (a *AndroidAdapter) LogRange(id string, filter LogFilter, since, until time
 		}
 	}
 
-	out, stderr, runErr := runCapture("adb", args...)
+	out, stderr, runErr := runCapture(bin, args...)
 	if runErr != nil {
 		return nil, fmt.Errorf("adb logcat: %v\n%s", runErr, truncate(string(stderr), 200))
 	}
 
+	readAt := time.Now()
+	dec := NewAndroidLogDecoder()
 	var lines []LogLine
+	offset := int64(0)
 	for line := range strings.SplitSeq(string(out), "\n") {
-		ll, ok := ParseAndroidLogcatLine(line)
-		if !ok {
+		if line == "" {
+			offset++
 			continue
 		}
-		if !since.IsZero() && ll.Timestamp.Before(since) {
+		ll, keep := acceptAndroidLine(dec, line, offset, filter, regexFilter, since, until)
+		offset += int64(len(line)) + 1
+		if !keep {
 			continue
 		}
-		if !until.IsZero() && ll.Timestamp.After(until) {
-			continue
-		}
-		if filter.Process != "" && !strings.EqualFold(ll.Tag, filter.Process) &&
-			!strings.Contains(strings.ToLower(ll.Tag), strings.ToLower(filter.Process)) {
-			continue
-		}
-		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			continue
+		if ll.Diagnostic != nil && (ll.Diagnostic.HostReceipt.Source == "" || ll.Diagnostic.HostReceipt.Source == "unavailable") {
+			ll.Diagnostic.HostReceipt = HostClock(readAt, "host_buffer_read")
 		}
 		lines = append(lines, ll)
 	}
@@ -1100,7 +1092,8 @@ func (a *AndroidAdapter) LogStream(ctx context.Context, id string, filter LogFil
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
-	if _, err := exec.LookPath("adb"); err != nil {
+	bin := a.logcatCommand()
+	if _, err := exec.LookPath(bin); err != nil {
 		return fmt.Errorf("adb not found: %w", err)
 	}
 
@@ -1118,7 +1111,8 @@ func (a *AndroidAdapter) LogStream(ctx context.Context, id string, filter LogFil
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "adb", args...)
+	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("pipe: %w", err)
@@ -1128,28 +1122,49 @@ func (a *AndroidAdapter) LogStream(ctx context.Context, id string, filter LogFil
 	}
 
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	dec := NewAndroidLogDecoder()
+	offset := int64(0)
 	for scanner.Scan() {
-		ll, ok := ParseAndroidLogcatLine(scanner.Text())
-		if !ok {
+		line := scanner.Text()
+		if line == "" {
+			offset++
 			continue
 		}
-		if filter.Process != "" && !strings.EqualFold(ll.Tag, filter.Process) &&
-			!strings.Contains(strings.ToLower(ll.Tag), strings.ToLower(filter.Process)) {
+		ll, keep := acceptAndroidLine(dec, line, offset, filter, regexFilter, time.Time{}, time.Time{})
+		offset += int64(len(line)) + 1
+		if !keep {
 			continue
 		}
-		if regexFilter != nil && !regexFilter.MatchString(ll.Message) {
-			continue
+		if ll.Diagnostic != nil && (ll.Diagnostic.HostReceipt.Source == "" || ll.Diagnostic.HostReceipt.Source == "unavailable") {
+			ll.Diagnostic.HostReceipt = HostClock(time.Now(), "host_receipt")
 		}
 		select {
 		case out <- ll:
 		case <-ctx.Done():
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+			reapLogcat(cmd)
 			return nil
 		}
 	}
-	_ = cmd.Wait()
+	if err := scanner.Err(); err != nil && ctx.Err() == nil {
+		reapLogcat(cmd)
+		return fmt.Errorf("adb logcat read: %w", err)
+	}
+	reapLogcat(cmd)
+	if ctx.Err() != nil {
+		return nil
+	}
 	return nil
+}
+
+// reapLogcat kills the logcat process group and waits so a cancelled
+// capture cannot leave its adb client behind. Other devices have their
+// own processes and are not signalled.
+func reapLogcat(cmd *exec.Cmd) {
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	_ = cmd.Wait()
 }
 
 // Screenshot captures a PNG via `adb shell screencap -p`. The subcommand

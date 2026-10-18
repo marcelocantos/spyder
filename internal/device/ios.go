@@ -1859,11 +1859,14 @@ func (a *IOSAdapter) streamOSTrace(ctx context.Context, id string, filter LogFil
 }
 
 func ostraceEntryToLogLine(e ostrace.LogEntry) LogLine {
+	diag := DiagnosticFromOSTrace(e)
+	diag.HostReceipt = HostClock(time.Now(), "host_receipt")
 	return LogLine{
-		Timestamp: e.Timestamp,
-		Process:   e.ImageName,
-		Level:     e.Level.String(),
-		Message:   e.Message,
+		Timestamp:  e.Timestamp,
+		Process:    e.ImageName,
+		Level:      e.Level.String(),
+		Message:    e.Message,
+		Diagnostic: diag,
 	}
 }
 
@@ -1907,11 +1910,14 @@ func (a *IOSAdapter) streamOSLogDTX(ctx context.Context, id string,
 			if regexFilter != nil && !regexFilter.MatchString(rec.Message) {
 				continue
 			}
+			received := time.Now()
+			diag := DiagnosticFromActivityTrace(rec, received)
 			ll := LogLine{
-				Timestamp: time.Now(),
-				Process:   rec.ImageName,
-				Level:     rec.MessageType,
-				Message:   rec.Message,
+				Timestamp:  received,
+				Process:    rec.ImageName,
+				Level:      rec.MessageType,
+				Message:    rec.Message,
+				Diagnostic: diag,
 			}
 			if !emit(ll) {
 				return ctx.Err()

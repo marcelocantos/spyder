@@ -91,3 +91,15 @@ func VerifyDir() string {
 func BatteryDir() string {
 	return filepath.Join(Base(), "battery")
 }
+
+// CapturesBase is the root for durable diagnostic captures
+// (~/.spyder/captures). Each capture owns a subdirectory.
+func CapturesBase() string {
+	return filepath.Join(Base(), "captures")
+}
+
+// CaptureDir returns the directory for one capture id. id must be a
+// single path segment; callers use the session id, which is hex.
+func CaptureDir(id string) string {
+	return filepath.Join(CapturesBase(), filepath.Base(id))
+}

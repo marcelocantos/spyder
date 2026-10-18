@@ -1,0 +1,2 @@
+{"timestamp":"2026-10-17 07:59:01.123456+1100","eventMessage":"fresh marker","processImagePath":"/var/containers/Bundle/Application/X/StockCars.app/StockCars","processID":4321,"threadID":4322,"messageType":"Info","subsystem":"com.minicades.stockcars","category":"game"}
+{"not":"a log row"}

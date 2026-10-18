@@ -87,7 +87,7 @@ func init() {
 		{"app-perf-get", "spyder app-perf-get [--session-id ID] [--json]  (app-channel perfEmit counters)", runAppPerfGet},
 		{"wait-state", "spyder wait-state [--session-id ID | --device D --bundle-id B] --slice S [--select JQ] [--timeout-ms N] [--poll-ms N] [--json]", runWaitState},
 		{"device-setting", "spyder device-setting <device> set|restore|get --key refresh_rate [--value N] [--as OWNER] [--json]", runDeviceSetting},
-		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow | --capture [--ttl-sec N] [--max-bytes N] [--max-lines N] [--as OWNER] | --capture-get SID | --capture-stop SID | --capture-list]", runLog},
+		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow | --capture [--ttl-sec N] [--max-bytes N] [--max-lines N] [--marker TEXT] [--marker-tag TAG] [--as OWNER] | --capture-get SID | --capture-stop SID | --capture-list] | spyder log parse --platform android|ios [--channels]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 		{"list-scripts", "spyder list-scripts [--json]", runListScripts},
 		{"run-script", "spyder run-script <name|path> [--param k=v]... [--max-duration-ms N] [--json]", runRunScript},
@@ -1710,6 +1710,10 @@ func runAppPerfGet(args []string) {
 }
 
 func runLog(args []string) {
+	if len(args) > 0 && args[0] == "parse" {
+		runLogParse(args[1:])
+		return
+	}
 	// `log` has multiple modes:
 	//   - bounded range query (default; DefaultRead timeout)
 	//   - live follow (--follow; DefaultLogStream = 0, no timeout)
@@ -1721,7 +1725,7 @@ func runLog(args []string) {
 		[]string{"--process", "--bundle-id", "--subsystem", "--tag", "--regex",
 			"--since", "--until",
 			"--capture-get", "--capture-stop",
-			"--ttl-sec", "--max-bytes", "--max-lines", "--as"},
+			"--ttl-sec", "--max-bytes", "--max-lines", "--marker", "--marker-tag", "--as"},
 		[]string{"--follow", "--json", "--capture", "--capture-list"},
 		clitimeout.DefaultRead,
 	)
@@ -1751,11 +1755,13 @@ func runLog(args []string) {
 	if pf.bools["--capture"] {
 		a := map[string]any{"device": dev, "owner": deriveOwner(pf.flags["--as"])}
 		for src, dst := range map[string]string{
-			"--bundle-id": "bundle_id",
-			"--process":   "process",
-			"--subsystem": "subsystem",
-			"--tag":       "tag",
-			"--regex":     "regex",
+			"--bundle-id":  "bundle_id",
+			"--process":    "process",
+			"--subsystem":  "subsystem",
+			"--tag":        "tag",
+			"--regex":      "regex",
+			"--marker":     "marker",
+			"--marker-tag": "marker_tag",
 		} {
 			if v := pf.flags[src]; v != "" {
 				a[dst] = v

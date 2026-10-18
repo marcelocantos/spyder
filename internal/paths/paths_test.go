@@ -25,6 +25,7 @@ func TestPathsDefaultAndDataDirectoryOverride(t *testing.T) {
 		{"pool", PoolConfigPath, "pool.yaml"}, {"screenshots", ScreenshotsBase, "screenshots"},
 		{"usb", USBSpeedPath, "usb-speed.json"}, {"listen", ListenAddrPath, "listen-addr"},
 		{"audit", ShipAuditBase, "ship-audit"}, {"verify", VerifyDir, "verify"}, {"battery", BatteryDir, "battery"},
+		{"captures", CapturesBase, "captures"},
 	}
 	t.Run("default", func(t *testing.T) {
 		t.Setenv(DataDirEnv, "")

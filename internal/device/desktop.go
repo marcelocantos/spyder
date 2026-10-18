@@ -349,8 +349,53 @@ func (p *desktopProc) scan(r io.Reader, level string) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for sc.Scan() {
-		p.appendLog(LogLine{Timestamp: time.Now().UTC(), Level: level, Message: sc.Text()})
+		now := time.Now().UTC()
+		text := sc.Text()
+		p.appendLog(LogLine{
+			Timestamp:  now,
+			Level:      level,
+			Message:    text,
+			Diagnostic: desktopDiagnostic(p.pid, level, text, now),
+		})
 	}
+	if err := sc.Err(); err != nil {
+		p.appendLog(desktopDiagnosticFailure(err))
+	}
+}
+
+func desktopDiagnostic(pid int, level, text string, at time.Time) *Diagnostic {
+	diag := &Diagnostic{
+		SchemaVersion:     DiagnosticSchemaVersion,
+		Platform:          "desktop",
+		Severity:          level,
+		Message:           text,
+		App:               UnavailableIdentity(),
+		Process:           UnavailableIdentity(),
+		Thread:            UnavailableIdentity(),
+		PIDStatus:         IdentityUnavailable,
+		TIDStatus:         IdentityUnavailable,
+		ProcessGeneration: UnavailableIdentity(),
+		DeviceTime:        UnavailableClock(),
+		HostReceipt:       HostClock(at, "host_receipt"),
+		Parse:             ParseInfo{Status: "ok"},
+		Meta:              map[string]string{"timestamp_basis": "host_receipt"},
+	}
+	if pid > 0 {
+		diag.PID = pid
+		diag.PIDStatus = IdentityObserved
+		diag.ProcessGeneration = Identity{Status: IdentityUnverified}
+	}
+	diag.Raw.Format = "desktop_stdio"
+	setRawText(&diag.Raw, text)
+	return diag
+}
+
+func desktopDiagnosticFailure(err error) LogLine {
+	diag := desktopDiagnostic(0, "unknown", "", time.Now().UTC())
+	diag.Parse = ParseInfo{Status: "unparsed", Error: err.Error()}
+	diag.Severity = "unknown"
+	diag.Meta["capture_failure"] = "reader"
+	return LogLine{Level: "unknown", Diagnostic: diag}
 }
 
 func (p *desktopProc) appendLog(ll LogLine) {

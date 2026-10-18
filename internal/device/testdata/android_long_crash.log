@@ -1,0 +1,4 @@
+[ 10-17 18:21:01.123  321: 654 E/AndroidRuntime ]
+FATAL EXCEPTION: main
+Process: com.example.racing, PID: 321
+	at com.example.Foo.bar(Foo.java:10)
