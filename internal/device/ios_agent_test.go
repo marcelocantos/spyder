@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	goios_ios "github.com/danielpaulus/go-ios/ios"
 	"github.com/marcelocantos/spyder/internal/agent"
 	"github.com/marcelocantos/spyder/internal/goios"
 )
@@ -486,7 +487,58 @@ func tunnelAdapter(t *testing.T, srv *httptest.Server) *IOSAdapter {
 	return a
 }
 
-func TestListenerDetach_RemovesUDIDUntilReattach(t *testing.T) {
+func hideDevicectl(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
+func stubDevices(serials ...string) goios_ios.DeviceList {
+	list := goios_ios.DeviceList{DeviceList: make([]goios_ios.DeviceEntry, len(serials))}
+	for i, serial := range serials {
+		list.DeviceList[i].Properties.SerialNumber = serial
+	}
+	return list
+}
+
+func infoUUIDs(list []Info) []string {
+	out := make([]string, len(list))
+	for i, info := range list {
+		out[i] = info.UUID
+	}
+	return out
+}
+
+func TestList_ProjectsUsbmuxSerials(t *testing.T) {
+	hideDevicectl(t)
+	serials := []string{"phone", "pad"}
+	a := &IOSAdapter{
+		listDevices: func() (goios_ios.DeviceList, error) {
+			return stubDevices(serials...), nil
+		},
+	}
+	var seen []string
+	a.SetUsbmuxSeen(func(got []string) {
+		seen = append([]string(nil), got...)
+	})
+	list, err := a.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(infoUUIDs(list), ",") != "phone,pad" || strings.Join(seen, ",") != "phone,pad" {
+		t.Fatalf("list %v logged %v", infoUUIDs(list), seen)
+	}
+	serials = []string{"pad"}
+	list, err = a.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(infoUUIDs(list), ",") != "pad" || strings.Join(seen, ",") != "pad" {
+		t.Fatalf("list %v logged %v", infoUUIDs(list), seen)
+	}
+}
+
+func TestDropTunnel_LeavesUsbmuxSerials(t *testing.T) {
+	hideDevicectl(t)
 	var deletes atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
@@ -500,42 +552,37 @@ func TestListenerDetach_RemovesUDIDUntilReattach(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := tunnelAdapter(t, srv)
+	a.listDevices = func() (goios_ios.DeviceList, error) {
+		return stubDevices("phone", "pad"), nil
+	}
 	var got []string
 	a.SetTetherNotify(func(udid string, up bool) {
 		got = append(got, udid+":"+boolWord(up))
 	})
-	// The kernel list still contains the UDID. The enumeration List
-	// builds from loses it only after DropTunnel's DELETE succeeds.
-	kernel := []string{"phone", "pad"}
 	l := goios.NewListener(iosTunnelRecovery{a})
 	l.RunSync(context.Background(), &goios.ScriptedSource{Events: []goios.DeviceEvent{
 		{DeviceID: 1, UDID: "phone", Attached: true},
 		{DeviceID: 1, Attached: false},
 	}})
 	if deletes.Load() != 1 {
-		t.Fatalf("detach deletes=%d, want the listener's DropTunnel", deletes.Load())
+		t.Fatalf("detach deletes=%d", deletes.Load())
 	}
-	hidden := a.muxEnumeration(kernel)
-	if len(hidden) != 1 || hidden[0] != "pad" {
-		t.Fatalf("after detach enumeration %v kernel %v", hidden, kernel)
+	list, err := a.List()
+	if err != nil {
+		t.Fatal(err)
 	}
-
+	if strings.Join(infoUUIDs(list), ",") != "phone,pad" {
+		t.Fatalf("DropTunnel changed usbmux serials %v", infoUUIDs(list))
+	}
 	l.RunSync(context.Background(), &goios.ScriptedSource{Events: []goios.DeviceEvent{
 		{DeviceID: 2, UDID: "phone", Attached: true},
 	}})
-	if deletes.Load() != 2 {
-		t.Fatalf("reattach deletes=%d, want DropTunnel then ReestablishTunnel", deletes.Load())
-	}
-	shown := a.muxEnumeration(kernel)
-	if len(shown) != 2 || shown[0] != "phone" || shown[1] != "pad" {
-		t.Fatalf("after reattach enumeration %v", shown)
-	}
 	if strings.Join(got, ",") != "phone:up,phone:down,phone:up" {
 		t.Fatalf("hook saw %v", got)
 	}
 }
 
-func TestListenerDetach_FailedDropKeepsUDID(t *testing.T) {
+func TestListenerDetach_FailedDropDoesNotNotify(t *testing.T) {
 	var deletes atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
@@ -552,7 +599,6 @@ func TestListenerDetach_FailedDropKeepsUDID(t *testing.T) {
 	a.SetTetherNotify(func(udid string, up bool) {
 		got = append(got, udid+":"+boolWord(up))
 	})
-	kernel := []string{"phone", "pad"}
 	l := goios.NewListener(iosTunnelRecovery{a})
 	l.RunSync(context.Background(), &goios.ScriptedSource{Events: []goios.DeviceEvent{
 		{DeviceID: 1, UDID: "phone", Attached: true},
@@ -560,10 +606,6 @@ func TestListenerDetach_FailedDropKeepsUDID(t *testing.T) {
 	}})
 	if deletes.Load() != 1 {
 		t.Fatalf("failed detach deletes=%d", deletes.Load())
-	}
-	kept := a.muxEnumeration(kernel)
-	if len(kept) != 2 || kept[0] != "phone" || kept[1] != "pad" {
-		t.Fatalf("failed DELETE still changed enumeration %v", kept)
 	}
 	if strings.Join(got, ",") != "phone:up" {
 		t.Fatalf("hook saw %v", got)
