@@ -415,6 +415,29 @@ func TestNoteTether_UnknownLockIsNotReady(t *testing.T) {
 	}
 }
 
+func TestTick_RebootWhileIdleStaysRebooted(t *testing.T) {
+	h := &harness{obs: healthyObs(), holder: "alice", held: true}
+	h.obs.BootID = "boot-a"
+	s := h.supervisor()
+	if _, err := s.Ensure("phone", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	idle, err := s.Idle("phone", "alice")
+	if err != nil || idle.Condition != CondIdle {
+		t.Fatalf("idle %+v err=%v", idle, err)
+	}
+	h.obs.BootID = "boot-b"
+	launches := h.launches
+	snap, err := s.Tick("phone")
+	if err != nil || snap.Condition != CondRebooted || snap.Ready || snap.Relaunched || h.launches != launches {
+		t.Fatalf("idle reboot %+v launches=%d err=%v", snap, h.launches, err)
+	}
+	again, err := s.Tick("phone")
+	if err != nil || again.Relaunched || h.launches != launches {
+		t.Fatalf("second tick relaunched %+v launches=%d err=%v", again, h.launches, err)
+	}
+}
+
 func TestSupervisor_TickRestartsOnlyUnhealthy(t *testing.T) {
 	h := &harness{obs: healthyObs(), holder: "alice", held: true}
 	s := h.supervisor()

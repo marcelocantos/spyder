@@ -5,6 +5,7 @@ package goios
 
 import (
 	"context"
+	"io"
 	"log/slog"
 
 	"github.com/danielpaulus/go-ios/ios"
@@ -95,6 +96,39 @@ func NewListener(rec TunnelRecovery) *Listener {
 		dispatch:   func(f func()) { go f() },
 	}
 }
+
+// RunSync consumes src on the calling goroutine, including the tunnel
+// drop or rebuild. Production Run dispatches those actions in the
+// background so a slow rebuild cannot stall the usbmux stream. The
+// supervised journey uses RunSync so List observes the detach before
+// it reads the enumeration.
+func (l *Listener) RunSync(ctx context.Context, src EventSource) {
+	if l == nil {
+		return
+	}
+	prev := l.dispatch
+	l.dispatch = func(f func()) { f() }
+	defer func() { l.dispatch = prev }()
+	l.Run(ctx, src)
+}
+
+// ScriptedSource replays Events and then ends the stream. Callers drive
+// Listener.onDetach with a detach event instead of poking adapter state.
+type ScriptedSource struct {
+	Events []DeviceEvent
+	i      int
+}
+
+func (s *ScriptedSource) Next() (DeviceEvent, error) {
+	if s == nil || s.i >= len(s.Events) {
+		return DeviceEvent{}, io.EOF
+	}
+	ev := s.Events[s.i]
+	s.i++
+	return ev, nil
+}
+
+func (s *ScriptedSource) Close() error { return nil }
 
 // Run consumes events from src until it errors (e.g. the daemon shuts
 // down and closes it) or ctx is cancelled. It closes src on ctx

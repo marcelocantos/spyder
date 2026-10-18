@@ -288,6 +288,13 @@ func (s *Supervisor) Tick(deviceID string) (Snapshot, error) {
 	if err != nil {
 		return snap, err
 	}
+	// A changed boot id is a reboot on this tick even when the device
+	// is idle. idleLocked would replace CondRebooted with CondIdle
+	// after the new id had already been absorbed, so the next tick
+	// would not report the reboot either.
+	if snap.Condition == CondRebooted {
+		return snap, nil
+	}
 	if m.idle {
 		return s.idleLocked(m)
 	}

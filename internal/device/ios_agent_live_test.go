@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/agent"
+	"github.com/marcelocantos/spyder/internal/goios"
 )
 
 // TestAgentJourney_Live drives the shipped supervisor on the connected
@@ -57,7 +58,7 @@ func runAgentJourney(t *testing.T, udid, logPath, shotPath string) {
 
 	logf("device %s", udid)
 	logf("Past prompt recurrence is not attributed to runner restart alone; earlier evidence showed actionable OS-consent timing as well.")
-	logf("Physical USB cable was not unplugged. Disconnect is the usbmux listener edge on the supervisor that owns the runner: List omits the device, then shows it again. Ready requires a fresh AppPID match. The journey does not call NoteTether and does not drop the userspace tunnel.")
+	logf("Physical USB cable was not pulled. Disconnect is Listener.onDetach calling DropTunnel (DELETE /tunnel/<udid>) on the supervisor that owns the runner. The pre-filter usbmux enumeration loses the UDID only after that DELETE succeeds, then a reattach re-establishes the tunnel. Ready requires a fresh AppPID match. The journey does not set the tether bit itself.")
 
 	root, err := findRepoRoot()
 	if err != nil {
@@ -106,7 +107,16 @@ func runAgentJourney(t *testing.T, udid, logPath, shotPath string) {
 		},
 	})
 	ios.BindSupervisor(sup)
-	defer ios.noteUsbmux(udid, true)
+	listener := goios.NewListener(iosTunnelRecovery{ios})
+	defer func() {
+		if !ios.muxDetachedUDID(udid) {
+			return
+		}
+		logf("listener detach left %s out of the enumeration; re-establishing its tunnel", udid)
+		if err := (iosTunnelRecovery{ios}).ReestablishTunnel(udid); err != nil {
+			logf("tunnel re-establish on cleanup failed: %v", err)
+		}
+	}()
 
 	installsBefore := host.InstallCount()
 	first, err := sup.Ensure(udid, holder)
@@ -175,27 +185,37 @@ func runAgentJourney(t *testing.T, udid, logPath, shotPath string) {
 		t.Fatalf("client sessions still held: %d", host.ClientSessions(udid))
 	}
 
-	beforeListed := deviceListed(ios, udid)
-	logf("listed before detach: %v", beforeListed)
-	if !beforeListed {
-		t.Fatal("device was not listed before the listener detach")
+	beforeIDs := listUDIDs(ios)
+	logf("usbmux enumeration before listener detach: %v", beforeIDs)
+	if !udidIn(beforeIDs, udid) {
+		t.Fatal("device was not in the usbmux enumeration before the listener detach")
 	}
-	ios.noteUsbmux(udid, false)
-	midListed := deviceListed(ios, udid)
+	// Attach seeds DeviceID→UDID, then a DeviceID-only detach is
+	// Listener.onDetach → DropTunnel. The kernel cable stays in;
+	// the enumeration loses the UDID only when that DELETE succeeds.
+	listener.RunSync(context.Background(), &goios.ScriptedSource{Events: []goios.DeviceEvent{
+		{DeviceID: 1, UDID: udid, Attached: true},
+		{DeviceID: 1, Attached: false},
+	}})
+	midIDs := listUDIDs(ios)
 	down, downOK := sup.Snapshot(udid)
-	logf("listener detach: listed=%v condition=%s ready=%v recovered=%v snapshot=%v",
-		midListed, down.Condition, down.Ready, down.Recovered, downOK)
-	if midListed || !downOK || down.Ready || down.Condition != agent.CondDisconnected {
-		t.Fatalf("disconnect listed=%v snap=%+v", midListed, down)
+	logf("listener detach DropTunnel: enumeration=%v condition=%s ready=%v recovered=%v snapshot=%v",
+		midIDs, down.Condition, down.Ready, down.Recovered, downOK)
+	// An empty enumeration is a failed List, not a detach. The other
+	// tethered device has to remain so this can fail closed.
+	if udidIn(midIDs, udid) || len(midIDs) == 0 || !downOK || down.Ready || down.Condition != agent.CondDisconnected {
+		t.Fatalf("disconnect enumeration=%v snap=%+v", midIDs, down)
 	}
-	ios.noteUsbmux(udid, true)
-	listed := deviceListed(ios, udid)
+	listener.RunSync(context.Background(), &goios.ScriptedSource{Events: []goios.DeviceEvent{
+		{DeviceID: 2, UDID: udid, Attached: true},
+	}})
+	upIDs := listUDIDs(ios)
 	up, upOK := sup.Snapshot(udid)
 	rePID, reErr := probeApp(ios, udid, alertRunnerBundle, appProbeAttempts)
-	logf("listener attach: listed=%v condition=%s ready=%v recovered=%v snapshot=%v runner_pid=%d fresh_pid=%d fresh_err=%v lock=%q boot=%s",
-		listed, up.Condition, up.Ready, up.Recovered, upOK, up.Runner.PID, rePID, reErr, host.LockDetail(udid), up.BootID)
-	if !listed || !upOK || up.Condition != agent.CondReconnected {
-		t.Fatalf("reconnect listed=%v snap=%+v", listed, up)
+	logf("listener reattach: enumeration=%v condition=%s ready=%v recovered=%v snapshot=%v runner_pid=%d fresh_pid=%d fresh_err=%v lock=%q boot=%s",
+		upIDs, up.Condition, up.Ready, up.Recovered, upOK, up.Runner.PID, rePID, reErr, host.LockDetail(udid), up.BootID)
+	if !udidIn(upIDs, udid) || !upOK || up.Condition != agent.CondReconnected {
+		t.Fatalf("reconnect enumeration=%v snap=%+v", upIDs, up)
 	}
 	if up.Ready && (reErr != nil || rePID <= 0 || rePID != up.Runner.PID) {
 		t.Fatalf("ready without a matching AppPID: fresh=%d snap=%d err=%v", rePID, up.Runner.PID, reErr)
@@ -281,13 +301,21 @@ func bundlesInstalled(t *testing.T, ios *IOSAdapter, udid string) bool {
 	return hostOK && runnerOK
 }
 
-func deviceListed(ios *IOSAdapter, udid string) bool {
+func listUDIDs(ios *IOSAdapter) []string {
 	list, err := ios.List()
 	if err != nil {
-		return false
+		return []string{"list error: " + err.Error()}
 	}
+	out := make([]string, 0, len(list))
 	for _, info := range list {
-		if info.UUID == udid {
+		out = append(out, info.UUID)
+	}
+	return out
+}
+
+func udidIn(ids []string, udid string) bool {
+	for _, id := range ids {
+		if id == udid {
 			return true
 		}
 	}

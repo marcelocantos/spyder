@@ -110,11 +110,11 @@ type IOSAdapter struct {
 	// records the tether bit. Nil when supervision is off.
 	onTether func(udid string, up bool)
 
-	// unplugged UDIDs were reported detached by the usbmux listener
-	// and have not been reported attached again. List omits them so
-	// the inventory matches that edge. noteUsbmux does not drop the
-	// userspace tunnel; a real detach still does, via DropTunnel.
-	unplugged map[string]bool
+	// muxDetached UDIDs left the usbmux enumeration only after
+	// DropTunnel returned nil, and have not been restored by a
+	// successful Invalidate or ReestablishTunnel. A failed DELETE
+	// does not add a UDID here, so List keeps showing it.
+	muxDetached map[string]bool
 }
 
 // IOSProcessListConn is the appservice ListProcesses subset used by AppPID.
@@ -335,28 +335,47 @@ func (a *IOSAdapter) reportReestablish(udid string, reErr error) {
 type iosTunnelRecovery struct{ a *IOSAdapter }
 
 func (r iosTunnelRecovery) Invalidate(udid string) {
-	r.a.goios.Invalidate(udid)
+	if r.a.goios != nil {
+		r.a.goios.Invalidate(udid)
+	}
 	r.a.invalidatePools(udid)
 	// A plain attach (startup snapshot or fresh hot-plug): the device is
 	// present, so reflect it as healthy — clearing any prior absent state.
 	r.a.reportAttach(udid)
-	r.a.noteUsbmux(udid, true)
+	r.a.setMuxDetached(udid, false)
+	r.a.notifyTether(udid, true)
 }
 
 func (r iosTunnelRecovery) DropTunnel(udid string) error {
 	r.a.invalidatePools(udid)
+	if r.a.goios == nil {
+		return fmt.Errorf("ios: no tunnel resolver for %s", udid)
+	}
 	err := r.a.goios.DropTunnel(udid)
 	r.a.reportDetach(udid)
-	r.a.noteUsbmux(udid, false)
-	return err
+	if err != nil {
+		// The DELETE did not succeed. Leave the UDID in the usbmux
+		// enumeration so a listed=false result can still fail.
+		return err
+	}
+	r.a.setMuxDetached(udid, true)
+	r.a.notifyTether(udid, false)
+	return nil
 }
 
 func (r iosTunnelRecovery) ReestablishTunnel(udid string) error {
 	r.a.invalidatePools(udid)
+	if r.a.goios == nil {
+		return fmt.Errorf("ios: no tunnel resolver for %s", udid)
+	}
 	err := r.a.goios.ReestablishTunnel(udid)
 	r.a.reportReestablish(udid, err)
-	r.a.noteUsbmux(udid, true)
-	return err
+	if err != nil {
+		return err
+	}
+	r.a.setMuxDetached(udid, false)
+	r.a.notifyTether(udid, true)
+	return nil
 }
 
 // SetTetherNotify registers the USB attach/detach edge for agent
@@ -382,33 +401,9 @@ func (a *IOSAdapter) notifyTether(udid string, up bool) {
 	}
 }
 
-// noteUsbmux is the listener edge supervision and List share. Detach
-// hides the device from List and tells the supervisor. Attach shows it
-// again and re-probes through the same hook. It does not delete or
-// rebuild the userspace tunnel.
-func (a *IOSAdapter) noteUsbmux(udid string, up bool) {
-	if a == nil || udid == "" {
-		return
-	}
-	a.mu.Lock()
-	if a.unplugged == nil {
-		a.unplugged = map[string]bool{}
-	}
-	if up {
-		delete(a.unplugged, udid)
-	} else {
-		a.unplugged[udid] = true
-	}
-	a.mu.Unlock()
-	if !up && a.goios != nil {
-		a.goios.ForgetBootSession(udid)
-	}
-	a.notifyTether(udid, up)
-}
-
 // BindSupervisor wires the usbmux listener edge to the supervisor that
-// owns the resident runner. The journey and serve both use this hook;
-// neither calls NoteTether on its own.
+// owns the resident runner. The listener calls this hook from DropTunnel
+// and ReestablishTunnel. Callers do not poke the tether bit themselves.
 func (a *IOSAdapter) BindSupervisor(sup *agent.Supervisor) {
 	if a == nil {
 		return
@@ -424,27 +419,52 @@ func (a *IOSAdapter) BindSupervisor(sup *agent.Supervisor) {
 	})
 }
 
-func (a *IOSAdapter) omitUnplugged(devices []Info) []Info {
-	if a == nil || len(devices) == 0 {
-		return devices
+// setMuxDetached records whether udid is absent from the usbmux
+// enumeration List builds. Only a successful DropTunnel sets it, and
+// only a successful Invalidate or ReestablishTunnel clears it.
+func (a *IOSAdapter) setMuxDetached(udid string, detached bool) {
+	if a == nil || udid == "" {
+		return
 	}
 	a.mu.Lock()
-	if len(a.unplugged) == 0 {
-		a.mu.Unlock()
-		return devices
+	defer a.mu.Unlock()
+	if a.muxDetached == nil {
+		a.muxDetached = map[string]bool{}
 	}
-	gone := make(map[string]bool, len(a.unplugged))
-	for id := range a.unplugged {
-		gone[id] = true
+	if detached {
+		a.muxDetached[udid] = true
+		return
 	}
-	a.mu.Unlock()
-	kept := make([]Info, 0, len(devices))
-	for _, d := range devices {
-		if !gone[d.UUID] {
-			kept = append(kept, d)
+	delete(a.muxDetached, udid)
+}
+
+func (a *IOSAdapter) muxDetachedUDID(udid string) bool {
+	if a == nil || udid == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.muxDetached[udid]
+}
+
+// muxEnumeration is the usbmux serial list List iterates. kernel is the
+// pre-filter enumeration (what usbmux reported). A serial is copied
+// through unless DropTunnel has already removed it. This is not a pass
+// over the finished device list.
+func (a *IOSAdapter) muxEnumeration(kernel []string) []string {
+	out := make([]string, 0, len(kernel))
+	if a == nil {
+		return append(out, kernel...)
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, id := range kernel {
+		if a.muxDetached[id] {
+			continue
 		}
+		out = append(out, id)
 	}
-	return kept
+	return out
 }
 
 // invalidatePools evicts every per-device cached resource for udid: the
@@ -548,8 +568,15 @@ func (a *IOSAdapter) List() ([]Info, error) {
 	// CoreDevice doesn't talk to iOS ≤16 devices at all, so those
 	// gate purely on a successful lockdown probe (the legacy oracle).
 	if devList, err := goios_ios.ListDevices(); err == nil {
-		for _, dev := range devList.DeviceList {
+		serials := make([]string, len(devList.DeviceList))
+		byUDID := make(map[string]goios_ios.DeviceEntry, len(devList.DeviceList))
+		for i, dev := range devList.DeviceList {
 			udid := dev.Properties.SerialNumber
+			serials[i] = udid
+			byUDID[udid] = dev
+		}
+		for _, udid := range a.muxEnumeration(serials) {
+			dev := byUDID[udid]
 			info := Info{UUID: udid, Platform: "ios"}
 			values, gerr := goios_ios.GetValues(dev)
 			if gerr == nil {
@@ -584,6 +611,9 @@ func (a *IOSAdapter) List() ([]Info, error) {
 					// internally for the merge step.
 					filtered := parsed[:0]
 					for _, d := range parsed {
+						if a.muxDetachedUDID(d.UUID) {
+							continue
+						}
 						if connected == nil || connected[d.UUID] {
 							filtered = append(filtered, d)
 						}
@@ -594,7 +624,7 @@ func (a *IOSAdapter) List() ([]Info, error) {
 		}
 	}
 
-	return a.omitUnplugged(devices), nil
+	return devices, nil
 }
 
 // devicectlConnectedIOSDevices returns the set of UDIDs that

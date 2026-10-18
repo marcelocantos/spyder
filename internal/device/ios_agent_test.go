@@ -7,10 +7,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/marcelocantos/spyder/internal/agent"
+	"github.com/marcelocantos/spyder/internal/goios"
 )
 
 func TestNotifyTether_ReachesHook(t *testing.T) {
@@ -462,24 +468,104 @@ func TestInterpretDevicectlLock_NeverUnlockedIsLocked(t *testing.T) {
 	}
 }
 
-func TestNoteUsbmux_HidesThenRestoresAndNotifies(t *testing.T) {
-	a := &IOSAdapter{}
+// tunnelAdapter points a real adapter's resolver at srv. Pools stay
+// non-nil so recovery can invalidate them; the resolver is not the
+// shared userspace tunnel.
+func tunnelAdapter(t *testing.T, srv *httptest.Server) *IOSAdapter {
+	t.Helper()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := NewIOSAdapter()
+	a.goios = goios.New(u.Hostname(), port)
+	return a
+}
+
+func TestListenerDetach_RemovesUDIDUntilReattach(t *testing.T) {
+	var deletes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deletes.Add(1)
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"address":"::1","rsdPort":1,"udid":"phone"}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := tunnelAdapter(t, srv)
 	var got []string
 	a.SetTetherNotify(func(udid string, up bool) {
 		got = append(got, udid+":"+boolWord(up))
 	})
-	devices := []Info{{UUID: "phone", Platform: "ios"}, {UUID: "pad", Platform: "ios"}}
-	a.noteUsbmux("phone", false)
-	hidden := a.omitUnplugged(devices)
-	if len(hidden) != 1 || hidden[0].UUID != "pad" {
-		t.Fatalf("hidden %+v", hidden)
+	// The kernel list still contains the UDID. The enumeration List
+	// builds from loses it only after DropTunnel's DELETE succeeds.
+	kernel := []string{"phone", "pad"}
+	l := goios.NewListener(iosTunnelRecovery{a})
+	l.RunSync(context.Background(), &goios.ScriptedSource{Events: []goios.DeviceEvent{
+		{DeviceID: 1, UDID: "phone", Attached: true},
+		{DeviceID: 1, Attached: false},
+	}})
+	if deletes.Load() != 1 {
+		t.Fatalf("detach deletes=%d, want the listener's DropTunnel", deletes.Load())
 	}
-	a.noteUsbmux("phone", true)
-	shown := a.omitUnplugged(devices)
-	if len(shown) != 2 {
-		t.Fatalf("shown %+v", shown)
+	hidden := a.muxEnumeration(kernel)
+	if len(hidden) != 1 || hidden[0] != "pad" {
+		t.Fatalf("after detach enumeration %v kernel %v", hidden, kernel)
 	}
-	if strings.Join(got, ",") != "phone:down,phone:up" {
+
+	l.RunSync(context.Background(), &goios.ScriptedSource{Events: []goios.DeviceEvent{
+		{DeviceID: 2, UDID: "phone", Attached: true},
+	}})
+	if deletes.Load() != 2 {
+		t.Fatalf("reattach deletes=%d, want DropTunnel then ReestablishTunnel", deletes.Load())
+	}
+	shown := a.muxEnumeration(kernel)
+	if len(shown) != 2 || shown[0] != "phone" || shown[1] != "pad" {
+		t.Fatalf("after reattach enumeration %v", shown)
+	}
+	if strings.Join(got, ",") != "phone:up,phone:down,phone:up" {
+		t.Fatalf("hook saw %v", got)
+	}
+}
+
+func TestListenerDetach_FailedDropKeepsUDID(t *testing.T) {
+	var deletes atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			deletes.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	a := tunnelAdapter(t, srv)
+	var got []string
+	a.SetTetherNotify(func(udid string, up bool) {
+		got = append(got, udid+":"+boolWord(up))
+	})
+	kernel := []string{"phone", "pad"}
+	l := goios.NewListener(iosTunnelRecovery{a})
+	l.RunSync(context.Background(), &goios.ScriptedSource{Events: []goios.DeviceEvent{
+		{DeviceID: 1, UDID: "phone", Attached: true},
+		{DeviceID: 1, Attached: false},
+	}})
+	if deletes.Load() != 1 {
+		t.Fatalf("failed detach deletes=%d", deletes.Load())
+	}
+	kept := a.muxEnumeration(kernel)
+	if len(kept) != 2 || kept[0] != "phone" || kept[1] != "pad" {
+		t.Fatalf("failed DELETE still changed enumeration %v", kept)
+	}
+	if strings.Join(got, ",") != "phone:up" {
 		t.Fatalf("hook saw %v", got)
 	}
 }
