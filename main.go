@@ -186,7 +186,7 @@ func runServe(args []string) {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	if err := daemon.Start(daemon.Config{Addr: addr, Version: version, ExplicitAddr: explicit}); err != nil {
+	if err := daemon.Start(daemon.Config{Addr: addr, Version: version, ExplicitAddr: explicit, SuperviseAgents: true}); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 		os.Exit(1)
 	}

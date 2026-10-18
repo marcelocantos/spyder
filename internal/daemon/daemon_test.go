@@ -75,6 +75,14 @@ func postJSON(t *testing.T, url, session string, body any) (map[string]any, stri
 	return out, resp.Header.Get("Mcp-Session-Id")
 }
 
+func TestBuild_DoesNotAttachAgentSupervisor(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	_, _, h, _, _ := Build(Config{Version: "test"})
+	if h.AgentSupervisor() != nil {
+		t.Fatal("Build must not attach XCTest supervision; only serve opts in")
+	}
+}
+
 func TestRun_PersistsListenAddr(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	ctx, cancel := context.WithCancel(context.Background())

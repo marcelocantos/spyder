@@ -16,6 +16,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/marcelocantos/spyder/internal/agent"
 	"github.com/marcelocantos/spyder/internal/device"
 )
 
@@ -264,6 +265,9 @@ func (h *Handler) handleInputTap(args map[string]any) (*mcpgo.CallToolResult, er
 	if errRes != nil {
 		return errRes, nil
 	}
+	if res := h.gateAgentAny(owner, agent.MutInput, dev, id); res != nil {
+		return res, nil
+	}
 	inj, ok := adapter.(touchInjector)
 	if !ok {
 		return toolErr("adapter does not support OS input inject")
@@ -308,6 +312,9 @@ func (h *Handler) handleInputSwipe(args map[string]any) (*mcpgo.CallToolResult, 
 	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
+	}
+	if res := h.gateAgentAny(owner, agent.MutInput, dev, id); res != nil {
+		return res, nil
 	}
 	inj, ok := adapter.(touchInjector)
 	if !ok {

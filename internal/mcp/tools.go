@@ -20,6 +20,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/marcelocantos/spyder/internal/agent"
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/inventory"
@@ -552,6 +553,9 @@ func (h *Handler) launchAppLocked(dev, bundleID, owner string, env map[string]st
 		res, _ := toolErr("%v", err)
 		return "", res
 	}
+	if res := h.gateAgentAny(owner, agent.MutLifecycle, dev, id); res != nil {
+		return "", res
+	}
 	env, err = h.ensureAppChannelEnv(env, platform, id, bundleID)
 	if err != nil {
 		res, _ := toolErr("launch_app %s on %s: %v", bundleID, dev, err)
@@ -715,6 +719,9 @@ func (h *Handler) handleTerminateAppContext(ctx context.Context, args map[string
 	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
+	}
+	if res := h.gateAgentAny(owner, agent.MutLifecycle, dev, id); res != nil {
+		return res, nil
 	}
 	if err := device.TerminateAppContext(ctx, adapter, id, bundleID); err != nil {
 		return toolErr("terminate_app %s on %s: %v", bundleID, dev, err)

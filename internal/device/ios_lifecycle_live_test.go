@@ -12,14 +12,6 @@ import (
 	"time"
 )
 
-// TestBouncingBallBundleID is the bundle id of the test fixture
-// app at ios/BouncingBall/. Built + signed via xcodebuild and
-// installed manually on every reference iOS device; emits a steady
-// stream of os_log entries on every wall bounce so the log-capture
-// tests have a guaranteed emitter. Override via SPYDER_LIVE_BUNDLE_ID
-// when an alternative fixture is needed on a specific device.
-const TestBouncingBallBundleID = "com.marcelocantos.spyder.BouncingBall"
-
 // liveIOSLaunchBundle returns the bundle id to use as the
 // launch/terminate target. Prefers SPYDER_LIVE_BUNDLE_ID (caller
 // override), falling back to BouncingBall. Skips the test when

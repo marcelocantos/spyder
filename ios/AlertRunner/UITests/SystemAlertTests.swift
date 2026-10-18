@@ -19,4 +19,33 @@ final class SystemAlertTests: XCTestCase {
         XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 5), .completed,
                        "system alert button \"\(label)\" still showing after the tap")
     }
+
+    // testHoldAgent is the resident automation session. It stays in this
+    // method so Spyder can reuse one runner process across clients. A
+    // command file in Documents names a SpringBoard button to tap; the
+    // one-shot test is unchanged for a runner that is not already up.
+    func testHoldAgent() {
+        executionTimeAllowance = 3600
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let cmdURL = docs.appendingPathComponent("spyder-agent-cmd.txt")
+        let resultURL = docs.appendingPathComponent("spyder-agent-result.txt")
+        let deadline = Date().addingTimeInterval(3600)
+        while Date() < deadline {
+            if let raw = try? String(contentsOf: cmdURL, encoding: .utf8) {
+                try? FileManager.default.removeItem(at: cmdURL)
+                let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if label != "" {
+                    let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+                    let button = springboard.buttons[label]
+                    if button.waitForExistence(timeout: 5) {
+                        button.tap()
+                        try? "tapped\n".write(to: resultURL, atomically: true, encoding: .utf8)
+                    } else {
+                        try? "missing\n".write(to: resultURL, atomically: true, encoding: .utf8)
+                    }
+                }
+            }
+            Thread.sleep(forTimeInterval: 0.4)
+        }
+    }
 }

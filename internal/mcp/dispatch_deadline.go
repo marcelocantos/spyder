@@ -45,8 +45,9 @@ func toolDeadlineClass(name string) time.Duration {
 	case "verify":
 		// Owner gates and long shell graphs; no extra wall-clock cap.
 		return 0
-	case "system_alert_tap":
+	case "system_alert_tap", "agent_ensure":
 		// Optional wait for the alert, then the XCUITest runner (🎯T154).
+		// agent_ensure may install and start the resident runner (🎯T163).
 		return 5 * time.Minute
 	case "system_alert":
 		return DeadlineDeviceOp
@@ -59,7 +60,7 @@ func toolDeadlineClass(name string) time.Duration {
 		return maxExecDuration + 5*time.Second
 	case "devices", "resolve", "device_state", "battery_history", "list_apps", "is_running",
 		"reservations", "runs_list", "runs_show", "runs_artefacts",
-		"app_channel_list", "app_channel_diagnose", "health":
+		"app_channel_list", "app_channel_diagnose", "health", "agent_status":
 		return DeadlineFastRead
 	case "screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",
@@ -72,7 +73,8 @@ func toolDeadlineClass(name string) time.Duration {
 		"app_screenshot", "app_input", "app_pause", "app_step",
 		"app_tweak_list", "app_tweak_get", "app_tweak_set", "app_tweak_reset",
 		"app_log_get", "app_spawn", "app_quit", "app_ping", "app_flush",
-		"app_background", "app_foreground", "app_state":
+		"app_background", "app_foreground", "app_state",
+		"agent_idle":
 		return DeadlineDeviceOp
 	default:
 		return DeadlineDeviceOp

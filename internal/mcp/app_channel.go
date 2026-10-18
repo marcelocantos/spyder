@@ -14,6 +14,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/marcelocantos/spyder/internal/agent"
 	"github.com/marcelocantos/spyder/internal/appchannel"
 )
 
@@ -384,6 +385,17 @@ func (h *Handler) handleAppInput(args map[string]any) (*mcpgo.CallToolResult, er
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
+	}
+	owner := optString(args, "owner")
+	if owner == "" {
+		owner = s.Owner
+	}
+	ids := []string{optString(args, "device")}
+	if l := s.Listener(); l != nil {
+		ids = append(ids, l.Key.DeviceID)
+	}
+	if res := h.gateAgentAny(owner, agent.MutInput, ids...); res != nil {
+		return res, nil
 	}
 	inputType, err := requireString(args, "type")
 	if err != nil {

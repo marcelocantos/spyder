@@ -99,6 +99,15 @@ type IOSAdapter struct {
 	// pidProbe replaces only the AppPID discovery/connection seam in
 	// hermetic deploy tests. Production adapters leave it nil.
 	pidProbe *IOSProcessProbe
+
+	// automation is the resident XCTest host when supervision is on.
+	// Nil unless NewAutomationHost bound this adapter (🎯T163).
+	automation *AutomationHost
+
+	// onTether reports USB attach/detach to the agent supervisor.
+	// The listener still owns tunnel drop and rebuild; this hook only
+	// records the tether bit. Nil when supervision is off.
+	onTether func(udid string, up bool)
 }
 
 // IOSProcessListConn is the appservice ListProcesses subset used by AppPID.
@@ -321,12 +330,14 @@ func (r iosTunnelRecovery) Invalidate(udid string) {
 	// A plain attach (startup snapshot or fresh hot-plug): the device is
 	// present, so reflect it as healthy — clearing any prior absent state.
 	r.a.reportAttach(udid)
+	r.a.notifyTether(udid, true)
 }
 
 func (r iosTunnelRecovery) DropTunnel(udid string) error {
 	r.a.invalidatePools(udid)
 	err := r.a.goios.DropTunnel(udid)
 	r.a.reportDetach(udid)
+	r.a.notifyTether(udid, false)
 	return err
 }
 
@@ -334,7 +345,31 @@ func (r iosTunnelRecovery) ReestablishTunnel(udid string) error {
 	r.a.invalidatePools(udid)
 	err := r.a.goios.ReestablishTunnel(udid)
 	r.a.reportReestablish(udid, err)
+	r.a.notifyTether(udid, true)
 	return err
+}
+
+// SetTetherNotify registers the USB attach/detach edge for agent
+// supervision (🎯T163). Passing nil clears it.
+func (a *IOSAdapter) SetTetherNotify(fn func(udid string, up bool)) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.onTether = fn
+	a.mu.Unlock()
+}
+
+func (a *IOSAdapter) notifyTether(udid string, up bool) {
+	if a == nil || udid == "" {
+		return
+	}
+	a.mu.Lock()
+	fn := a.onTether
+	a.mu.Unlock()
+	if fn != nil {
+		fn(udid, up)
+	}
 }
 
 // invalidatePools evicts every per-device cached resource for udid: the

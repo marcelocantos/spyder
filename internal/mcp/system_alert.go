@@ -10,6 +10,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/marcelocantos/spyder/internal/agent"
 	"github.com/marcelocantos/spyder/internal/device"
 )
 
@@ -78,8 +79,12 @@ func (h *Handler) handleSystemAlertTap(args map[string]any) (*mcpgo.CallToolResu
 	if ms, ok := args["wait_ms"].(float64); ok && ms > 0 {
 		wait = time.Duration(ms) * time.Millisecond
 	}
-	reader, _, id, res := h.systemAlertReader(dev, optString(args, "owner"), true)
+	owner := optString(args, "owner")
+	reader, _, id, res := h.systemAlertReader(dev, owner, true)
 	if res != nil {
+		return res, nil
+	}
+	if res := h.gateAgentAny(owner, agent.MutInput, dev, id); res != nil {
 		return res, nil
 	}
 	// A freshly launched app raises its alert a few seconds later: wait for

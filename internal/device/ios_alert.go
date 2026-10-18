@@ -128,6 +128,17 @@ func (a *IOSAdapter) TapSystemAlertButton(id, button, titleContains string) (Sys
 // owner to authorise it on the device (Touch ID or passcode) unless
 // Settings > Developer > Enable UI Automation is on.
 func (a *IOSAdapter) runAlertRunner(id, button string) error {
+	// A healthy resident runner already owns UI automation. Delegate
+	// the tap to it and fail closed: a second RunTestWithConfig would
+	// kill that process (go-ios always killTestRunner when the test ends).
+	if a.automation != nil {
+		if pid, ok := a.automation.HealthyPID(id); ok && pid > 0 {
+			if err := a.automation.TapButton(id, button); err != nil {
+				return fmt.Errorf("resident alert agent on %s (pid %d) could not tap %q: %w", id, pid, button, err)
+			}
+			return nil
+		}
+	}
 	apps, err := a.ListApps(id)
 	if err != nil {
 		return fmt.Errorf("list apps on %s: %w", id, err)

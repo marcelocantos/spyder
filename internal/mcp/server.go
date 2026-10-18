@@ -18,6 +18,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/marcelocantos/spyder/internal/agent"
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/battery"
@@ -136,6 +137,13 @@ type Handler struct {
 	verifyMu       sync.Mutex
 	verifyHub      *verify.Hub
 	verifyStateDir string
+
+	// agents supervises one XCTest runner per tethered iOS device
+	// (🎯T163). Nil unless serve opted in, so unit-test daemons do not
+	// launch a runner. agentHost is the iOS effect surface for that
+	// supervisor; Shutdown cancels resident sessions.
+	agents    *agent.Supervisor
+	agentHost *device.AutomationHost
 }
 
 // launchKey indexes launchTimes. The device dimension is the
@@ -794,6 +802,9 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"input_tap":              h.handleInputTap,
 		"system_alert":           h.handleSystemAlert,
 		"system_alert_tap":       h.handleSystemAlertTap,
+		"agent_ensure":           h.handleAgentEnsure,
+		"agent_idle":             h.handleAgentIdle,
+		"agent_status":           h.handleAgentStatus,
 		"input_swipe":            h.handleInputSwipe,
 		"input_key":              h.handleInputKey,
 		"notification_shade":     h.handleNotificationShade,
@@ -900,6 +911,7 @@ func legacyDefinitions() []mcpgo.Tool {
 	defs = append(defs, logCaptureDefinitions()...)
 	defs = append(defs, appChannelDefinitions()...)
 	defs = append(defs, systemAlertDefinitions()...)
+	defs = append(defs, agentDefinitions()...)
 	return append(defs, verifyDefinitions()...)
 }
 

@@ -55,11 +55,17 @@ const (
 
 // Config configures a spyder server instance.
 type Config struct {
-	Addr         string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
-	ExplicitAddr bool   // caller override (--addr or SPYDER_ADDR 🎯T151): do not replace the supervised daemon's remembered address.
-	Version      string // emitted in serverInfo
-	TunneldAddr  string // Deprecated: tunneld is no longer used; field retained for backward compat.
+	Addr            string // HTTP listen address (e.g. ":3030"). ":0" picks a free port.
+	ExplicitAddr    bool   // caller override (--addr or SPYDER_ADDR 🎯T151): do not replace the supervised daemon's remembered address.
+	Version         string // emitted in serverInfo
+	TunneldAddr     string // Deprecated: tunneld is no longer used; field retained for backward compat.
+	SuperviseAgents bool   // production serve only: own one XCTest agent per tethered iOS device (🎯T163). Unit tests leave this false so Run does not launch a runner.
 }
+
+// agentTickInterval is how often the production daemon health-checks
+// tethered runners. The first pass waits out one interval so a process
+// that exits in a few seconds does not start XCTest.
+const agentTickInterval = 30 * time.Second
 
 // Start creates the MCP server, registers all spyder tools, wraps it in
 // a streamable-HTTP transport, and blocks serving on cfg.Addr until a
@@ -76,7 +82,7 @@ func Start(cfg Config) error {
 func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version)
-	httpHandler, _, mcpHandler, logCapMgr, appChanMgr := Build(cfg)
+	httpHandler, resvStore, mcpHandler, logCapMgr, appChanMgr := Build(cfg)
 
 	// Bundled go-ios tunnel daemon. Spawned as a child process so its
 	// lifecycle is tied to spyder's — stop on shutdown. Missing binary
@@ -89,6 +95,14 @@ func Run(ctx context.Context, cfg Config) error {
 			slog.Error("iostunnel: start failed; iOS tools degraded", "error", err)
 			tunnelSup = nil
 		}
+	}
+
+	// XCTest supervision is opt-in (🎯T163). Attach before the usbmux
+	// listener so attach/detach reaches the supervisor. The tick loop
+	// waits out agentTickInterval before the first launch.
+	if cfg.SuperviseAgents && mcpHandler != nil {
+		mcpHandler.AttachIOSAgent(resvStore)
+		go superviseIOSAgents(ctx, mcpHandler)
 	}
 
 	// Keep the RemoteXPC tunnel registry fresh across device
@@ -168,6 +182,9 @@ func Run(ctx context.Context, cfg Config) error {
 	select {
 	case <-ctx.Done():
 		slog.Info("daemon: shutting down (signal or context cancel)")
+		if mcpHandler != nil {
+			mcpHandler.StopAgents()
+		}
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		if tunnelSup != nil {
@@ -191,6 +208,23 @@ func Run(ctx context.Context, cfg Config) error {
 			return fmt.Errorf("http server: %w", err)
 		}
 		return nil
+	}
+}
+
+// superviseIOSAgents health-checks tethered runners until ctx ends.
+// The first tick is delayed so a short-lived process does not launch XCTest.
+func superviseIOSAgents(ctx context.Context, h *spydermcp.Handler) {
+	timer := time.NewTimer(agentTickInterval)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			h.StopAgents()
+			return
+		case <-timer.C:
+			h.TickAgents()
+			timer.Reset(agentTickInterval)
+		}
 	}
 }
 
