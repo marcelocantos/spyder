@@ -85,6 +85,7 @@ type Snapshot struct {
 	HostSession   bool      `json:"host_session"`
 	Owner         string    `json:"owner,omitempty"`
 	Ready         bool      `json:"ready"`
+	BootID        string    `json:"boot_id,omitempty"`
 	Consent       *Consent  `json:"consent,omitempty"`
 	Attempts      int       `json:"attempts"`
 	Relaunched    bool      `json:"relaunched"`
@@ -94,8 +95,12 @@ type Snapshot struct {
 
 // Observation is what a probe saw. The machine does not collect it.
 type Observation struct {
-	Tethered          bool
-	Locked            bool
+	Tethered bool
+	Locked   bool
+	// LockKnown is false when the lock read failed. That is not an
+	// unlock: supervision must not report ready, and it must not
+	// treat the failure as CondLocked.
+	LockKnown         bool
 	BootID            string
 	RunnerPID         int
 	RunnerAlive       bool
@@ -230,6 +235,7 @@ func (m *machine) snapshot(relaunched, reinstalled bool) Snapshot {
 		HostSession:   m.host,
 		Owner:         m.owner,
 		Ready:         m.ready,
+		BootID:        m.bootID,
 		Consent:       consent,
 		Attempts:      m.attempts,
 		Relaunched:    relaunched,
@@ -290,15 +296,20 @@ func (s *Supervisor) Tick(deviceID string) (Snapshot, error) {
 
 // Idle stops the app under test and drops any build lease and any
 // host xcodebuild or testmanagerd session. A healthy runner is left
-// in place.
+// in place. It probes first so the bundle launch_app recorded after
+// the last ensure is the one that gets terminated.
 func (s *Supervisor) Idle(deviceID, owner string) (Snapshot, error) {
 	if err := s.holds(deviceID, owner); err != nil {
 		return Snapshot{}, err
 	}
+	obs, obsErr := s.observe(deviceID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.machine(deviceID)
 	m.owner = owner
+	if obsErr == nil {
+		s.absorb(m, obs)
+	}
 	return s.idleLocked(m)
 }
 
@@ -386,7 +397,7 @@ func (s *Supervisor) applyLocked(m *machine, c Condition, obs Observation) Snaps
 	m.ready = false
 	switch c {
 	case CondReconnected:
-		if obs.Tethered && obs.RunnerAlive && obs.Authorized && !obs.Locked && !obs.ConsentRequired {
+		if obs.Tethered && obs.RunnerAlive && obs.Authorized && obs.LockKnown && !obs.Locked && !obs.ConsentRequired {
 			m.ready = true
 			m.recovered = true
 			m.healthy = true
@@ -406,7 +417,7 @@ func (s *Supervisor) applyLocked(m *machine, c Condition, obs Observation) Snaps
 			m.consent = nil
 		}
 	case CondReady:
-		m.ready = m.healthy && obs.Authorized && obs.Tethered && !obs.Locked
+		m.ready = m.healthy && obs.Authorized && obs.Tethered && obs.LockKnown && !obs.Locked
 	default:
 		m.ready = false
 	}
@@ -441,17 +452,18 @@ func (s *Supervisor) absorb(m *machine, obs Observation) {
 
 func (s *Supervisor) advance(m *machine, obs Observation, relaunch bool) (Snapshot, error) {
 	if obs.BootID != "" && m.bootID != "" && obs.BootID != m.bootID {
-		s.applyLocked(m, CondRebooted, obs)
-		obs.RunnerAlive = false
-		obs.RunnerPID = 0
-	} else {
-		s.absorb(m, obs)
+		// Stay rebooted for this observation. Falling through relaunched
+		// the runner and returned CondReady on the same call.
+		return s.applyLocked(m, CondRebooted, obs), nil
 	}
+	s.absorb(m, obs)
 	switch {
 	case !obs.Tethered:
 		return s.applyLocked(m, CondDisconnected, obs), nil
 	case obs.Locked:
 		return s.applyLocked(m, CondLocked, obs), nil
+	case !obs.LockKnown:
+		return s.applyLocked(m, CondAgentFailure, obs), nil
 	case obs.ConsentRequired:
 		return s.noteConsent(m, obs)
 	case obs.RunnerAlive && obs.Authorized:

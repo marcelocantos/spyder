@@ -83,6 +83,15 @@ type Resolver struct {
 	// onInvalidate is fired after a UDID is dropped from the cache so
 	// service pools can drop dead connections (🎯T89).
 	onInvalidate func(udid string)
+
+	// boots caches the RSD BootSessionUUID. It changes across a reboot
+	// and stays put for one boot. Invalidate drops it.
+	boots map[string]bootSnap
+}
+
+type bootSnap struct {
+	id string
+	at time.Time
 }
 
 type entry struct {
@@ -125,6 +134,7 @@ func New(host string, port int) *Resolver {
 		tunnelPort: port,
 		cache:      map[string]*entry{},
 		inflight:   map[string]chan struct{}{},
+		boots:      map[string]bootSnap{},
 	}
 	r.resolveFn = r.resolve
 	r.reestablishFn = r.ReestablishTunnel
@@ -223,6 +233,7 @@ func (r *Resolver) SessionWithVersionContext(ctx context.Context, udid string) (
 func (r *Resolver) InvalidateSession(udid string) {
 	r.mu.Lock()
 	delete(r.cache, udid)
+	delete(r.boots, udid)
 	r.mu.Unlock()
 }
 
@@ -231,6 +242,7 @@ func (r *Resolver) InvalidateSession(udid string) {
 func (r *Resolver) Invalidate(udid string) {
 	r.mu.Lock()
 	delete(r.cache, udid)
+	delete(r.boots, udid)
 	hook := r.onInvalidate
 	r.mu.Unlock()
 	if hook != nil {

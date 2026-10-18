@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/agent"
+	"github.com/marcelocantos/spyder/internal/device"
 )
 
 // The handler drives the shipped supervisor: a second authorized client
@@ -24,7 +25,7 @@ func TestAgentHandlers_ReuseIdleAndOwnership(t *testing.T) {
 	var mu sync.Mutex
 	var appLaunches, taps int
 	obs := agent.Observation{
-		Tethered: true, RunnerAlive: true, RunnerPID: 42, Authorized: true,
+		Tethered: true, LockKnown: true, RunnerAlive: true, RunnerPID: 42, Authorized: true,
 		Installed: true, InstallGen: "gen-1", AUTBundle: "com.example.game",
 		AUTRunning: true, HostSession: true, LeaseHeld: true,
 	}
@@ -184,7 +185,7 @@ func TestAgentHandlers_ConsentIsNotReady(t *testing.T) {
 	h.agents = agent.NewSupervisor(&agent.SupervisorArgs{
 		Probe: func(string) (agent.Observation, error) {
 			return agent.Observation{
-				Tethered: true, Installed: true, InstallGen: "gen-1",
+				Tethered: true, LockKnown: true, Installed: true, InstallGen: "gen-1",
 				ConsentRequired: true, ConsentActionable: true, ConsentMessage: "Touch ID",
 			}, nil
 		},
@@ -221,6 +222,35 @@ func TestAgentHandlers_ConsentIsNotReady(t *testing.T) {
 	}
 	if launches != 0 {
 		t.Fatalf("exhausted launched %d", launches)
+	}
+}
+
+func TestLaunchApp_RecordsBundleForIdle(t *testing.T) {
+	prev := postLaunchSessionWait
+	postLaunchSessionWait = 20 * time.Millisecond
+	t.Cleanup(func() { postLaunchSessionWait = prev })
+
+	const dev = "00008110-AAAABBBBCCCCDDDD"
+	const game = "com.minicades.stockcars"
+	h, _ := newHandlerWithReservations(t, &stubAdapter{
+		launchApp: func(string, string, map[string]string) error { return nil },
+	}, nil)
+	host := device.NewAutomationHost(nil)
+	if host.AUT != "" {
+		t.Fatalf("production AUT default %q", host.AUT)
+	}
+	h.agentHost = host
+	res := dispatchJSON(t, h, "launch_app", map[string]any{
+		"device": dev, "bundle_id": game, "owner": "alice",
+	})
+	if res.IsError {
+		t.Fatalf("launch: %s", resultText(t, &res))
+	}
+	if host.LaunchedBundle(dev) != game {
+		t.Fatalf("recorded %q", host.LaunchedBundle(dev))
+	}
+	if strings.Contains(host.LaunchedBundle(dev), device.TestBouncingBallBundleID) {
+		t.Fatal("recorded the fixture bundle")
 	}
 }
 

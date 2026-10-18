@@ -57,7 +57,7 @@ func runAgentJourney(t *testing.T, udid, logPath, shotPath string) {
 
 	logf("device %s", udid)
 	logf("Past prompt recurrence is not attributed to runner restart alone; earlier evidence showed actionable OS-consent timing as well.")
-	logf("Physical USB cable was not unplugged. Disconnect is Supervisor.NoteTether(false), the usbmux-listener edge, then NoteTether(true) re-probes List and AppPID.")
+	logf("Physical USB cable was not unplugged. Disconnect is the usbmux listener edge on the supervisor that owns the runner: List omits the device, then shows it again. Ready requires a fresh AppPID match. The journey does not call NoteTether and does not drop the userspace tunnel.")
 
 	root, err := findRepoRoot()
 	if err != nil {
@@ -93,7 +93,6 @@ func runAgentJourney(t *testing.T, udid, logPath, shotPath string) {
 	terminateBounded(ios, udid, TestBouncingBallBundleID)
 
 	host := NewAutomationHost(ios)
-	host.AUT = TestBouncingBallBundleID
 	defer host.Shutdown()
 	holder := "session-a"
 	sup := agent.NewSupervisor(&agent.SupervisorArgs{
@@ -106,16 +105,21 @@ func runAgentJourney(t *testing.T, udid, logPath, shotPath string) {
 			return holder, true
 		},
 	})
+	ios.BindSupervisor(sup)
+	defer ios.noteUsbmux(udid, true)
 
 	installsBefore := host.InstallCount()
 	first, err := sup.Ensure(udid, holder)
-	logf("ensure session-a: condition=%s ready=%v pid=%d install_gen=%s relaunched=%v reinstalled=%v attempts=%d installs=%d launches=%d err=%v",
-		first.Condition, first.Ready, first.Runner.PID, first.Runner.InstallGen, first.Relaunched, first.Reinstalled, first.Attempts, host.InstallCount(), host.LaunchCount(), err)
+	logf("ensure session-a: condition=%s ready=%v pid=%d install_gen=%s relaunched=%v reinstalled=%v attempts=%d installs=%d launches=%d boot=%s lock=%q err=%v",
+		first.Condition, first.Ready, first.Runner.PID, first.Runner.InstallGen, first.Relaunched, first.Reinstalled, first.Attempts, host.InstallCount(), host.LaunchCount(), first.BootID, host.LockDetail(udid), err)
 	logf("runner probe: %s", host.ProbeNote(udid))
 	logConsent(logf, "session-a", first)
 	if err != nil || !first.Ready || first.Runner.PID <= 0 {
 		saveShot(logf, ios, udid, shotPath)
 		t.Fatalf("session-a did not reach a healthy runner: %+v err=%v", first, err)
+	}
+	if first.BootID == "" {
+		t.Fatal("probe did not observe a device boot id")
 	}
 	if host.InstallCount() != installsBefore {
 		t.Fatalf("session-a reinstalled the runner: installs %d -> %d", installsBefore, host.InstallCount())
@@ -127,6 +131,7 @@ func runAgentJourney(t *testing.T, udid, logPath, shotPath string) {
 		logf("launch AUT failed: %v", err)
 		t.Fatal(err)
 	}
+	host.NoteLaunched(udid, TestBouncingBallBundleID)
 	autPID, autErr := appPIDBounded(ios, udid, TestBouncingBallBundleID)
 	logf("AUT after launch: pid=%d err=%v", autPID, autErr)
 	if autErr != nil || autPID <= 0 {
@@ -170,22 +175,30 @@ func runAgentJourney(t *testing.T, udid, logPath, shotPath string) {
 		t.Fatalf("client sessions still held: %d", host.ClientSessions(udid))
 	}
 
-	down, err := sup.NoteTether(udid, false)
-	logf("note tether down: condition=%s ready=%v recovered=%v err=%v", down.Condition, down.Ready, down.Recovered, err)
-	if err != nil || down.Ready || down.Condition != agent.CondDisconnected {
-		t.Fatalf("disconnect %+v err=%v", down, err)
+	beforeListed := deviceListed(ios, udid)
+	logf("listed before detach: %v", beforeListed)
+	if !beforeListed {
+		t.Fatal("device was not listed before the listener detach")
 	}
-	up, err := sup.NoteTether(udid, true)
+	ios.noteUsbmux(udid, false)
+	midListed := deviceListed(ios, udid)
+	down, downOK := sup.Snapshot(udid)
+	logf("listener detach: listed=%v condition=%s ready=%v recovered=%v snapshot=%v",
+		midListed, down.Condition, down.Ready, down.Recovered, downOK)
+	if midListed || !downOK || down.Ready || down.Condition != agent.CondDisconnected {
+		t.Fatalf("disconnect listed=%v snap=%+v", midListed, down)
+	}
+	ios.noteUsbmux(udid, true)
 	listed := deviceListed(ios, udid)
+	up, upOK := sup.Snapshot(udid)
 	rePID, reErr := probeApp(ios, udid, alertRunnerBundle, appProbeAttempts)
-	logf("note tether up: condition=%s ready=%v recovered=%v err=%v listed=%v runner_pid=%d runner_err=%v lock=%q",
-		up.Condition, up.Ready, up.Recovered, err, listed, rePID, reErr, host.LockDetail(udid))
-	if err != nil || up.Condition != agent.CondReconnected {
-		t.Fatalf("reconnect %+v err=%v", up, err)
+	logf("listener attach: listed=%v condition=%s ready=%v recovered=%v snapshot=%v runner_pid=%d fresh_pid=%d fresh_err=%v lock=%q boot=%s",
+		listed, up.Condition, up.Ready, up.Recovered, upOK, up.Runner.PID, rePID, reErr, host.LockDetail(udid), up.BootID)
+	if !listed || !upOK || up.Condition != agent.CondReconnected {
+		t.Fatalf("reconnect listed=%v snap=%+v", listed, up)
 	}
-	alive := reErr == nil && rePID > 0
-	if up.Ready && (!listed || !alive) {
-		t.Fatalf("ready lie: listed=%v alive=%v snap=%+v", listed, alive, up)
+	if up.Ready && (reErr != nil || rePID <= 0 || rePID != up.Runner.PID) {
+		t.Fatalf("ready without a matching AppPID: fresh=%d snap=%d err=%v", rePID, up.Runner.PID, reErr)
 	}
 	if up.Ready {
 		logf("reconnect recovered a live authorized runner")

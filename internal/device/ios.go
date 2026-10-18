@@ -30,6 +30,7 @@ import (
 	"github.com/danielpaulus/go-ios/ios/instruments"
 	"github.com/danielpaulus/go-ios/ios/ostrace"
 	"github.com/danielpaulus/go-ios/ios/zipconduit"
+	"github.com/marcelocantos/spyder/internal/agent"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/network"
@@ -108,6 +109,12 @@ type IOSAdapter struct {
 	// The listener still owns tunnel drop and rebuild; this hook only
 	// records the tether bit. Nil when supervision is off.
 	onTether func(udid string, up bool)
+
+	// unplugged UDIDs were reported detached by the usbmux listener
+	// and have not been reported attached again. List omits them so
+	// the inventory matches that edge. noteUsbmux does not drop the
+	// userspace tunnel; a real detach still does, via DropTunnel.
+	unplugged map[string]bool
 }
 
 // IOSProcessListConn is the appservice ListProcesses subset used by AppPID.
@@ -126,6 +133,9 @@ type IOSProcessProbe struct {
 	Acquire             func(id string) (IOSProcessListConn, func(), error)
 	AcquireContext      func(ctx context.Context, id string) (IOSProcessListConn, func(), func(), error)
 	Invalidate          func(id string)
+	// Kill, when set, handles terminate after the pid lookup. Hermetic
+	// probes have no devicectl or appservice pool. Production leaves it nil.
+	Kill func(id, bundle string, pid int) error
 }
 
 // NewIOSProcessProbeAdapter makes an AppPID/TerminateApp test adapter without
@@ -330,14 +340,14 @@ func (r iosTunnelRecovery) Invalidate(udid string) {
 	// A plain attach (startup snapshot or fresh hot-plug): the device is
 	// present, so reflect it as healthy — clearing any prior absent state.
 	r.a.reportAttach(udid)
-	r.a.notifyTether(udid, true)
+	r.a.noteUsbmux(udid, true)
 }
 
 func (r iosTunnelRecovery) DropTunnel(udid string) error {
 	r.a.invalidatePools(udid)
 	err := r.a.goios.DropTunnel(udid)
 	r.a.reportDetach(udid)
-	r.a.notifyTether(udid, false)
+	r.a.noteUsbmux(udid, false)
 	return err
 }
 
@@ -345,7 +355,7 @@ func (r iosTunnelRecovery) ReestablishTunnel(udid string) error {
 	r.a.invalidatePools(udid)
 	err := r.a.goios.ReestablishTunnel(udid)
 	r.a.reportReestablish(udid, err)
-	r.a.notifyTether(udid, true)
+	r.a.noteUsbmux(udid, true)
 	return err
 }
 
@@ -370,6 +380,71 @@ func (a *IOSAdapter) notifyTether(udid string, up bool) {
 	if fn != nil {
 		fn(udid, up)
 	}
+}
+
+// noteUsbmux is the listener edge supervision and List share. Detach
+// hides the device from List and tells the supervisor. Attach shows it
+// again and re-probes through the same hook. It does not delete or
+// rebuild the userspace tunnel.
+func (a *IOSAdapter) noteUsbmux(udid string, up bool) {
+	if a == nil || udid == "" {
+		return
+	}
+	a.mu.Lock()
+	if a.unplugged == nil {
+		a.unplugged = map[string]bool{}
+	}
+	if up {
+		delete(a.unplugged, udid)
+	} else {
+		a.unplugged[udid] = true
+	}
+	a.mu.Unlock()
+	if !up && a.goios != nil {
+		a.goios.ForgetBootSession(udid)
+	}
+	a.notifyTether(udid, up)
+}
+
+// BindSupervisor wires the usbmux listener edge to the supervisor that
+// owns the resident runner. The journey and serve both use this hook;
+// neither calls NoteTether on its own.
+func (a *IOSAdapter) BindSupervisor(sup *agent.Supervisor) {
+	if a == nil {
+		return
+	}
+	if sup == nil {
+		a.SetTetherNotify(nil)
+		return
+	}
+	a.SetTetherNotify(func(udid string, up bool) {
+		if _, err := sup.NoteTether(udid, up); err != nil {
+			slog.Warn("agent tether", "device", udid, "up", up, "error", err)
+		}
+	})
+}
+
+func (a *IOSAdapter) omitUnplugged(devices []Info) []Info {
+	if a == nil || len(devices) == 0 {
+		return devices
+	}
+	a.mu.Lock()
+	if len(a.unplugged) == 0 {
+		a.mu.Unlock()
+		return devices
+	}
+	gone := make(map[string]bool, len(a.unplugged))
+	for id := range a.unplugged {
+		gone[id] = true
+	}
+	a.mu.Unlock()
+	kept := make([]Info, 0, len(devices))
+	for _, d := range devices {
+		if !gone[d.UUID] {
+			kept = append(kept, d)
+		}
+	}
+	return kept
 }
 
 // invalidatePools evicts every per-device cached resource for udid: the
@@ -519,7 +594,7 @@ func (a *IOSAdapter) List() ([]Info, error) {
 		}
 	}
 
-	return devices, nil
+	return a.omitUnplugged(devices), nil
 }
 
 // devicectlConnectedIOSDevices returns the set of UDIDs that
@@ -1149,6 +1224,9 @@ func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID strin
 			return nil
 		}
 		return err
+	}
+	if a.pidProbe != nil && a.pidProbe.Kill != nil {
+		return a.pidProbe.Kill(id, bundleID, pid)
 	}
 	if err := ctx.Err(); err != nil {
 		return err

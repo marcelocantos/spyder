@@ -565,6 +565,7 @@ func (h *Handler) launchAppLocked(dev, bundleID, owner string, env map[string]st
 		res, _ := toolErr("launch_app %s on %s: %v", bundleID, dev, err)
 		return "", res
 	}
+	h.noteLaunchedAUT(id, bundleID)
 	h.mu.Lock()
 	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
 	h.mu.Unlock()

@@ -36,15 +36,23 @@ func (h *Handler) AttachIOSAgent(resv *reservations.Store) {
 			return r.Owner, true
 		},
 	})
-	ios.SetTetherNotify(func(udid string, up bool) {
-		if _, err := sup.NoteTether(udid, up); err != nil {
-			slog.Warn("agent tether", "device", udid, "up", up, "error", err)
-		}
-	})
+	ios.BindSupervisor(sup)
 	h.mu.Lock()
 	h.agents = sup
 	h.agentHost = host
 	h.mu.Unlock()
+}
+
+func (h *Handler) noteLaunchedAUT(id, bundle string) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	host := h.agentHost
+	h.mu.Unlock()
+	if host != nil {
+		host.NoteLaunched(id, bundle)
+	}
 }
 
 // AgentSupervisor is the shipped per-device supervisor, or nil when

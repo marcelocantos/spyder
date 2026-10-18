@@ -5,11 +5,13 @@ package device
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -35,14 +37,22 @@ const agentLaunchBudget = 45 * time.Second
 const agentProbeBudget = 15 * time.Second
 
 // TestBouncingBallBundleID is the fixture app at ios/BouncingBall.
-// It stands in for the game under test when no other AUT is configured.
+// Live journeys may launch it. Production idle stops the bundle
+// launch_app recorded, not this constant.
 const TestBouncingBallBundleID = "com.marcelocantos.spyder.BouncingBall"
+
+// lockProbeBudget bounds one springboard getLockState read. The
+// connection stays open until the reply or this deadline. Closing
+// earlier turns a live read into EOF and looks like an unlock.
+const lockProbeBudget = 5 * time.Second
 
 // AutomationHost is the iOS side of agent.Supervisor: tether, lock,
 // runner process, and the resident XCTest session. It does not decide
 // transitions; the supervisor does.
 type AutomationHost struct {
 	IOS *IOSAdapter
+	// AUT is an explicit override. Production leaves it empty;
+	// NoteLaunched records the bundle launch_app actually started.
 	AUT string
 
 	mu             sync.Mutex
@@ -50,6 +60,7 @@ type AutomationHost struct {
 	consent        map[string]string
 	leases         map[string]bool
 	clientSessions map[string]int
+	launched       map[string]string
 	installs       int
 	launches       int
 	hostDrops      int
@@ -57,6 +68,14 @@ type AutomationHost struct {
 	lockDetail     map[string]string
 	probeNote      map[string]string
 	installGen     map[string]string
+
+	// lockRead, lockExec, and bootSource feed Probe in hermetic tests.
+	// Production leaves them nil. iOS 17+ lock state comes from
+	// devicectl; older devices use springboard getLockState. The boot
+	// id is the device's RSD BootSessionUUID.
+	lockRead   func(id string) (map[string]any, error)
+	lockExec   func(ctx context.Context, udid string) ([]byte, error)
+	bootSource func(id string) string
 }
 
 type runnerHold struct {
@@ -69,7 +88,6 @@ type runnerHold struct {
 func NewAutomationHost(ios *IOSAdapter) *AutomationHost {
 	h := &AutomationHost{
 		IOS:            ios,
-		AUT:            TestBouncingBallBundleID,
 		holds:          map[string]*runnerHold{},
 		consent:        map[string]string{},
 		leases:         map[string]bool{},
@@ -162,6 +180,46 @@ func (h *AutomationHost) NoteClientSession(id string) {
 	h.mu.Unlock()
 }
 
+// NoteLaunched records the bundle a successful launch_app started.
+// Idle terminates that bundle. The fixture app is not a default.
+func (h *AutomationHost) NoteLaunched(id, bundle string) {
+	if h == nil || id == "" || bundle == "" {
+		return
+	}
+	if bundle == alertRunnerBundle || bundle == alertHostBundle {
+		return
+	}
+	h.mu.Lock()
+	if h.launched == nil {
+		h.launched = map[string]string{}
+	}
+	h.launched[id] = bundle
+	h.mu.Unlock()
+}
+
+// LaunchedBundle is the bundle NoteLaunched recorded for id.
+func (h *AutomationHost) LaunchedBundle(id string) string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.launched[id]
+}
+
+func (h *AutomationHost) autBundle(id string) string {
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	noted := h.launched[id]
+	h.mu.Unlock()
+	if noted != "" {
+		return noted
+	}
+	return h.AUT
+}
+
 // NoteLease records that a build/Unity lease is held. Spyder has no
 // Unity lease object; callers set this only when they actually hold one.
 func (h *AutomationHost) NoteLease(id string, held bool) {
@@ -176,7 +234,7 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 		return agent.Observation{}, errors.New("ios adapter is nil")
 	}
 	tethered := h.tethered(id)
-	locked, detail := h.locked(id)
+	locked, lockKnown, detail := h.locked(id)
 	h.mu.Lock()
 	h.lockDetail[id] = detail
 	consent := h.consent[id]
@@ -198,7 +256,7 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 	if instErr != nil {
 		return agent.Observation{}, instErr
 	}
-	aut := h.AUT
+	aut := h.autBundle(id)
 	autRunning := false
 	if aut != "" {
 		if p, err := h.appPID(id, aut); err == nil && p > 0 {
@@ -208,6 +266,8 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 	return agent.Observation{
 		Tethered:          tethered,
 		Locked:            locked,
+		LockKnown:         lockKnown,
+		BootID:            h.bootID(id),
 		RunnerPID:         pid,
 		RunnerAlive:       alive,
 		Authorized:        alive && consent == "",
@@ -244,35 +304,147 @@ func (h *AutomationHost) tethered(id string) bool {
 	return false
 }
 
-func (h *AutomationHost) locked(id string) (bool, string) {
-	if h.processSeam() {
-		return false, "process probe seam"
+func (h *AutomationHost) locked(id string) (locked, known bool, detail string) {
+	if h.lockRead != nil {
+		resp, err := h.lockRead(id)
+		return interpretLock(resp, err)
+	}
+	// Hermetic process probes have no device. A test that supplies
+	// lockExec is driving the devicectl parser, so it must not take
+	// this shortcut.
+	if h.processSeam() && h.lockExec == nil {
+		return false, true, "process probe seam"
+	}
+	locked, known, detail = h.lockViaDevicectl(id)
+	if known || h.lockExec != nil {
+		return locked, known, detail
+	}
+	if h.supportsRSD(id) {
+		// iOS 17+ springboard getLockState connects and the device
+		// closes the socket. That EOF is not an unlock.
+		return false, false, detail
+	}
+	sbLocked, sbKnown, sbDetail := h.lockViaSpringboard(id)
+	if sbKnown {
+		return sbLocked, sbKnown, sbDetail
+	}
+	if detail == "" {
+		return false, false, sbDetail
+	}
+	return false, false, detail + "; " + sbDetail
+}
+
+// lockViaDevicectl runs `xcrun devicectl device info lockState`. A
+// command or parse failure is not a known unlock.
+func (h *AutomationHost) lockViaDevicectl(id string) (bool, bool, string) {
+	ctx, cancel := context.WithTimeout(context.Background(), agentProbeBudget)
+	defer cancel()
+	var raw []byte
+	var err error
+	if h.lockExec != nil {
+		raw, err = h.lockExec(ctx, id)
+	} else {
+		raw, err = devicectlLockState(ctx, id)
+	}
+	if err != nil {
+		return false, false, err.Error()
+	}
+	return interpretDevicectlLock(raw)
+}
+
+func devicectlLockState(ctx context.Context, udid string) ([]byte, error) {
+	if strings.TrimSpace(udid) == "" {
+		return nil, errors.New("devicectl lockState requires a udid")
+	}
+	timeout := int(agentProbeBudget / time.Second)
+	cmd := exec.CommandContext(ctx, "xcrun", "devicectl", "device", "info", "lockState",
+		"--device", udid,
+		"--timeout", fmt.Sprintf("%d", timeout),
+		"--json-output", "-",
+		"--quiet")
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+			return nil, fmt.Errorf("devicectl lockState: %s", strings.TrimSpace(string(exitErr.Stderr)))
+		}
+		return nil, fmt.Errorf("devicectl lockState: %w", err)
+	}
+	return out, nil
+}
+
+// interpretDevicectlLock reads the lockState JSON document.
+// passcodeRequired means the screen is locked. unlockedSinceBoot false
+// means the device has not been unlocked since boot, which is also locked.
+// A missing or failed document is not known.
+func interpretDevicectlLock(raw []byte) (locked, known bool, detail string) {
+	var doc struct {
+		Info struct {
+			Outcome string `json:"outcome"`
+		} `json:"info"`
+		Result struct {
+			PasscodeRequired  *bool `json:"passcodeRequired"`
+			UnlockedSinceBoot *bool `json:"unlockedSinceBoot"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		return false, false, "devicectl lockState unreadable: " + err.Error()
+	}
+	if doc.Info.Outcome != "success" {
+		if doc.Info.Outcome == "" {
+			return false, false, "devicectl lockState missing outcome"
+		}
+		return false, false, "devicectl lockState outcome=" + doc.Info.Outcome
+	}
+	if doc.Result.PasscodeRequired == nil {
+		return false, false, "devicectl lockState missing passcodeRequired"
+	}
+	if *doc.Result.PasscodeRequired {
+		return true, true, "devicectl passcodeRequired=true"
+	}
+	if doc.Result.UnlockedSinceBoot != nil && !*doc.Result.UnlockedSinceBoot {
+		return true, true, "devicectl unlockedSinceBoot=false"
+	}
+	return false, true, "devicectl passcodeRequired=false"
+}
+
+func (h *AutomationHost) supportsRSD(id string) bool {
+	if h == nil || h.IOS == nil || h.IOS.goios == nil || id == "" {
+		return false
 	}
 	dev, err := h.IOS.goios.Session(id)
 	if err != nil {
-		return false, err.Error()
+		return false
+	}
+	return dev.SupportsRsd()
+}
+
+func (h *AutomationHost) lockViaSpringboard(id string) (bool, bool, string) {
+	if h.IOS == nil || h.IOS.goios == nil {
+		return false, false, "ios session is not configured"
+	}
+	dev, err := h.IOS.goios.Session(id)
+	if err != nil {
+		return false, false, err.Error()
 	}
 	type result struct {
 		locked bool
+		known  bool
 		detail string
 	}
 	ch := make(chan result, 1)
+	box := &lockConn{}
 	go func() {
-		conn, err := goios_ios.ConnectToService(dev, "com.apple.springboardservices")
+		c, err := connectSpringboard(dev)
 		if err != nil {
 			ch <- result{detail: err.Error()}
 			return
 		}
-		var once sync.Once
-		closeConn := func() { once.Do(func() { conn.Close() }) }
-		defer closeConn()
-		// Close on the caller's deadline so a stuck plist read cannot
-		// pin the tunnel for the next probe.
-		go func() {
-			<-time.After(3 * time.Second)
-			closeConn()
-		}()
-		codec := goios_ios.NewPlistCodecReadWriter(conn.Reader(), conn.Writer())
+		if !box.store(c) {
+			return
+		}
+		defer box.close()
+		codec := goios_ios.NewPlistCodecReadWriter(c.Reader(), c.Writer())
 		if err := codec.Write(map[string]any{"command": "getLockState"}); err != nil {
 			ch <- result{detail: err.Error()}
 			return
@@ -282,20 +454,115 @@ func (h *AutomationHost) locked(id string) (bool, string) {
 			ch <- result{detail: err.Error()}
 			return
 		}
-		state, _ := resp["state"].(uint64)
-		if state == 0 {
-			if n, ok := resp["state"].(int); ok {
-				state = uint64(n)
-			}
-		}
-		ch <- result{locked: state != 0, detail: fmt.Sprintf("springboard state=%v", resp["state"])}
+		locked, known, detail := interpretLock(resp, nil)
+		ch <- result{locked: locked, known: known, detail: detail}
 	}()
+	timer := time.NewTimer(lockProbeBudget)
+	defer timer.Stop()
 	select {
 	case r := <-ch:
-		return r.locked, r.detail
-	case <-time.After(3 * time.Second):
-		return false, "lock probe timed out"
+		return r.locked, r.known, r.detail
+	case <-timer.C:
+		box.close()
+		return false, false, "lock probe timed out"
 	}
+}
+
+// lockConn closes a springboard connection exactly once. store after
+// close closes the new connection immediately so a late dial cannot
+// outlive the probe budget.
+type lockConn struct {
+	mu     sync.Mutex
+	c      goios_ios.DeviceConnectionInterface
+	closed bool
+}
+
+func (b *lockConn) store(c goios_ios.DeviceConnectionInterface) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		c.Close()
+		return false
+	}
+	b.c = c
+	return true
+}
+
+func (b *lockConn) close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.closed = true
+	if b.c != nil {
+		b.c.Close()
+		b.c = nil
+	}
+}
+
+// connectSpringboard opens getLockState on the lockdown service. iOS 17+
+// does not use this path: the device closes that socket, and the RSD
+// shim resets during checkin. Those devices use devicectl lockState.
+func connectSpringboard(dev goios_ios.DeviceEntry) (goios_ios.DeviceConnectionInterface, error) {
+	return goios_ios.ConnectToService(dev, "com.apple.springboardservices")
+}
+
+// interpretLock turns one getLockState result into the supervision bit.
+// A read error or an unreadable state is not locked and not known, so
+// the supervisor must not report ready. state != 0 is locked.
+func interpretLock(resp map[string]any, err error) (locked, known bool, detail string) {
+	if err != nil {
+		return false, false, err.Error()
+	}
+	if resp == nil {
+		return false, false, "lock probe returned no state"
+	}
+	state, ok := lockStateValue(resp["state"])
+	if !ok {
+		return false, false, fmt.Sprintf("lock probe state unreadable: %#v", resp["state"])
+	}
+	return state != 0, true, fmt.Sprintf("springboard state=%d", state)
+}
+
+func lockStateValue(v any) (uint64, bool) {
+	switch n := v.(type) {
+	case uint64:
+		return n, true
+	case uint32:
+		return uint64(n), true
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case int64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case float64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	default:
+		return 0, false
+	}
+}
+
+func (h *AutomationHost) bootID(id string) string {
+	if h.bootSource != nil {
+		return h.bootSource(id)
+	}
+	if h.IOS == nil || h.IOS.goios == nil || id == "" {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), agentProbeBudget)
+	defer cancel()
+	got, err := h.IOS.goios.BootSessionUUID(ctx, id)
+	if err != nil || got == "" {
+		slog.Warn("boot session id unavailable", "device", id, "error", err)
+		return ""
+	}
+	return got
 }
 
 func (h *AutomationHost) appPID(id, bundle string) (int, error) {
@@ -550,7 +817,13 @@ func (h *AutomationHost) Install(id string) (string, error) {
 const agentStopAttempts = 2
 
 // StopAUT terminates the app under test and leaves the runner alone.
+// The bundle launch_app recorded wins over the supervisor's last
+// observation so idle stops that app even when the machine has not
+// probed since the launch.
 func (h *AutomationHost) StopAUT(id, bundle string) error {
+	if noted := h.autBundle(id); noted != "" {
+		bundle = noted
+	}
 	if bundle == "" || bundle == alertRunnerBundle || bundle == alertHostBundle {
 		return nil
 	}

@@ -5,6 +5,8 @@ package device
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"strings"
 	"testing"
 
@@ -61,7 +63,7 @@ func TestAutomationHostEffects_SupervisorReusesAndRejects(t *testing.T) {
 	holder := "alice"
 	var launches int
 	obs := agent.Observation{
-		Tethered: true, RunnerAlive: true, RunnerPID: 42, Authorized: true,
+		Tethered: true, LockKnown: true, RunnerAlive: true, RunnerPID: 42, Authorized: true,
 		Installed: true, InstallGen: "gen-1", AUTBundle: TestBouncingBallBundleID,
 		AUTRunning: true, HostSession: true, LeaseHeld: true,
 	}
@@ -249,5 +251,235 @@ func TestStopAUT_RetriesStuckLookup(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("calls=%d", calls)
+	}
+}
+
+const stockcarsBundle = "com.minicades.stockcars"
+const stockcarsExe = "/var/containers/Bundle/Application/GAME/StockCars.app/StockCars"
+
+// Idle must stop the bundle launch_app recorded, not the BouncingBall fixture.
+func TestIdle_StopsLaunchedBundleNotFixture(t *testing.T) {
+	var killed []string
+	ios := NewIOSProcessProbeAdapter(IOSProcessProbe{
+		InstalledExecutable: func(_, bundle string) (string, error) {
+			switch bundle {
+			case alertRunnerBundle:
+				return runnerProbeExe, nil
+			case stockcarsBundle:
+				return stockcarsExe, nil
+			default:
+				return "", fmt.Errorf("app not installed: %s", bundle)
+			}
+		},
+		MajorVersion: func(string) (int, error) { return 27, nil },
+		Acquire: func(string) (IOSProcessListConn, func(), error) {
+			return identityProcesses{
+				{Pid: 42, Path: runnerProbeExe},
+				{Pid: 77, Path: stockcarsExe},
+			}, func() {}, nil
+		},
+		Kill: func(_, bundle string, pid int) error {
+			killed = append(killed, fmt.Sprintf("%s:%d", bundle, pid))
+			return nil
+		},
+		Invalidate: func(string) {},
+	})
+	host := NewAutomationHost(ios)
+	if host.AUT != "" {
+		t.Fatalf("production AUT default %q", host.AUT)
+	}
+	sup := agent.NewSupervisor(&agent.SupervisorArgs{
+		Effects: host.Effects(),
+		Probe:   host.Probe,
+		OwnerOf: func(string) (string, bool) { return "alice", true },
+	})
+	first, err := sup.Ensure("dut", "alice")
+	if err != nil || !first.Ready || first.Runner.PID != 42 || first.AUTBundle != "" {
+		t.Fatalf("ensure before launch %+v err=%v", first, err)
+	}
+	host.NoteLaunched("dut", stockcarsBundle)
+	seen, err := host.Probe("dut")
+	if err != nil || seen.AUTBundle != stockcarsBundle || !seen.AUTRunning {
+		t.Fatalf("probe %+v err=%v", seen, err)
+	}
+	idle, err := sup.Idle("dut", "alice")
+	if err != nil || idle.AUTRunning || idle.Ready || idle.Condition != agent.CondIdle || idle.Runner.PID != 42 {
+		t.Fatalf("idle %+v err=%v", idle, err)
+	}
+	if len(killed) != 1 || killed[0] != stockcarsBundle+":77" {
+		t.Fatalf("stopped %v", killed)
+	}
+	if strings.Contains(strings.Join(killed, ","), TestBouncingBallBundleID) {
+		t.Fatalf("stopped the fixture: %v", killed)
+	}
+}
+
+func TestProbe_PositiveLockIsCondLocked(t *testing.T) {
+	host := runnerProbeHost(func(int) (IOSProcessListConn, error) {
+		return identityProcesses{{Pid: 42, Path: runnerProbeExe}}, nil
+	})
+	host.lockRead = func(string) (map[string]any, error) {
+		return map[string]any{"state": uint64(1)}, nil
+	}
+	launches := 0
+	snap, err := supervisorOver(host, &launches).Ensure("dut", "alice")
+	if err != nil || snap.Condition != agent.CondLocked || snap.Ready || launches != 0 {
+		t.Fatalf("locked %+v launches=%d err=%v detail=%s", snap, launches, err, host.LockDetail("dut"))
+	}
+}
+
+func TestProbe_FailedLockReadIsNotReady(t *testing.T) {
+	host := runnerProbeHost(func(int) (IOSProcessListConn, error) {
+		return identityProcesses{{Pid: 42, Path: runnerProbeExe}}, nil
+	})
+	host.lockRead = func(string) (map[string]any, error) {
+		return nil, io.EOF
+	}
+	launches := 0
+	snap, err := supervisorOver(host, &launches).Ensure("dut", "alice")
+	if err != nil || snap.Ready || snap.Condition == agent.CondReady || snap.Condition == agent.CondLocked || launches != 0 {
+		t.Fatalf("failed lock %+v launches=%d err=%v detail=%s", snap, launches, err, host.LockDetail("dut"))
+	}
+}
+
+func TestProbe_UnlockedStateStaysReady(t *testing.T) {
+	host := runnerProbeHost(func(int) (IOSProcessListConn, error) {
+		return identityProcesses{{Pid: 42, Path: runnerProbeExe}}, nil
+	})
+	host.lockRead = func(string) (map[string]any, error) {
+		return map[string]any{"state": float64(0)}, nil
+	}
+	launches := 0
+	snap, err := supervisorOver(host, &launches).Ensure("dut", "alice")
+	if err != nil || !snap.Ready || snap.Condition != agent.CondReady || launches != 0 {
+		t.Fatalf("unlocked %+v launches=%d err=%v detail=%s", snap, launches, err, host.LockDetail("dut"))
+	}
+}
+
+func TestProbe_ChangedBootIDStaysRebooted(t *testing.T) {
+	host := runnerProbeHost(func(int) (IOSProcessListConn, error) {
+		return identityProcesses{{Pid: 42, Path: runnerProbeExe}}, nil
+	})
+	boot := "boot-a"
+	host.bootSource = func(string) string { return boot }
+	launches := 0
+	sup := supervisorOver(host, &launches)
+	first, err := sup.Ensure("dut", "alice")
+	if err != nil || !first.Ready || first.BootID != "boot-a" || launches != 0 {
+		t.Fatalf("first %+v launches=%d err=%v", first, launches, err)
+	}
+	boot = "boot-b"
+	second, err := sup.Ensure("dut", "alice")
+	if err != nil || second.Condition != agent.CondRebooted || second.Ready || second.Relaunched || second.BootID != "boot-b" || launches != 0 {
+		t.Fatalf("reboot %+v launches=%d err=%v", second, launches, err)
+	}
+}
+
+func TestInterpretLock_StateAndFailure(t *testing.T) {
+	locked, known, detail := interpretLock(map[string]any{"state": uint64(3)}, nil)
+	if !locked || !known || !strings.Contains(detail, "state=3") {
+		t.Fatalf("locked=%v known=%v detail=%s", locked, known, detail)
+	}
+	locked, known, _ = interpretLock(nil, io.EOF)
+	if locked || known {
+		t.Fatalf("eof locked=%v known=%v", locked, known)
+	}
+	if _, ok := lockStateValue(struct{ N int }{N: 1}); ok {
+		t.Fatal("non-numeric state was accepted")
+	}
+}
+
+// Captured from `xcrun devicectl device info lockState` on the unlocked
+// iPhone 13 (UDID 00008110-0014182E0AC2801E) on 2026-10-18.
+const devicectlLockUnlocked = `{
+  "info": {"outcome": "success", "commandType": "devicectl.device.info.lockState"},
+  "result": {
+    "deviceIdentifier": "CD2E3380-F1AB-5D03-BBA8-E5A68ADB3261",
+    "passcodeRequired": false,
+    "unlockedSinceBoot": true
+  }
+}`
+
+func TestProbe_DevicectlPasscodeRequiredIsCondLocked(t *testing.T) {
+	host := runnerProbeHost(func(int) (IOSProcessListConn, error) {
+		return identityProcesses{{Pid: 42, Path: runnerProbeExe}}, nil
+	})
+	doc := strings.Replace(devicectlLockUnlocked, `"passcodeRequired": false`, `"passcodeRequired": true`, 1)
+	host.lockExec = func(context.Context, string) ([]byte, error) {
+		return []byte(doc), nil
+	}
+	launches := 0
+	snap, err := supervisorOver(host, &launches).Ensure("dut", "alice")
+	if err != nil || snap.Condition != agent.CondLocked || snap.Ready || launches != 0 {
+		t.Fatalf("locked %+v launches=%d err=%v detail=%s", snap, launches, err, host.LockDetail("dut"))
+	}
+	if !strings.Contains(host.LockDetail("dut"), "passcodeRequired=true") {
+		t.Fatalf("detail %s", host.LockDetail("dut"))
+	}
+}
+
+func TestProbe_DevicectlUnlockedStaysReady(t *testing.T) {
+	host := runnerProbeHost(func(int) (IOSProcessListConn, error) {
+		return identityProcesses{{Pid: 42, Path: runnerProbeExe}}, nil
+	})
+	host.lockExec = func(context.Context, string) ([]byte, error) {
+		return []byte(devicectlLockUnlocked), nil
+	}
+	launches := 0
+	snap, err := supervisorOver(host, &launches).Ensure("dut", "alice")
+	if err != nil || !snap.Ready || snap.Condition != agent.CondReady || launches != 0 {
+		t.Fatalf("unlocked %+v launches=%d err=%v detail=%s", snap, launches, err, host.LockDetail("dut"))
+	}
+}
+
+func TestProbe_DevicectlFailureIsNotReady(t *testing.T) {
+	host := runnerProbeHost(func(int) (IOSProcessListConn, error) {
+		return identityProcesses{{Pid: 42, Path: runnerProbeExe}}, nil
+	})
+	host.lockExec = func(context.Context, string) ([]byte, error) {
+		return nil, fmt.Errorf("devicectl lockState: exit")
+	}
+	launches := 0
+	snap, err := supervisorOver(host, &launches).Ensure("dut", "alice")
+	if err != nil || snap.Ready || snap.Condition == agent.CondReady || snap.Condition == agent.CondLocked || launches != 0 {
+		t.Fatalf("failed lock %+v launches=%d err=%v detail=%s", snap, launches, err, host.LockDetail("dut"))
+	}
+}
+
+func TestInterpretDevicectlLock_NeverUnlockedIsLocked(t *testing.T) {
+	doc := strings.Replace(devicectlLockUnlocked, `"unlockedSinceBoot": true`, `"unlockedSinceBoot": false`, 1)
+	locked, known, detail := interpretDevicectlLock([]byte(doc))
+	if !locked || !known || !strings.Contains(detail, "unlockedSinceBoot=false") {
+		t.Fatalf("locked=%v known=%v detail=%s", locked, known, detail)
+	}
+	locked, known, _ = interpretDevicectlLock([]byte(`{"info":{"outcome":"failed"}}`))
+	if locked || known {
+		t.Fatalf("failed outcome locked=%v known=%v", locked, known)
+	}
+	locked, known, _ = interpretDevicectlLock([]byte(`not-json`))
+	if locked || known {
+		t.Fatalf("garbage locked=%v known=%v", locked, known)
+	}
+}
+
+func TestNoteUsbmux_HidesThenRestoresAndNotifies(t *testing.T) {
+	a := &IOSAdapter{}
+	var got []string
+	a.SetTetherNotify(func(udid string, up bool) {
+		got = append(got, udid+":"+boolWord(up))
+	})
+	devices := []Info{{UUID: "phone", Platform: "ios"}, {UUID: "pad", Platform: "ios"}}
+	a.noteUsbmux("phone", false)
+	hidden := a.omitUnplugged(devices)
+	if len(hidden) != 1 || hidden[0].UUID != "pad" {
+		t.Fatalf("hidden %+v", hidden)
+	}
+	a.noteUsbmux("phone", true)
+	shown := a.omitUnplugged(devices)
+	if len(shown) != 2 {
+		t.Fatalf("shown %+v", shown)
+	}
+	if strings.Join(got, ",") != "phone:down,phone:up" {
+		t.Fatalf("hook saw %v", got)
 	}
 }

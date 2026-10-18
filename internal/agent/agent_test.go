@@ -71,6 +71,7 @@ func (h *harness) supervisor() *Supervisor {
 func healthyObs() Observation {
 	return Observation{
 		Tethered:    true,
+		LockKnown:   true,
 		RunnerPID:   42,
 		RunnerAlive: true,
 		Authorized:  true,
@@ -361,6 +362,56 @@ func TestSupervisor_ConsentIsNotReadyAndRetriesStop(t *testing.T) {
 	}
 	if h.launches != MaxAttempts || again.Ready || again.Condition != CondRetryExhausted {
 		t.Fatalf("retry did not stop: launches=%d snap=%+v", h.launches, again)
+	}
+}
+
+func TestEnsure_ChangedBootIDStaysRebooted(t *testing.T) {
+	h := &harness{obs: healthyObs(), holder: "alice", held: true}
+	h.obs.BootID = "boot-a"
+	s := h.supervisor()
+	first, err := s.Ensure("phone", "alice")
+	if err != nil || !first.Ready || first.Condition != CondReady || first.BootID != "boot-a" || h.launches != 0 {
+		t.Fatalf("first %+v launches=%d err=%v", first, h.launches, err)
+	}
+	h.obs.BootID = "boot-b"
+	h.obs.RunnerAlive = true
+	h.obs.RunnerPID = 42
+	second, err := s.Ensure("phone", "alice")
+	if err != nil || second.Condition != CondRebooted || second.Ready || second.Relaunched || second.BootID != "boot-b" || h.launches != 0 {
+		t.Fatalf("changed boot %+v launches=%d err=%v", second, h.launches, err)
+	}
+	h.obs.BootID = ""
+	third, err := s.Ensure("phone", "alice")
+	if err != nil || !third.Ready || third.Condition != CondReady || third.BootID != "boot-b" || h.launches != 0 {
+		t.Fatalf("empty boot id looked like a reboot: %+v launches=%d err=%v", third, h.launches, err)
+	}
+}
+
+func TestEnsure_UnknownLockIsNotReady(t *testing.T) {
+	h := &harness{obs: healthyObs(), holder: "alice", held: true}
+	h.obs.LockKnown = false
+	h.obs.Locked = false
+	s := h.supervisor()
+	snap, err := s.Ensure("phone", "alice")
+	if err != nil || snap.Ready || snap.Condition == CondReady || snap.Condition == CondLocked || h.launches != 0 {
+		t.Fatalf("unknown lock %+v launches=%d err=%v", snap, h.launches, err)
+	}
+	if snap.Condition != CondAgentFailure {
+		t.Fatalf("unknown lock condition %s", snap.Condition)
+	}
+}
+
+func TestNoteTether_UnknownLockIsNotReady(t *testing.T) {
+	h := &harness{obs: healthyObs(), holder: "alice", held: true}
+	s := h.supervisor()
+	if _, err := s.Ensure("phone", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	h.obs.LockKnown = false
+	h.obs.Locked = false
+	up, err := s.NoteTether("phone", true)
+	if err != nil || up.Ready || up.Recovered || up.Condition != CondReconnected {
+		t.Fatalf("unknown lock reconnect %+v err=%v", up, err)
 	}
 }
 
