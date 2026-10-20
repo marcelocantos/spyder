@@ -5,8 +5,140 @@ package oslog
 
 import (
 	"encoding/binary"
+	"errors"
+	"io"
+	"reflect"
+	"strings"
 	"testing"
 )
+
+// This synthetic corpus includes table definitions, a PID binding, stack
+// copies, and two rows. Its expected values are independent of frame splits.
+func incrementalCorpus() []byte {
+	return buildFrame(
+		defineTableFrame("Processes", []string{"process", "name"}),
+		encodeImmediate([]byte{42, 0, 0, 0}), pushString("MyApp"), word16(cmdEndRow, 0),
+		defineTableFrame("Logs", []string{"process", "message"}),
+		encodeImmediate([]byte{42, 0, 0, 0}), word16(cmdCopy, 0), word16(cmdPlaceholderCount, 1),
+		pushString("narrative-text"), encodeImmediate([]byte("got it")), word16(cmdStruct, 2), word16(cmdStruct, 1), word16(cmdEndRow, 1),
+		encodeImmediate([]byte{42, 0, 0, 0}),
+		pushString("narrative-text"), encodeImmediate([]byte("second")), word16(cmdStruct, 2), word16(cmdStruct, 1), word16(cmdEndRow, 1),
+	)
+}
+
+func TestDecoderIncrementalEveryFrameSplit(t *testing.T) {
+	corpus := incrementalCorpus()
+	baseline := NewDecoder()
+	want, err := baseline.Decode(corpus, nil)
+	if err != nil || len(want) != 2 || want[0].PID != 42 || want[0].ImageName != "MyApp" || want[0].Message != "got it" || want[1].Message != "second" {
+		t.Fatalf("synthetic oracle mismatch: rows=%v err=%v", want, err)
+	}
+	for split := 0; split <= len(corpus); split++ {
+		d := NewDecoder()
+		var got []Record
+		for _, part := range [][]byte{corpus[:split], nil, corpus[split:]} {
+			got, err = d.Decode(part, got)
+			if err != nil {
+				t.Fatalf("split %d: %v", split, err)
+			}
+		}
+		if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(d, baseline) {
+			t.Fatalf("split %d changed rows or VM state", split)
+		}
+		if err := d.Finish(); err != nil {
+			t.Fatalf("split %d failed actual EOF: %v", split, err)
+		}
+	}
+	for _, chunk := range []int{1, 2, 3, 7, 31} {
+		d := NewDecoder()
+		var got []Record
+		for start := 0; start < len(corpus); start += chunk {
+			got, err = d.Decode(corpus[start:min(start+chunk, len(corpus))], got)
+			if err != nil {
+				t.Fatalf("chunk %d: %v", chunk, err)
+			}
+		}
+		if !reflect.DeepEqual(got, want) || !reflect.DeepEqual(d, baseline) || d.Finish() != nil {
+			t.Fatalf("chunk %d changed rows or VM state", chunk)
+		}
+	}
+}
+
+func TestDecoderCompleteRowsBeforePendingInstruction(t *testing.T) {
+	corpus := incrementalCorpus()
+	d := NewDecoder()
+	// A complete corpus followed by an unfinished push emits each completed
+	// row now. Replaying that one pending push must not repeat prior rows.
+	rows, err := d.Decode(append(corpus, 0x00, 0x80), nil)
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("completed prefix: %v %v", rows, err)
+	}
+	rows, err = d.Decode([]byte{0x00, 0xc0}, nil)
+	if err != nil || len(rows) != 0 || len(d.stack) != 1 || d.Finish() != nil {
+		t.Fatalf("continuation replayed or lost VM work: rows=%v stack=%v err=%v", rows, d.stack, err)
+	}
+}
+
+func TestDecoderTerminalPendingInputIsSticky(t *testing.T) {
+	for _, partial := range [][]byte{{0x00}, {0x00, 0x80}, {0x00, 0x80, 0x00}} {
+		d := NewDecoder()
+		if _, err := d.Decode(partial, nil); err != nil {
+			t.Fatal(err)
+		}
+		if len(d.stack) != 0 {
+			t.Fatal("partial instruction mutated stack")
+		}
+		err := d.Finish()
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Fatalf("unfinished stream passed: %v", err)
+		}
+		if _, next := d.Decode([]byte{0x00, 0xc0}, nil); next != err || d.Finish() != err {
+			t.Fatal("continuation or cleanup erased terminal failure")
+		}
+	}
+}
+
+func TestDecoderMalformedInstructionsFailAcrossPartitions(t *testing.T) {
+	for _, malformed := range [][]byte{word16(0x70, 0), word16(cmdStruct, 1), word16(cmdStruct, 0xff), word16(cmdCopy, 0), word16(cmdCopy, 0xff), word16(cmdDefineTable, 0), word16(cmdDebug, 0), word16(cmdEndRow, 0), word16(cmdPlaceholderCount, 1)} {
+		for split := 0; split <= len(malformed); split++ {
+			d := NewDecoder()
+			_, err := d.Decode(malformed[:split], nil)
+			if err == nil {
+				_, err = d.Decode(malformed[split:], nil)
+			}
+			if err == nil || errors.Is(err, io.EOF) || d.Finish() != err {
+				t.Fatalf("malformed instruction %x split %d did not fail sticky: %v", malformed, split, err)
+			}
+		}
+	}
+}
+
+func TestDecoderImmediateResourceBudgetIsPartitionIndependent(t *testing.T) {
+	// All-zero data chunks have continuation prefix 10. The final chunk
+	// terminates exactly at the declared host budget; one extra word fails.
+	valid := make([]byte, maxImmediateWireBytes)
+	for i := 1; i < len(valid); i += 2 {
+		valid[i] = 0x80
+	}
+	valid[len(valid)-1] = 0xc0
+	oversize := append(append([]byte(nil), valid[:len(valid)-2]...), 0, 0x80, 0, 0xc0)
+	for _, input := range [][]byte{valid, oversize} {
+		for _, split := range []int{0, 1, len(input) / 2, len(input) - 1, len(input)} {
+			d := NewDecoder()
+			_, err := d.Decode(input[:split], nil)
+			if err == nil {
+				_, err = d.Decode(input[split:], nil)
+			}
+			if len(input) == maxImmediateWireBytes {
+				if err != nil || d.Finish() != nil || len(d.stack) != 1 {
+					t.Fatalf("budget boundary split %d: %v", split, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "resource budget") || d.Finish() != err || len(d.stack) != 0 {
+				t.Fatalf("oversize split %d passed or mutated stack: %v", split, err)
+			}
+		}
+	}
+}
 
 // word16 encodes a 16-bit little-endian word with the given high-byte
 // opcode and low-byte operand.

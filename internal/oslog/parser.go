@@ -27,6 +27,7 @@ package oslog
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -43,6 +44,14 @@ const (
 	cmdPlaceholderCount      = 0x6A
 	cmdDebug                 = 0x6B
 )
+
+// maxImmediateWireBytes is a host resource budget, not an Apple protocol
+// limit. One unfinished opcode may retain at most 1 MiB of wire data; its
+// decoded value is at most 7/8 of that size. This bounds retained input and
+// transient replay allocations per decoder without capping a whole batch or
+// the number of complete rows. Oversize opcodes fail explicitly, whether
+// delivered in one frame or many.
+const maxImmediateWireBytes = 1 << 20
 
 // stackItem represents one entry on the parser's value stack. The
 // stream pushes raw byte sequences (variable-length immediates) plus
@@ -96,6 +105,8 @@ type Decoder struct {
 	tables     []table
 	generation int
 	pidToName  map[uint32]string
+	pending    []byte
+	err        error
 }
 
 // NewDecoder returns an initialised Decoder. The zero-value Decoder
@@ -103,16 +114,35 @@ type Decoder struct {
 func NewDecoder() *Decoder { return &Decoder{} }
 
 // Decode processes one frame, appending any complete rows to out and
-// returning the result. Frames that produce no rows (e.g. table
-// definitions only) return out unchanged. Heartbeat frames whose
+// returning the result. An instruction may span DTX frames; only its
+// unfinished suffix is retained until more input arrives. Call Finish at
+// actual stream end to detect a genuinely truncated instruction. The
+// cross-message opcode contract is also documented by upstream PR 1748:
+// https://github.com/doronz88/pymobiledevice3/pull/1748
+// Frames that produce no rows (e.g. table definitions only) return out
+// unchanged. Heartbeat frames whose
 // payload starts with `bplist` should be filtered by the caller before
 // invoking Decode — they are out-of-band keepalives, not opcode
 // streams, and would otherwise produce nonsense.
-func (d *Decoder) Decode(frame []byte, out []Record) ([]Record, error) {
+func (d *Decoder) Decode(frame []byte, out []Record) (records []Record, retErr error) {
+	if d.err != nil {
+		return out, d.err
+	}
+	defer func() {
+		if retErr != nil {
+			d.err = retErr
+		}
+	}()
+	if len(d.pending) != 0 {
+		frame = append(d.pending, frame...)
+		d.pending = nil
+	}
 	r := &frameReader{buf: frame}
 	for {
+		start := r.pos
 		word, err := r.readWord()
 		if err == io.EOF {
+			d.pending = append([]byte(nil), frame[start:]...)
 			return out, nil
 		}
 		if err != nil {
@@ -217,12 +247,34 @@ func (d *Decoder) Decode(frame []byte, out []Record) ([]Record, error) {
 		default:
 			// Not an opcode — this word starts a variable-length push.
 			imm, err := readImmediate(r, word)
+			if errors.Is(err, io.EOF) {
+				if len(frame)-start > maxImmediateWireBytes {
+					return out, fmt.Errorf("oslog: immediate exceeds %d-byte wire resource budget", maxImmediateWireBytes)
+				}
+				// readImmediate has not changed the stack. Keep only this
+				// incomplete instruction; completed instructions stay committed.
+				d.pending = append([]byte(nil), frame[start:]...)
+				return out, nil
+			}
 			if err != nil {
 				return out, err
 			}
 			d.stack = append(d.stack, imm)
 		}
 	}
+}
+
+// Finish checks actual end-of-stream, rather than a DTX message boundary.
+// Cancellation cannot certify an unfinished instruction as complete.
+func (d *Decoder) Finish() error {
+	if d.err == nil && len(d.pending) != 0 {
+		if len(d.pending) == 1 {
+			d.err = fmt.Errorf("oslog: truncated word at stream end: %w", io.ErrUnexpectedEOF)
+		} else {
+			d.err = fmt.Errorf("oslog: truncated push at stream end (%d pending bytes): %w", len(d.pending), io.ErrUnexpectedEOF)
+		}
+	}
+	return d.err
 }
 
 // frameReader walks a frame as a stream of little-endian 16-bit words.
@@ -266,6 +318,7 @@ func readImmediate(r *frameReader, first uint16) ([]byte, error) {
 	var n int       // bit count currently in window
 
 	word := first
+	wireBytes := 2
 	for {
 		bits = (bits << 14) | uint64(word&0x3FFF)
 		n += 14
@@ -277,11 +330,15 @@ func readImmediate(r *frameReader, first uint16) ([]byte, error) {
 		if word&tailMask == 0xC000 {
 			break
 		}
+		if wireBytes >= maxImmediateWireBytes {
+			return nil, fmt.Errorf("oslog: immediate exceeds %d-byte wire resource budget", maxImmediateWireBytes)
+		}
 		next, err := r.readWord()
 		if err != nil {
 			return nil, fmt.Errorf("oslog: truncated push: %w", err)
 		}
 		word = next
+		wireBytes += 2
 	}
 	// Pad remaining bits to a byte boundary (zeros at the LSB end).
 	if n > 0 {

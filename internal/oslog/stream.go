@@ -192,6 +192,16 @@ func (s *Stream) pump(ctx context.Context) {
 		disconnected = s.conn.Closed()
 	}
 	dec := NewDecoder()
+	defer func() {
+		if err := dec.Finish(); err != nil {
+			s.errMu.Lock()
+			if s.decodeErr == nil {
+				s.decodeErr = err
+				s.err = errors.Join(s.err, fmt.Errorf("%w: activitytracetap stream end: %w", ErrCaptureIntegrity, err))
+			}
+			s.errMu.Unlock()
+		}
+	}()
 	var buf []Record
 	for {
 		select {
@@ -277,7 +287,8 @@ func (s *Stream) Close() error {
 }
 
 // Err returns the sticky terminal capture cause. Explicit Close and context
-// cancellation leave it nil; an interrupted/undecodable stream is not clean.
+// cancellation remain clean only at a complete decoder instruction boundary;
+// an interrupted/undecodable stream is not clean.
 func (s *Stream) Err() error {
 	s.errMu.RLock()
 	defer s.errMu.RUnlock()

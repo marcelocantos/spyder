@@ -169,3 +169,70 @@ func TestStreamFailureDoesNotCloseAnotherCapture(t *testing.T) {
 		t.Fatalf("another capture inherited failure: %v", healthy.Err())
 	}
 }
+
+func TestStreamPendingInstructionFailsEveryTerminalPath(t *testing.T) {
+	for _, mode := range []string{"close", "cancel", "disconnect", "frames_closed"} {
+		for _, partial := range [][]byte{{0x00}, {0x00, 0x80}} {
+			connection := &controlledConnection{closed: make(chan struct{}), cause: errors.New("injected DTX EOF")}
+			stream := &Stream{conn: connection, frames: make(chan traceBatch), closeCh: make(chan struct{}), Records: make(chan Record)}
+			ctx, cancel := context.WithCancel(context.Background())
+			go stream.pump(ctx)
+			stream.frames <- traceBatch{Payload: partial}
+			// Receipt on an unbuffered channel ensures the partial instruction
+			// is decoded before the next select can observe termination.
+			switch mode {
+			case "close":
+				stream.Close()
+			case "cancel":
+				cancel()
+			case "disconnect":
+				connection.Close()
+			case "frames_closed":
+				close(stream.frames)
+			}
+			receiveClosed(t, stream)
+			cancel()
+			stream.Close()
+			if !errors.Is(stream.Err(), ErrCaptureIntegrity) || stream.LastDecodeError() == nil || !strings.Contains(stream.Err().Error(), "truncated") {
+				t.Fatalf("%s lost pending terminal instruction: %v", mode, stream.Err())
+			}
+			if mode == "disconnect" && !strings.Contains(stream.Err().Error(), "injected DTX EOF") {
+				t.Fatal("terminal decoder check erased transport cause")
+			}
+			if mode == "frames_closed" && !strings.Contains(stream.Err().Error(), "frame channel closed") {
+				t.Fatal("terminal decoder check erased channel cause")
+			}
+			select {
+			case <-connection.Closed():
+			default:
+				t.Fatal("pending failure leaked owned connection")
+			}
+		}
+	}
+}
+
+func TestStreamHeartbeatBetweenImmediatePartsPreservesRows(t *testing.T) {
+	connection := &controlledConnection{closed: make(chan struct{}), cause: errors.New("injected DTX EOF")}
+	stream := &Stream{conn: connection, frames: make(chan traceBatch), closeCh: make(chan struct{}), Records: make(chan Record, 2)}
+	ctx, cancel := context.WithCancel(context.Background())
+	go stream.pump(ctx)
+	corpus := incrementalCorpus()
+	for _, payload := range [][]byte{corpus[:1], heartbeatPrefix, nil, corpus[1:]} {
+		stream.frames <- traceBatch{Payload: payload}
+	}
+	for _, message := range []string{"got it", "second"} {
+		select {
+		case row, ok := <-stream.Records:
+			if !ok || row.PID != 42 || row.ImageName != "MyApp" || row.Message != message {
+				t.Fatalf("lost or duplicated row: %+v err=%v", row, stream.Err())
+			}
+		case <-time.After(time.Second):
+			t.Fatal("split immediate did not resume")
+		}
+	}
+	cancel()
+	receiveClosed(t, stream)
+	if stream.Err() != nil {
+		t.Fatalf("complete incremental stream failed: %v", stream.Err())
+	}
+}

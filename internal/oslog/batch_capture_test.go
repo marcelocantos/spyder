@@ -70,7 +70,7 @@ func readBatchEntries(t *testing.T, path string) []capturedBatchEntry {
 func batchTestStream(t *testing.T, capture *batchCapture) (*Stream, context.CancelFunc) {
 	t.Helper()
 	connection := &controlledConnection{closed: make(chan struct{}), cause: errors.New("injected DTX EOF")}
-	stream := &Stream{conn: connection, frames: make(chan traceBatch, 8), closeCh: make(chan struct{}), Records: make(chan Record, 8), batchCapture: capture}
+	stream := &Stream{conn: connection, frames: make(chan traceBatch), closeCh: make(chan struct{}), Records: make(chan Record, 8), batchCapture: capture}
 	ctx, cancel := context.WithCancel(context.Background())
 	go stream.pump(ctx)
 	t.Cleanup(func() {
@@ -95,6 +95,9 @@ func TestBatchCaptureReplaysExactValidPrefixAndFailingVMInput(t *testing.T) {
 		dispatcher.Dispatch(dtx.Message{Payload: []any{payload}, PayloadHeader: dtx.PayloadHeader{MessageType: 1},
 			ChannelCode: -1, Identifier: i + 100, FragmentIndex: 2, Fragments: 3})
 	}
+	// The unbuffered final dispatch has been received by pump; it must finish
+	// decoding that case before observing cancellation on its next select.
+	cancel()
 	var rows int
 	for range stream.Records {
 		rows++
@@ -125,8 +128,11 @@ func TestBatchCaptureReplaysExactValidPrefixAndFailingVMInput(t *testing.T) {
 			t.Fatalf("recorded valid prefix failed at%d: %v", i, err)
 		}
 	}
-	if err == nil || !strings.Contains(err.Error(), "truncated push") {
-		t.Fatal("recorded failing batch does not reproduce decoder error")
+	if err != nil {
+		t.Fatalf("message boundary was mistaken for stream EOF: %v", err)
+	}
+	if err := decoder.Finish(); err == nil || !strings.Contains(err.Error(), "truncated push") {
+		t.Fatal("recorded terminal prefix does not reproduce truncation")
 	}
 	terminal := entries[len(entries)-1]
 	if terminal.Kind != "terminal" || !terminal.Incomplete || terminal.Recorded != 4 || terminal.Attempted != 4 || !strings.Contains(terminal.Error, "truncated push") {
