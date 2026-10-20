@@ -26,6 +26,45 @@ func incrementalCorpus() []byte {
 	)
 }
 
+// Synthetic wire schema: process=(pid, opaque), thread=(tid, process).
+// Only the first direct scalar carries each identity. No real device data.
+func tupleIdentityCorpus() []byte {
+	return buildFrame(
+		defineTableFrame("Logs", []string{"process", "thread", "process-image-path", "message"}),
+		encodeImmediate([]byte{42}), encodeImmediate([]byte{1, 2, 3, 4, 5}), word16(cmdStruct, 2),
+		encodeImmediate([]byte{84}), word16(cmdCopy, 1), word16(cmdStruct, 2),
+		pushString("/private/Test/StockCars"),
+		pushString("narrative-text"), encodeImmediate([]byte("ready")), word16(cmdStruct, 2), word16(cmdStruct, 1), word16(cmdEndRow, 0),
+	)
+}
+
+func TestDecoderTupleProcessAndThreadIdentity(t *testing.T) {
+	corpus := tupleIdentityCorpus()
+	process := []stackItem{[]byte{42, 0}, []byte{1, 2, 3, 4, 5, 0}}
+	thread := []stackItem{[]byte{84, 0}, process}
+	for split := 0; split <= len(corpus); split++ {
+		d := NewDecoder()
+		var rows []Record
+		for _, part := range [][]byte{corpus[:split], corpus[split:]} {
+			var err error
+			rows, err = d.Decode(part, rows)
+			if err != nil {
+				t.Fatalf("split %d: %v", split, err)
+			}
+		}
+		if d.Finish() != nil || len(rows) != 1 {
+			t.Fatalf("split %d incomplete corpus", split)
+		}
+		rec := rows[0]
+		if rec.PID != 42 || rec.ThreadID != 84 || rec.ImageName != "StockCars" || rec.Message != "ready" {
+			t.Fatalf("split %d lost tuple identity: PID=%d TID=%d image=%q message=%q", split, rec.PID, rec.ThreadID, rec.ImageName, rec.Message)
+		}
+		if !reflect.DeepEqual(rec.Columns["process"], process) || !reflect.DeepEqual(rec.Columns["thread"], thread) {
+			t.Fatalf("split %d changed raw identity Columns", split)
+		}
+	}
+}
+
 func TestDecoderIncrementalEveryFrameSplit(t *testing.T) {
 	corpus := incrementalCorpus()
 	baseline := NewDecoder()

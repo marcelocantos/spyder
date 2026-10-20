@@ -10,11 +10,44 @@ import (
 	"strings"
 )
 
+// activityIdentityMaxWireBytes follows the upstream activitytracetap integer
+// representation: zero-bit elision and whole-byte padding produce 2–9 bytes.
+// https://github.com/doronz88/pymobiledevice3/blob/master/pymobiledevice3/services/dvt/instruments/activity_trace_tap.py
+// Record.PID and Record.ThreadID are uint32, so only four bytes may be nonzero.
+const (
+	activityIdentityMaxWireBytes = 9
+	recordIdentityBytes          = 4
+)
+
+// activityIdentity reads only the first direct scalar of a process/thread
+// tuple. The remaining tuple fields are opaque, not fallback identities.
+// Legacy direct-byte scalars remain supported. Missing, malformed, over-wide,
+// or overflowing values stay unavailable (zero), rather than being truncated.
+func activityIdentity(value stackItem) uint32 {
+	if tuple, ok := value.([]stackItem); ok {
+		if len(tuple) == 0 {
+			return 0
+		}
+		value = tuple[0]
+	}
+	b, ok := value.([]byte)
+	if !ok || len(b) == 0 || len(b) > activityIdentityMaxWireBytes {
+		return 0
+	}
+	for _, high := range b[min(len(b), recordIdentityBytes):] {
+		if high != 0 {
+			return 0
+		}
+	}
+	return uint32(leUint64(b))
+}
+
 // buildRecord folds a row's column items into a Record.
 //
 // Column semantics (derived from the activitytracetap stream's
-// table definitions): the row carries scalar bytes for `process` /
-// `thread` / `timestamp`, NUL-terminated strings for fields like
+// table definitions): process/thread tuples carry their integer identity in
+// the first direct byte scalar; legacy flat scalars are accepted too. Time
+// carries scalar bytes, with NUL-terminated strings for fields like
 // `message_type`, `subsystem`, `category`, `sender_image_path`, and a
 // structured tuple-of-tuples for `message` describing a format-string
 // expansion. Anything not classified gets stashed in Columns under
@@ -34,13 +67,9 @@ func buildRecord(columns []string, items []stackItem) (Record, bool) {
 		rec.Columns[col] = v
 		switch col {
 		case "process":
-			// The activitytracetap `process` column is a 4-byte
-			// little-endian PID, not the image path. The image-name
-			// resolution happens in the Decoder via the side-channel
-			// pid-to-name table.
-			rec.PID = uint32(leUint64(asBytes(v)))
+			rec.PID = activityIdentity(v)
 		case "thread":
-			rec.ThreadID = uint32(leUint64(asBytes(v)))
+			rec.ThreadID = activityIdentity(v)
 		case "time", "timestamp":
 			rec.Timestamp = leUint64(asBytes(v))
 		case "message_type", "message-type":
