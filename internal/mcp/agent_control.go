@@ -22,9 +22,11 @@ func (h *Handler) AttachIOSAgent(resv *reservations.Store) {
 		return
 	}
 	host := device.NewAutomationHost(ios)
+	host.DeviceKit = device.DeviceKitAgentFromEnvironment()
 	sup := agent.NewSupervisor(&agent.SupervisorArgs{
-		Effects: host.Effects(),
-		Probe:   host.Probe,
+		RunnerBundle: host.RunnerBundle(),
+		Effects:      host.Effects(),
+		Probe:        host.Probe,
 		OwnerOf: func(id string) (string, bool) {
 			if resv == nil {
 				return "", false
@@ -89,6 +91,17 @@ func (h *Handler) TickAgents() {
 			continue
 		}
 		if info.UUID == "" {
+			continue
+		}
+		// A DeviceKit client explicitly admits the first session. Background
+		// supervision must not open consent prompts on every connected device.
+		if h.agentHost != nil && h.agentHost.DeviceKit != nil {
+			if _, exists := sup.Snapshot(info.UUID); !exists {
+				continue
+			}
+			if _, err := sup.Check(info.UUID); err != nil {
+				slog.Warn("agent check", "device", info.UUID, "error", err)
+			}
 			continue
 		}
 		if _, err := sup.Tick(info.UUID); err != nil {

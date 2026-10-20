@@ -266,6 +266,9 @@ func (s *Supervisor) Ensure(deviceID, owner string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	if err := s.holds(deviceID, owner); err != nil {
+		return Snapshot{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.machine(deviceID)
@@ -301,6 +304,19 @@ func (s *Supervisor) Tick(deviceID string) (Snapshot, error) {
 	return snap, nil
 }
 
+// Check observes a resident game-input agent without opening another consent
+// session when a runner has died. Only an explicit client Ensure may start it.
+func (s *Supervisor) Check(deviceID string) (Snapshot, error) {
+	obs, err := s.observe(deviceID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m := s.machine(deviceID)
+	return s.advance(m, obs, false)
+}
+
 // Idle stops the app under test and drops any build lease and any
 // host xcodebuild or testmanagerd session. A healthy runner is left
 // in place. It probes first so the bundle launch_app recorded after
@@ -310,6 +326,9 @@ func (s *Supervisor) Idle(deviceID, owner string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	obs, obsErr := s.observe(deviceID)
+	if err := s.holds(deviceID, owner); err != nil {
+		return Snapshot{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.machine(deviceID)

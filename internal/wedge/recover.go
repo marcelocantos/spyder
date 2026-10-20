@@ -33,8 +33,15 @@ const recoveryHelperPath = "/opt/homebrew/bin/spyder-killusbmuxd"
 // Outcomes are reported via slog: Info on success (usbmuxd was killed;
 // launchd respawns it), Error on sudo-not-configured or helper failure.
 func AttemptRecovery(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "sudo", "-n", recoveryHelperPath)
-	out, runErr := cmd.CombinedOutput()
+	return attemptRecovery(ctx, func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		return exec.CommandContext(ctx, name, args...).CombinedOutput()
+	})
+}
+
+// Host tests supply a command executor. They must never invoke privileged USB
+// recovery merely to discover whether the developer configured passwordless sudo.
+func attemptRecovery(ctx context.Context, run func(context.Context, string, ...string) ([]byte, error)) error {
+	out, runErr := run(ctx, "sudo", "-n", recoveryHelperPath)
 	trimmed := strings.TrimSpace(string(out))
 	if runErr != nil {
 		slog.Error("wedge: auto-recovery failed",

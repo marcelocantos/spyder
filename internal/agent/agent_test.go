@@ -21,6 +21,45 @@ type harness struct {
 	held      bool
 }
 
+func TestCheckNeverReopensConsentOrInstallsAnAgent(t *testing.T) {
+	h := &harness{obs: Observation{Tethered: true, LockKnown: true}, holder: "office", held: true}
+	s := h.supervisor()
+	for range 5 {
+		state, err := s.Check("ipad")
+		if err != nil || state.Ready || h.launches != 0 || h.installs != 0 {
+			t.Fatalf("state=%+v err=%v launches=%d installs=%d", state, err, h.launches, h.installs)
+		}
+	}
+	state, err := s.Ensure("ipad", "office")
+	if err != nil || !state.Ready || h.launches != 1 {
+		t.Fatalf("explicit ensure failed: %+v %v", state, err)
+	}
+}
+
+func TestOwnerLostDuringProbeCannotStartOrStopApps(t *testing.T) {
+	for _, idle := range []bool{false, true} {
+		holder := "office"
+		effects := 0
+		s := NewSupervisor(&SupervisorArgs{
+			OwnerOf: func(string) (string, bool) { return holder, true },
+			Probe: func(string) (Observation, error) {
+				holder = "other"
+				return Observation{Tethered: true, LockKnown: true, AUTBundle: "game", AUTRunning: true}, nil
+			},
+			Effects: Effects{Launch: func(string) (int, error) { effects++; return 123, nil }, StopAUT: func(string, string) error { effects++; return nil }},
+		})
+		var err error
+		if idle {
+			_, err = s.Idle("ipad", "office")
+		} else {
+			_, err = s.Ensure("ipad", "office")
+		}
+		if !errors.Is(err, ErrNotOwner) || effects != 0 {
+			t.Fatalf("idle=%v err=%v effects=%d", idle, err, effects)
+		}
+	}
+}
+
 func (h *harness) supervisor() *Supervisor {
 	if h.nextPID == 0 {
 		h.nextPID = 100

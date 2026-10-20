@@ -181,12 +181,25 @@ func main() {
 
 // runServe parses optional --addr and starts the HTTP MCP server.
 func runServe(args []string) {
-	addr, explicit, err := parseServeAddr(args, os.Getenv("SPYDER_ADDR"), listenaddr.Load(paths.ListenAddrPath()))
+	agentsOnly := false
+	filtered := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--agents-only" {
+			agentsOnly = true
+		} else {
+			filtered = append(filtered, arg)
+		}
+	}
+	addr, explicit, err := parseServeAddr(filtered, os.Getenv("SPYDER_ADDR"), listenaddr.Load(paths.ListenAddrPath()))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
-	if err := daemon.Start(daemon.Config{Addr: addr, Version: version, ExplicitAddr: explicit, SuperviseAgents: true}); err != nil {
+	if agentsOnly && (!explicit || !listenaddr.IsLoopback(addr) || os.Getenv(paths.DataDirEnv) == "" || os.Getenv("SPYDER_IOS_AGENT_BACKEND") != "devicekit") {
+		fmt.Fprintln(os.Stderr, "--agents-only requires explicit loopback address, separate SPYDER_DATA_DIR and DeviceKit configuration")
+		os.Exit(2)
+	}
+	if err := daemon.Start(daemon.Config{Addr: addr, Version: version, ExplicitAddr: explicit, SuperviseAgents: true, AgentsOnly: agentsOnly}); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 		os.Exit(1)
 	}

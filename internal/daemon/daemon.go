@@ -60,6 +60,7 @@ type Config struct {
 	Version         string // emitted in serverInfo
 	TunneldAddr     string // Deprecated: tunneld is no longer used; field retained for backward compat.
 	SuperviseAgents bool   // production serve only: own one XCTest agent per tethered iOS device (🎯T163). Unit tests leave this false so Run does not launch a runner.
+	AgentsOnly      bool   // Separate resident-agent service: reuse the existing tunnel, no lab-wide monitors.
 }
 
 // agentTickInterval is how often the production daemon health-checks
@@ -89,7 +90,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// is non-fatal — degraded mode where iOS DTX-dependent tools fail
 	// per-call but the daemon stays up.
 	var tunnelSup *iostunnel.Supervisor
-	if binPath := resolveIOSTunnelBinary(); binPath != "" {
+	if binPath := resolveIOSTunnelBinary(); binPath != "" && !cfg.AgentsOnly {
 		tunnelSup = iostunnel.New(binPath, goios.DefaultTunnelHost, goios.DefaultTunnelPort)
 		if err := tunnelSup.Start(ctx); err != nil {
 			slog.Error("iostunnel: start failed; iOS tools degraded", "error", err)
@@ -116,7 +117,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	// Self-monitoring: attach the attention notifier to the live health
 	// model and start the background probes that populate it (🎯T90).
-	if mcpHandler != nil {
+	if mcpHandler != nil && !cfg.AgentsOnly {
 		startHealthWiring(ctx, mcpHandler.Health(), tunnelSup != nil)
 		// 🎯T137: persist battery_level/charging for every connected
 		// iOS/Android device. First tick is immediate so /dashboard#battery
@@ -143,12 +144,14 @@ func Run(ctx context.Context, cfg Config) error {
 	// tail of `log stream --process usbmuxd`. On detection, fires a
 	// snapshot and attempts `sudo spyder-killusbmuxd`. Cleanly tied
 	// to ctx — exits on daemon shutdown.
-	go wedge.RunMonitor(ctx)
+	if !cfg.AgentsOnly {
+		go wedge.RunMonitor(ctx)
+	}
 
 	// Host Wi-Fi monitor. Uses app-channel staleness (missing dial-back or
 	// ping failure on live sessions) as the primary signal — OS self-dials
 	// can succeed while devices still cannot reach the host over Wi-Fi.
-	if mcpHandler != nil && mcpHandler.HasMobileInventory() {
+	if !cfg.AgentsOnly && mcpHandler != nil && mcpHandler.HasMobileInventory() {
 		deps := hostwifi.ProductionDeps(
 			appChanMgr,
 			mcpHandler.LaunchTimesSnapshot,

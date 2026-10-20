@@ -51,6 +51,9 @@ const lockProbeBudget = 5 * time.Second
 // transitions; the supervisor does.
 type AutomationHost struct {
 	IOS *IOSAdapter
+	// DeviceKit is configured once, before supervision starts. The daemon,
+	// rather than a test client, owns the installed game-input runner.
+	DeviceKit *DeviceKitAgent
 	// AUT is an explicit override. Production leaves it empty;
 	// NoteLaunched records the bundle launch_app actually started.
 	AUT string
@@ -230,6 +233,12 @@ func (h *AutomationHost) NoteLease(id string, held bool) {
 
 // Probe reads tether, lock, runner, and the app under test.
 func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
+	if h.DeviceKit != nil && h.DeviceKit.err != nil {
+		return agent.Observation{}, h.DeviceKit.err
+	}
+	if h.DeviceKit != nil && !h.DeviceKit.Devices[id] {
+		return agent.Observation{}, errors.New("device is outside the configured automation scope")
+	}
 	if h.IOS == nil {
 		return agent.Observation{}, errors.New("ios adapter is nil")
 	}
@@ -253,6 +262,12 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 	if runErr != nil {
 		return agent.Observation{}, runErr
 	}
+	if h.DeviceKit != nil && alive {
+		owned, ok := h.heldPID(id)
+		if !ok || owned != pid {
+			return agent.Observation{}, errors.New("DeviceKit process has no matching daemon-owned live channel")
+		}
+	}
 	if instErr != nil {
 		return agent.Observation{}, instErr
 	}
@@ -263,6 +278,10 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 			autRunning = true
 		}
 	}
+	authorized := alive && consent == ""
+	if h.DeviceKit != nil && alive {
+		authorized = h.deviceKitReady(id, pid)
+	}
 	return agent.Observation{
 		Tethered:          tethered,
 		Locked:            locked,
@@ -270,7 +289,7 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 		BootID:            h.bootID(id),
 		RunnerPID:         pid,
 		RunnerAlive:       alive,
-		Authorized:        alive && consent == "",
+		Authorized:        authorized,
 		ConsentRequired:   consent != "",
 		ConsentActionable: consent != "",
 		ConsentMessage:    consent,
@@ -587,11 +606,14 @@ func (h *AutomationHost) installed(id string) (bool, string, error) {
 	var hostVer, runnerVer string
 	hostOK, runnerOK := false, false
 	for _, app := range apps {
+		if h.DeviceKit != nil && app.BundleID == DeviceKitRunnerBundle {
+			return true, app.Version, nil
+		}
 		switch app.BundleID {
-		case alertHostBundle:
+		case h.hostBundle():
 			hostOK = true
 			hostVer = app.Version
-		case alertRunnerBundle:
+		case h.RunnerBundle():
 			runnerOK = true
 			runnerVer = app.Version
 		}
@@ -631,6 +653,11 @@ func (h *AutomationHost) heldPID(id string) (int, bool) {
 	if hold == nil || hold.pid <= 0 {
 		return 0, false
 	}
+	select {
+	case <-hold.done:
+		return 0, false
+	default:
+	}
 	return hold.pid, true
 }
 
@@ -638,7 +665,7 @@ func (h *AutomationHost) heldPID(id string) (int, bool) {
 // not a dead runner: one retry, then the pid of a hold this process
 // still owns. Only "app not running" means the runner is gone.
 func (h *AutomationHost) observeRunner(id string) (int, bool, string, error) {
-	pid, err := h.appPID(id, alertRunnerBundle)
+	pid, err := h.appPID(id, h.RunnerBundle())
 	if err == nil && pid > 0 {
 		return pid, true, fmt.Sprintf("runner pid %d", pid), nil
 	}
@@ -647,7 +674,7 @@ func (h *AutomationHost) observeRunner(id string) (int, bool, string, error) {
 	}
 	first := err
 	if err != nil {
-		pid, err = h.appPID(id, alertRunnerBundle)
+		pid, err = h.appPID(id, h.RunnerBundle())
 		if err == nil && pid > 0 {
 			return pid, true, fmt.Sprintf("runner pid %d after retry (%v)", pid, first), nil
 		}
@@ -667,6 +694,9 @@ func (h *AutomationHost) observeRunner(id string) (int, bool, string, error) {
 // Launch replaces an unhealthy runner with one resident XCTest session.
 // The supervisor calls it only for a dead or unauthorized runner.
 func (h *AutomationHost) Launch(id string) (int, error) {
+	if h.DeviceKit != nil {
+		return h.launchDeviceKit(id)
+	}
 	if pid, alive, _, err := h.observeRunner(id); err == nil && alive && pid > 0 {
 		return pid, nil
 	}
@@ -723,7 +753,7 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 			<-done
 			return 0, fmt.Errorf("resident XCTest runner did not stay up on %s", id)
 		case <-time.After(200 * time.Millisecond):
-			pid, err := h.appPID(id, alertRunnerBundle)
+			pid, err := h.appPID(id, h.RunnerBundle())
 			if err != nil || pid <= 0 {
 				stableSince = time.Time{}
 				continue
@@ -733,6 +763,9 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 				continue
 			}
 			if time.Since(stableSince) < agentHoldSettle {
+				continue
+			}
+			if h.DeviceKit != nil && !h.deviceKitReady(id, pid) {
 				continue
 			}
 			h.mu.Lock()
@@ -746,6 +779,9 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 }
 
 func (h *AutomationHost) runHold(ctx context.Context, id string) error {
+	if h.DeviceKit != nil {
+		return h.runDeviceKit(ctx, id)
+	}
 	dev, err := h.IOS.goios.Session(id)
 	if err != nil {
 		return fmt.Errorf("agent session on %s: %w", id, err)
@@ -793,6 +829,9 @@ func (h *AutomationHost) Install(id string) (string, error) {
 	}
 	if ok {
 		return gen, nil
+	}
+	if h.DeviceKit != nil {
+		return "", errors.New("DeviceKit agent must be installed explicitly; supervision never reinstalls it")
 	}
 	hostApp, runnerApp, err := alertRunnerProducts()
 	if err != nil {
@@ -891,6 +930,9 @@ func (h *AutomationHost) Shutdown() {
 
 // TapButton asks the resident runner to press a SpringBoard button.
 func (h *AutomationHost) TapButton(id, button string) error {
+	if h.DeviceKit != nil {
+		return errors.New("DeviceKit runner does not implement the AlertRunner command-file protocol")
+	}
 	if h.IOS == nil || h.IOS.goios == nil {
 		return errors.New("ios session is not configured")
 	}
