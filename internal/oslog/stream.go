@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sync"
 
 	goios_ios "github.com/danielpaulus/go-ios/ios"
@@ -32,17 +31,29 @@ const (
 // before invoking the decoder.
 var heartbeatPrefix = []byte("bplist")
 
+// ErrCaptureIntegrity marks loss after a DTX capture opened. Falling back to
+// another channel cannot recover the missing interval or undecodable batch.
+var ErrCaptureIntegrity = errors.New("oslog capture integrity failed")
+
+type streamConnection interface {
+	Close() error
+	Closed() <-chan struct{}
+	Err() error
+}
+
 // Stream is a live OSLog stream from one device, opened via the DTX
 // activitytracetap channel. Records are delivered on the Records
 // channel until the stream is closed (context cancellation, device
 // disconnect, or explicit Close).
 type Stream struct {
-	conn      *dtx.Connection
+	conn      streamConnection
 	channel   *dtx.Channel
 	frames    chan []byte
 	closeOnce sync.Once
 	closeCh   chan struct{}
 	Records   chan Record
+	errMu     sync.RWMutex
+	err       error
 	decodeErr error
 }
 
@@ -160,6 +171,11 @@ func defaultConfig() map[string]any {
 // Records. It terminates when ctx fires or the connection drops.
 func (s *Stream) pump(ctx context.Context) {
 	defer close(s.Records)
+	defer s.Close()
+	var disconnected <-chan struct{}
+	if s.conn != nil {
+		disconnected = s.conn.Closed()
+	}
 	dec := NewDecoder()
 	var buf []Record
 	for {
@@ -169,8 +185,16 @@ func (s *Stream) pump(ctx context.Context) {
 			return
 		case <-s.closeCh:
 			return
+		case <-disconnected:
+			// Explicit Close and context cancellation also close the transport.
+			// When both selects are ready, neither is a capture failure.
+			s.noteDisconnect(ctx)
+			return
 		case frame, ok := <-s.frames:
 			if !ok {
+				s.errMu.Lock()
+				s.err = fmt.Errorf("%w: DTX frame channel closed", ErrCaptureIntegrity)
+				s.errMu.Unlock()
 				return
 			}
 			if bytes.HasPrefix(frame, heartbeatPrefix) || len(frame) == 0 {
@@ -179,9 +203,11 @@ func (s *Stream) pump(ctx context.Context) {
 			buf = buf[:0]
 			out, err := dec.Decode(frame, buf)
 			if err != nil {
+				s.errMu.Lock()
 				s.decodeErr = err
-				slog.Error("oslog: decode error — continuing", "error", err.Error(), "frame_len", len(frame))
-				continue
+				s.err = fmt.Errorf("%w: activitytracetap batch decode: %w", ErrCaptureIntegrity, err)
+				s.errMu.Unlock()
+				return
 			}
 			for _, r := range out {
 				select {
@@ -191,10 +217,27 @@ func (s *Stream) pump(ctx context.Context) {
 					return
 				case <-s.closeCh:
 					return
+				case <-disconnected:
+					s.noteDisconnect(ctx)
+					return
 				}
 			}
 		}
 	}
+}
+
+func (s *Stream) noteDisconnect(ctx context.Context) {
+	if ctx.Err() != nil {
+		return
+	}
+	select {
+	case <-s.closeCh:
+		return
+	default:
+	}
+	s.errMu.Lock()
+	s.err = fmt.Errorf("%w: DTX connection closed: %v", ErrCaptureIntegrity, s.conn.Err())
+	s.errMu.Unlock()
 }
 
 // Close terminates the stream and tears down the DTX connection.
@@ -209,11 +252,19 @@ func (s *Stream) Close() error {
 	return nil
 }
 
-// LastDecodeError returns the most recent decoder error encountered
-// during streaming, if any. Decoder errors are non-fatal — the pump
-// continues — but they are surfaced here so callers can decide
-// whether to log or fall back.
+// Err returns the sticky terminal capture cause. Explicit Close and context
+// cancellation leave it nil; an interrupted/undecodable stream is not clean.
+func (s *Stream) Err() error {
+	s.errMu.RLock()
+	defer s.errMu.RUnlock()
+	return s.err
+}
+
+// LastDecodeError retains the decoder cause for existing callers. A decoding
+// failure now ends the stream because the omitted records cannot be counted.
 func (s *Stream) LastDecodeError() error {
+	s.errMu.RLock()
+	defer s.errMu.RUnlock()
 	if s.decodeErr == nil {
 		return nil
 	}

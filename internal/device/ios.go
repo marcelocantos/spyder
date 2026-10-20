@@ -1919,6 +1919,10 @@ func (a *IOSAdapter) streamOSTrace(ctx context.Context, id string, filter LogFil
 	// Try DTX first.
 	if err := a.streamOSLogDTX(ctx, id, dev, filter, regexFilter, emit); err == nil {
 		return nil
+	} else if errors.Is(err, oslog.ErrCaptureIntegrity) {
+		// The stream already opened and lost data. Another channel cannot
+		// repair that capture interval, even when it can still emit records.
+		return err
 	} else if ctx.Err() != nil {
 		return ctx.Err()
 	} else {
@@ -2014,14 +2018,24 @@ func (a *IOSAdapter) streamOSLogDTX(ctx context.Context, id string,
 		return err
 	}
 	defer stream.Close()
+	return drainOSLogDTX(ctx, stream.Records, stream.Err, filter, regexFilter, emit)
+}
 
+// drainOSLogDTX preserves a terminal decoder/transport cause through adapter
+// cancellation, allowing managed captures to report incomplete without guessing
+// how many device records were lost.
+func drainOSLogDTX(ctx context.Context, records <-chan oslog.Record, streamErr func() error,
+	filter LogFilter, regexFilter *regexp.Regexp, emit func(LogLine) bool) error {
 	for {
 		select {
 		case <-ctx.Done():
+			if err := streamErr(); err != nil {
+				return err
+			}
 			return ctx.Err()
-		case rec, ok := <-stream.Records:
+		case rec, ok := <-records:
 			if !ok {
-				return nil
+				return streamErr()
 			}
 			if filter.Process != "" && rec.ImageName != filter.Process {
 				continue
@@ -2043,6 +2057,9 @@ func (a *IOSAdapter) streamOSLogDTX(ctx context.Context, id string,
 				Diagnostic: diag,
 			}
 			if !emit(ll) {
+				if err := streamErr(); err != nil {
+					return err
+				}
 				return ctx.Err()
 			}
 		}
