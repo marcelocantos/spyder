@@ -29,7 +29,7 @@ func controlledStream(t *testing.T, buffered bool) (*Stream, *controlledConnecti
 	if buffered {
 		capacity = 1
 	}
-	stream := &Stream{conn: connection, frames: make(chan []byte, 2), closeCh: make(chan struct{}), Records: make(chan Record, capacity)}
+	stream := &Stream{conn: connection, frames: make(chan traceBatch, 2), closeCh: make(chan struct{}), Records: make(chan Record, capacity)}
 	ctx, cancel := context.WithCancel(context.Background())
 	go stream.pump(ctx)
 	t.Cleanup(func() {
@@ -65,7 +65,7 @@ func TestStreamDisconnectEndsReaderWithIntegrityCause(t *testing.T) {
 func TestStreamDecodeLossEndsReaderWithIntegrityCause(t *testing.T) {
 	stream, connection, _ := controlledStream(t, true)
 	// A struct opcode with an empty decoder stack is a real decoder failure.
-	stream.frames <- word16(cmdStruct, 1)
+	stream.frames <- traceBatch{Payload: word16(cmdStruct, 1)}
 	receiveClosed(t, stream)
 	if !errors.Is(stream.Err(), ErrCaptureIntegrity) || !strings.Contains(stream.Err().Error(), "underflow") || stream.LastDecodeError() == nil {
 		t.Fatalf("undecodable batch was silently dropped: %v", stream.Err())
@@ -102,9 +102,9 @@ func TestStreamOwnedCloseAndCancellationRemainClean(t *testing.T) {
 
 func TestStreamValidHeartbeatDoesNotLookLikeDecoderLoss(t *testing.T) {
 	stream, _, cancel := controlledStream(t, true)
-	stream.frames <- heartbeatPrefix
-	stream.frames <- defineTableFrame("Logs", []string{"message"})
-	stream.frames <- buildFrame(word16(cmdStruct, 0), word16(cmdEndRow, 0))
+	stream.frames <- traceBatch{Payload: heartbeatPrefix}
+	stream.frames <- traceBatch{Payload: defineTableFrame("Logs", []string{"message"})}
+	stream.frames <- traceBatch{Payload: buildFrame(word16(cmdStruct, 0), word16(cmdEndRow, 0))}
 	select {
 	case _, ok := <-stream.Records:
 		if !ok {
@@ -122,8 +122,8 @@ func TestStreamValidHeartbeatDoesNotLookLikeDecoderLoss(t *testing.T) {
 
 func TestStreamDisconnectUnblocksFullRecordDelivery(t *testing.T) {
 	stream, connection, _ := controlledStream(t, false)
-	stream.frames <- defineTableFrame("Logs", []string{"message"})
-	stream.frames <- buildFrame(word16(cmdStruct, 0), word16(cmdEndRow, 0))
+	stream.frames <- traceBatch{Payload: defineTableFrame("Logs", []string{"message"})}
+	stream.frames <- traceBatch{Payload: buildFrame(word16(cmdStruct, 0), word16(cmdEndRow, 0))}
 	connection.Close()
 	// A queued row may win once before disconnect; continuously drain so both
 	// outer and blocked-send shutdown paths are allowed to finish.
@@ -146,10 +146,10 @@ func TestStreamDisconnectUnblocksFullRecordDelivery(t *testing.T) {
 func TestStreamFailureDoesNotCloseAnotherCapture(t *testing.T) {
 	failed, _, _ := controlledStream(t, true)
 	healthy, connection, cancel := controlledStream(t, true)
-	failed.frames <- word16(cmdStruct, 1)
+	failed.frames <- traceBatch{Payload: word16(cmdStruct, 1)}
 	receiveClosed(t, failed)
-	healthy.frames <- defineTableFrame("Logs", []string{"message"})
-	healthy.frames <- buildFrame(word16(cmdStruct, 0), word16(cmdEndRow, 0))
+	healthy.frames <- traceBatch{Payload: defineTableFrame("Logs", []string{"message"})}
+	healthy.frames <- traceBatch{Payload: buildFrame(word16(cmdStruct, 0), word16(cmdEndRow, 0))}
 	select {
 	case _, ok := <-healthy.Records:
 		if !ok {

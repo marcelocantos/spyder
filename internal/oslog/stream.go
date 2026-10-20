@@ -46,15 +46,16 @@ type streamConnection interface {
 // channel until the stream is closed (context cancellation, device
 // disconnect, or explicit Close).
 type Stream struct {
-	conn      streamConnection
-	channel   *dtx.Channel
-	frames    chan []byte
-	closeOnce sync.Once
-	closeCh   chan struct{}
-	Records   chan Record
-	errMu     sync.RWMutex
-	err       error
-	decodeErr error
+	conn         streamConnection
+	channel      *dtx.Channel
+	frames       chan traceBatch
+	closeOnce    sync.Once
+	closeCh      chan struct{}
+	Records      chan Record
+	errMu        sync.RWMutex
+	err          error
+	decodeErr    error
+	batchCapture *batchCapture
 }
 
 // frameDispatcher pushes incoming DTX message payloads onto the
@@ -62,7 +63,7 @@ type Stream struct {
 // log batch as a single binary blob in Payload[0], with the
 // expects-reply flag set false (one-way push).
 type frameDispatcher struct {
-	frames  chan []byte
+	frames  chan traceBatch
 	closeCh chan struct{}
 }
 
@@ -75,7 +76,8 @@ func (d frameDispatcher) Dispatch(msg dtx.Message) {
 		return
 	}
 	select {
-	case d.frames <- blob:
+	case d.frames <- traceBatch{Payload: blob, MessageType: uint32(msg.PayloadHeader.MessageType),
+		ChannelCode: msg.ChannelCode, Identifier: msg.Identifier, FragmentIndex: msg.FragmentIndex, Fragments: msg.Fragments}:
 	case <-d.closeCh:
 	}
 }
@@ -89,13 +91,23 @@ func (d frameDispatcher) Dispatch(msg dtx.Message) {
 // causes: developer disk image not mounted on the device, RSD tunnel
 // not established, iOS version that doesn't support this channel.
 // Callers can downgrade to the ostrace_relay path on error.
-func Open(ctx context.Context, dev goios_ios.DeviceEntry) (*Stream, error) {
+func Open(ctx context.Context, dev goios_ios.DeviceEntry) (_ *Stream, retErr error) {
+	capture, err := batchCaptureFromEnvironment(dev.Properties.SerialNumber)
+	if err != nil {
+		return nil, fmt.Errorf("%w: diagnostic batch configuration: %w", ErrCaptureIntegrity, err)
+	}
+	handedOff := false
+	defer func() {
+		if capture != nil && !handedOff {
+			retErr = errors.Join(retErr, capture.finish(retErr))
+		}
+	}()
 	conn, err := connectInstruments(dev)
 	if err != nil {
 		return nil, fmt.Errorf("oslog: DTX connect: %w", err)
 	}
 
-	frames := make(chan []byte, 32)
+	frames := make(chan traceBatch, 32)
 	closeCh := make(chan struct{})
 	disp := frameDispatcher{frames: frames, closeCh: closeCh}
 
@@ -117,13 +129,15 @@ func Open(ctx context.Context, dev goios_ios.DeviceEntry) (*Stream, error) {
 	}
 
 	s := &Stream{
-		conn:    conn,
-		channel: channel,
-		frames:  frames,
-		closeCh: closeCh,
-		Records: make(chan Record, 64),
+		conn:         conn,
+		channel:      channel,
+		frames:       frames,
+		closeCh:      closeCh,
+		Records:      make(chan Record, 64),
+		batchCapture: capture,
 	}
 
+	handedOff = true
 	go s.pump(ctx)
 
 	return s, nil
@@ -171,6 +185,7 @@ func defaultConfig() map[string]any {
 // Records. It terminates when ctx fires or the connection drops.
 func (s *Stream) pump(ctx context.Context) {
 	defer close(s.Records)
+	defer s.finishBatchCapture()
 	defer s.Close()
 	var disconnected <-chan struct{}
 	if s.conn != nil {
@@ -190,13 +205,22 @@ func (s *Stream) pump(ctx context.Context) {
 			// When both selects are ready, neither is a capture failure.
 			s.noteDisconnect(ctx)
 			return
-		case frame, ok := <-s.frames:
+		case batch, ok := <-s.frames:
 			if !ok {
 				s.errMu.Lock()
 				s.err = fmt.Errorf("%w: DTX frame channel closed", ErrCaptureIntegrity)
 				s.errMu.Unlock()
 				return
 			}
+			if s.batchCapture != nil {
+				if err := s.batchCapture.writeBatch(batch); err != nil {
+					s.errMu.Lock()
+					s.err = fmt.Errorf("%w: diagnostic batch retention: %w", ErrCaptureIntegrity, err)
+					s.errMu.Unlock()
+					return
+				}
+			}
+			frame := batch.Payload
 			if bytes.HasPrefix(frame, heartbeatPrefix) || len(frame) == 0 {
 				continue
 			}
