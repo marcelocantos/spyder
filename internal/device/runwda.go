@@ -389,6 +389,9 @@ func (h *runwdaHost) loop(udid string, gen int) {
 				release()
 				release = nil
 			}
+			if startErr != nil {
+				slog.Warn("runwda attempt failed", "udid", udid, "errText", startErr.Error())
+			}
 			if _, _, ready, errText := h.live(udid); ready && startErr == nil {
 				h.publish(udid, gen, AutomationReady, "")
 				slog.Info("runwda ready", "udid", udid, "bundle", bundle)
@@ -692,6 +695,9 @@ func (p *procRunner) Start(udid, bundle string, args []string) (int, error) {
 	if p == nil {
 		return 0, errors.New("runwda runner is not configured")
 	}
+	// The previous attempt's stderr lives only in its tail. Record the
+	// error and whether the child has exited before this slot is replaced.
+	p.logAttemptBeforeReplace(udid)
 	p.stopOwned(udid)
 	if len(args) == 0 {
 		args = defaultRunwdaArgs(udid, bundle)
@@ -748,6 +754,33 @@ func (p *procRunner) Start(udid, bundle string, args []string) (int, error) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+func (p *procRunner) logAttemptBeforeReplace(udid string) {
+	if p == nil || udid == "" {
+		return
+	}
+	p.mu.Lock()
+	o := p.owned[udid]
+	if o == nil {
+		p.mu.Unlock()
+		return
+	}
+	pid := o.pid
+	exited := o.exited
+	exitText := ""
+	if o.exitErr != nil {
+		exitText = o.exitErr.Error()
+	}
+	p.mu.Unlock()
+	_, _, _, errText, _ := p.ownedLive(udid)
+	slog.Warn("runwda attempt ended",
+		"udid", udid,
+		"pid", pid,
+		"exited", exited,
+		"exit", exitText,
+		"errText", errText,
+	)
 }
 
 func (p *procRunner) stopOwned(udid string) {
