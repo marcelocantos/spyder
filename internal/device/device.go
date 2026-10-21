@@ -91,6 +91,14 @@ type State struct {
 	// (Android dumpsys names, iOS lockdown / IORegistry names).
 	// Stored as-is for later trend analysis (🎯T137).
 	Battery map[string]any `json:"battery,omitempty"`
+
+	// AutomationSession is the DeviceKit/WDA `ios runwda` session on
+	// iOS: absent, starting, ready, or failed (🎯T167). Empty on
+	// platforms that do not track one.
+	AutomationSession string `json:"automation_session,omitempty"`
+	// AutomationError is the last reinstantiation error when
+	// AutomationSession is failed.
+	AutomationError string `json:"automation_error,omitempty"`
 }
 
 // AppInfo summarises an installed third-party application.

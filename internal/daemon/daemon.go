@@ -87,13 +87,24 @@ func Run(ctx context.Context, cfg Config) error {
 	// Bundled go-ios tunnel daemon. Spawned as a child process so its
 	// lifecycle is tied to spyder's — stop on shutdown. Missing binary
 	// is non-fatal — degraded mode where iOS DTX-dependent tools fail
-	// per-call but the daemon stays up.
+	// per-call but the daemon stays up. When a registry is already
+	// listening, leave that process alone: a second `ios tunnel` fights
+	// the supervised daemon for :60105.
 	var tunnelSup *iostunnel.Supervisor
-	if binPath := resolveIOSTunnelBinary(); binPath != "" {
-		tunnelSup = iostunnel.New(binPath, goios.DefaultTunnelHost, goios.DefaultTunnelPort)
-		if err := tunnelSup.Start(ctx); err != nil {
-			slog.Error("iostunnel: start failed; iOS tools degraded", "error", err)
-			tunnelSup = nil
+	var ownTunnel bool
+	iosBin := resolveIOSTunnelBinary()
+	if iosBin != "" {
+		tunnelSup = iostunnel.New(iosBin, goios.DefaultTunnelHost, goios.DefaultTunnelPort)
+		switch {
+		case tunnelSup.RegistryListening():
+			slog.Info("iostunnel: registry already listening; not spawning a second tunnel")
+		default:
+			if err := tunnelSup.Start(ctx); err != nil {
+				slog.Error("iostunnel: start failed; iOS tools degraded", "error", err)
+				tunnelSup = nil
+			} else {
+				ownTunnel = true
+			}
 		}
 	}
 
@@ -103,6 +114,12 @@ func Run(ctx context.Context, cfg Config) error {
 	if cfg.SuperviseAgents && mcpHandler != nil {
 		mcpHandler.AttachIOSAgent(resvStore)
 		go superviseIOSAgents(ctx, mcpHandler)
+	}
+
+	// ios runwda reinstantiation (🎯T167) listens on the same attach
+	// edge as tunnel grooming, so bind it first.
+	if mcpHandler != nil {
+		mcpHandler.BindIOSRunwda(resvStore, iosBin)
 	}
 
 	// Keep the RemoteXPC tunnel registry fresh across device
@@ -128,7 +145,7 @@ func Run(ctx context.Context, cfg Config) error {
 		mcpHandler.EnableSelfHeal(0, 5*time.Second) // 0 → DeadlineDeviceOp
 		// 🎯T90.5.1: ios-tunnel restart/liveness owned solely by health.Supervise
 		// (iostunnel has no restartLoop/healthProbe of its own).
-		if tunnelSup != nil {
+		if ownTunnel {
 			go mcpHandler.Health().Supervise(ctx, tunnelSup, health.Policy{
 				MaxAttempts: 5,
 				BaseBackoff: 2 * time.Second,

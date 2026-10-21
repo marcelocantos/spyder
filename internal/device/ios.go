@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -118,6 +119,16 @@ type IOSAdapter struct {
 	// usbmuxSeen observes the serials listDevices returned, before
 	// lockdown enrichment. It cannot add or remove any. Nil in production.
 	usbmuxSeen func([]string)
+
+	// runwda reinstates a live ios runwda after the device leaves the
+	// tunnel and comes back (🎯T167). Nil until BindRunwda.
+	runwda *runwdaHost
+
+	// Counts of input inject, app launch, and app terminate. A runwda
+	// reinstantiation must leave all three at zero.
+	controlInputs     atomic.Uint64
+	controlLaunches   atomic.Uint64
+	controlTerminates atomic.Uint64
 }
 
 // IOSProcessListConn is the appservice ListProcesses subset used by AppPID.
@@ -345,6 +356,7 @@ func (r iosTunnelRecovery) Invalidate(udid string) {
 	// A plain attach (startup snapshot or fresh hot-plug): the device is
 	// present, so reflect it as healthy — clearing any prior absent state.
 	r.a.reportAttach(udid)
+	r.a.runwdaAttached(udid)
 	r.a.notifyTether(udid, true)
 }
 
@@ -360,6 +372,7 @@ func (r iosTunnelRecovery) DropTunnel(udid string) error {
 		// device, and the supervisor must not be told otherwise.
 		return err
 	}
+	r.a.runwdaDisappeared(udid)
 	r.a.notifyTether(udid, false)
 	return nil
 }
@@ -374,6 +387,7 @@ func (r iosTunnelRecovery) ReestablishTunnel(udid string) error {
 	if err != nil {
 		return err
 	}
+	r.a.runwdaReappeared(udid)
 	r.a.notifyTether(udid, true)
 	return nil
 }
@@ -787,6 +801,7 @@ func (a *IOSAdapter) State(id string) (State, error) {
 	if c, ok := a.cache[id]; ok && time.Since(c.at) < stateTTL {
 		s := c.state
 		a.mu.Unlock()
+		a.fillAutomation(id, &s)
 		return s, nil
 	}
 	a.mu.Unlock()
@@ -849,8 +864,14 @@ func (a *IOSAdapter) State(id string) (State, error) {
 		"foreground app detection unavailable via state today",
 	)
 
+	// Battery is cached. The automation phase is not: a restart can
+	// change it inside stateTTL, so overlay it on the way out.
+	a.fillAutomation(id, &state)
+	cached := state
+	cached.AutomationSession = ""
+	cached.AutomationError = ""
 	a.mu.Lock()
-	a.cache[id] = cachedState{state: state, at: time.Now()}
+	a.cache[id] = cachedState{state: cached, at: time.Now()}
 	a.mu.Unlock()
 
 	return state, nil
@@ -1022,6 +1043,9 @@ func (a *IOSAdapter) ResolveExecutable(id, bundleID string) (string, bool, error
 func (a *IOSAdapter) LaunchApp(id, bundleID string, env map[string]string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
+	}
+	if a != nil {
+		a.controlLaunches.Add(1)
 	}
 	if err := a.writeAppStreamConfig(id, bundleID, env); err != nil {
 		// Non-fatal: argv/env may still work (simulator, some OS versions).
@@ -1226,6 +1250,9 @@ func (a *IOSAdapter) TerminateAppContext(ctx context.Context, id, bundleID strin
 	defer func() { operationEnded(resultErr) }()
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
+	}
+	if a != nil {
+		a.controlTerminates.Add(1)
 	}
 	pid, err := a.AppPIDContext(ctx, id, bundleID)
 	if err != nil {

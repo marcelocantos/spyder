@@ -84,6 +84,10 @@ type Resolver struct {
 	// service pools can drop dead connections (🎯T89).
 	onInvalidate func(udid string)
 
+	// deviceInitMu serialises RSD/XPC handshakes and ios runwda
+	// restarts for one UDID inside this process (🎯T167).
+	deviceInitMu map[string]*sync.Mutex
+
 	// boots caches the RSD BootSessionUUID. It changes across a reboot
 	// and stays put for one boot. Invalidate drops it.
 	boots map[string]bootSnap
@@ -439,21 +443,30 @@ func (r *Resolver) resolve(udid string) (ios.DeviceEntry, int, error) {
 	dev.UserspaceTUNHost = r.tunnelHost
 	dev.UserspaceTUNPort = info.UserspaceTUNPort
 
-	rsdService, err := ios.NewWithAddrPortDevice(info.Address, info.RsdPort, dev)
-	if err != nil {
-		return ios.DeviceEntry{}, major, fail("NewRSD",
-			fmt.Errorf("goios: connect RSD %s:%d: %w", info.Address, info.RsdPort, err))
-	}
-	defer rsdService.Close()
-	rsdProvider, err := rsdService.Handshake()
-	if err != nil {
-		return ios.DeviceEntry{}, major, fail("Handshake",
-			fmt.Errorf("goios: RSD handshake for %s: %w", udid, err))
-	}
-	enriched, err := ios.GetDeviceWithAddress(udid, info.Address, rsdProvider)
-	if err != nil {
-		return ios.DeviceEntry{}, major, fail("Enrich",
-			fmt.Errorf("goios: enrich device %s: %w", udid, err))
+	// The handshake is the in-process RSD/XPC initializer. Hold the
+	// per-device lock so a runwda restart cannot overlap it (🎯T167).
+	var enriched ios.DeviceEntry
+	initErr := r.WithDeviceInitializer(udid, func() error {
+		rsdService, err := ios.NewWithAddrPortDevice(info.Address, info.RsdPort, dev)
+		if err != nil {
+			return fail("NewRSD",
+				fmt.Errorf("goios: connect RSD %s:%d: %w", info.Address, info.RsdPort, err))
+		}
+		defer rsdService.Close()
+		rsdProvider, err := rsdService.Handshake()
+		if err != nil {
+			return fail("Handshake",
+				fmt.Errorf("goios: RSD handshake for %s: %w", udid, err))
+		}
+		enriched, err = ios.GetDeviceWithAddress(udid, info.Address, rsdProvider)
+		if err != nil {
+			return fail("Enrich",
+				fmt.Errorf("goios: enrich device %s: %w", udid, err))
+		}
+		return nil
+	})
+	if initErr != nil {
+		return ios.DeviceEntry{}, major, initErr
 	}
 	enriched.UserspaceTUN = dev.UserspaceTUN
 	enriched.UserspaceTUNHost = dev.UserspaceTUNHost

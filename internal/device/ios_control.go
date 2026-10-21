@@ -60,6 +60,9 @@ func (a *IOSAdapter) InjectTap(id string, x, y int) error {
 	if x < 0 || y < 0 {
 		return fmt.Errorf("x and y must be non-negative pixel coordinates")
 	}
+	if a != nil {
+		a.controlInputs.Add(1)
+	}
 	return fmt.Errorf("%s", ErrIOSInjectUnsupported)
 }
 
@@ -70,6 +73,9 @@ func (a *IOSAdapter) InjectSwipe(id string, x1, y1, x2, y2, durationMs int) erro
 	}
 	if x1 < 0 || y1 < 0 || x2 < 0 || y2 < 0 {
 		return fmt.Errorf("coordinates must be non-negative pixel values")
+	}
+	if a != nil {
+		a.controlInputs.Add(1)
 	}
 	return fmt.Errorf("%s", ErrIOSInjectUnsupported)
 }

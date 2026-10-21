@@ -81,6 +81,17 @@ func New(binPath, probeHost string, probePort int) *Supervisor {
 // Name implements health.ManagedProcess (🎯T90.5.1).
 func (s *Supervisor) Name() string { return "ios-tunnel" }
 
+// RegistryListening reports whether a tunnel registry is already serving
+// this supervisor's probe address. It does not say this supervisor owns
+// that process.
+func (s *Supervisor) RegistryListening() bool {
+	if s == nil {
+		return false
+	}
+	_, err := tunnel.ListRunningTunnels(s.probeHost, s.probePort)
+	return err == nil
+}
+
 // Alive implements health.ManagedProcess: process running AND registry responsive.
 func (s *Supervisor) Alive() bool {
 	s.mu.Lock()
