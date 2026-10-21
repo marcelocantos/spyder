@@ -356,6 +356,7 @@ func (a *Archiver) ArchiveRun(runDir string) (*IndexRecord, error) {
 		_ = os.Remove(partial)
 		return nil, errSkip{"write archive: " + err.Error()}
 	}
+	_ = os.Chmod(partial, 0o600) // zstd creates 0644; runs are private
 	// No-clobber publish: link fails if an archive appeared meanwhile.
 	if err := os.Link(partial, apath); err != nil {
 		_ = os.Remove(partial)
