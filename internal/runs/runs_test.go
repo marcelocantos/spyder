@@ -265,7 +265,7 @@ func TestList_EmptyBaseDir(t *testing.T) {
 
 func TestPrune_MaxAgeRemovesOldClosedRuns(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
-	s := newTestStore(t, &now, WithPolicy(Policy{MaxAge: 24 * time.Hour}))
+	s := newTestStore(t, &now, WithPolicy(Policy{MaxAge: 24 * time.Hour}), WithArchiver(testArchiver(t)))
 
 	// Old run: created 3 days ago, closed same time.
 	now = now.Add(-72 * time.Hour)
@@ -299,7 +299,7 @@ func TestPrune_MaxAgeRemovesOldClosedRuns(t *testing.T) {
 
 func TestPrune_MaxAgePreservesOpenRuns(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
-	s := newTestStore(t, &now, WithPolicy(Policy{MaxAge: 24 * time.Hour}))
+	s := newTestStore(t, &now, WithPolicy(Policy{MaxAge: 24 * time.Hour}), WithArchiver(testArchiver(t)))
 
 	// Open but ancient run — still in progress; must not be pruned.
 	now = now.Add(-72 * time.Hour)
@@ -318,7 +318,7 @@ func TestPrune_MaxAgePreservesOpenRuns(t *testing.T) {
 func TestPrune_MaxSizeDropsOldestUntilUnderCap(t *testing.T) {
 	now := time.Date(2026, 4, 19, 14, 0, 0, 0, time.UTC)
 	// 100-byte cap; each run holds ~40 bytes → max 2 survive.
-	s := newTestStore(t, &now, WithPolicy(Policy{MaxSize: 100}))
+	s := newTestStore(t, &now, WithPolicy(Policy{MaxSize: 100}), WithArchiver(testArchiver(t)))
 
 	payload := make([]byte, 40)
 

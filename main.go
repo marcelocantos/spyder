@@ -21,6 +21,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/scriptlib"
 )
 
 //go:embed agents-guide.md
@@ -137,9 +139,16 @@ Run:
   --timeout DURATION (e.g. 5m, 90s) bounds the wrapped child invocation.
   When the deadline fires, the child is signalled and spyder exits with
   code 30 (timeout) instead of forwarding the child's signal-induced exit.
+
+  Run provenance (recorded in the run manifest; omitted = "unknown"):
+    --script PATH|NAME   .star script the run drives (git state recorded)
+    --app-bundle ID      app under test; --app-name NAME
+    --app-commit SHA     --app-branch BRANCH   --app-dirty true|false
+  The child's exit status is recorded as the run outcome.
 `
 
 func main() {
+	runs.BuildVersion = version // run manifests carry the spyder build stamp (🎯T166)
 	if len(os.Args) < 2 {
 		fmt.Print(usage)
 		return
@@ -227,6 +236,14 @@ type runArgs struct {
 	Owner   string        // empty = derive from filepath.Base(cwd)
 	Timeout time.Duration // 0 = no cell budget (current behaviour)
 	Command []string
+
+	// Run provenance (🎯T166), recorded in the run manifest.
+	Script    string // .star script path or library name
+	AppBundle string
+	AppName   string
+	AppCommit string
+	AppBranch string
+	AppDirty  string // "true" / "false" / "" (unknown)
 }
 
 // parseRunArgs parses the flag portion of `spyder run`. Extracted so
@@ -258,6 +275,31 @@ func parseRunArgs(args []string) (runArgs, error) {
 				return runArgs{}, fmt.Errorf("--as requires a value")
 			}
 			out.Owner = args[1]
+			args = args[2:]
+		case "--script", "--app-bundle", "--app-name", "--app-commit", "--app-branch", "--app-dirty":
+			if len(args) < 2 {
+				return runArgs{}, fmt.Errorf("%s requires a value", args[0])
+			}
+			v := args[1]
+			switch args[0] {
+			case "--script":
+				out.Script = v
+			case "--app-bundle":
+				out.AppBundle = v
+			case "--app-name":
+				out.AppName = v
+			case "--app-commit":
+				out.AppCommit = v
+			case "--app-branch":
+				out.AppBranch = v
+			case "--app-dirty":
+				switch v {
+				case "true", "false":
+					out.AppDirty = v
+				default:
+					return runArgs{}, fmt.Errorf("--app-dirty must be true or false, got %q", v)
+				}
+			}
 			args = args[2:]
 		case "--timeout":
 			if len(args) < 2 {
@@ -360,7 +402,21 @@ func runCmd(args []string) {
 	var runID string
 	if runsStore != nil {
 		canonical := normalize(parsed.Device)
-		if r, err := runsStore.Open(canonical, owner, note); err != nil {
+		p := runs.OpenParams{
+			Device: canonical, Owner: owner, Note: note,
+			App: runs.AppVersion{
+				Name: parsed.AppName, BundleID: parsed.AppBundle,
+				Commit: parsed.AppCommit, Branch: parsed.AppBranch, Dirty: parsed.AppDirty,
+			},
+		}
+		if parsed.Script != "" {
+			if _, info, err := scriptlib.Load(parsed.Script); err == nil {
+				p.ScriptPath, p.ScriptSource = info.Path, info.Source
+			} else {
+				p.ScriptPath, p.ScriptSource = parsed.Script, "unresolved"
+			}
+		}
+		if r, err := runsStore.OpenWith(p); err != nil {
 			fmt.Fprintf(os.Stderr, "spyder run: open run: %v\n", err)
 		} else {
 			runID = r.ID
@@ -371,9 +427,12 @@ func runCmd(args []string) {
 	// Guarantee release on any exit path (success, error, SIGINT).
 	// The child inherits our stdio, so a SIGINT on our process group
 	// also terminates it before we reach this block.
-	release := func() {
+	// The run's outcome is the child's exit status; failure screenshots
+	// are unknown to the CLI (🎯T166).
+	release := func(passed bool, outcome string) {
 		if runsStore != nil && runID != "" {
-			if err := runsStore.Close(runID); err != nil {
+			cp := runs.CloseParams{Passed: strconv.FormatBool(passed), Outcome: outcome}
+			if err := runsStore.CloseWith(runID, cp); err != nil {
 				fmt.Fprintf(os.Stderr, "spyder run: close run %s: %v\n", runID, err)
 			}
 		}
@@ -417,7 +476,7 @@ func runCmd(args []string) {
 	if runErr != nil {
 		if parsed.Timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			fmt.Fprintf(os.Stderr, "spyder run: timed out after %s\n", parsed.Timeout)
-			release()
+			release(false, fmt.Sprintf("timeout after %s", parsed.Timeout))
 			os.Exit(30) // cliexit.ExitTimeout
 		}
 		if ee, ok := errors.AsType[*exec.ExitError](runErr); ok {
@@ -427,7 +486,13 @@ func runCmd(args []string) {
 			exitCode = 1
 		}
 	}
-	release()
+	outcome := fmt.Sprintf("exit %d", exitCode)
+	if runErr != nil && exitCode == 1 {
+		if _, ok := errors.AsType[*exec.ExitError](runErr); !ok {
+			outcome = "error: " + runErr.Error()
+		}
+	}
+	release(exitCode == 0, outcome)
 	os.Exit(exitCode)
 }
 

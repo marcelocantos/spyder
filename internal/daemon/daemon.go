@@ -279,17 +279,18 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 		resvStore = nil
 	}
 
+	runsPolicy := runsPolicyFromEnv()
+	runsArchiver := runs.NewArchiver(paths.RunsArchiveBase())
 	runsStore, err := runs.New(paths.RunsBase(),
-		runs.WithPolicy(runsPolicyFromEnv()))
+		runs.WithPolicy(runsPolicy), runs.WithArchiver(runsArchiver))
 	if err != nil {
 		slog.Warn("runs store unavailable — artefact archiving disabled",
 			"path", paths.RunsBase(), "error", err)
 		runsStore = nil
-	} else if res, perr := runsStore.Prune(); perr != nil {
-		slog.Error("runs prune failed", "error", perr)
-	} else if len(res.Removed) > 0 {
-		slog.Info("runs pruned on startup",
-			"removed", len(res.Removed), "retained", res.Retained)
+	} else {
+		// Retention archives (never deletes) closed runs; it can take
+		// minutes on a large backlog, so it runs off the startup path.
+		go pruneRunsOnStartup(runsStore, runsArchiver, runsPolicy)
 	}
 
 	blsStore, err := baselines.New(paths.BaselinesBase())
@@ -506,20 +507,76 @@ func exePathReal() (string, error) {
 	return resolved, nil
 }
 
+// pruneRunsOnStartup runs one retention pass: closed runs past the
+// age/size bounds are archived (🎯T166) and removed only once their
+// archive verifies.
+func pruneRunsOnStartup(store *runs.Store, a *runs.Archiver, p runs.Policy) {
+	if p.MaxAge <= 0 && p.MaxSize <= 0 {
+		slog.Info("runs retention disabled (SPYDER_RUNS_MAX_AGE_DAYS=0, SPYDER_RUNS_MAX_SIZE_GB=0)")
+		return
+	}
+	slog.Info("runs archive pass starting",
+		"runs", store.BaseDir(), "archive", a.Dir(), "method", a.Method(),
+		"max_age", p.MaxAge, "max_size_bytes", p.MaxSize, "quiet", p.Quiet)
+	res, err := store.Prune()
+	if err != nil {
+		slog.Error("runs archive pass failed", "error", err)
+		return
+	}
+	var raw, arch int64
+	for _, rec := range res.Archived {
+		slog.Info("runs: archived",
+			"run", rec.RunID, "archive", rec.ArchivePath, "method", rec.ArchiveMethod,
+			"raw_bytes", rec.RawBytes, "archive_bytes", rec.ArchiveBytes,
+			"verified", rec.Verification.OK(), "original_removed", rec.OriginalRemoved)
+		if rec.OriginalRemoved {
+			raw += rec.RawBytes
+			arch += rec.ArchiveBytes
+		}
+	}
+	for _, id := range res.Failed {
+		slog.Error("runs: archive verification failed; original kept", "run", id)
+	}
+	slog.Info("runs archive pass done",
+		"archived_removed", len(res.Removed), "failed", len(res.Failed),
+		"skipped", res.Skipped, "retained", res.Retained,
+		"raw_bytes", raw, "archive_bytes", arch)
+}
+
 // runsPolicyFromEnv reads the retention overrides from environment
-// variables. Zero either knob disables that bound; negative values
-// are treated as zero.
+// variables. Zero either bound disables it; negative values are
+// treated as zero. SPYDER_RUNS_MAX_SIZE_GB accepts fractions (e.g.
+// 0.5). SPYDER_RUNS_ARCHIVE_QUIET_MINUTES (default 120) is how long a
+// run must have been closed and untouched before it is archived.
 func runsPolicyFromEnv() runs.Policy {
 	days := envInt("SPYDER_RUNS_MAX_AGE_DAYS", defaultRunsMaxAgeDays)
-	gb := envInt("SPYDER_RUNS_MAX_SIZE_GB", defaultRunsMaxSizeGB)
+	gb := envFloat("SPYDER_RUNS_MAX_SIZE_GB", defaultRunsMaxSizeGB)
+	quiet := envInt("SPYDER_RUNS_ARCHIVE_QUIET_MINUTES", int(runs.DefaultQuiet/time.Minute))
 	p := runs.Policy{}
 	if days > 0 {
 		p.MaxAge = time.Duration(days) * 24 * time.Hour
 	}
 	if gb > 0 {
-		p.MaxSize = int64(gb) * 1024 * 1024 * 1024
+		p.MaxSize = int64(gb * 1024 * 1024 * 1024)
+	}
+	if quiet > 0 {
+		p.Quiet = time.Duration(quiet) * time.Minute
 	}
 	return p
+}
+
+func envFloat(key string, fallback float64) float64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	f, err := strconv.ParseFloat(v, 64)
+	if err != nil {
+		slog.Warn("ignoring non-numeric env override",
+			"key", key, "value", v, "using", fallback)
+		return fallback
+	}
+	return f
 }
 
 func envInt(key string, fallback int) int {

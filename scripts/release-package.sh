@@ -32,7 +32,7 @@ mkdir -p "$STAGE/bin" "$STAGE/libexec/spyder" "$STAGE/libexec/spyder/player"
 
 echo "release-package: building spyder ${TAG} (darwin/arm64, CGO=1)" >&2
 CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
-	go build -trimpath -ldflags "-s -w -X main.version=${TAG}" \
+	go build -trimpath -ldflags "-s -w -X main.version=${TAG} -X github.com/marcelocantos/spyder/internal/runs.BuildBranch=$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)" \
 	-o "$STAGE/bin/spyder" .
 
 "$ROOT/scripts/codesign-spyder.sh" "$STAGE/bin/spyder"

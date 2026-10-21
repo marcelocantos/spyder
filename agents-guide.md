@@ -1851,14 +1851,30 @@ spyder runs show 20260419-143022-a3f1b2
 spyder runs artefacts 20260419-143022-a3f1b2
 ```
 
-Retention is enforced when the daemon starts up. Two bounds, either
-optional, configured via environment:
+Retention is enforced when the daemon starts up. It **archives** runs
+rather than deleting them (🎯T166): a closed, quiet run is packed into
+`~/.spyder/archive/runs/<run-id>.tar.zst` (screenshots as lossless JPEG
+XL when `cjxl` is installed), verified, indexed in
+`~/.spyder/archive/runs/index.jsonl`, and only then removed from
+`~/.spyder/runs`. Archives are never deleted. Bounds, configured via
+environment:
 
 - `SPYDER_RUNS_MAX_AGE_DAYS` — default 30. Closed runs older than this
-  are deleted. Open runs are never pruned by age.
+  are archived. Open runs are never touched.
 - `SPYDER_RUNS_MAX_SIZE_GB` — default 20. If total artefact bytes
-  exceed this, oldest closed runs are deleted until the store is under
+  exceed this, oldest closed runs are archived until the store is under
   the cap.
+- `SPYDER_RUNS_ARCHIVE_QUIET_MINUTES` — default 120. Runs closed or
+  modified more recently are left alone.
+
+Record provenance so archived runs stay traceable: pass `script_path`,
+`app_bundle_id`, `app_name`, `app_commit`, `app_branch` and `app_dirty`
+to `reserve` (spyder adds the installed app version/build, device OS
+version/build, its own build stamp and the script's git state), and
+`passed`, `outcome` and `failure_screenshots` to `release`. `spyder run`
+takes `--script`, `--app-bundle`, `--app-name`, `--app-commit`,
+`--app-branch` and `--app-dirty`, and records the child's exit status as
+the outcome. Anything not supplied is recorded as `"unknown"`.
 
 Set either to `0` to disable that bound. When spyder is run as a
 Homebrew service, use `launchctl setenv` to inject env vars into the

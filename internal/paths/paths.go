@@ -39,6 +39,13 @@ func RunsBase() string {
 	return filepath.Join(Base(), "runs")
 }
 
+// RunsArchiveBase returns the directory holding verified run archives
+// (~/.spyder/archive/runs): <run-id>.tar.zst, <run-id>.manifest.json
+// and index.jsonl (🎯T166). Archives are never deleted by spyder.
+func RunsArchiveBase() string {
+	return filepath.Join(Base(), "archive", "runs")
+}
+
 // BaselinesBase returns the root directory for the visual-regression
 // baseline store (~/.spyder/baselines). Baselines are organised as
 // <suite>/<variant>/<case>.{png,manifest.json}.

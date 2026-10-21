@@ -43,6 +43,7 @@ func newTestHandler(t *testing.T) *Handler {
 	h := NewHandler()
 	// Hermetic default: don't exec live ioreg in unit tests (🎯T131).
 	h.readUSBCensus = func() ([]byte, error) { return []byte{}, nil }
+	h.noProvenanceProbe = true // no live adb/go-ios probes on reserve (🎯T166)
 	return h
 }
 

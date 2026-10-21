@@ -31,10 +31,22 @@ import (
 
 // Policy controls run-dir retention. Zero values disable the
 // corresponding bound.
+//
+// Pruning never deletes a run outright: a selected run is archived
+// (see Archiver) and its directory is removed only after the archive
+// has been verified. Without an archiver, Prune is a no-op.
 type Policy struct {
-	MaxAge  time.Duration // prune runs older than MaxAge (based on CreatedAt)
-	MaxSize int64         // prune oldest runs until total bytes ≤ MaxSize
+	MaxAge  time.Duration // archive runs older than MaxAge (based on CreatedAt)
+	MaxSize int64         // archive oldest runs until total bytes ≤ MaxSize
+	// Quiet is how long a run must have been closed, and its files
+	// untouched, before it is eligible. Zero disables the quiet check
+	// (tests); the daemon uses DefaultQuiet.
+	Quiet time.Duration
 }
+
+// DefaultQuiet is the daemon's quiet period before a closed run may
+// be archived.
+const DefaultQuiet = 2 * time.Hour
 
 // Run is the in-memory form of a run dir's manifest.
 type Run struct {
@@ -45,6 +57,11 @@ type Run struct {
 	CreatedAt time.Time  `json:"created_at"`
 	ClosedAt  *time.Time `json:"closed_at,omitempty"`
 	Artefacts []Artefact `json:"artefacts,omitempty"`
+	// Versions is stamped at open (🎯T166). Absent on runs created by
+	// older spyder builds; the archiver reports those as unknown.
+	Versions *Versions `json:"versions,omitempty"`
+	// Result is stamped at close.
+	Result *Result `json:"result,omitempty"`
 }
 
 // Artefact is one file produced by a spyder tool during a run.
@@ -65,14 +82,19 @@ func WithNow(now func() time.Time) Option { return func(s *Store) { s.now = now 
 // WithPolicy installs a retention policy.
 func WithPolicy(p Policy) Option { return func(s *Store) { s.policy = p } }
 
+// WithArchiver installs the archiver Prune uses. Without one, Prune
+// never touches any run.
+func WithArchiver(a *Archiver) Option { return func(s *Store) { s.archiver = a } }
+
 // Store is the top-level artefact-store handle. Safe for concurrent
 // use within one process; the filesystem protocol tolerates multiple
 // processes as long as each picks a distinct run-id.
 type Store struct {
-	mu      sync.Mutex
-	baseDir string
-	now     func() time.Time
-	policy  Policy
+	mu       sync.Mutex
+	baseDir  string
+	now      func() time.Time
+	policy   Policy
+	archiver *Archiver
 }
 
 // New opens a Store rooted at baseDir. Creates the dir on demand;
@@ -97,12 +119,23 @@ func (s *Store) BaseDir() string { return s.baseDir }
 // Open mints a new run-id, creates its directory, and writes the
 // initial manifest. device and owner are required; note is optional.
 func (s *Store) Open(device, owner, note string) (*Run, error) {
+	return s.OpenWith(OpenParams{Device: device, Owner: owner, Note: note})
+}
+
+// OpenWith is Open plus source-version provenance (🎯T166). The spyder
+// build stamp and the script's git state are computed here; app and
+// device-OS fields come from the caller. Anything not observed is
+// recorded as "unknown".
+func (s *Store) OpenWith(p OpenParams) (*Run, error) {
+	device, owner, note := p.Device, p.Owner, p.Note
 	if device == "" {
 		return nil, errors.New("runs: device is required")
 	}
 	if owner == "" {
 		return nil, errors.New("runs: owner is required")
 	}
+
+	vers := buildVersions(p)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -126,18 +159,77 @@ func (s *Store) Open(device, owner, note string) (*Run, error) {
 		Owner:     owner,
 		Note:      note,
 		CreatedAt: now,
+		Versions:  &vers,
 	}
 	if err := writeManifest(dir, r); err != nil {
 		return nil, err
 	}
 	slog.Info("runs: opened",
-		"run", id, "device", device, "owner", owner, "dir", dir)
+		"run", id, "device", device, "owner", owner, "dir", dir,
+		"spyder_commit", vers.Spyder.Commit, "script", vers.Script.Path,
+		"app", vers.App.BundleID, "app_version", vers.App.Version,
+		"os_version", vers.DeviceOS.Version)
 	return r, nil
+}
+
+func buildVersions(p OpenParams) Versions {
+	sp := SpyderBuild()
+	v := Versions{
+		App:      p.App,
+		Spyder:   sp,
+		Script:   ScriptProvenance(p.ScriptPath, p.ScriptSource, sp),
+		DeviceOS: p.DeviceOS,
+	}
+	v.normalize()
+	return v
+}
+
+// UpdateProvenance fills in provenance on an existing open run (e.g. a
+// same-owner re-reserve that now names the script or app). Only known
+// values overwrite; nothing is ever downgraded to unknown.
+func (s *Store) UpdateProvenance(runID string, p OpenParams) error {
+	vers := buildVersions(p)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	dir, r, err := s.readLocked(runID)
+	if err != nil {
+		return err
+	}
+	if r.ClosedAt != nil {
+		return fmt.Errorf("runs: run %s is closed", runID)
+	}
+	if r.Versions == nil {
+		u := UnknownVersions()
+		r.Versions = &u
+	}
+	dst := r.Versions
+	if p.ScriptPath != "" {
+		dst.Script = vers.Script
+	}
+	for _, f := range []struct {
+		d *string
+		s string
+	}{
+		{&dst.App.Name, vers.App.Name}, {&dst.App.BundleID, vers.App.BundleID},
+		{&dst.App.Version, vers.App.Version}, {&dst.App.Build, vers.App.Build},
+		{&dst.App.Commit, vers.App.Commit}, {&dst.App.Branch, vers.App.Branch},
+		{&dst.App.Dirty, vers.App.Dirty},
+		{&dst.DeviceOS.Version, vers.DeviceOS.Version}, {&dst.DeviceOS.Build, vers.DeviceOS.Build},
+	} {
+		mergeKnown(f.d, f.s)
+	}
+	return writeManifest(dir, r)
 }
 
 // Close stamps ClosedAt on the run's manifest. Idempotent: closing an
 // already-closed run is a no-op.
 func (s *Store) Close(runID string) error {
+	return s.CloseWith(runID, CloseParams{})
+}
+
+// CloseWith closes the run and stamps its result (🎯T166). Fields the
+// caller did not supply are recorded as "unknown".
+func (s *Store) CloseWith(runID string, p CloseParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	dir, r, err := s.readLocked(runID)
@@ -149,13 +241,23 @@ func (s *Store) Close(runID string) error {
 	}
 	t := s.now()
 	r.ClosedAt = &t
+	r.Result = &Result{
+		Passed:             orUnknown(p.Passed),
+		Outcome:            orUnknown(p.Outcome),
+		FailureScreenshots: p.FailureScreenshots,
+	}
+	if r.Versions == nil {
+		u := UnknownVersions()
+		r.Versions = &u
+	}
 	if err := writeManifest(dir, r); err != nil {
 		return err
 	}
 	slog.Info("runs: closed",
 		"run", runID, "device", r.Device, "owner", r.Owner,
 		"artefacts", len(r.Artefacts),
-		"size_bytes", runSize(*r))
+		"size_bytes", runSize(*r),
+		"passed", r.Result.Passed, "outcome", r.Result.Outcome)
 	return nil
 }
 
@@ -248,82 +350,141 @@ func (s *Store) Get(runID string) (*Run, error) {
 
 // PruneResult describes a prune pass.
 type PruneResult struct {
-	Removed  []string // run-ids deleted
-	Retained int      // number of runs remaining
+	Removed  []string       // run-ids archived, verified, then removed
+	Archived []IndexRecord  // one record per archive written (incl. failed verification)
+	Failed   []string       // run-ids whose archive failed; originals kept
+	Skipped  map[string]int // reason → count, for runs selected but not archived
+	Retained int            // number of run dirs remaining
 }
 
-// Prune applies the store's Policy: deletes runs older than MaxAge,
-// then deletes oldest runs until remaining size ≤ MaxSize. No-op if
-// both bounds are zero. Never prunes open runs.
+// Prune applies the store's Policy by archiving, never deleting:
+// closed runs older than MaxAge, then oldest closed runs until the
+// remaining size ≤ MaxSize, are handed to the Archiver, which removes
+// a run's directory only after its archive verifies. Open runs, runs
+// closed or modified within Policy.Quiet, runs with open file handles
+// and runs that already have an archive are skipped. No-op if both
+// bounds are zero or no archiver is installed.
+//
+// The store lock is held only while listing; archiving (slow) runs
+// unlocked so Open/AddArtefact/Close are never blocked. Closed runs
+// are immutable (AddArtefact rejects them), and the archiver re-checks
+// the directory snapshot before removing anything.
 func (s *Store) Prune() (PruneResult, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	runs, err := s.listLocked()
+	s.mu.Unlock()
 	if err != nil {
 		return PruneResult{}, err
 	}
+	res := PruneResult{Skipped: map[string]int{}}
+	if s.policy.MaxAge <= 0 && s.policy.MaxSize <= 0 {
+		res.Retained = len(runs)
+		return res, nil
+	}
+	if s.archiver == nil {
+		slog.Warn("runs: retention bound hit but no archiver configured; nothing pruned")
+		res.Retained = len(runs)
+		return res, nil
+	}
+	unlock, lerr := s.archiver.lockPass()
+	if lerr != nil {
+		slog.Info("runs: archive pass skipped", "reason", lerr)
+		res.Retained = len(runs)
+		return res, nil
+	}
+	defer unlock()
 
-	var removed []string
 	now := s.now()
-
-	// Pass 1: age-based. Newest-first order, so walk backwards.
-	if s.policy.MaxAge > 0 {
-		cutoff := now.Add(-s.policy.MaxAge)
-		kept := runs[:0]
-		for _, r := range runs {
-			if r.ClosedAt == nil {
-				kept = append(kept, r)
-				continue
-			}
-			if r.CreatedAt.Before(cutoff) {
-				if err := os.RemoveAll(filepath.Join(s.baseDir, r.ID)); err == nil {
-					removed = append(removed, r.ID)
-					continue
-				}
-			}
-			kept = append(kept, r)
+	archive := func(r Run) bool {
+		if why := s.eligible(r, now); why != "" {
+			res.Skipped[why]++
+			return false
 		}
-		runs = kept
+		rec, err := s.archiver.ArchiveRun(filepath.Join(s.baseDir, r.ID))
+		if rec != nil {
+			res.Archived = append(res.Archived, *rec)
+		}
+		switch {
+		case err != nil && rec == nil:
+			res.Skipped[err.Error()]++
+			return false
+		case err != nil:
+			res.Failed = append(res.Failed, r.ID)
+			return false
+		case rec.OriginalRemoved:
+			res.Removed = append(res.Removed, r.ID)
+			return true
+		}
+		return false
 	}
 
-	// Pass 2: size-based. Prune oldest closed runs first. Size means
-	// artefact bytes — manifest overhead is measured in kilobytes and
-	// isn't what the retention knob is trying to cap.
+	// Pass 1: age-based.
+	kept := runs[:0]
+	for _, r := range runs {
+		if s.policy.MaxAge > 0 && r.CreatedAt.Before(now.Add(-s.policy.MaxAge)) && archive(r) {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	runs = kept
+
+	// Pass 2: size-based, oldest first. Size means artefact bytes.
 	if s.policy.MaxSize > 0 {
-		sizes := make(map[string]int64, len(runs))
 		var total int64
 		for _, r := range runs {
-			sz := runSize(r)
-			sizes[r.ID] = sz
-			total += sz
+			total += runSize(r)
 		}
-		// Oldest first.
 		sort.SliceStable(runs, func(i, j int) bool {
 			return runs[i].CreatedAt.Before(runs[j].CreatedAt)
 		})
 		kept := runs[:0]
 		for _, r := range runs {
-			if total <= s.policy.MaxSize {
-				kept = append(kept, r)
+			if total > s.policy.MaxSize && archive(r) {
+				total -= runSize(r)
 				continue
 			}
-			if r.ClosedAt == nil {
-				kept = append(kept, r)
-				continue
-			}
-			dir := filepath.Join(s.baseDir, r.ID)
-			if err := os.RemoveAll(dir); err != nil {
-				kept = append(kept, r)
-				continue
-			}
-			removed = append(removed, r.ID)
-			total -= sizes[r.ID]
+			kept = append(kept, r)
 		}
 		runs = kept
 	}
+	res.Retained = len(runs)
+	return res, nil
+}
 
-	return PruneResult{Removed: removed, Retained: len(runs)}, nil
+// eligible returns "" when r may be archived, else the skip reason.
+func (s *Store) eligible(r Run, now time.Time) string {
+	if r.ClosedAt == nil {
+		return "open"
+	}
+	q := s.policy.Quiet
+	if q <= 0 {
+		return ""
+	}
+	if now.Sub(*r.ClosedAt) < q {
+		return "closed recently"
+	}
+	if mt, err := latestMtime(filepath.Join(s.baseDir, r.ID)); err != nil || now.Sub(mt) < q {
+		return "modified recently"
+	}
+	return ""
+}
+
+func latestMtime(dir string) (time.Time, error) {
+	var latest time.Time
+	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+		return nil
+	})
+	return latest, err
 }
 
 // --- internals ------------------------------------------------------

@@ -498,13 +498,32 @@ it, and `manifest.json` enumerates every file. `release` stamps
     screenshot-20260419-143025.png
 ```
 
-Retention is enforced on daemon startup. Configurable via environment:
+Retention is enforced on daemon startup (in the background) by
+**archiving, never deleting** (🎯T166). Configurable via environment:
 
 - `SPYDER_RUNS_MAX_AGE_DAYS` (default `30`; `0` disables). Closed runs
-  older than this are deleted.
-- `SPYDER_RUNS_MAX_SIZE_GB` (default `20`; `0` disables). Measures the
-  sum of `artefacts[].size` from each run's manifest; deletes oldest
-  closed runs until total ≤ cap.
+  older than this are archived.
+- `SPYDER_RUNS_MAX_SIZE_GB` (default `20`; `0` disables; fractions
+  allowed). Measures the sum of `artefacts[].size` from each run's
+  manifest; archives oldest closed runs until total ≤ cap.
+- `SPYDER_RUNS_ARCHIVE_QUIET_MINUTES` (default `120`). A run must have
+  been closed, and its files untouched, this long before it is eligible.
+
+Archives live in `~/.spyder/archive/runs/`: `<run-id>.tar.zst` (PNGs
+re-encoded as lossless JPEG XL and pixel-verified when `cjxl`/`djxl`
+are installed, else stored verbatim; `archive-files.json` inside maps
+original names and sha256s), `<run-id>.manifest.json`, and an
+append-only `index.jsonl` with one record per archive. A run directory
+is removed only after its archive passes `zstd -t`, a full tar
+read-back with per-entry sha256 match, a file-count match and an
+unchanged-originals check. Runs with open file handles (`lsof`) or an
+existing archive are skipped. Spyder never deletes archives; an archive
+that fails verification is kept as `<run-id>.failed-<ts>.tar.zst`.
+
+Each manifest records source versions under `versions` (`app`,
+`spyder`, `script`, `device_os`) at open and the outcome under
+`result` (`passed`, `outcome`, `failure_screenshots`) at close. Any
+field spyder could not observe is the string `"unknown"`.
 
 Open runs are never pruned — they represent in-flight reservations.
 **Needs review** — schema may gain fields as more artefact tools land.

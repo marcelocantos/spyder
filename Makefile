@@ -2,6 +2,10 @@
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
+# Run manifests record the spyder build stamp (🎯T166). Commit and dirty
+# come from Go's vcs stamping; the branch only via ldflags.
+STAMP_LDFLAGS = -X github.com/marcelocantos/spyder/internal/runs.BuildBranch=$(shell git rev-parse --abbrev-ref HEAD 2>/dev/null)
+
 # Spyder player (stream glass). Self-contained C++ tree under player/;
 # speaks the GE wire over spyder's relay — no link against the ge engine.
 player:
@@ -51,7 +55,7 @@ export GOWORK
 # darwin is CGO_ENABLED=1 when a cgo file is selected; force it so a
 # parent shell with CGO_ENABLED=0 cannot silently drop SecItem*.
 bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum internal/dashboard/index.html
-	CGO_ENABLED=1 go build -ldflags "-X main.version=dev" -o bin/spyder .
+	CGO_ENABLED=1 go build -ldflags "-X main.version=dev $(STAMP_LDFLAGS)" -o bin/spyder .
 
 # sign attaches a stable Development / Developer ID Application identity
 # and identifier com.marcelocantos.spyder so keychain ACLs do not churn
@@ -110,7 +114,7 @@ bullseye:
 	@test -z "$$(gofmt -l .)" && echo "✓ fmt" || \
 	 (echo "✗ gofmt issues:"; gofmt -l .; exit 1)
 	@CGO_ENABLED=1 go vet ./... && echo "✓ vet"
-	@CGO_ENABLED=1 go build -ldflags "-X main.version=dev" -o bin/spyder . && echo "✓ build"
+	@CGO_ENABLED=1 go build -ldflags "-X main.version=dev $(STAMP_LDFLAGS)" -o bin/spyder . && echo "✓ build"
 	@go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios && echo "✓ build ios"
 	@CGO_ENABLED=1 go test ./... && echo "✓ tests"
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \

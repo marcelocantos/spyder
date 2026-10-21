@@ -956,9 +956,16 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 			slog.Error("runs: active lookup on reserve failed",
 				"device", canonical, "owner", owner, "error", lerr)
 		case existing == nil:
-			if _, err := h.runs.Open(canonical, owner, note); err != nil {
+			p := h.runOpenParams(dev, canonical, owner, note, args, true)
+			if _, err := h.runs.OpenWith(p); err != nil {
 				slog.Error("runs: open on reserve failed",
 					"device", canonical, "owner", owner, "error", err)
+			}
+		case hasProvenanceArgs(args):
+			p := h.runOpenParams(dev, canonical, owner, note, args, true)
+			if err := h.runs.UpdateProvenance(existing.ID, p); err != nil {
+				slog.Error("runs: provenance update on reserve failed",
+					"run", existing.ID, "error", err)
 			}
 		}
 	}
@@ -978,6 +985,10 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 	if err != nil {
 		return nil, err
 	}
+	closeParams, err := runCloseParams(args)
+	if err != nil {
+		return toolErr("%v", err)
+	}
 
 	h.mu.Lock()
 	canonical := h.canonicalDevice(dev)
@@ -993,7 +1004,7 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 	if h.runs != nil {
 		canonical := h.canonicalDevice(dev)
 		if run, lerr := h.runs.Active(canonical, owner); lerr == nil && run != nil {
-			if cerr := h.runs.Close(run.ID); cerr != nil {
+			if cerr := h.runs.CloseWith(run.ID, closeParams); cerr != nil {
 				slog.Error("runs: close on release failed",
 					"run", run.ID, "error", cerr)
 			}

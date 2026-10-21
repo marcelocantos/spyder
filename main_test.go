@@ -343,3 +343,22 @@ func indexOfStr(s, sub string) int {
 	}
 	return -1
 }
+
+// 🎯T166: spyder run carries run-provenance flags into runArgs.
+func TestParseRunArgs_Provenance(t *testing.T) {
+	got, err := parseRunArgs([]string{
+		"--device", "A23", "--script", "euan_shop_smoke", "--app-bundle", "com.example.scr",
+		"--app-name", "Stock Car Racing", "--app-commit", "c0ffee", "--app-branch", "main",
+		"--app-dirty", "true", "--", "echo", "hi",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Script != "euan_shop_smoke" || got.AppBundle != "com.example.scr" || got.AppName != "Stock Car Racing" ||
+		got.AppCommit != "c0ffee" || got.AppBranch != "main" || got.AppDirty != "true" || got.Device != "A23" {
+		t.Errorf("got %+v", got)
+	}
+	if _, err := parseRunArgs([]string{"--app-dirty", "maybe", "--", "x"}); err == nil {
+		t.Error("--app-dirty maybe should be rejected")
+	}
+}

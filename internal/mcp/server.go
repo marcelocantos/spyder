@@ -68,15 +68,18 @@ type Handler struct {
 	desktop      device.Adapter
 	reservations *reservations.Store
 	runs         *runs.Store
-	bls          *baselines.Store
-	recordings   *recording.Registry
-	logCapture   *logcapture.Manager
-	appChannel   *appchannel.Manager
-	instances    *appchannel.InstancePool // 🎯T92.1 factory-spawned instance lifecycle
-	runsBaseDir  string                   // base dir for active-run temp files; empty = os.TempDir()
-	pool         selector.PoolResolver    // optional hook for 🎯T23 fuzzy selector
-	poolMgr      PoolManager              // optional hook for 🎯T24 pool management
-	health       *health.Supervisor       // live health model + subprocess supervisor (🎯T90)
+	// noProvenanceProbe disables reserve's device OS / app version
+	// probes (🎯T166). Unit tests set it so they never exec adb/go-ios.
+	noProvenanceProbe bool
+	bls               *baselines.Store
+	recordings        *recording.Registry
+	logCapture        *logcapture.Manager
+	appChannel        *appchannel.Manager
+	instances         *appchannel.InstancePool // 🎯T92.1 factory-spawned instance lifecycle
+	runsBaseDir       string                   // base dir for active-run temp files; empty = os.TempDir()
+	pool              selector.PoolResolver    // optional hook for 🎯T23 fuzzy selector
+	poolMgr           PoolManager              // optional hook for 🎯T24 pool management
+	health            *health.Supervisor       // live health model + subprocess supervisor (🎯T90)
 
 	// networkByDevice maps a normalised device reference to the most
 	// recently applied network profile for that device. Cleared when
@@ -1119,6 +1122,24 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("note",
 				mcpgo.Description("Human-readable note surfaced in conflict errors (e.g. 'UI regression run')"),
 			),
+			mcpgo.WithString("script_path",
+				mcpgo.Description("Run provenance: the .star script this session will drive (library name, bundled:name, or path). Its git commit/branch/dirty state is recorded in the run manifest."),
+			),
+			mcpgo.WithString("app_bundle_id",
+				mcpgo.Description("Run provenance: bundle id / package of the app under test. Spyder reads its installed version and build from the device."),
+			),
+			mcpgo.WithString("app_name",
+				mcpgo.Description("Run provenance: app under test display name (e.g. 'Stock Car Racing')."),
+			),
+			mcpgo.WithString("app_commit",
+				mcpgo.Description("Run provenance: git commit of the app build under test (spyder can't see the app's source tree, so the caller supplies it)."),
+			),
+			mcpgo.WithString("app_branch",
+				mcpgo.Description("Run provenance: git branch of the app build under test."),
+			),
+			mcpgo.WithBoolean("app_dirty",
+				mcpgo.Description("Run provenance: whether the app build had uncommitted changes."),
+			),
 		),
 
 		mcpgo.NewTool("release",
@@ -1130,6 +1151,16 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("owner",
 				mcpgo.Required(),
 				mcpgo.Description("Owner identity under which the reservation was taken"),
+			),
+			mcpgo.WithBoolean("passed",
+				mcpgo.Description("Run outcome: whether the session passed. Recorded in the run manifest; omitted means unknown."),
+			),
+			mcpgo.WithString("outcome",
+				mcpgo.Description("Run outcome: short free-text result (e.g. 'pass', 'assert failed: lap timer')."),
+			),
+			mcpgo.WithArray("failure_screenshots",
+				mcpgo.Description("Run outcome: artefact names of screenshots that show the failure."),
+				mcpgo.Items(map[string]any{"type": "string"}),
 			),
 		),
 
