@@ -227,7 +227,7 @@ steps:
 	if err != nil {
 		t.Fatalf("read selection: %v", err)
 	}
-	var sel struct{Run, Step string}
+	var sel struct{ Run, Step string }
 	if err := json.Unmarshal([]byte(selJSON), &sel); err != nil {
 		t.Fatalf("selection json: %v", err)
 	}
