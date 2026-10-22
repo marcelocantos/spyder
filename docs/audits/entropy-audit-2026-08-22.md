@@ -25,9 +25,7 @@ validation. Production code was not modified.
 - **Highest-consequence findings at the snapshot:** ENT-001 (`max_duration_ms`
   advertised as 120 s vs 10 min at runtime; closed 2026-10-03),
   ENT-002 (`go test ./...` failed on this snapshot while
-  `TEST-REPORT.json` still says pass), ENT-003 (`STABILITY.md` still
-  catalogues per-verb MCP tools after 🎯T88 made `app_exec` the only
-  advertised MCP tool).
+  `TEST-REPORT.json` still says pass), ENT-003 (closed 🎯T132.3 — `STABILITY.md` MCP section matches the `app_exec`-only wire).
 - **Unverified residue:** live device tests (`SPYDER_LIVE_*` not set for
   this run), `make -C player check-wire` / player-web build, govulncheck,
   clone detection, parent `go.work` blocked default `go list` /
@@ -141,8 +139,6 @@ because that rewrites a tracked file): `generated_at` 2026-08-16T00:54:05Z,
 - `CLAUDE.md` Architecture: `main.go` subcommands are `serve` / `run` /
   `version`. Observed: `doctor`, `status`, `help-agent`, plus 36 CLI
   proxies (`main.go` usage string).
-- `STABILITY.md` “MCP tools” table lists `devices`, `screenshot`, … as MCP
-  tools. Observed MCP wire: `app_exec` only. REST still uses those names.
 - `appExecDefinition` description says max 120 s; `maxExecDuration` is
   10 minutes; `agents-guide.md` still says 120 000 ms.
 - `docs/plateau-p.md` still lists “H.264 opaque relay” as the plateau
@@ -295,41 +291,9 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 ### ENT-003: Stability catalogue still describes the pre-T88 MCP wire
 
 - **Priority:** P1
-- **Dimensions:** Documentation / governance; Redundancy / sources of truth
-- **Status:** observed fact
-- **Evidence:**
-  - `internal/mcp/server.go:713-720` `Definitions()` returns only
-    `appExecDefinition()` (🎯T88.3). Comment at `:711-712` still says
-    “complete MCP tool definition list — core tools plus visual-regression
-    tools…”.
-  - `TestDefinitions_SingleEntryPoint` (`internal/mcp/app_exec_test.go:318-328`)
-    locks that wire.
-  - `STABILITY.md:8-16` commits 1.0 compatibility to “the MCP tool
-    surface (names, input schemas, output shapes)”.
-  - `STABILITY.md:40-47` table titled **MCP tools** starts with `devices`,
-    `screenshot` (output still “MCP image content block”), etc.
-  - `internal/mcp/tools.go:397-405` 🎯T114: screenshot default is a
-    filesystem path, not inline PNG.
-  - REST still accepts `/api/v1/<tool>` (`internal/rest/rest.go:3-14,46-49`).
-- **Mechanism:** The compatibility document an agent or human uses to
-  decide “what is MCP” is the old N-tool surface. Callers following
-  `STABILITY.md` will look for MCP tools that are not advertised.
-  Screenshot output shape in that table predates 🎯T114.
-- **Blast radius:** MCP clients, 1.0 lock-in planning, any consumer of
-  `STABILITY.md` as the public-surface list.
-- **Counterevidence checked:** `agents-guide.md` and `README.md` correctly
-  describe `app_exec` as the single MCP tool. Verb names remain REST +
-  Starlark builtins. `legacyDefinitions()` is an intentional in-repo
-  schema oracle, not the wire.
-- **Smallest coherent remediation:** retitle the `STABILITY.md` table to
-  “REST / Starlark verbs”; add a one-row MCP section for `app_exec`;
-  update screenshot output to the 🎯T114 path default; fix the stale
-  `Definitions()` comment.
-- **Verification:** a test (or docs grep in `make bullseye`) that
-  `STABILITY.md` does not list a heading `### MCP tools` with names other
-  than `app_exec`.
-- **Ratchet candidate:** extend `TestDefinitions_SingleEntryPoint` with a
-  file assert on `STABILITY.md`, or a small `docs_parity_test.go`.
+- **Status:** closed by `TestSTABILITY_MCPToolsSectionListsOnlyAppExec` in `internal/mcp/stability_catalogue_test.go` (🎯T132.3).
+- **Shipped path:** `STABILITY.md` keeps a one-row `### MCP tools` table for `app_exec` only; per-verb surfaces live under `### REST / Starlark verbs` with 🎯T114 screenshot defaults. `internal/mcp/server.go` `Definitions()` advertises `app_exec` alone; the stale pre-T88 comment above `Definitions()` was removed. `agents-guide.md` describes `app_metrics_*` as Starlark builtins inside `app_exec`, not separate MCP tools.
+- **Historical evidence (2026-08-22 audit):** the catalogue had listed `devices`, `screenshot`, … under **MCP tools** while the wire exposed only `app_exec` after 🎯T88.
 
 ### ENT-004: Bundled Starlark has an enforced repo mirror
 
@@ -575,12 +539,12 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 | Fact | Authorities | Drift? |
 |---|---|---|
-| Verb set | `toolHandlers()` (runtime), `legacyDefinitions()` (schema, tested), CLI list (subset, untested), `STABILITY.md` MCP table (stale), `agents-guide.md` | Yes — STABILITY/MCP |
+| Verb set | `toolHandlers()` (runtime), `legacyDefinitions()` (schema, tested), CLI list (subset, untested), `STABILITY.md` REST/Starlark table, `agents-guide.md` | No — STABILITY MCP row ratcheted (ENT-003) |
 | `app_exec` duration cap | `maxExecDuration`, MCP description, MCP param desc, agents-guide | Historical yes; source/test closed (ENT-001), released surface unobserved |
 | Durable recipes | embed `recipes/`, repo `scripts/lib/`, user `~/.spyder/scripts/` | Mirror unenforced (ENT-004); user layer deliberate |
 | Device health | `health.Model`, `wedge.DoctorFinding`, `spyder doctor` CLI | Bridged on purpose (T99.6); doctor CLI can run without daemon |
 | Stream protocol | ge `Protocol.h`, spyder `player/include/wire/Protocol.h` | Copied; local sizeof oracle only (ENT-006) |
-| Screenshot default | T114 path in code + agents-guide; STABILITY “MCP image block” | Yes |
+| Screenshot default | T114 path in code + agents-guide + STABILITY REST verb rows | No |
 | Inventory | `~/.spyder/inventory.json`; USB ceiling `~/.spyder/usb-speed.json` (ratchet-up, not written back to inventory) | Deliberate split (`agents-guide.md`) |
 | Daemon listen address | `defaultAddr` loopback; `SPYDER_ADDR`; brew `:3030`; `SPYDER_DAEMON_URL` for CLI | Documented; ops footgun (ENT-008) |
 
@@ -687,10 +651,8 @@ was instructed not to install.
    serialize the desktop LogRange race; `gofmt -w` the eight files;
    regenerate `TEST-REPORT.json` on that commit. Until `make test` and
    `make fmt-check` are green, other ratchets will lie.
-2. **Converge MCP catalogue (ENT-003).** ENT-001 source/test convergence
-   landed in `668a1d84`; released-surface activation is unobserved. Rewrite
-   `STABILITY.md` MCP section to `app_exec` + REST/Starlark verbs; fix the
-   `Definitions()` comment.
+2. **ENT-003 closed (🎯T132.3).** `STABILITY.md`, `agents-guide.md`, and
+   `TestSTABILITY_MCPToolsSectionListsOnlyAppExec` match the post-T88 wire.
 3. **Lock remaining duplicates (ENT-004, ENT-011, ENT-006).** Recipe
    mirror test; deadline-name subset test; `check-wire` in
    `test-report.sh`.

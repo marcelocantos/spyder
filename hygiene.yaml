@@ -481,7 +481,7 @@ items:
     cadence: continuous
     enforce: informational
     tier: 3
-    reason: Docs are not built or link-checked in a hosted job; STABILITY.md has known drift (entropy audit ENT-003).
+    reason: Docs are not built or link-checked in a hosted job.
     evidence: {absent: {file: {path: .github/workflows}}}
 
   # ============================== PERFORMANCE ===========================
