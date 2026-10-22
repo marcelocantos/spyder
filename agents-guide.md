@@ -816,7 +816,8 @@ the app: `log` (structured), `perf` (key/value counter batches).
 
 Per-instance frame-trace ring (ge 🎯T166 / spyder 🎯T110): wire
 methods `metrics_list`, `metrics_arm`, `metrics_disarm`,
-`metrics_status`, `metrics_dump` — MCP tools `app_metrics_*`. Apps
+`metrics_status`, `metrics_dump` — Starlark builtins `app_metrics_*` inside
+`app_exec` (not separate MCP tools). Apps
 register typed series (`metric<T>` / `ge::metrics::Scope`); spyder
 selects by name and dumps **full retained-frame history**, not the
 latest-only `perf` push (`app_perf_get`).

@@ -902,8 +902,6 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 	}
 }
 
-// Definitions returns the complete MCP tool definition list — core tools
-// plus visual-regression tools plus log-capture-session tools.
 func Definitions() []mcpgo.Tool {
 	// 🎯T88.3: app_exec is spyder's single MCP entry point. Every former
 	// one-off tool is reachable as a Starlark builtin inside app_exec (see
