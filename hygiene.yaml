@@ -75,12 +75,12 @@ items:
 
   - id: correctness.player-wire
     dim: correctness
-    desc: Player compile-time wire-layout oracle (`make -C player check-wire`)
+    desc: Player compile-time wire-layout oracle (`make check-wire` on darwin)
     state: present
     cadence: once-must-hold
     enforce: informational
     tier: 2
-    evidence: {file: {path: player/Makefile, matches: '(?m)^check-wire:'}}
+    evidence: {make_target: check-wire}
 
   - id: correctness.push-ci
     dim: correctness

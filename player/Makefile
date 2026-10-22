@@ -193,6 +193,7 @@ check-wire-web: tools/check-wire-layout.cpp include/wire/Protocol.h
 
 # Wire layout oracle (magics + struct sizes). No ge checkout required.
 check-wire: tools/check-wire-layout.cpp include/wire/Protocol.h
+	@mkdir -p $(BUILD_DIR)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) $(DEFS) tools/check-wire-layout.cpp -o $(BUILD_DIR)/check-wire-layout
 	$(BUILD_DIR)/check-wire-layout
 

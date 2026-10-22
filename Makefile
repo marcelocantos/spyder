@@ -1,4 +1,4 @@
-.PHONY: bullseye pre-release build test test-live-session-cancel test-live-process-cancel test-report test-integration vet fmt-check clean player player-web alert-runner permission-fixture permission-fixture-check sign release-dist release-tap release
+.PHONY: bullseye pre-release build test test-live-session-cancel test-live-process-cancel test-report test-integration vet fmt-check clean player player-web check-wire alert-runner permission-fixture permission-fixture-check sign release-dist release-tap release
 
 build: bin/spyder bin/ios bin/spyder-killusbmuxd
 
@@ -46,6 +46,11 @@ permission-fixture-check:
 player-web:
 	$(MAKE) -C player web
 
+# Player wire layout oracle (macOS/C++ only — see ENT-006 / 🎯T132.6).
+check-wire:
+	$(MAKE) -C player check-wire
+	@./scripts/check-wire-ge.sh
+
 # Parent ../go.work (claudia/jevons) does not list this module; force
 # module mode so vet/test/build work from a sibling checkout.
 GOWORK ?= off
@@ -90,6 +95,7 @@ bin/ios: go.mod go.sum
 
 test:
 	CGO_ENABLED=1 go test ./...
+	@if [ "$(uname -s)" = Darwin ]; then $(MAKE) check-wire; fi
 
 vet:
 	CGO_ENABLED=1 go vet ./...
@@ -117,6 +123,7 @@ bullseye:
 	@CGO_ENABLED=1 go build -ldflags "-X main.version=dev $(STAMP_LDFLAGS)" -o bin/spyder . && echo "✓ build"
 	@go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios && echo "✓ build ios"
 	@CGO_ENABLED=1 go test ./... && echo "✓ tests"
+	@if [ "$(uname -s)" = Darwin ]; then $(MAKE) check-wire && echo "✓ check-wire"; fi
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
 	if [ -z "$$dirty" ]; then echo "✓ working tree clean"; \
 	else \

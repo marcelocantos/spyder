@@ -55,7 +55,12 @@ When the stream wire changes, update **both**:
 | ge | `include/ge/Protocol.h` |
 
 `make -C player check-wire` is the player's layout oracle. Magics are
-ASCII `SP2x` and must stay identical on both sides.
+ASCII `SP2x` and must stay identical on both sides. From the spyder
+repo root, `make check-wire` also runs `./scripts/check-wire-ge.sh`, which
+compares magics and `kProtocolVersion` against `../ge/include/ge/Protocol.h`
+when that checkout exists (`SPYDER_GE_ROOT` overrides the path). If ge is
+absent, the cross-repo step skips closed; the local sizeof oracle still
+runs. Regression: `./scripts/check-wire-ge-test.sh`.
 
 ### Submodule object-store independence
 

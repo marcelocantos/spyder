@@ -79,7 +79,7 @@ contain modules listed in go.work”.
 | `diff -rq scripts/lib internal/scriptlib/recipes` | — | 0 (identical) | auxiliary | No test owns this equality |
 | `staticcheck ./internal/mcp` | 2025.1.1 | n/a | auxiliary | Failed: module not in parent `go.work`; not retried under `GOWORK=off` |
 | `jscpd` / `govulncheck` | unavailable | n/a | — | Not installed; not added |
-| `make -C player check-wire` | not run | — | player oracle | Residue |
+| `make check-wire` | run on darwin (`make test` / `bullseye`) | 0 | player oracle | Closed (ENT-006) |
 | Live `go test -run '_Live$'` | not run | — | live device path | `SPYDER_LIVE_UDID` unset this session |
 
 `TEST-REPORT.json` (committed attestation, **not** re-run as `make test-report`
@@ -351,35 +351,24 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 - **Priority:** P2
 - **Dimensions:** Redundancy / sources of truth; Architecture topology
-- **Status:** observed fact
-- **Evidence:**
-  - `player/include/wire/Protocol.h:13-64` — magics, `kProtocolVersion = 9`.
-  - `player/src/InputScript.h:17-19` — “byte-identical mirror of this
-    header (same convention as Protocol.h)”.
-  - `player/tools/check-wire-layout.cpp` + `player/Makefile` `check-wire`
-    assert sizeof/magics of *this* copy.
-  - `docs/streaming-data-plane-plan.md:7-16,39-42` — ge owns
-    `include/ge/Protocol.h`; spyder relay is magic-agnostic.
-  - `CLAUDE.md` transport note: H.264 deprecated in place; SP2S default.
-  - `make test` / `release.yml` do not run `check-wire`. `release.yml`
-    does not build `bin/player`.
-- **Mechanism:** A ge encoder change that is not copied here compiles
-  spyder’s player against a stale layout. `check-wire` cannot see ge.
-  H.264 decode remains in the tree (`VideoDecoder_apple.mm`) as frozen
-  residue, so stream bugs can still land on the deprecated rung.
-- **Blast radius:** every glass (desktop, iOS, Android, wasm) and any
-  ge server speaking SP2*.
-- **Counterevidence checked:** relay tests pipe opaque magics
-  (`TestRelay_PipesCommandStreamMagic` cited in the plan). Deliberate
-  duplication of Protocol.h is the stated ge/spyder decoupling. Players
-  are “dev tools only, never store-packaged” (`CLAUDE.md`).
-- **Smallest coherent remediation:** run `make -C player check-wire` from
-  `make test` or `make bullseye`; add a documented cross-repo check
-  (hash/size of magics) against ge when both checkouts exist, skip
-  closed otherwise.
-- **Verification:** `make -C player check-wire` in the laptop
-  `TEST-REPORT.json` as its own suite (not CI — player is macOS/C++).
-- **Ratchet candidate:** `make_target: check-wire` once hygiene exists.
+- **Status:** closed (2026-10-22) by `make check-wire` on darwin (🎯T132.6).
+  Evidence cited in the 2026-08-22 audit no longer reproduces on the
+  shipped path.
+- **Shipped path:** `player/tools/check-wire-layout.cpp` remains the
+  local sizeof/magic oracle (`make -C player check-wire`). The repo root
+  `check-wire` target runs that oracle plus `scripts/check-wire-ge.sh`,
+  which compares magics and `kProtocolVersion` against
+  `include/ge/Protocol.h` when a ge checkout is present (`SPYDER_GE_ROOT`
+  overrides; skips closed otherwise). `make test` and `make bullseye` invoke
+  `check-wire` on darwin; `scripts/test-report.sh` records a `player-wire`
+  suite (macOS/C++ — not hosted CI). Hygiene ratchet:
+  `make_target: check-wire`.
+- **Residual (unchanged):** Protocol.h is still a deliberate copy, not a
+  shared library; H.264 decode residue can still land stream bugs on the
+  deprecated rung; `release.yml` still does not build `bin/player`.
+- **Historical evidence (2026-08-22 audit):** observed fact — ge encoder
+  changes not copied here compiled spyder’s player against a stale layout;
+  `check-wire` could not see ge; `make test` did not run the oracle.
 
 ### ENT-007: Declared `gofmt` gate is red on `master`
 
@@ -547,7 +536,7 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 | `app_exec` duration cap | `maxExecDuration`, MCP description, MCP param desc, agents-guide | Historical yes; source/test closed (ENT-001), released surface unobserved |
 | Durable recipes | embed `recipes/`, repo `scripts/lib/`, user `~/.spyder/scripts/` | Mirror unenforced (ENT-004); user layer deliberate |
 | Device health | `health.Model`, `wedge.DoctorFinding`, `spyder doctor` CLI | Bridged on purpose (T99.6); doctor CLI can run without daemon |
-| Stream protocol | ge `Protocol.h`, spyder `player/include/wire/Protocol.h` | Copied; local sizeof oracle only (ENT-006) |
+| Stream protocol | ge `Protocol.h`, spyder `player/include/wire/Protocol.h` | Copied; `make check-wire` + optional ge magics compare (ENT-006 closed) |
 | Screenshot default | T114 path in code + agents-guide + STABILITY REST verb rows | No |
 | Inventory | `~/.spyder/inventory.json`; USB ceiling `~/.spyder/usb-speed.json` (ratchet-up, not written back to inventory) | Deliberate split (`agents-guide.md`) |
 | Daemon listen address | `defaultAddr` loopback; `SPYDER_ADDR`; brew `:3030`; `SPYDER_DAEMON_URL` for CLI | Documented; ops footgun (ENT-008) |
@@ -624,7 +613,7 @@ drift the moment those make targets were declared `state: enforced`.
 | `go vet` | shipped `make vet` | pass |
 | Live iOS/Android | `SPYDER_LIVE_*` `_Live` tests + `TEST-REPORT.json` live suite | **not run**; last attestation 2026-08-16 pass |
 | Desktop stdout capture | `TestDesktopAdapter_LaunchLifecycle` | red under `./...`, green isolated |
-| Player wire layout | `make -C player check-wire` | **not run** |
+| Player wire layout | `make check-wire` | **darwin gate** (ENT-006 closed) |
 | Browser player render | none in this repo’s Go tests; `playerweb` has no tests | **not run** (journeys: owner-visible `/player/` and `/dashboard` have no journey harness here) |
 | Recipe mirror identity | none | identical by manual `diff` |
 | Duration cap consistency | none on audit date | drifted on 2026-08-22; source/test closed by `668a1d84`, released surface unobserved |

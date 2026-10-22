@@ -90,6 +90,13 @@ DEFAULT_TIMEOUT="-timeout 2m"
 # flakiness (🎯T72.6).
 run_suite go-unit "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS ./..."
 
+# ── Player wire layout (macOS/C++ — ENT-006 / 🎯T132.6) ─────────────────────
+if [[ "$(uname -s)" == Darwin ]]; then
+  run_suite player-wire "make check-wire && ./scripts/check-wire-ge-test.sh"
+else
+  run_suite_skipped player-wire "macOS/C++ player oracle; run make test-report on darwin"
+fi
+
 # ── Tier 2: live device tier (go-ios) ────────────────────────────────────────
 # Gated on SPYDER_LIVE_UDID. Requires a paired iOS device + the bundled
 # `ios tunnel start --userspace` running (spyder spawns it; outside spyder
