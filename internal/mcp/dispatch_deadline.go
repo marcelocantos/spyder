@@ -34,37 +34,37 @@ var (
 // toolDeadlineByName lists explicit deadline classes. Unlisted verbs use
 // DeadlineDeviceOp via toolDeadlineClass. Keys must stay ⊆ toolHandlers()
 // (TestDeadlineNamesSubsetOfHandlers, ENT-005).
-var toolDeadlineByName = func() map[string]time.Duration {
-	m := map[string]time.Duration{}
-	add := func(d time.Duration, names ...string) {
+var toolDeadlineByName = func() map[string]func() time.Duration {
+	m := map[string]func() time.Duration{}
+	add := func(d func() time.Duration, names ...string) {
 		for _, n := range names {
 			m[n] = d
 		}
 	}
 	// ensure_session / launch_player may install on the deploy path
 	// (🎯T103: a cold emulator adb install must fit under this class).
-	add(DeadlineInstall, "install_app", "deploy_app", "ensure_session", "launch_player")
+	add(func() time.Duration { return DeadlineInstall }, "install_app", "deploy_app", "ensure_session", "launch_player")
 	// Explicit class: window_sec max 120 must fit under this bound.
-	add(DeadlinePerfFPS, "perf_fps")
-	add(DeadlineWaitState, "wait_state", "wait_app_session")
+	add(func() time.Duration { return DeadlinePerfFPS }, "perf_fps")
+	add(func() time.Duration { return DeadlineWaitState }, "wait_state", "wait_app_session")
 	// Owner gates and long shell graphs; no extra wall-clock cap.
-	add(0, "verify")
+	add(func() time.Duration { return 0 }, "verify")
 	// Optional wait for the alert, then the XCUITest runner (🎯T154).
 	// agent_ensure may install and start the resident runner (🎯T163).
-	add(5*time.Minute, "system_alert_tap", "agent_ensure")
-	add(DeadlineDeviceOp, "system_alert")
-	add(DeadlineFastRead,
+	add(func() time.Duration { return 5 * time.Minute }, "system_alert_tap", "agent_ensure")
+	add(func() time.Duration { return DeadlineDeviceOp }, "system_alert")
+	add(func() time.Duration { return DeadlineFastRead },
 		"verify_status", "verify_answer", "verify_abort", "verify_dismiss", "verify_detail",
 		"verify_review", "verify_report", "verify_now")
 	// Outer dispatch must not undercut max_duration_ms (default 30s,
 	// ceiling maxExecDuration). FastRead (15s) was killing multi-step
 	// device recipes that correctly request 60–120s budgets.
-	add(maxExecDuration+5*time.Second, "app_exec", "run_script", "list_scripts")
-	add(DeadlineFastRead,
+	add(func() time.Duration { return maxExecDuration + 5*time.Second }, "app_exec", "run_script", "list_scripts")
+	add(func() time.Duration { return DeadlineFastRead },
 		"devices", "resolve", "device_state", "battery_history", "list_apps", "is_running",
 		"reservations", "runs_list", "runs_show",
 		"app_channel_list", "app_channel_diagnose", "agent_status")
-	add(DeadlineDeviceOp,
+	add(func() time.Duration { return DeadlineDeviceOp },
 		"screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",
 		"port_forward_start", "port_forward_stop", "input_tap", "input_swipe",
@@ -94,8 +94,8 @@ func toolDeadlineExplicitNames() []string {
 
 // toolDeadlineClass returns the wall-clock bound for a tool name.
 func toolDeadlineClass(name string) time.Duration {
-	if d, ok := toolDeadlineByName[name]; ok {
-		return d
+	if get, ok := toolDeadlineByName[name]; ok {
+		return get()
 	}
 	return DeadlineDeviceOp
 }
