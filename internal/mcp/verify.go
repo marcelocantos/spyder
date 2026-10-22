@@ -22,9 +22,13 @@ func (h *Handler) VerifyHub() *verify.Hub {
 	h.verifyMu.Lock()
 	defer h.verifyMu.Unlock()
 	if h.verifyHub == nil {
+		model := h.execVerifyModel
+		if h.verifyModelOverride != nil {
+			model = h.verifyModelOverride
+		}
 		h.verifyHub = verify.NewHub(verify.HubArgs{
 			Script:   h.execVerifyScript,
-			Model:    h.execVerifyModel,
+			Model:    model,
 			StateDir: h.verifyStateDir,
 		})
 	}

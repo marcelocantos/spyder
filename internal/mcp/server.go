@@ -140,6 +140,8 @@ type Handler struct {
 	verifyMu       sync.Mutex
 	verifyHub      *verify.Hub
 	verifyStateDir string
+	// verifyModelOverride replaces execVerifyModel when building the hub (tests).
+	verifyModelOverride verify.StepRunner
 
 	// agents supervises one XCTest runner per tethered iOS device
 	// (🎯T163). Nil unless serve opted in, so unit-test daemons do not
@@ -233,6 +235,12 @@ func WithHealth(s *health.Supervisor) HandlerOption {
 			h.health = s
 		}
 	}
+}
+
+// WithVerifyModel injects a model runner for verify static-gate appraisals.
+// Production daemons use execVerifyModel (Claudia); hermetic tests pass a stub.
+func WithVerifyModel(model verify.StepRunner) HandlerOption {
+	return func(h *Handler) { h.verifyModelOverride = model }
 }
 
 // Health returns the handler's health supervisor. Always non-nil.
