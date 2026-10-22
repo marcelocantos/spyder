@@ -1,13 +1,13 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-10-22T07:07:55Z",
-  "head_sha": "64a369990f3863fb80b079d5f05dd42bbde3df16",
+  "generated_at": "2026-10-22T10:36:31Z",
+  "head_sha": "248875974e49dee0dbebc51df85d88c43f456dc9",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test -timeout 2m  ./...",
-      "duration_s": 45,
+      "duration_s": 64,
       "status": "pass"
     },
     {
