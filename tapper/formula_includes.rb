@@ -3,7 +3,8 @@ service do
   keep_alive true
   log_path var/"log/spyder.log"
   error_log_path var/"log/spyder.log"
-  environment_variables PATH: "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", SPYDER_ADDR: ":3030"
+  # adb (Homebrew prefix), xcrun and ioreg (system dirs) — all on std_service_path_env.
+  environment_variables PATH: std_service_path_env, SPYDER_ADDR: ":3030"
 end
 
 def caveats
