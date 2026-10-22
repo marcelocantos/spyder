@@ -123,10 +123,11 @@ func (s *Store) Acquire(device, owner string, ttl time.Duration, note string) (R
 		ttl = MaxTTL
 	}
 
+	// Normalise before locking: the normaliser consults the inventory,
+	// which may touch the filesystem (🎯T168).
+	key := s.canonical(device)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	key := s.canonical(device)
 	now := s.now()
 	if existing, ok := s.state[key]; ok && now.Before(existing.ExpiresAt) {
 		if existing.Owner != owner {
@@ -161,10 +162,11 @@ func (s *Store) Acquire(device, owner string, ttl time.Duration, note string) (R
 // caller if the reservation has already expired). Releasing a free
 // device is a no-op (returns nil).
 func (s *Store) Release(device, owner string) error {
+	// Normalise before locking: the normaliser consults the inventory,
+	// which may touch the filesystem (🎯T168).
+	key := s.canonical(device)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	key := s.canonical(device)
 	existing, ok := s.state[key]
 	if !ok {
 		return nil
@@ -195,10 +197,11 @@ func (s *Store) Renew(device, owner string, ttl time.Duration) (Reservation, err
 		ttl = MaxTTL
 	}
 
+	// Normalise before locking: the normaliser consults the inventory,
+	// which may touch the filesystem (🎯T168).
+	key := s.canonical(device)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	key := s.canonical(device)
 	existing, ok := s.state[key]
 	if !ok || s.now().After(existing.ExpiresAt) {
 		return Reservation{}, fmt.Errorf("no active reservation on %s", key)
@@ -219,10 +222,11 @@ func (s *Store) Renew(device, owner string, ttl time.Duration) (Reservation, err
 // Otherwise returns a *Conflict. Callers pass "" for owner to
 // represent an anonymous caller (rejected if anyone holds it).
 func (s *Store) Authorize(device, owner string) error {
+	// Normalise before locking: the normaliser consults the inventory,
+	// which may touch the filesystem (🎯T168).
+	key := s.canonical(device)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	key := s.canonical(device)
 	existing, ok := s.state[key]
 	if !ok {
 		return nil
@@ -248,9 +252,9 @@ func (s *Store) List() []Reservation {
 
 // Get returns the active reservation for a device, if any.
 func (s *Store) Get(device string) (Reservation, bool) {
+	key := s.canonical(device) // before locking (🎯T168)
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := s.canonical(device)
 	r, ok := s.state[key]
 	if !ok {
 		return Reservation{}, false

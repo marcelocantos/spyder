@@ -123,6 +123,19 @@ type Handler struct {
 	// handler goroutine to finish before requesting self-restart.
 	selfRestartGrace time.Duration
 
+	// devicesMu guards the `devices` listing cache (🎯T170): concurrent
+	// requests for a platform share one in-flight listing, a completed
+	// listing is reused for devicesTTL, and lastIOS keeps the last good
+	// iOS rows for when an iOS census overruns its budget (🎯T169).
+	devicesMu       sync.Mutex
+	devicesCache    map[string]devicesSnapshot
+	devicesInFlight map[string]chan struct{}
+	lastIOS         []device.Info
+	lastIOSAt       time.Time
+	iosInFlight     *iosCall
+	// iosListBudget, when nonzero, replaces the default iOS budget (tests).
+	iosListBudget time.Duration
+
 	// readUSBCensus, when set, replaces usbspeed.ReadCensus (ioreg exec).
 	// Tests inject canned bytes; nil means the live IOUSB snapshot.
 	readUSBCensus func() ([]byte, error)

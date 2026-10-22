@@ -338,3 +338,41 @@ func stringsContains(s, sub string) bool {
 	}
 	return false
 }
+
+// 🎯T168: the normaliser runs outside the store lock, so a slow lookup for
+// one device (the inventory touching a stalled filesystem) does not hold up
+// reservation calls for another.
+func TestStore_SlowNormaliserDoesNotBlockOtherDevices(t *testing.T) {
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	norm := func(ref string) string {
+		if ref == "slow" {
+			close(entered)
+			<-release
+		}
+		return ref
+	}
+	s, err := New("", WithNormalizer(norm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Acquire("fast", "me", time.Minute, ""); err != nil {
+		t.Fatal(err)
+	}
+	go func() { s.Get("slow") }()
+	<-entered
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := s.Get("fast")
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("expected the fast device's reservation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Get waited on another device's slow normaliser")
+	}
+	close(release)
+}

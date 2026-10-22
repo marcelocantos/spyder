@@ -306,3 +306,64 @@ func TestClassifyRaw(t *testing.T) {
 		}
 	}
 }
+
+// 🎯T168: with a recheck interval, lookups inside the interval answer from
+// the loaded entries without touching the file; after it, a change is seen.
+func TestStore_RecheckIntervalLimitsFileChecks(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	dir := filepath.Join(tmp, ".spyder")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "inventory.json")
+	if err := os.WriteFile(path, []byte(sampleInventory), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s := New()
+	s.SetRecheckInterval(time.Hour)
+	if _, ok := s.Lookup("Raspberry"); !ok {
+		t.Fatal("expected Raspberry after first load")
+	}
+	// Remove the file: inside the interval nothing re-reads it.
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Lookup("Raspberry"); !ok {
+		t.Fatal("lookup inside the recheck interval should answer from loaded entries")
+	}
+	// Once the interval has passed, the next lookup sees the change.
+	s.mu.Lock()
+	s.checkedAt = time.Now().Add(-2 * time.Hour)
+	s.mu.Unlock()
+	if _, ok := s.Lookup("Raspberry"); ok {
+		t.Fatal("lookup after the interval should see the file is gone")
+	}
+}
+
+// While one caller is checking the file, others answer immediately from
+// the loaded entries instead of waiting on the filesystem.
+func TestStore_ConcurrentLookupsDoNotWaitOnRefresh(t *testing.T) {
+	s := withInventory(t, sampleInventory)
+	s.SetRecheckInterval(time.Second)
+	if _, ok := s.Lookup("Raspberry"); !ok {
+		t.Fatal("expected Raspberry after first load")
+	}
+	s.mu.Lock()
+	s.refreshing = true // another caller is mid-check
+	s.checkedAt = time.Now().Add(-time.Hour)
+	s.mu.Unlock()
+	done := make(chan bool, 1)
+	go func() {
+		_, ok := s.Lookup("Raspberry")
+		done <- ok
+	}()
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("expected Raspberry from loaded entries")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lookup waited on an in-progress refresh")
+	}
+}

@@ -64,6 +64,47 @@ type Store struct {
 	// fileSize == -1 means the file was missing at last check.
 	fileMod  time.Time
 	fileSize int64
+
+	// recheck, when positive, limits how often inventory.json is checked
+	// (🎯T168). Every reservation, alias and resolve call looks the
+	// inventory up; with recheck set, at most one caller per interval
+	// checks the file, outside the lock, while the others answer from
+	// the loaded entries, so a slow filesystem cannot queue them. Zero
+	// (the default) checks the file on every lookup.
+	recheck    time.Duration
+	loaded     bool
+	checkedAt  time.Time
+	refreshing bool
+}
+
+// SetRecheckInterval limits how often the file is checked for changes
+// once it has been loaded; see Store.recheck. The daemon uses one second.
+func (s *Store) SetRecheckInterval(d time.Duration) {
+	s.mu.Lock()
+	s.recheck = d
+	s.mu.Unlock()
+}
+
+// syncLocked brings entries up to date before a read. Callers hold s.mu;
+// it may release and reacquire it while checking the file.
+func (s *Store) syncLocked() {
+	if s.recheck <= 0 || !s.loaded {
+		s.loadLocked()
+		return
+	}
+	if s.refreshing || time.Since(s.checkedAt) < s.recheck {
+		return
+	}
+	s.refreshing = true
+	s.checkedAt = time.Now()
+	mod, size := s.fileMod, s.fileSize
+	s.mu.Unlock()
+	entries, newMod, newSize, changed := readInventoryIfChanged(mod, size)
+	s.mu.Lock()
+	if changed {
+		s.entries, s.fileMod, s.fileSize = entries, newMod, newSize
+	}
+	s.refreshing = false
 }
 
 // New creates an empty inventory store.
@@ -76,7 +117,7 @@ func (s *Store) Path() string { return paths.InventoryPath() }
 func (s *Store) Lookup(ref string) (Entry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.loadLocked()
+	s.syncLocked()
 
 	for _, e := range s.entries {
 		if strings.EqualFold(e.Alias, ref) ||
@@ -131,7 +172,7 @@ func (e Entry) DisplayName() string {
 func (s *Store) entryByUUID(uuid string) (Entry, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.loadLocked()
+	s.syncLocked()
 	for _, e := range s.entries {
 		if e.IOSUUID == uuid || e.IOSCoreDevice == uuid || e.AndroidSerial == uuid {
 			return e, true
@@ -145,7 +186,7 @@ func (s *Store) entryByUUID(uuid string) (Entry, bool) {
 func (s *Store) Entries() []Entry {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.loadLocked()
+	s.syncLocked()
 	out := make([]Entry, len(s.entries))
 	copy(out, s.entries)
 	return out
@@ -157,29 +198,36 @@ func (s *Store) Entries() []Entry {
 // Missing file → empty inventory. Unreadable or invalid JSON keeps the
 // previous snapshot (so a half-written editor save does not blank aliases).
 func (s *Store) loadLocked() {
+	entries, mod, size, changed := readInventoryIfChanged(s.fileMod, s.fileSize)
+	if changed {
+		s.entries, s.fileMod, s.fileSize = entries, mod, size
+	}
+	s.loaded = true
+	s.checkedAt = time.Now()
+}
+
+// readInventoryIfChanged reads inventory.json when its size or mtime
+// differs from (mod, size). Missing file → empty inventory (size -1).
+// Unreadable or invalid JSON reports no change, keeping the previous
+// snapshot (so a half-written editor save does not blank aliases).
+func readInventoryIfChanged(mod time.Time, size int64) ([]Entry, time.Time, int64, bool) {
 	path := paths.InventoryPath()
 	fi, err := os.Stat(path)
 	if err != nil {
 		// Gone or never present.
-		s.entries = nil
-		s.fileMod = time.Time{}
-		s.fileSize = -1
-		return
+		return nil, time.Time{}, -1, size != -1 || !mod.IsZero()
 	}
-	mod, size := fi.ModTime(), fi.Size()
-	if s.fileSize == size && s.fileMod.Equal(mod) {
-		return
+	newMod, newSize := fi.ModTime(), fi.Size()
+	if size == newSize && mod.Equal(newMod) {
+		return nil, mod, size, false
 	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return // keep previous snapshot
+		return nil, mod, size, false // keep previous snapshot
 	}
 	var entries []Entry
 	if err := json.Unmarshal(data, &entries); err != nil {
-		return // keep previous snapshot (mid-write / syntax error)
+		return nil, mod, size, false // keep previous snapshot (mid-write / syntax error)
 	}
-	s.entries = entries
-	s.fileMod = mod
-	s.fileSize = size
+	return entries, newMod, newSize, true
 }

@@ -26,6 +26,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/dashboard"
+	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/goios"
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/hostwifi"
@@ -263,6 +264,9 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	)
 
 	invStore := inventory.New()
+	// Reservation, alias and resolve calls look the inventory up many
+	// times a second; check the file at most once a second (🎯T168).
+	invStore.SetRecheckInterval(time.Second)
 	resvPath := filepath.Join(paths.Base(), "reservations.json")
 	resvStore, err := reservations.New(
 		resvPath,
@@ -292,6 +296,13 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 		// minutes on a large backlog, so it runs off the startup path.
 		go pruneRunsOnStartup(runsStore, runsArchiver, runsPolicy)
 	}
+	// Device listings no longer use temp directories; clear the ones
+	// earlier daemons left behind (🎯T169).
+	go func() {
+		if n := device.RemoveStaleDevicectlTempDirs("", 10*time.Minute); n > 0 {
+			slog.Info("removed stale devicectl temp dirs", "count", n)
+		}
+	}()
 
 	blsStore, err := baselines.New(paths.BaselinesBase())
 	if err != nil {

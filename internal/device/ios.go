@@ -54,12 +54,16 @@ const (
 	devicectlTimeout        = (devicectlTimeoutSeconds + 2) * time.Second
 )
 
+// devicectlListTimeout bounds the one devicectl census a listing runs
+// (🎯T169), well inside the 15 s dispatch deadline of the `devices` verb.
+const devicectlListTimeout = 8 * time.Second
+
 // IOSAdapter talks to iOS devices via in-process go-ios calls.
 // Install/uninstall go through go-ios's `zipconduit` / `installation_proxy`
 // (🎯T98) — never `xcrun devicectl`, whose CoreDevice installapp capability
 // is incomplete on some devices (🎯T98 origin incident). `xcrun devicectl`
 // is used only for device *listing* (merged with usbmux — see
-// devicectlConnectedIOSDevices) and for the capabilities devicectl alone
+// listUncached) and for the capabilities devicectl alone
 // exposes; everything else runs in-process.
 type IOSAdapter struct {
 	goios *goios.Resolver
@@ -119,6 +123,21 @@ type IOSAdapter struct {
 	// usbmuxSeen observes the serials listDevices returned, before
 	// lockdown enrichment. It cannot add or remove any. Nil in production.
 	usbmuxSeen func([]string)
+
+	// deviceValues overrides the per-device lockdown GetValues read and
+	// devicectlList the devicectl census. Nil in production.
+	deviceValues  func(goios_ios.DeviceEntry) (goios_ios.GetAllValuesResponse, error)
+	devicectlList func(ctx context.Context) ([]byte, error)
+
+	// List coalescing (🎯T170). listMu guards the fields below.
+	// identities caches each device's lockdown values by UDID for
+	// as long as usbmux keeps reporting it, so a listing does not open a
+	// TLS lockdown session per device per call.
+	listMu       sync.Mutex
+	listInFlight chan struct{}
+	listResult   []Info
+	listErr      error
+	identities   map[string]goios_ios.GetAllValuesResponse
 
 	// runwda reinstates a live ios runwda after the device leaves the
 	// tunnel and comes back (🎯T167). Nil until BindRunwda.
@@ -536,6 +555,37 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 // rather than an error — matching the Android adapter's behaviour when
 // adb is absent.
 func (a *IOSAdapter) List() ([]Info, error) {
+	// Concurrent callers share one in-flight listing (🎯T170): a caller
+	// that arrives while a census is running waits for it and gets its
+	// result, instead of starting another. A caller arriving after it
+	// finished starts a fresh one, so List never returns a stale view.
+	// Callers get their own copy of the slice.
+	a.listMu.Lock()
+	if wait := a.listInFlight; wait != nil {
+		a.listMu.Unlock()
+		<-wait
+		a.listMu.Lock()
+		out, err := append([]Info(nil), a.listResult...), a.listErr
+		a.listMu.Unlock()
+		return out, err
+	}
+	done := make(chan struct{})
+	a.listInFlight = done
+	a.listMu.Unlock()
+
+	devices, err := a.listUncached()
+
+	a.listMu.Lock()
+	a.listResult, a.listErr = devices, err
+	a.listInFlight = nil
+	a.listMu.Unlock()
+	close(done)
+	return append([]Info(nil), devices...), err
+}
+
+// listUncached runs one census: usbmux enumeration, cached lockdown
+// identities, and a single bounded devicectl listing read from stdout.
+func (a *IOSAdapter) listUncached() ([]Info, error) {
 	var devices []Info
 
 	// Primary source: go-ios's usbmux enumeration. The serials are
@@ -559,7 +609,22 @@ func (a *IOSAdapter) List() ([]Info, error) {
 		}
 	}
 
-	connected, _ := devicectlConnectedIOSDevices()
+	// One devicectl census serves both the connected filter and the
+	// merge of usbmux-invisible devices (🎯T169: it used to run twice,
+	// each time through a fresh temp directory).
+	var devicectlJSON []byte
+	if a.devicectlList != nil || hasXcrun() {
+		ctx, cancel := context.WithTimeout(context.Background(), devicectlListTimeout)
+		data, err := a.runDevicectlList(ctx)
+		cancel()
+		if err == nil {
+			devicectlJSON = data
+		}
+	}
+	var connected map[string]bool
+	if devicectlJSON != nil {
+		connected, _ = parseDevicectlConnectedIOSDevices(devicectlJSON)
+	}
 
 	// Per-device lockdown enrichment for the human-friendly fields.
 	//
@@ -572,10 +637,12 @@ func (a *IOSAdapter) List() ([]Info, error) {
 	// CoreDevice doesn't talk to iOS ≤16 devices at all, so those
 	// gate purely on a successful lockdown probe (the legacy oracle).
 	if listErr == nil {
+		present := make(map[string]bool, len(devList.DeviceList))
 		for _, dev := range devList.DeviceList {
 			udid := dev.Properties.SerialNumber
+			present[udid] = true
 			info := Info{UUID: udid, Platform: "ios"}
-			values, gerr := goios_ios.GetValues(dev)
+			values, gerr := a.identity(dev)
 			if gerr == nil {
 				info.Name = values.Value.DeviceName
 				info.Model = values.Value.ProductType
@@ -594,61 +661,85 @@ func (a *IOSAdapter) List() ([]Info, error) {
 			info.TunnelPending = pending
 			devices = append(devices, info)
 		}
+		a.forgetIdentitiesExcept(present)
 	}
 
-	if _, err := exec.LookPath("xcrun"); err == nil {
-		tmp, err := os.MkdirTemp("", "spyder-devctl-*")
-		if err == nil {
-			defer os.RemoveAll(tmp)
-			jsonPath := filepath.Join(tmp, "devices.json")
-			_, _, _ = runDevicectl("list", "devices", "--quiet", "--json-output", jsonPath)
-			if data, err := os.ReadFile(jsonPath); err == nil {
-				if parsed, err := parseDevicectlList(data); err == nil {
-					// parseDevicectlList already filters by tunnelState
-					// internally for the merge step.
-					filtered := parsed[:0]
-					for _, d := range parsed {
-						if connected == nil || connected[d.UUID] {
-							filtered = append(filtered, d)
-						}
-					}
-					devices = mergeIOSDevices(devices, filtered)
+	if devicectlJSON != nil {
+		if parsed, err := parseDevicectlList(devicectlJSON); err == nil {
+			// parseDevicectlList already filters by tunnelState
+			// internally for the merge step.
+			filtered := parsed[:0]
+			for _, d := range parsed {
+				if connected == nil || connected[d.UUID] {
+					filtered = append(filtered, d)
 				}
 			}
+			devices = mergeIOSDevices(devices, filtered)
 		}
 	}
 
 	return devices, nil
 }
 
-// devicectlConnectedIOSDevices returns the set of UDIDs that
-// `xcrun devicectl list devices --json-output` reports as
-// `tunnelState=connected` AND `transportType=wired` for the iOS
-// platform. Used by IOSAdapter.List to filter out paired-but-unavailable
-// devices that the tunneld registry would otherwise surface (e.g. a
-// phone that was previously trusted but is currently powered off), and
-// to exclude devices reachable only over the local network.
-//
-// Returns (nil, error) when devicectl can't be queried — caller should
-// treat this as "filter unavailable" and pass everything through.
-func devicectlConnectedIOSDevices() (map[string]bool, error) {
-	if _, err := exec.LookPath("xcrun"); err != nil {
-		return nil, err
+// identity returns a device's lockdown values, cached by UDID while
+// usbmux keeps reporting the device (🎯T170). Name, model and OS version
+// do not change while a device stays attached; a replug re-reads them.
+// Failures are not cached, so a device whose lockdown was not ready is
+// probed again on the next listing.
+func (a *IOSAdapter) identity(dev goios_ios.DeviceEntry) (goios_ios.GetAllValuesResponse, error) {
+	udid := dev.Properties.SerialNumber
+	a.listMu.Lock()
+	values, ok := a.identities[udid]
+	a.listMu.Unlock()
+	if ok {
+		return values, nil
 	}
-	tmp, err := os.MkdirTemp("", "spyder-devctl-conn-*")
+	read := a.deviceValues
+	if read == nil {
+		read = goios_ios.GetValues
+	}
+	values, err := read(dev)
+	if err != nil {
+		return values, err
+	}
+	a.listMu.Lock()
+	if a.identities == nil {
+		a.identities = map[string]goios_ios.GetAllValuesResponse{}
+	}
+	a.identities[udid] = values
+	a.listMu.Unlock()
+	return values, nil
+}
+
+// forgetIdentitiesExcept drops cached identities for devices usbmux no
+// longer reports, so a device that comes back is read afresh.
+func (a *IOSAdapter) forgetIdentitiesExcept(present map[string]bool) {
+	a.listMu.Lock()
+	defer a.listMu.Unlock()
+	for udid := range a.identities {
+		if !present[udid] {
+			delete(a.identities, udid)
+		}
+	}
+}
+
+// runDevicectlList runs `devicectl list devices` once and returns its
+// JSON document, written to stdout so no temp directory is created
+// (🎯T169: temp-directory create/remove stalled under disk pressure).
+func (a *IOSAdapter) runDevicectlList(ctx context.Context) ([]byte, error) {
+	if a.devicectlList != nil {
+		return a.devicectlList(ctx)
+	}
+	stdout, _, err := runDevicectlContext(ctx, "list", "devices", "--quiet", "--json-output", "-")
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(tmp)
-	jsonPath := filepath.Join(tmp, "devices.json")
-	if _, _, err := runDevicectl("list", "devices", "--quiet", "--json-output", jsonPath); err != nil {
-		return nil, err
-	}
-	data, err := os.ReadFile(jsonPath)
-	if err != nil {
-		return nil, err
-	}
-	return parseDevicectlConnectedIOSDevices(data)
+	return stdout, nil
+}
+
+func hasXcrun() bool {
+	_, err := exec.LookPath("xcrun")
+	return err == nil
 }
 
 // parseDevicectlConnectedIOSDevices applies the wired+connected filter
@@ -2090,4 +2181,31 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// RemoveStaleDevicectlTempDirs deletes spyder-devctl-* directories older
+// than olderThan from dir (os.TempDir() when empty). Listings used to
+// create one per devicectl call, and a daemon killed mid-listing left them
+// behind (🎯T169); listings now read devicectl's JSON from stdout. It
+// returns how many it removed.
+func RemoveStaleDevicectlTempDirs(dir string, olderThan time.Duration) int {
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "spyder-devctl-*"))
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	cutoff := time.Now().Add(-olderThan)
+	for _, path := range matches {
+		fi, err := os.Lstat(path)
+		if err != nil || !fi.IsDir() || fi.ModTime().After(cutoff) {
+			continue
+		}
+		if os.RemoveAll(path) == nil {
+			removed++
+		}
+	}
+	return removed
 }

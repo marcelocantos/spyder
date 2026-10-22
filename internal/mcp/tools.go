@@ -198,15 +198,91 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 	if platform == "" {
 		platform = "all"
 	}
+	snap := h.listDevices(platform)
+	if snap.fatal != "" {
+		return toolErr("%s", snap.fatal)
+	}
+	devices := append([]device.Info(nil), snap.devices...)
+	if platform == "all" && len(snap.errors) > 0 {
+		return toolJSON(struct {
+			Devices []device.Info `json:"devices"`
+			Errors  []string      `json:"errors,omitempty"`
+		}{devices, snap.errors})
+	}
+	return toolJSON(devices)
+}
 
+// devicesTTL is how long a completed `devices` listing is reused, and
+// defaultIOSListBudget how long a listing waits for the iOS census before
+// answering with the last good iOS rows (🎯T169, 🎯T170). The runner's
+// binding checks, ad-policy renewals and dashboards call `devices` many
+// times a minute; each fresh listing spawns adb, devicectl and ioreg.
+const (
+	devicesTTL           = 1500 * time.Millisecond
+	defaultIOSListBudget = 10 * time.Second
+)
+
+// iosCall is one in-flight iOS census shared by `devices` listings.
+type iosCall struct {
+	done    chan struct{}
+	devices []device.Info
+	err     error
+}
+
+type devicesSnapshot struct {
+	devices []device.Info
+	errors  []string
+	fatal   string // single-platform failure, reported as a tool error
+	at      time.Time
+}
+
+// listDevices returns the listing for platform, sharing an in-flight
+// listing with concurrent callers and reusing a completed one for
+// devicesTTL.
+func (h *Handler) listDevices(platform string) devicesSnapshot {
+	h.devicesMu.Lock()
+	for {
+		if snap, ok := h.devicesCache[platform]; ok && time.Since(snap.at) < devicesTTL {
+			h.devicesMu.Unlock()
+			return snap
+		}
+		wait, running := h.devicesInFlight[platform]
+		if !running {
+			break
+		}
+		h.devicesMu.Unlock()
+		<-wait
+		h.devicesMu.Lock()
+	}
+	if h.devicesInFlight == nil {
+		h.devicesInFlight = map[string]chan struct{}{}
+	}
+	done := make(chan struct{})
+	h.devicesInFlight[platform] = done
+	h.devicesMu.Unlock()
+
+	snap := h.listDevicesUncached(platform)
+
+	h.devicesMu.Lock()
+	if h.devicesCache == nil {
+		h.devicesCache = map[string]devicesSnapshot{}
+	}
+	h.devicesCache[platform] = snap
+	delete(h.devicesInFlight, platform)
+	h.devicesMu.Unlock()
+	close(done)
+	return snap
+}
+
+func (h *Handler) listDevicesUncached(platform string) devicesSnapshot {
 	var devices []device.Info
 	var perAdapterErrors []string
 
 	if platform == "ios" || platform == "all" {
-		ds, err := h.ios.List()
+		ds, err := h.listIOSBounded()
 		if err != nil {
 			if platform == "ios" {
-				return toolErr("ios: %v", err)
+				return devicesSnapshot{fatal: fmt.Sprintf("ios: %v", err), at: time.Now()}
 			}
 			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("ios: %v", err))
 		}
@@ -216,7 +292,7 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 		ds, err := h.android.List()
 		if err != nil {
 			if platform == "android" {
-				return toolErr("android: %v", err)
+				return devicesSnapshot{fatal: fmt.Sprintf("android: %v", err), at: time.Now()}
 			}
 			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("android: %v", err))
 		}
@@ -226,7 +302,7 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 		ds, err := h.desktop.List()
 		if err != nil {
 			if platform == "desktop" {
-				return toolErr("desktop: %v", err)
+				return devicesSnapshot{fatal: fmt.Sprintf("desktop: %v", err), at: time.Now()}
 			}
 			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("desktop: %v", err))
 		}
@@ -240,14 +316,52 @@ func (h *Handler) handleDevices(args map[string]any) (*mcpgo.CallToolResult, err
 	}
 
 	h.annotateUSB(devices)
+	return devicesSnapshot{devices: devices, errors: perAdapterErrors, at: time.Now()}
+}
 
-	if platform == "all" && len(perAdapterErrors) > 0 {
-		return toolJSON(struct {
-			Devices []device.Info `json:"devices"`
-			Errors  []string      `json:"errors,omitempty"`
-		}{devices, perAdapterErrors})
+// listIOSBounded runs the iOS census within the iOS budget (🎯T169). When
+// the census overruns, it answers with the last good iOS rows and an
+// error naming their age; the census keeps running and refreshes those
+// rows when it finishes, and at most one overrunning census is in flight.
+func (h *Handler) listIOSBounded() ([]device.Info, error) {
+	budget := h.iosListBudget
+	if budget <= 0 {
+		budget = defaultIOSListBudget
 	}
-	return toolJSON(devices)
+	h.devicesMu.Lock()
+	call := h.iosInFlight
+	if call == nil {
+		call = &iosCall{done: make(chan struct{})}
+		h.iosInFlight = call
+		go func() {
+			ds, err := h.ios.List()
+			h.devicesMu.Lock()
+			call.devices, call.err = ds, err
+			if err == nil {
+				h.lastIOS, h.lastIOSAt = ds, time.Now()
+			}
+			h.iosInFlight = nil
+			h.devicesMu.Unlock()
+			close(call.done)
+		}()
+	}
+	h.devicesMu.Unlock()
+
+	select {
+	case <-call.done:
+		h.devicesMu.Lock()
+		defer h.devicesMu.Unlock()
+		return append([]device.Info(nil), call.devices...), call.err
+	case <-time.After(budget):
+		h.devicesMu.Lock()
+		defer h.devicesMu.Unlock()
+		if h.lastIOSAt.IsZero() {
+			return nil, fmt.Errorf("listing still running after %s", budget)
+		}
+		return append([]device.Info(nil), h.lastIOS...),
+			fmt.Errorf("listing still running after %s; showing rows from %s ago",
+				budget, time.Since(h.lastIOSAt).Round(time.Second))
+	}
 }
 
 // annotateUSB joins one ioreg census onto the just-listed devices
