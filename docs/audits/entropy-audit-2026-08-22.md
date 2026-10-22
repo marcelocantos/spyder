@@ -399,34 +399,9 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 ### ENT-008: Production brew bind is unauthenticated on all interfaces
 
 - **Priority:** P2
-- **Dimensions:** Security / dependencies; Build / release / operations
-- **Status:** observed fact (bind + no auth); accepted-risk documentation exists
-- **Evidence:**
-  - `main.go:41-47` documents no auth and loopback default.
-  - `main.go:162-168` `SPYDER_ADDR` overrides that default.
-  - `.github/workflows/release.yml:124` Homebrew service
-    `SPYDER_ADDR: ":3030"`.
-  - `agents-guide.md:1065-1066` “No authentication / encryption. LAN-only.”
-  - `cli.go:146-159` on `ECONNREFUSED` to `127.0.0.1:3030`, CLI may
-    `autoStartDaemon()` — a second listener vs the “one daemon only”
-    rule in `CLAUDE.md`.
-- **Mechanism:** The shipped service (not the loopback default) exposes
-  screenshot, launch, deploy, and reservations to any host that can
-  reach `:3030`. That is required for LAN glasses and app-channel
-  dial-back. CLI auto-start can still produce the IPv4/IPv6 double-bind
-  mismatch `CLAUDE.md` warns about.
-- **Blast radius:** every brew-installed daemon on a shared network;
-  any agent that shells `spyder devices` while brew is in a weird bind
-  state.
-- **Counterevidence checked:** loopback default is safe; LAN bind is
-  explicit and documented; 🎯T76.4 is named as the upgrade path;
-  `spyder-killusbmuxd` is correctly split out for sudo.
-- **Smallest coherent remediation:** keep LAN bind; add a loopback-only
-  mode flag in the formula caveats for laptops on untrusted Wi-Fi;
-  make `autoStartDaemon` refuse if *any* process already listens on
-  3030 (IPv4 or IPv6).
-- **Verification:** a unit test around listen-preflight; manual
-  `lsof -nP -iTCP:3030`.
+- **Status:** closed by `TestAnyTCPListener_*` in `internal/listenpreflight/preflight_test.go` and `autoStartDaemon` listen preflight (🎯T132.8).
+- **Shipped path:** Homebrew still sets `SPYDER_ADDR=":3030"` for LAN reachability. `tapper/formula_includes.rb` caveats document loopback-only (`SPYDER_ADDR=127.0.0.1:3030`) for untrusted Wi-Fi. CLI `autoStartDaemon` refuses to spawn when `listenpreflight.AnyTCPListener(3030)` reports any TCP listener (IPv4 or IPv6), so the IPv4/IPv6 double-bind footgun no longer produces a second daemon.
+- **Historical evidence (2026-08-22 audit):** `ECONNREFUSED` on loopback could trigger auto-start while another process already owned `:3030` on a different address family, violating the one-daemon rule in `CLAUDE.md`.
 - **Ratchet candidate:** later, optional token on non-loopback binds
   (product change — not a silent audit fix).
 
@@ -539,7 +514,7 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 | Stream protocol | ge `Protocol.h`, spyder `player/include/wire/Protocol.h` | Copied; `make check-wire` + optional ge magics compare (ENT-006 closed) |
 | Screenshot default | T114 path in code + agents-guide + STABILITY REST verb rows | No |
 | Inventory | `~/.spyder/inventory.json`; USB ceiling `~/.spyder/usb-speed.json` (ratchet-up, not written back to inventory) | Deliberate split (`agents-guide.md`) |
-| Daemon listen address | `defaultAddr` loopback; `SPYDER_ADDR`; brew `:3030`; `SPYDER_DAEMON_URL` for CLI | Documented; ops footgun (ENT-008) |
+| Daemon listen address | `defaultAddr` loopback; `SPYDER_ADDR`; brew `:3030`; `SPYDER_DAEMON_URL` for CLI | LAN bind documented; auto-start preflight (ENT-008 closed) |
 
 ## Healthy structure worth retaining
 

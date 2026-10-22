@@ -12,7 +12,9 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/daemon"
 	"github.com/marcelocantos/spyder/internal/listenaddr"
+	"github.com/marcelocantos/spyder/internal/listenpreflight"
 	"github.com/marcelocantos/spyder/internal/paths"
+	"strings"
 )
 
 func TestParseServeAddr(t *testing.T) {
@@ -360,5 +362,22 @@ func TestParseRunArgs_Provenance(t *testing.T) {
 	}
 	if _, err := parseRunArgs([]string{"--app-dirty", "maybe", "--", "x"}); err == nil {
 		t.Error("--app-dirty maybe should be rejected")
+	}
+}
+func TestAutoStartDaemonRefusesWhenPortInUse(t *testing.T) {
+	prev := listenpreflight.Hook
+	defer func() { listenpreflight.Hook = prev }()
+	listenpreflight.Hook = func(port int) (bool, error) {
+		if port != listenpreflight.DaemonPort {
+			t.Fatalf("port=%d", port)
+		}
+		return true, nil
+	}
+	err := autoStartDaemon()
+	if err == nil {
+		t.Fatal("expected refusal when port is in use")
+	}
+	if !strings.Contains(err.Error(), "3030") {
+		t.Fatalf("error should mention port: %v", err)
 	}
 }

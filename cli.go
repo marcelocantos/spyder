@@ -24,6 +24,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/cliexit"
 	"github.com/marcelocantos/spyder/internal/clitimeout"
 	"github.com/marcelocantos/spyder/internal/inventory"
+	"github.com/marcelocantos/spyder/internal/listenpreflight"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/selector"
@@ -225,10 +226,20 @@ func postWithCtx(ctx context.Context, url string, body []byte) (*http.Response, 
 
 // autoStartDaemon spawns a detached `spyder serve` process, logs its
 // output to ~/.spyder/daemon.log, and polls the listener until it's
-// reachable or a short timeout expires. Safe to call when the daemon
-// is already up — the new process will fail to bind and exit, and
-// the probe will succeed on the running instance.
+// reachable or a short timeout expires. Refuses to spawn when any TCP
+// listener already owns the default daemon port (IPv4 or IPv6) so a
+// half-dead brew/supervisor bind cannot be joined by a stray tree binary
+// on another address family (ENT-008 / 🎯T132.8).
 func autoStartDaemon() error {
+	if inUse, err := listenpreflight.AnyTCPListener(listenpreflight.DaemonPort); err != nil {
+		return fmt.Errorf("listen preflight on :%d: %w", listenpreflight.DaemonPort, err)
+	} else if inUse {
+		return fmt.Errorf(
+			"port %d already has a TCP listener (see: lsof -nP -iTCP:%d -sTCP:LISTEN); "+
+				"auto-start would risk a second daemon — start or restart the supervised service instead",
+			listenpreflight.DaemonPort, listenpreflight.DaemonPort,
+		)
+	}
 	logPath := filepath.Join(paths.Base(), "daemon.log")
 	if err := os.MkdirAll(paths.Base(), 0o755); err != nil {
 		return fmt.Errorf("prepare %s: %w", paths.Base(), err)

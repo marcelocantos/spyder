@@ -9,7 +9,15 @@ end
 
 def caveats
   <<~EOS
-    spyder runs as a persistent HTTP MCP server on :3030.
+    spyder runs as a persistent HTTP MCP server on :3030 (all interfaces).
+    The MCP API has no authentication — required for LAN glasses and
+    app-channel dial-back. On laptops on untrusted Wi-Fi, use loopback-only:
+
+      brew services stop spyder
+      # Edit the service env (or reinstall with a local formula tweak) so
+      # SPYDER_ADDR is 127.0.0.1:3030 instead of :3030, then:
+      brew services start spyder
+
     It is NOT started automatically on install — start it with:
 
       brew services start spyder
