@@ -149,11 +149,19 @@ func (a *DesktopAdapter) LaunchApp(id, bundleID string, env map[string]string) e
 	if err != nil {
 		return fmt.Errorf("stderr pipe: %w", err)
 	}
+
+	// Attach log scanners before Start so early stdout (e.g. under full-suite
+	// load) cannot fill the pipe buffer before a reader exists (ENT-002).
+	p := &desktopProc{cmd: cmd, subs: map[chan<- LogLine]struct{}{}}
+	stdoutDone := make(chan struct{})
+	stderrDone := make(chan struct{})
+	go func() { p.scan(stdout, "info"); close(stdoutDone) }()
+	go func() { p.scan(stderr, "error"); close(stderrDone) }()
+
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("launch %q: %w", id, err)
 	}
-
-	p := &desktopProc{cmd: cmd, pid: cmd.Process.Pid, subs: map[chan<- LogLine]struct{}{}}
+	p.pid = cmd.Process.Pid
 	key := procKey{id: id, bundleID: bundleID}
 
 	a.mu.Lock()
@@ -161,10 +169,6 @@ func (a *DesktopAdapter) LaunchApp(id, bundleID string, env map[string]string) e
 	a.procs[key] = p
 	a.mu.Unlock()
 
-	stdoutDone := make(chan struct{})
-	stderrDone := make(chan struct{})
-	go func() { p.scan(stdout, "info"); close(stdoutDone) }()
-	go func() { p.scan(stderr, "error"); close(stderrDone) }()
 	go func() {
 		<-stdoutDone
 		<-stderrDone

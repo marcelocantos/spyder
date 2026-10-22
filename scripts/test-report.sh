@@ -33,6 +33,7 @@ fi
 
 host=$(hostname -s)
 generated_at=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+head_sha=$(git rev-parse HEAD)
 
 suite_results=()
 
@@ -127,12 +128,14 @@ fi
 jq -n \
   --arg schema_version 2 \
   --arg generated_at "$generated_at" \
+  --arg head_sha "$head_sha" \
   --arg host "$host" \
   --argjson suites "$suites_json" \
   --arg overall "$overall" \
   '{
     schema_version: ($schema_version | tonumber),
     generated_at: $generated_at,
+    head_sha: $head_sha,
     host: $host,
     suites: $suites,
     overall: $overall

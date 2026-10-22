@@ -245,9 +245,11 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 ### ENT-002: Shipped hermetic suite is red on HEAD; attestation still green
 
+**Closed 2026-10-22 (🎯T132.2):** `DesktopAdapter.LaunchApp` attaches log scanners before `cmd.Start()` so early stdout cannot be lost under full-suite load. `TEST-REPORT.json` records `head_sha`; `scripts/check-test-report-fresh.sh` (wired to `make pre-release`) refuses stale attestations when exercised source paths changed since that SHA. Oracle: `go test -count=20 ./internal/device/ -run TestDesktopAdapter_LaunchLifecycle` under concurrent `go test ./...` load.
+
 - **Priority:** P1
 - **Dimensions:** Correctness / verification; Build / release / operations
-- **Status:** observed fact (failure); inference (flake vs product bug)
+- **Status:** **closed** (was: observed failure; load-sensitive log capture in `LaunchApp`)
 - **Evidence:**
   - `GOWORK=off go test -timeout 5m ./...` exit 1.
     `TestDesktopAdapter_LaunchLifecycle` (`internal/device/desktop_test.go:18-52`):

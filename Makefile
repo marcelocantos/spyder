@@ -135,6 +135,7 @@ bullseye:
 	fi
 
 pre-release: bullseye
+	@./scripts/check-test-report-fresh.sh && echo "✓ test-report fresh"
 
 # Local release (🎯T135). VERSION is required for package:
 #   VERSION=0.86.0 make release-dist
