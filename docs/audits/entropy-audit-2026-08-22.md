@@ -488,22 +488,22 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 - **Priority:** P3
 - **Dimensions:** Local code quality; Change amplification
-- **Status:** observed fact
-- **Evidence:** `internal/mcp/dispatch_deadline.go:49-59` includes
-  `runs_artefacts`, `sim_erase`, `app_channel_start`, `log_stream`,
-  `health`. `TestAppChannel_StartRemoved`
-  (`internal/mcp/app_channel_test.go:702-708`) asserts
-  `app_channel_start` is an unknown tool. None of those names are in
-  `toolHandlers()`.
-- **Mechanism:** Dead cases are harmless today (`default` is also
-  `DeadlineDeviceOp` for most). Re-adding a name with a different
-  class, or assuming this list is the verb inventory, will be wrong.
-- **Blast radius:** dispatch timeouts for any revived name.
-- **Counterevidence checked:** `app_exec`/`run_script` class is
-  correct and comments cite the 15 s FastRead bug.
-- **Smallest coherent remediation:** delete dead names; test subset.
-- **Verification:** see ENT-005 ratchet.
-- **Ratchet candidate:** `TestDeadlineNamesSubsetOfHandlers`.
+- **Status:** closed (2026-10-22) by `TestDeadlineNamesSubsetOfHandlers` in
+  `internal/mcp/dispatch_deadline_test.go` (🎯T132.5 / 🎯T132.11). Evidence
+  cited in the 2026-08-22 audit no longer reproduces on the shipped path.
+- **Shipped path:** `toolDeadlineByName` in `dispatch_deadline.go` lists only
+  live `toolHandlers()` verbs; removed names (`runs_artefacts`, `sim_erase`,
+  `app_channel_start`, `log_stream`, `health`, …) are gone. The ENT-005 ratchet
+  `TestDeadlineNamesSubsetOfHandlers` fails if an explicit deadline name is not
+  in the verb table. Unlisted verbs still default to `DeadlineDeviceOp` via
+  `toolDeadlineClass`.
+- **Historical evidence (2026-08-22 audit):** observed fact — the deadline map
+  still named removed tools while `TestAppChannel_StartRemoved` proved
+  `app_channel_start` was not a handler; dead cases were harmless until someone
+  revived a name with the wrong class.
+- **Verification:** `GOWORK=off go test -run TestDeadlineNamesSubsetOfHandlers ./internal/mcp/`
+  (see ENT-005 ratchet).
+- **Ratchet candidate:** `TestDeadlineNamesSubsetOfHandlers` (shipped).
 
 ### ENT-012: go-ios is a replace-pinned fork with a documented GC incident
 
@@ -646,9 +646,9 @@ was instructed not to install.
    `make fmt-check` are green, other ratchets will lie.
 2. **ENT-003 closed (🎯T132.3).** `STABILITY.md`, `agents-guide.md`, and
    `TestSTABILITY_MCPToolsSectionListsOnlyAppExec` match the post-T88 wire.
-3. **Lock remaining duplicates (ENT-004, ENT-011, ENT-006).** Recipe
-   mirror test; deadline-name subset test; `check-wire` in
-   `test-report.sh`.
+3. **ENT-004, ENT-006, ENT-011 closed.** Recipe mirror test (ENT-004);
+   `check-wire` in `test-report.sh` (ENT-006); deadline-name subset test
+   (ENT-011 / ENT-005 ratchet).
 4. **Do not split `internal/mcp` yet (ENT-005).** Generate or test the
    satellite lists (CLI allow-list, deadlines) from `toolHandlers`
    first. A package explosion without a second hub does not reduce
