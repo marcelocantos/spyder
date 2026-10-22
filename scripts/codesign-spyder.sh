@@ -28,7 +28,7 @@ fi
 cert_ou() {
   security find-certificate -c "$1" -p 2>/dev/null |
     openssl x509 -noout -subject 2>/dev/null |
-    sed -n 's#.*OU=\([^/]*\).*#\1#p'
+    sed -n 's#.*OU *= *\([^,/]*\).*#\1#p'
 }
 
 pick_identity_for_team() {
