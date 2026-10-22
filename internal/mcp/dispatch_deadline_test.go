@@ -135,6 +135,18 @@ func spyderNeedsAttention(h *Handler) bool {
 	return false
 }
 
+// TestDeadlineNamesSubsetOfHandlers is the ENT-005 / ENT-011 ratchet: every
+// explicit dispatch_deadline.go entry must name a live toolHandlers verb.
+func TestDeadlineNamesSubsetOfHandlers(t *testing.T) {
+	h := &Handler{}
+	handlers := h.toolHandlers()
+	for _, name := range toolDeadlineExplicitNames() {
+		if _, ok := handlers[name]; !ok {
+			t.Errorf("deadline table names %q not in toolHandlers()", name)
+		}
+	}
+}
+
 func TestLaunchPlayer_DeadlineCoversInstall(t *testing.T) {
 	if toolDeadlineClass("launch_player") != DeadlineInstall {
 		t.Fatalf("launch_player deadline %v want DeadlineInstall %v",

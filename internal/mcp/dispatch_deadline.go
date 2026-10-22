@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -30,55 +31,73 @@ var (
 	DeadlineWaitStateMargin = 30 * time.Second
 )
 
-// toolDeadlineClass returns the wall-clock bound for a tool name.
-func toolDeadlineClass(name string) time.Duration {
-	switch name {
-	case "install_app", "deploy_app", "ensure_session", "launch_player":
-		// ensure_session / launch_player may install on the deploy path
-		// (🎯T103: a cold emulator adb install must fit under this class).
-		return DeadlineInstall
-	case "perf_fps":
-		// Explicit class: window_sec max 120 must fit under this bound.
-		return DeadlinePerfFPS
-	case "wait_state", "wait_app_session":
-		return DeadlineWaitState
-	case "verify":
-		// Owner gates and long shell graphs; no extra wall-clock cap.
-		return 0
-	case "system_alert_tap", "agent_ensure":
-		// Optional wait for the alert, then the XCUITest runner (🎯T154).
-		// agent_ensure may install and start the resident runner (🎯T163).
-		return 5 * time.Minute
-	case "system_alert":
-		return DeadlineDeviceOp
-	case "verify_status", "verify_answer", "verify_abort", "verify_dismiss", "verify_detail", "verify_review", "verify_report", "verify_now":
-		return DeadlineFastRead
-	case "app_exec", "run_script", "list_scripts":
-		// Outer dispatch must not undercut max_duration_ms (default 30s,
-		// ceiling maxExecDuration). FastRead (15s) was killing multi-step
-		// device recipes that correctly request 60–120s budgets.
-		return maxExecDuration + 5*time.Second
-	case "devices", "resolve", "device_state", "battery_history", "list_apps", "is_running",
-		"reservations", "runs_list", "runs_show", "runs_artefacts",
-		"app_channel_list", "app_channel_diagnose", "health", "agent_status":
-		return DeadlineFastRead
-	case "screenshot", "launch_app", "terminate_app", "uninstall_app",
+// toolDeadlineByName lists explicit deadline classes. Unlisted verbs use
+// DeadlineDeviceOp via toolDeadlineClass. Keys must stay ⊆ toolHandlers()
+// (TestDeadlineNamesSubsetOfHandlers, ENT-005).
+var toolDeadlineByName = func() map[string]time.Duration {
+	m := map[string]time.Duration{}
+	add := func(d time.Duration, names ...string) {
+		for _, n := range names {
+			m[n] = d
+		}
+	}
+	// ensure_session / launch_player may install on the deploy path
+	// (🎯T103: a cold emulator adb install must fit under this class).
+	add(DeadlineInstall, "install_app", "deploy_app", "ensure_session", "launch_player")
+	// Explicit class: window_sec max 120 must fit under this bound.
+	add(DeadlinePerfFPS, "perf_fps")
+	add(DeadlineWaitState, "wait_state", "wait_app_session")
+	// Owner gates and long shell graphs; no extra wall-clock cap.
+	add(0, "verify")
+	// Optional wait for the alert, then the XCUITest runner (🎯T154).
+	// agent_ensure may install and start the resident runner (🎯T163).
+	add(5*time.Minute, "system_alert_tap", "agent_ensure")
+	add(DeadlineDeviceOp, "system_alert")
+	add(DeadlineFastRead,
+		"verify_status", "verify_answer", "verify_abort", "verify_dismiss", "verify_detail",
+		"verify_review", "verify_report", "verify_now")
+	// Outer dispatch must not undercut max_duration_ms (default 30s,
+	// ceiling maxExecDuration). FastRead (15s) was killing multi-step
+	// device recipes that correctly request 60–120s budgets.
+	add(maxExecDuration+5*time.Second, "app_exec", "run_script", "list_scripts")
+	add(DeadlineFastRead,
+		"devices", "resolve", "device_state", "battery_history", "list_apps", "is_running",
+		"reservations", "runs_list", "runs_show",
+		"app_channel_list", "app_channel_diagnose", "agent_status")
+	add(DeadlineDeviceOp,
+		"screenshot", "launch_app", "terminate_app", "uninstall_app",
 		"rotate", "network", "record_start", "record_stop",
 		"port_forward_start", "port_forward_stop", "input_tap", "input_swipe",
 		"input_key", "notification_shade", "notification_tap_first",
-		"crashes", "logs", "log_stream", "baseline_update", "diff",
+		"crashes", "logs", "baseline_update", "diff",
 		"reserve", "release", "renew",
-		"sim_list", "sim_create", "sim_boot", "sim_shutdown", "sim_erase",
-		"app_channel_start", "app_channel_stop",
+		"sim_list", "sim_create", "sim_boot", "sim_shutdown",
+		"app_channel_stop",
 		"app_screenshot", "app_input", "app_pause", "app_step",
 		"app_tweak_list", "app_tweak_get", "app_tweak_set", "app_tweak_reset",
 		"app_log_get", "app_spawn", "app_quit", "app_ping", "app_flush",
 		"app_background", "app_foreground", "app_state",
-		"agent_idle":
-		return DeadlineDeviceOp
-	default:
-		return DeadlineDeviceOp
+		"agent_idle")
+	return m
+}()
+
+// toolDeadlineExplicitNames returns every tool name with a non-default entry
+// in toolDeadlineByName.
+func toolDeadlineExplicitNames() []string {
+	names := make([]string, 0, len(toolDeadlineByName))
+	for n := range toolDeadlineByName {
+		names = append(names, n)
 	}
+	sort.Strings(names)
+	return names
+}
+
+// toolDeadlineClass returns the wall-clock bound for a tool name.
+func toolDeadlineClass(name string) time.Duration {
+	if d, ok := toolDeadlineByName[name]; ok {
+		return d
+	}
+	return DeadlineDeviceOp
 }
 
 // InFlightOp is one tool call still running (🎯T99.5).

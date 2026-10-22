@@ -308,7 +308,9 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 - **Priority:** P2
 - **Dimensions:** Architecture topology; Change amplification; Local code quality
-- **Status:** observed fact (shape); inference (cost of the next verb)
+- **Status:** closed by `TestDeadlineNamesSubsetOfHandlers` in `internal/mcp/dispatch_deadline_test.go` (🎯T132.5).
+- **Shipped path:** `toolHandlers()` remains the verb table; `toolDeadlineByName` in `dispatch_deadline.go` lists only explicit deadline classes and must stay a subset of handler keys. `TestExec_BuiltinCoversEveryAdvertisedVerb` still guards handlers↔schemas; the deadline ratchet guards dispatch timeouts against removed verbs (see ENT-011). CLI/docs amplification is unchanged — optional CLI allow-list remains out of scope.
+- **Historical status (2026-08-22 audit):** observed fact (shape); inference (cost of the next verb)
 - **Evidence:**
   - 54 Go files under `internal/mcp`; `tools.go` 2040 lines;
     `app_channel.go` 1507; `server.go` 1277.
