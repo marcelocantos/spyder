@@ -129,6 +129,12 @@ func (a *IOSAdapter) runwdaReappeared(udid string) {
 	if a == nil || a.runwda == nil {
 		return
 	}
+	if a.automation.usesDeviceKit(udid) {
+		// The resident-agent supervisor owns this device's DeviceKit
+		// runner (🎯T175). A second runwda would race it for the one
+		// UI-automation session.
+		return
+	}
 	a.runwda.reappear(udid)
 }
 

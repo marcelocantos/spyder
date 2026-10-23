@@ -54,6 +54,10 @@ type AutomationHost struct {
 	// AUT is an explicit override. Production leaves it empty;
 	// NoteLaunched records the bundle launch_app actually started.
 	AUT string
+	// DeviceKit, when set, makes the resident runner on the devices it
+	// selects the DeviceKit game-input agent instead of AlertRunner
+	// (🎯T175). Other devices keep AlertRunner.
+	DeviceKit *DeviceKitAgent
 
 	mu             sync.Mutex
 	holds          map[string]*runnerHold
@@ -76,6 +80,10 @@ type AutomationHost struct {
 	lockRead   func(id string) (map[string]any, error)
 	lockExec   func(ctx context.Context, udid string) ([]byte, error)
 	bootSource func(id string) string
+	// holdRun and readyProbe replace the resident session and the
+	// DeviceKit JSON-RPC readiness check in hermetic tests.
+	holdRun    func(ctx context.Context, id string, out io.Writer) error
+	readyProbe func(id string, pid int) bool
 }
 
 type runnerHold struct {
@@ -110,6 +118,30 @@ func (h *AutomationHost) Effects() agent.Effects {
 		StopAUT:         h.StopAUT,
 		DropHostSession: h.DropHostSession,
 		DropLease:       h.DropLease,
+		ResetConsent:    h.ResetConsent,
+	}
+}
+
+// ResetConsent forgets a recorded consent failure. The supervisor calls
+// it on a reboot and on an attended agent_ensure retry.
+func (h *AutomationHost) ResetConsent(id string) {
+	h.mu.Lock()
+	delete(h.consent, id)
+	h.mu.Unlock()
+}
+
+// liveHold is the hold for id whose session has not ended. Callers
+// hold h.mu.
+func (h *AutomationHost) liveHold(id string) *runnerHold {
+	hold := h.holds[id]
+	if hold == nil {
+		return nil
+	}
+	select {
+	case <-hold.done:
+		return nil
+	default:
+		return hold
 	}
 }
 
@@ -168,8 +200,7 @@ func (h *AutomationHost) ClientSessions(id string) int {
 func (h *AutomationHost) ChannelOpen(id string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	_, ok := h.holds[id]
-	return ok
+	return h.liveHold(id) != nil
 }
 
 // NoteClientSession records a host build/test session the supervisor
@@ -186,7 +217,7 @@ func (h *AutomationHost) NoteLaunched(id, bundle string) {
 	if h == nil || id == "" || bundle == "" {
 		return
 	}
-	if bundle == alertRunnerBundle || bundle == alertHostBundle {
+	if isAgentBundle(bundle) {
 		return
 	}
 	h.mu.Lock()
@@ -233,6 +264,10 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 	if h.IOS == nil {
 		return agent.Observation{}, errors.New("ios adapter is nil")
 	}
+	if err := h.DeviceKit.Err(); err != nil {
+		// A bad backend setting must not quietly fall back to AlertRunner.
+		return agent.Observation{}, fmt.Errorf("resident agent backend: %w", err)
+	}
 	tethered := h.tethered(id)
 	locked, lockKnown, detail := h.locked(id)
 	h.mu.Lock()
@@ -256,6 +291,20 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 	if instErr != nil {
 		return agent.Observation{}, instErr
 	}
+	authorized := alive && consent == ""
+	if h.usesDeviceKit(id) && alive {
+		owned, ok := h.heldPID(id)
+		if !ok || owned != pid {
+			return agent.Observation{}, foreignRunner(id, pid)
+		}
+		ready := h.readyTwice(id, pid)
+		if ready && consent != "" {
+			// The owner approved after the launch budget ran out.
+			h.ResetConsent(id)
+			consent = ""
+		}
+		authorized = ready && consent == ""
+	}
 	aut := h.autBundle(id)
 	autRunning := false
 	if aut != "" {
@@ -270,7 +319,7 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 		BootID:            h.bootID(id),
 		RunnerPID:         pid,
 		RunnerAlive:       alive,
-		Authorized:        alive && consent == "",
+		Authorized:        authorized,
 		ConsentRequired:   consent != "",
 		ConsentActionable: consent != "",
 		ConsentMessage:    consent,
@@ -627,7 +676,7 @@ func appAbsent(err error) bool {
 func (h *AutomationHost) heldPID(id string) (int, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	hold := h.holds[id]
+	hold := h.liveHold(id)
 	if hold == nil || hold.pid <= 0 {
 		return 0, false
 	}
@@ -638,7 +687,8 @@ func (h *AutomationHost) heldPID(id string) (int, bool) {
 // not a dead runner: one retry, then the pid of a hold this process
 // still owns. Only "app not running" means the runner is gone.
 func (h *AutomationHost) observeRunner(id string) (int, bool, string, error) {
-	pid, err := h.appPID(id, alertRunnerBundle)
+	bundle := h.RunnerBundleFor(id)
+	pid, err := h.appPID(id, bundle)
 	if err == nil && pid > 0 {
 		return pid, true, fmt.Sprintf("runner pid %d", pid), nil
 	}
@@ -647,7 +697,7 @@ func (h *AutomationHost) observeRunner(id string) (int, bool, string, error) {
 	}
 	first := err
 	if err != nil {
-		pid, err = h.appPID(id, alertRunnerBundle)
+		pid, err = h.appPID(id, bundle)
 		if err == nil && pid > 0 {
 			return pid, true, fmt.Sprintf("runner pid %d after retry (%v)", pid, first), nil
 		}
@@ -667,6 +717,9 @@ func (h *AutomationHost) observeRunner(id string) (int, bool, string, error) {
 // Launch replaces an unhealthy runner with one resident XCTest session.
 // The supervisor calls it only for a dead or unauthorized runner.
 func (h *AutomationHost) Launch(id string) (int, error) {
+	if h.usesDeviceKit(id) {
+		return h.launchDeviceKit(id)
+	}
 	if pid, alive, _, err := h.observeRunner(id); err == nil && alive && pid > 0 {
 		return pid, nil
 	}
@@ -693,46 +746,77 @@ func (h *AutomationHost) Launch(id string) (int, error) {
 }
 
 func (h *AutomationHost) startHold(id string) (int, error) {
+	bundle := h.RunnerBundleFor(id)
+	deviceKit := bundle == DeviceKitRunnerBundle
+	out := &tailBuf{}
+	gate := h.holdInitializer(id, deviceKit)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	errCh := make(chan error, 1)
 	go func() {
 		defer close(done)
-		errCh <- h.runHold(ctx, id)
+		errCh <- h.runSession(ctx, id, out)
 	}()
 	timer := time.NewTimer(agentLaunchBudget)
 	defer timer.Stop()
 	var stableSince time.Time
+	sawPID := 0
 	for {
 		select {
 		case err := <-errCh:
+			gate.release()
 			cancel()
 			<-done
-			if consentish(err) {
+			if err == nil {
+				err = errors.New("resident XCTest ended")
+			}
+			if consentish(err) || consentish(errors.New(out.string())) {
 				h.mu.Lock()
 				h.consent[id] = err.Error()
 				h.mu.Unlock()
 				return 0, fmt.Errorf("%w: %s", agent.ErrConsent, err.Error())
 			}
-			if err == nil {
-				err = errors.New("resident XCTest ended")
-			}
 			return 0, err
 		case <-timer.C:
+			gate.release()
+			if deviceKit && (sawPID > 0 || consentish(errors.New(out.string()))) {
+				// The runner is up but not answering: iOS is most likely
+				// showing the Enable UI Automation prompt. Keep the session
+				// so an approval that comes later still lands; Probe clears
+				// the consent once the runner answers. Not relaunched until
+				// then, so the owner sees one prompt per attempt budget.
+				msg := fmt.Sprintf("DeviceKit runner pid %d started but never answered on :%d within %s; iOS may be waiting for Enable UI Automation approval (Touch ID or passcode) on the device", sawPID, deviceKitPort, agentLaunchBudget)
+				h.mu.Lock()
+				h.holds[id] = &runnerHold{cancel: cancel, done: done, pid: sawPID}
+				h.consent[id] = msg
+				h.mu.Unlock()
+				return 0, fmt.Errorf("%w: %s", agent.ErrConsent, msg)
+			}
 			cancel()
 			<-done
 			return 0, fmt.Errorf("resident XCTest runner did not stay up on %s", id)
 		case <-time.After(200 * time.Millisecond):
-			pid, err := h.appPID(id, alertRunnerBundle)
+			if !gate.done() {
+				continue
+			}
+			pid, err := h.appPID(id, bundle)
 			if err != nil || pid <= 0 {
 				stableSince = time.Time{}
 				continue
+			}
+			if pid != sawPID {
+				sawPID = pid
+				stableSince = time.Time{}
 			}
 			if stableSince.IsZero() {
 				stableSince = time.Now()
 				continue
 			}
 			if time.Since(stableSince) < agentHoldSettle {
+				continue
+			}
+			if deviceKit && !h.ready(id, pid) {
+				// A live pid also exists while iOS waits for approval.
 				continue
 			}
 			h.mu.Lock()
@@ -743,6 +827,18 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 			return pid, nil
 		}
 	}
+}
+
+// runSession is the resident session: AlertRunner's hold test in
+// process, or `ios runwda` for DeviceKit.
+func (h *AutomationHost) runSession(ctx context.Context, id string, out io.Writer) error {
+	if h.holdRun != nil {
+		return h.holdRun(ctx, id, out)
+	}
+	if h.usesDeviceKit(id) {
+		return h.runDeviceKit(ctx, id, out)
+	}
+	return h.runHold(ctx, id)
 }
 
 func (h *AutomationHost) runHold(ctx context.Context, id string) error {
@@ -785,8 +881,12 @@ func (h *AutomationHost) stopHold(id string) {
 }
 
 // Install copies the runner only when it is absent. A present bundle
-// is left untouched and is not counted as an install.
+// is left untouched and is not counted as an install. The DeviceKit
+// runner is installed by its own project, never by supervision.
 func (h *AutomationHost) Install(id string) (string, error) {
+	if h.usesDeviceKit(id) {
+		return "", fmt.Errorf("DeviceKit runner %s is not installed on %s; install it explicitly (spyder does not install it)", DeviceKitRunnerBundle, id)
+	}
 	ok, gen, err := h.installed(id)
 	if err != nil {
 		return "", err
@@ -824,7 +924,7 @@ func (h *AutomationHost) StopAUT(id, bundle string) error {
 	if noted := h.autBundle(id); noted != "" {
 		bundle = noted
 	}
-	if bundle == "" || bundle == alertRunnerBundle || bundle == alertHostBundle {
+	if bundle == "" || isAgentBundle(bundle) {
 		return nil
 	}
 	var err error
@@ -884,13 +984,24 @@ func (h *AutomationHost) Shutdown() {
 		ids = append(ids, id)
 	}
 	h.mu.Unlock()
+	// In parallel: each stop may wait up to 8s and supervisord gives
+	// the whole daemon 10s before SIGKILL orphans runwda children.
+	var wg sync.WaitGroup
 	for _, id := range ids {
-		h.stopHold(id)
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			h.stopHold(id)
+		}(id)
 	}
+	wg.Wait()
 }
 
 // TapButton asks the resident runner to press a SpringBoard button.
 func (h *AutomationHost) TapButton(id, button string) error {
+	if h.usesDeviceKit(id) {
+		return fmt.Errorf("the resident runner on %s is DeviceKit, which has no SpringBoard tap channel; tap through DeviceKit instead", id)
+	}
 	if h.IOS == nil || h.IOS.goios == nil {
 		return errors.New("ios session is not configured")
 	}

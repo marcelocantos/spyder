@@ -131,6 +131,11 @@ func (a *IOSAdapter) runAlertRunner(id, button string) error {
 	// A healthy resident runner already owns UI automation. Delegate
 	// the tap to it and fail closed: a second RunTestWithConfig would
 	// kill that process (go-ios always killTestRunner when the test ends).
+	if a.automation.usesDeviceKit(id) {
+		// The resident DeviceKit runner owns UI automation here (🎯T175).
+		// A one-shot AlertRunner session would end it.
+		return fmt.Errorf("system alert tap via AlertRunner is disabled on %s: the resident DeviceKit runner owns UI automation; tap through DeviceKit instead", id)
+	}
 	if a.automation != nil {
 		if pid, ok := a.automation.HealthyPID(id); ok && pid > 0 {
 			if err := a.automation.TapButton(id, button); err != nil {
