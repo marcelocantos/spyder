@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -142,6 +143,14 @@ func dkHost(t *testing.T, pid *atomic.Int64) *AutomationHost {
 		return identityProcesses{}, nil
 	})
 	host.DeviceKit = &DeviceKitAgent{CLI: exe, devices: map[string]bool{"dut": true}}
+	// No runwda hosts on this "Mac" unless a test says so.
+	host.hostScan = func(string) []runwdaProc { return nil }
+	host.hostAlive = func(int) bool { return false }
+	host.hostSignal = func(int, syscall.Signal) error { return nil }
+	host.IOS.pidProbe.Kill = func(_, _ string, _ int) error {
+		pid.Store(0)
+		return nil
+	}
 	return host
 }
 
@@ -200,14 +209,29 @@ func TestDeviceKit_ForeignRunnerIsNotAdopted(t *testing.T) {
 		<-ctx.Done()
 		return nil
 	}
+	signals := 0
+	host.hostSignal = func(int, syscall.Signal) error { signals++; return nil }
+	parentAlive := true
+	host.hostAlive = func(pid int) bool { return pid == 900 && parentAlive }
+	// Stock Cars' own harness, and a live spyder daemon's runwda (spyder's
+	// bundled ios, parent alive), are both foreign.
+	for _, foreign := range []runwdaProc{
+		{PID: 501, PPID: 1, Binary: "/Users/x/stockcars/bin/ios", Bundle: DeviceKitRunnerBundle},
+		{PID: 502, PPID: 900, Binary: "/opt/homebrew/Cellar/spyder/0.100.0/libexec/spyder/ios", Bundle: DeviceKitRunnerBundle},
+	} {
+		host.hostScan = func(string) []runwdaProc { return []runwdaProc{foreign} }
+		if _, err := host.Probe("dut"); err == nil || !strings.Contains(err.Error(), "not started by this daemon") {
+			t.Fatalf("probe over foreign host %+v: %v", foreign, err)
+		}
+	}
 	if _, err := dkSupervisor(host).Ensure("dut", "alice"); err == nil || !strings.Contains(err.Error(), "not started by this daemon") {
 		t.Fatalf("ensure over a foreign runner: %v", err)
 	}
 	if _, err := host.Launch("dut"); err == nil {
 		t.Fatal("launch adopted a foreign runner")
 	}
-	if started != 0 || host.LaunchCount() != 0 {
-		t.Fatalf("started=%d launches=%d", started, host.LaunchCount())
+	if started != 0 || host.LaunchCount() != 0 || signals != 0 || pid.Load() != 42 {
+		t.Fatalf("started=%d launches=%d signals=%d pid=%d", started, host.LaunchCount(), signals, pid.Load())
 	}
 }
 
@@ -218,17 +242,16 @@ func TestDeviceKit_OwnedRunnerNeedsReadiness(t *testing.T) {
 	host := dkHost(t, &pid)
 	var ready atomic.Bool
 	host.readyProbe = func(_ string, p int) bool { return ready.Load() && p == 42 }
-	host.holds["dut"] = &runnerHold{cancel: func() {}, done: make(chan struct{}), pid: 42}
-	host.consent["dut"] = "waiting for approval"
+	host.holds["dut"] = &runnerHold{cancel: func() {}, done: make(chan struct{}), pid: 42, pending: true, since: time.Now(), msg: "waiting for approval"}
 	sup := dkSupervisor(host)
 	snap, err := sup.Tick("dut")
-	if err != nil || snap.Ready || snap.Condition != agent.CondConsentRequired || host.LaunchCount() != 0 {
+	if err != nil || snap.Ready || snap.Condition != agent.CondConsentPending || !snap.ConsentPending || host.LaunchCount() != 0 {
 		t.Fatalf("pending %+v err=%v launches=%d", snap, err, host.LaunchCount())
 	}
 	// The owner approves on the device after the launch budget ran out.
 	ready.Store(true)
 	snap, err = sup.Tick("dut")
-	if err != nil || !snap.Ready || snap.Runner.PID != 42 || snap.Runner.BundleID != DeviceKitRunnerBundle || host.LaunchCount() != 0 {
+	if err != nil || !snap.Ready || snap.Runner.PID != 42 || snap.Runner.BundleID != DeviceKitRunnerBundle || snap.Consent != nil || snap.ConsentPending || host.LaunchCount() != 1 {
 		t.Fatalf("approved %+v err=%v launches=%d", snap, err, host.LaunchCount())
 	}
 }

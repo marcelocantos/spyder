@@ -216,12 +216,14 @@ func TestAgentHandlers_ConsentIsNotReady(t *testing.T) {
 	if launches != 0 {
 		t.Fatalf("consent launched %d times", launches)
 	}
-	exhausted := dispatchJSONMap(t, h, "agent_ensure", map[string]any{"device": dev, "owner": "alice"})
-	if exhausted["ready"] != false || exhausted["condition"] != string(agent.CondRetryExhausted) || exhausted["consent"] != nil {
-		t.Fatalf("exhausted %+v", exhausted)
+	// 🎯T175: re-observing the same prompt is not an attempt, so it never
+	// turns into retry_exhausted or loses the message.
+	again := dispatchJSONMap(t, h, "agent_ensure", map[string]any{"device": dev, "owner": "alice"})
+	if again["ready"] != false || again["condition"] != string(agent.CondConsentRequired) || again["consent"] == nil || again["attempts"] != float64(0) {
+		t.Fatalf("after cap %+v", again)
 	}
 	if launches != 0 {
-		t.Fatalf("exhausted launched %d", launches)
+		t.Fatalf("consent launched %d", launches)
 	}
 }
 

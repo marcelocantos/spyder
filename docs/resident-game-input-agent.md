@@ -49,6 +49,7 @@ renders `devicekit` with those UDIDs. Without it, the installer renders
 |---|---|
 | `SPYDER_IOS_AGENT_BACKEND` | unset or `alertrunner`: every device uses AlertRunner. `devicekit`: devices listed in `SPYDER_IOS_AGENT_DEVICES` use DeviceKit. |
 | `SPYDER_IOS_AGENT_DEVICES` | Comma-separated hardware UDIDs, or `*` for every device. Required when the backend is `devicekit`. |
+| `SPYDER_IOS_AGENT_CONSENT_WINDOW` | How long a live DeviceKit launch waits for the owner's Enable UI Automation approval (Go duration, 1m–2h). Default `10m`. |
 
 Any other value (an unknown backend, `devicekit` with no devices, a
 malformed UDID, or a bundled `ios` binary that is missing or not
@@ -72,13 +73,27 @@ device; the supervisor never installs or reinstalls it.
   device's USB with an explicit state. A running process alone is not
   enough.
 - **Unattended relaunch.** Every 30 s tick restarts a dead runner, up to
-  the attempt cap (3). A daemon restart, a device reboot (new boot id), or
+  the attempt cap (3). Each launch counts as one attempt, however long it
+  waits for consent; observing the same state again on a tick does not
+  count. A daemon restart, a device reboot (new boot id), or
   `agent_ensure` with `retry=true` from the reservation holder gives a
   fresh budget. A plain `agent_ensure` does not reset the cap.
-- **No adoption.** A DeviceKit runner that this daemon did not start (for
-  example from a harness or from the old `spyder-automation` service) is
-  reported and left alone. The error names the host `runwda` when it can
-  be seen. Stop that process, then call `agent_ensure`.
+- **Ownership is the launch.** The daemon owns a runner while the
+  `ios runwda` host process it spawned is alive, whatever pid the device
+  reports for the runner (approval can restart it under a new pid).
+- **No adoption.** A DeviceKit runner driven by a host this daemon did not
+  start (a harness, other tools, another live spyder daemon) is reported
+  and left alone. The error names the host `runwda` pid, binary and parent.
+  Stop that process, then call `agent_ensure`.
+- **Stale and orphaned runners are replaced.** A runner left on the device
+  with no `runwda` host on this Mac is killed on the device (process kill,
+  no reinstall) before a fresh launch. A `runwda` left by a previous spyder
+  daemon (spyder's own bundled `libexec/spyder/ios`, DeviceKit bundle,
+  parent gone) is sent SIGTERM (SIGKILL after 5 s) and the runner is
+  relaunched.
+- **Exits are logged.** Every launch exit is logged
+  (`resident agent launch exited`) with host pid, exit status and the last
+  20 lines of output, and the latest one is `last_exit` in `agent_status`.
 - **Owner checks.** `agent_ensure` and `agent_idle` need the device's
   reservation holder. The holder is checked again after the probe, so a
   reservation lost during the probe cannot start or stop anything.
@@ -87,20 +102,30 @@ device; the supervisor never installs or reinstalls it.
 - **Clean shutdown.** When the daemon stops, all runners are stopped in
   parallel within supervisord's `stopwaitsecs=10`. If the daemon is killed
   with SIGKILL, an orphaned `runwda` can keep the old runner alive. The new
-  daemon then reports it as foreign until it is stopped.
+  daemon terminates it and relaunches (see above).
 - **Go-ios startup serialization.** DeviceKit launch holds the per-device
   go-ios initializer lock for a 5 s settle window, so the launch never
   overlaps another RSD/XPC handshake on the same device (🎯T161).
 
 ## Consent
 
-Apple's approval cannot be bypassed and is never inferred. When the runner
-starts but does not answer within 45 s, or its output shows the automation
-prompt, the condition becomes `consent_required`. The launch is kept
-**pending**: approving on the device lets the same runner become ready on a
-later tick, with no relaunch and no second prompt. Each budget asks only
-once. After the budget is used up, approve at the device and call
-`agent_ensure(device, owner, retry=true)`.
+Apple's approval cannot be bypassed and is never inferred. When a launch
+is alive but its runner does not answer within 45 s, the condition becomes
+`consent_pending` (`consent_pending=true`, `host_pid` set, `consent.message`
+says what to do). The launch stays owned and tracked: the daemon keeps
+polling readiness on that same launch every 3 s until it answers, exits,
+or `SPYDER_IOS_AGENT_CONSENT_WINDOW` (default 10 min from launch) passes.
+Ticks and `agent_ensure` (even with `retry=true`) neither relaunch it nor
+count it again. Once the owner approves and the runner answers, the
+condition becomes `ready` on the next tick or `agent_ensure`, and the
+consent message is cleared.
+
+If the window passes, the launch is stopped and the condition becomes
+`consent_required`. A launch that exits with Apple's consent refusal in its
+output also records `consent_required`. Neither is relaunched unattended:
+with someone at the device, call `agent_ensure(device, owner, retry=true)`.
+A launch that exits for any other reason is relaunched on the next tick
+within the attempt cap; see `last_exit` for why it ended.
 
 Expect one approval per device after each reboot or new DeviceKit install,
 and none after that.

@@ -40,7 +40,11 @@ const (
 	CondRebooted          Condition = "rebooted"
 	CondAgentFailure      Condition = "agent_failure"
 	CondConsentRequired   Condition = "consent_required"
-	CondRetryExhausted    Condition = "retry_exhausted"
+	// CondConsentPending is a live launch this daemon owns that is
+	// waiting on the owner's Enable UI Automation approval (🎯T175).
+	// Ticks neither relaunch it nor count it as a failed attempt.
+	CondConsentPending Condition = "consent_pending"
+	CondRetryExhausted Condition = "retry_exhausted"
 )
 
 // Mutation is an input or app-lifecycle change that requires the
@@ -58,6 +62,11 @@ var ErrNotOwner = errors.New("caller does not hold per-device automation ownersh
 // ErrConsent is returned by Launch when Apple is asking the owner to
 // allow UI automation. Supervision surfaces that; it does not dismiss it.
 var ErrConsent = errors.New("apple UI automation consent is required")
+
+// ErrConsentPending is returned by Launch when the launch is still
+// alive and owned but waiting on the owner's approval. It wraps
+// ErrConsent. The launch counts as one attempt however long it waits.
+var ErrConsentPending = fmt.Errorf("%w: launch is waiting for approval on the device", ErrConsent)
 
 // Runner is the identity of the on-device XCTest agent.
 type Runner struct {
@@ -87,10 +96,17 @@ type Snapshot struct {
 	Ready         bool      `json:"ready"`
 	BootID        string    `json:"boot_id,omitempty"`
 	Consent       *Consent  `json:"consent,omitempty"`
-	Attempts      int       `json:"attempts"`
-	Relaunched    bool      `json:"relaunched"`
-	Reinstalled   bool      `json:"reinstalled"`
-	Recovered     bool      `json:"recovered"`
+	// ConsentPending is true while a live, owned launch waits on the
+	// owner's approval. HostPID is that launch's host process.
+	ConsentPending bool `json:"consent_pending"`
+	HostPID        int  `json:"host_pid,omitempty"`
+	// LastExit is the most recent resident launch exit: when, exit
+	// status, and the tail of its output.
+	LastExit    string `json:"last_exit,omitempty"`
+	Attempts    int    `json:"attempts"`
+	Relaunched  bool   `json:"relaunched"`
+	Reinstalled bool   `json:"reinstalled"`
+	Recovered   bool   `json:"recovered"`
 }
 
 // Observation is what a probe saw. The machine does not collect it.
@@ -108,12 +124,17 @@ type Observation struct {
 	ConsentRequired   bool
 	ConsentActionable bool
 	ConsentMessage    string
-	Installed         bool
-	InstallGen        string
-	AUTBundle         string
-	AUTRunning        bool
-	HostSession       bool
-	LeaseHeld         bool
+	// ConsentPending: a live launch this process owns is waiting on
+	// approval. It is not a failure and must not be relaunched.
+	ConsentPending bool
+	HostPID        int
+	LastExit       string
+	Installed      bool
+	InstallGen     string
+	AUTBundle      string
+	AUTRunning     bool
+	HostSession    bool
+	LeaseHeld      bool
 }
 
 // Effects are the only side effects supervision performs.
@@ -168,6 +189,9 @@ type machine struct {
 	owner      string
 	ready      bool
 	consent    *Consent
+	pending    bool
+	hostPID    int
+	lastExit   string
 	attempts   int
 	bootID     string
 	idle       bool
@@ -255,22 +279,25 @@ func (m *machine) snapshot(relaunched, reinstalled bool) Snapshot {
 		consent = &c
 	}
 	return Snapshot{
-		DeviceID:      m.id,
-		Condition:     m.condition,
-		Runner:        m.runner,
-		RunnerHealthy: m.healthy,
-		AUTBundle:     m.autBundle,
-		AUTRunning:    m.autRunning,
-		LeaseHeld:     m.lease,
-		HostSession:   m.host,
-		Owner:         m.owner,
-		Ready:         m.ready,
-		BootID:        m.bootID,
-		Consent:       consent,
-		Attempts:      m.attempts,
-		Relaunched:    relaunched,
-		Reinstalled:   reinstalled,
-		Recovered:     m.recovered,
+		DeviceID:       m.id,
+		Condition:      m.condition,
+		Runner:         m.runner,
+		RunnerHealthy:  m.healthy,
+		AUTBundle:      m.autBundle,
+		AUTRunning:     m.autRunning,
+		LeaseHeld:      m.lease,
+		HostSession:    m.host,
+		Owner:          m.owner,
+		Ready:          m.ready,
+		BootID:         m.bootID,
+		Consent:        consent,
+		ConsentPending: m.pending,
+		HostPID:        m.hostPID,
+		LastExit:       m.lastExit,
+		Attempts:       m.attempts,
+		Relaunched:     relaunched,
+		Reinstalled:    reinstalled,
+		Recovered:      m.recovered,
 	}
 }
 
@@ -499,6 +526,15 @@ func (s *Supervisor) absorb(m *machine, obs Observation) {
 	}
 	m.autRunning = obs.AUTRunning
 	m.lease = obs.LeaseHeld
+	m.hostPID = obs.HostPID
+	m.pending = obs.ConsentPending
+	if obs.LastExit != "" {
+		m.lastExit = obs.LastExit
+	}
+	if !obs.ConsentRequired && !obs.ConsentPending {
+		// Nothing is asking any more: drop the old prompt text.
+		m.consent = nil
+	}
 	m.host = obs.HostSession
 	if obs.RunnerAlive {
 		m.runner = Runner{BundleID: s.bundle(m.id), PID: obs.RunnerPID, InstallGen: obs.InstallGen}
@@ -524,6 +560,8 @@ func (s *Supervisor) advance(m *machine, obs Observation, relaunch bool) (Snapsh
 		return s.applyLocked(m, CondLocked, obs), nil
 	case !obs.LockKnown:
 		return s.applyLocked(m, CondAgentFailure, obs), nil
+	case obs.ConsentPending:
+		return s.notePending(m, obs), nil
 	case obs.ConsentRequired:
 		return s.noteConsent(m, obs)
 	case obs.RunnerAlive && obs.Authorized:
@@ -531,6 +569,7 @@ func (s *Supervisor) advance(m *machine, obs Observation, relaunch bool) (Snapsh
 		m.ready = true
 		m.healthy = true
 		m.consent = nil
+		m.pending = false
 		m.attempts = 0
 		m.recovered = false
 		m.runner = Runner{BundleID: s.bundle(m.id), PID: obs.RunnerPID, InstallGen: obs.InstallGen}
@@ -545,15 +584,25 @@ func (s *Supervisor) advance(m *machine, obs Observation, relaunch bool) (Snapsh
 	}
 }
 
-func (s *Supervisor) noteConsent(m *machine, obs Observation) (Snapshot, error) {
-	if m.attempts >= s.max {
-		m.condition = CondRetryExhausted
-		m.ready = false
-		m.healthy = false
-		m.consent = nil
-		return m.snapshot(false, false), nil
+// notePending holds a live launch that waits on approval. No attempt is
+// counted and nothing is relaunched: the launch already counted once.
+func (s *Supervisor) notePending(m *machine, obs Observation) Snapshot {
+	m.condition = CondConsentPending
+	m.pending = true
+	m.ready = false
+	m.healthy = false
+	msg := obs.ConsentMessage
+	if msg == "" {
+		msg = ErrConsentPending.Error()
 	}
-	m.attempts++
+	m.consent = &Consent{Actionable: true, Message: msg}
+	return m.snapshot(false, false)
+}
+
+// noteConsent records a launch that ended on Apple's consent gate.
+// Observing it again on a tick is not another attempt; only a launch
+// counts (🎯T175). It is not relaunched until reboot or attended retry.
+func (s *Supervisor) noteConsent(m *machine, obs Observation) (Snapshot, error) {
 	m.condition = CondConsentRequired
 	m.ready = false
 	m.healthy = false
@@ -605,6 +654,15 @@ func (s *Supervisor) relaunch(m *machine, obs Observation) (Snapshot, error) {
 	pid, err := s.effects.Launch(id)
 	s.mu.Lock()
 	if err != nil {
+		m.attempts++
+		if errors.Is(err, ErrConsentPending) {
+			obs.ConsentPending = true
+			obs.ConsentMessage = err.Error()
+			snap := s.notePending(m, obs)
+			snap.Relaunched = true
+			snap.Reinstalled = reinstalled
+			return snap, nil
+		}
 		if errors.Is(err, ErrConsent) {
 			obs.ConsentRequired = true
 			obs.ConsentActionable = true
@@ -615,7 +673,6 @@ func (s *Supervisor) relaunch(m *machine, obs Observation) (Snapshot, error) {
 			snap.Reinstalled = reinstalled
 			return snap, cerr
 		}
-		m.attempts++
 		if m.attempts >= s.max {
 			m.condition = CondRetryExhausted
 			m.consent = nil
@@ -631,6 +688,7 @@ func (s *Supervisor) relaunch(m *machine, obs Observation) (Snapshot, error) {
 	m.ready = true
 	m.healthy = true
 	m.consent = nil
+	m.pending = false
 	m.runner = Runner{BundleID: s.bundle(m.id), PID: pid, InstallGen: obs.InstallGen}
 	return m.snapshot(true, reinstalled), nil
 }

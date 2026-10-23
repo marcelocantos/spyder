@@ -334,21 +334,16 @@ func TestSupervisor_ConsentIsNotReadyAndRetriesStop(t *testing.T) {
 	h.obs.ConsentActionable = true
 	h.obs.ConsentMessage = "Enable UI Automation"
 	s := h.supervisor()
-	for i := 1; i <= MaxAttempts; i++ {
+	// Seeing the same recorded consent failure again is not another
+	// attempt (🎯T175): only a launch counts, and nothing is launched.
+	for i := 1; i <= MaxAttempts+2; i++ {
 		snap, err := s.Ensure("phone", "alice")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if snap.Ready || snap.Condition != CondConsentRequired || snap.Consent == nil || snap.Attempts != i {
-			t.Fatalf("attempt %d: %+v", i, snap)
+		if snap.Ready || snap.Condition != CondConsentRequired || snap.Consent == nil || snap.Attempts != 0 {
+			t.Fatalf("observation %d: %+v", i, snap)
 		}
-	}
-	stopped, err := s.Ensure("phone", "alice")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stopped.Ready || stopped.Consent != nil || stopped.Condition != CondRetryExhausted || stopped.Attempts != MaxAttempts {
-		t.Fatalf("cap: %+v", stopped)
 	}
 	if h.launches != 0 {
 		t.Fatalf("consent launched %d times", h.launches)
@@ -566,8 +561,8 @@ func TestTick_RebootGivesFreshBudget(t *testing.T) {
 		t.Fatalf("unattended consent relaunched: launches=%d", h.launches)
 	}
 	snap, _ := s.Snapshot("phone")
-	if snap.Condition != CondRetryExhausted {
-		t.Fatalf("condition %s", snap.Condition)
+	if snap.Condition != CondConsentRequired || snap.Attempts != 1 {
+		t.Fatalf("condition %s attempts %d", snap.Condition, snap.Attempts)
 	}
 	h.obs.BootID = "boot-b"
 	h.launchErr = nil
@@ -609,5 +604,73 @@ func TestSupervisor_RunnerBundlePerDevice(t *testing.T) {
 	ar, _ := s.Tick("ar")
 	if dk.Runner.BundleID != "com.example.devicekit.xctrunner" || ar.Runner.BundleID != RunnerBundle {
 		t.Fatalf("bundles dk=%q ar=%q", dk.Runner.BundleID, ar.Runner.BundleID)
+	}
+}
+
+// 🎯T175: a launch that is alive and waiting on approval counts as one
+// attempt. Ticks over it neither relaunch nor count.
+func TestTick_ConsentPendingIsOneAttempt(t *testing.T) {
+	h := &harness{obs: healthyObs()}
+	h.obs.RunnerAlive = false
+	h.launchErr = ErrConsentPending
+	s := h.supervisor()
+	snap, err := s.Tick("phone")
+	if err != nil || snap.Condition != CondConsentPending || !snap.ConsentPending || snap.Attempts != 1 || snap.Consent == nil || !snap.Relaunched {
+		t.Fatalf("launch %+v err=%v", snap, err)
+	}
+	h.obs.ConsentPending = true
+	h.obs.ConsentMessage = "approve on the device"
+	h.obs.HostPID = 31213
+	for i := 0; i < MaxAttempts+3; i++ {
+		snap, err = s.Tick("phone")
+		if err != nil || snap.Condition != CondConsentPending || snap.Attempts != 1 || snap.HostPID != 31213 || snap.Consent.Message != "approve on the device" {
+			t.Fatalf("tick %d %+v err=%v", i, snap, err)
+		}
+	}
+	if h.launches != 1 {
+		t.Fatalf("pending launch relaunched: %d", h.launches)
+	}
+	// Approved: the runner answers on the same launch.
+	h.obs.ConsentPending = false
+	h.obs.ConsentMessage = ""
+	h.obs.RunnerAlive = true
+	h.obs.Authorized = true
+	snap, err = s.Tick("phone")
+	if err != nil || !snap.Ready || snap.Consent != nil || snap.ConsentPending || snap.Attempts != 0 || h.launches != 1 {
+		t.Fatalf("approved %+v err=%v launches=%d", snap, err, h.launches)
+	}
+}
+
+// A consent message is dropped as soon as nothing is asking any more,
+// including when the device is merely unhealthy for another reason.
+func TestSnapshot_ClearsStaleConsent(t *testing.T) {
+	h := &harness{obs: healthyObs()}
+	h.obs.RunnerAlive = false
+	h.obs.ConsentRequired = true
+	h.obs.ConsentActionable = true
+	h.obs.ConsentMessage = "DeviceKit runner pid 6838 ..."
+	s := h.supervisor()
+	if snap, _ := s.Tick("phone"); snap.Consent == nil {
+		t.Fatalf("consent not shown: %+v", snap)
+	}
+	h.obs.ConsentRequired = false
+	h.obs.ConsentActionable = false
+	h.obs.ConsentMessage = ""
+	h.obs.LockKnown = false
+	snap, _ := s.Tick("phone")
+	if snap.Consent != nil {
+		t.Fatalf("stale consent kept: %+v", snap)
+	}
+}
+
+// LastExit from the host is kept across observations that carry none.
+func TestSnapshot_LastExitSticks(t *testing.T) {
+	h := &harness{obs: healthyObs()}
+	h.obs.LastExit = "host pid 1: exit status 3"
+	s := h.supervisor()
+	s.Tick("phone")
+	h.obs.LastExit = ""
+	if snap, _ := s.Tick("phone"); snap.LastExit != "host pid 1: exit status 3" {
+		t.Fatalf("last exit %+v", snap)
 	}
 }

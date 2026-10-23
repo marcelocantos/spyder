@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	goios_ios "github.com/danielpaulus/go-ios/ios"
@@ -84,12 +85,40 @@ type AutomationHost struct {
 	// DeviceKit JSON-RPC readiness check in hermetic tests.
 	holdRun    func(ctx context.Context, id string, out io.Writer) error
 	readyProbe func(id string, pid int) bool
+	// launchBudget and pendingPoll shorten the launch probe and the
+	// consent-pending poll in hermetic tests. Zero means production.
+	launchBudget time.Duration
+	pendingPoll  time.Duration
+	// hostScan, hostSignal, and hostAlive replace the Mac process table
+	// (ps, kill) for runwda host ownership in hermetic tests.
+	hostScan   func(udid string) []runwdaProc
+	hostSignal func(pid int, sig syscall.Signal) error
+	hostAlive  func(pid int) bool
+
+	lastExit map[string]string
 }
 
+// runnerHold is one resident launch this process started. Ownership is
+// the launch, not the device pid: while the session (for DeviceKit, the
+// spawned `ios runwda` host process) is alive, whatever runner pid the
+// device reports for the agent bundle is this launch's (🎯T175). The
+// fields below cancel/done are guarded by AutomationHost.mu.
 type runnerHold struct {
 	cancel context.CancelFunc
 	done   chan struct{}
-	pid    int
+	// pid is the latest device runner pid seen for this launch.
+	pid int
+	// hostPID is the spawned host process (runwda); 0 for in-process
+	// AlertRunner sessions and hermetic holds.
+	hostPID int
+	// launching: inside startHold's readiness budget. pending: past the
+	// budget, alive, waiting on the owner's approval. Neither is ready
+	// and neither may be replaced by another launch.
+	launching bool
+	pending   bool
+	expired   bool
+	since     time.Time
+	msg       string
 }
 
 // NewAutomationHost binds an iOS adapter to the XCTest agent bundles.
@@ -103,6 +132,7 @@ func NewAutomationHost(ios *IOSAdapter) *AutomationHost {
 		lockDetail:     map[string]string{},
 		probeNote:      map[string]string{},
 		installGen:     map[string]string{},
+		lastExit:       map[string]string{},
 	}
 	if ios != nil {
 		ios.automation = h
@@ -292,18 +322,29 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 		return agent.Observation{}, instErr
 	}
 	authorized := alive && consent == ""
-	if h.usesDeviceKit(id) && alive {
-		owned, ok := h.heldPID(id)
-		if !ok || owned != pid {
-			return agent.Observation{}, foreignRunner(id, pid)
+	pending, pendingMsg, hostPID := false, "", 0
+	if h.usesDeviceKit(id) {
+		st, err := h.probeDeviceKit(id, pid, alive)
+		if err != nil {
+			return agent.Observation{}, err
 		}
-		ready := h.readyTwice(id, pid)
-		if ready && consent != "" {
-			// The owner approved after the launch budget ran out.
-			h.ResetConsent(id)
+		pending, pendingMsg, hostPID = st.pending, st.msg, st.hostPID
+		if st.approved {
 			consent = ""
 		}
-		authorized = ready && consent == ""
+		if st.expired {
+			h.mu.Lock()
+			consent = h.consent[id]
+			h.mu.Unlock()
+		}
+		authorized = st.authorized && consent == "" && !pending
+	}
+	h.mu.Lock()
+	lastExit := h.lastExit[id]
+	h.mu.Unlock()
+	consentMsg := consent
+	if pending {
+		consentMsg = pendingMsg
 	}
 	aut := h.autBundle(id)
 	autRunning := false
@@ -320,9 +361,12 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 		RunnerPID:         pid,
 		RunnerAlive:       alive,
 		Authorized:        authorized,
-		ConsentRequired:   consent != "",
-		ConsentActionable: consent != "",
-		ConsentMessage:    consent,
+		ConsentRequired:   consent != "" && !pending,
+		ConsentActionable: consent != "" || pending,
+		ConsentMessage:    consentMsg,
+		ConsentPending:    pending,
+		HostPID:           hostPID,
+		LastExit:          lastExit,
 		Installed:         installed,
 		InstallGen:        gen,
 		AUTBundle:         aut,
@@ -677,7 +721,7 @@ func (h *AutomationHost) heldPID(id string) (int, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	hold := h.liveHold(id)
-	if hold == nil || hold.pid <= 0 {
+	if hold == nil || hold.pid <= 0 || hold.launching || hold.pending {
 		return 0, false
 	}
 	return hold.pid, true
@@ -749,15 +793,40 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 	bundle := h.RunnerBundleFor(id)
 	deviceKit := bundle == DeviceKitRunnerBundle
 	out := &tailBuf{}
-	gate := h.holdInitializer(id, deviceKit)
 	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+	hold := &runnerHold{cancel: cancel, done: make(chan struct{}), launching: true, since: time.Now()}
+	h.mu.Lock()
+	if live := h.liveHold(id); live != nil && (live.launching || live.pending) {
+		msg := live.msg
+		h.mu.Unlock()
+		cancel()
+		if msg == "" {
+			msg = fmt.Sprintf("a launch on %s is already in progress", id)
+		}
+		return 0, fmt.Errorf("%w: %s", agent.ErrConsentPending, msg)
+	}
+	// Registered before the session starts so a concurrent tick sees
+	// this launch as ours, never as a stale or foreign runner.
+	h.holds[id] = hold
+	h.mu.Unlock()
+	gate := h.holdInitializer(id, deviceKit)
 	errCh := make(chan error, 1)
 	go func() {
-		defer close(done)
-		errCh <- h.runSession(ctx, id, out)
+		defer close(hold.done)
+		err := h.runSession(ctx, id, out, func(pid int) {
+			h.mu.Lock()
+			hold.hostPID = pid
+			h.mu.Unlock()
+			slog.Info("resident agent launch started", "device", id, "bundle", bundle, "host_pid", pid)
+		})
+		h.noteExit(id, hold, ctx, err, out)
+		errCh <- err
 	}()
-	timer := time.NewTimer(agentLaunchBudget)
+	budget := h.launchBudget
+	if budget <= 0 {
+		budget = agentLaunchBudget
+	}
+	timer := time.NewTimer(budget)
 	defer timer.Stop()
 	var stableSince time.Time
 	sawPID := 0
@@ -766,7 +835,7 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 		case err := <-errCh:
 			gate.release()
 			cancel()
-			<-done
+			<-hold.done
 			if err == nil {
 				err = errors.New("resident XCTest ended")
 			}
@@ -779,21 +848,29 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 			return 0, err
 		case <-timer.C:
 			gate.release()
-			if deviceKit && (sawPID > 0 || consentish(errors.New(out.string()))) {
-				// The runner is up but not answering: iOS is most likely
-				// showing the Enable UI Automation prompt. Keep the session
-				// so an approval that comes later still lands; Probe clears
-				// the consent once the runner answers. Not relaunched until
-				// then, so the owner sees one prompt per attempt budget.
-				msg := fmt.Sprintf("DeviceKit runner pid %d started but never answered on :%d within %s; iOS may be waiting for Enable UI Automation approval (Touch ID or passcode) on the device", sawPID, deviceKitPort, agentLaunchBudget)
+			if deviceKit {
+				// The launch is alive but the runner has not answered: iOS
+				// is most likely showing Enable UI Automation. Keep this
+				// launch, owned and tracked, for the consent window. It is
+				// not relaunched or counted again while it waits; a watcher
+				// keeps polling readiness on this same launch.
+				window := h.DeviceKit.consentWindow()
 				h.mu.Lock()
-				h.holds[id] = &runnerHold{cancel: cancel, done: done, pid: sawPID}
-				h.consent[id] = msg
+				hostPID := hold.hostPID
+				msg := fmt.Sprintf("DeviceKit launch (host pid %d) is alive but the runner has not answered on :%d after %s; approve Enable UI Automation (Touch ID or passcode) on the device. Waiting up to %s from launch.", hostPID, deviceKitPort, budget, window)
+				hold.launching = false
+				hold.pending = true
+				hold.pid = sawPID
+				hold.msg = msg
+				delete(h.consent, id)
+				h.probeNote[id] = msg
 				h.mu.Unlock()
-				return 0, fmt.Errorf("%w: %s", agent.ErrConsent, msg)
+				slog.Warn("resident agent launch waiting for consent", "device", id, "host_pid", hostPID, "runner_pid", sawPID, "window", window, "output", lastLine(out.string()))
+				go h.watchPending(id, hold)
+				return 0, fmt.Errorf("%w: %s", agent.ErrConsentPending, msg)
 			}
 			cancel()
-			<-done
+			<-hold.done
 			return 0, fmt.Errorf("resident XCTest runner did not stay up on %s", id)
 		case <-time.After(200 * time.Millisecond):
 			if !gate.done() {
@@ -820,7 +897,8 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 				continue
 			}
 			h.mu.Lock()
-			h.holds[id] = &runnerHold{cancel: cancel, done: done, pid: pid}
+			hold.launching = false
+			hold.pid = pid
 			delete(h.consent, id)
 			h.launches++
 			h.mu.Unlock()
@@ -829,14 +907,65 @@ func (h *AutomationHost) startHold(id string) (int, error) {
 	}
 }
 
+// noteExit logs every resident launch exit with its status and output
+// tail, and keeps the last one for agent_status (🎯T175).
+func (h *AutomationHost) noteExit(id string, hold *runnerHold, ctx context.Context, err error, out *tailBuf) {
+	text := out.string()
+	h.mu.Lock()
+	hostPID, runnerPID, pending, expired := hold.hostPID, hold.pid, hold.pending, hold.expired
+	h.mu.Unlock()
+	reason := "exited with status 0"
+	if err != nil {
+		reason = err.Error()
+	}
+	switch {
+	case expired:
+		reason = "stopped: no approval within the consent window"
+	case ctx.Err() != nil:
+		reason = "stopped by daemon"
+	}
+	tail := tailLines(text, 20)
+	slog.Warn("resident agent launch exited", "device", id, "host_pid", hostPID, "runner_pid", runnerPID, "pending_consent", pending, "reason", reason, "output_tail", tail)
+	summary := fmt.Sprintf("%s host pid %d: %s", time.Now().Format(time.RFC3339), hostPID, reason)
+	if last := lastLine(text); last != "" && !strings.Contains(reason, last) {
+		summary += "; last output: " + last
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.lastExit[id] = summary
+	if pending && ctx.Err() == nil && (consentish(err) || consentish(errors.New(text))) {
+		// The prompt was refused or dismissed: recorded consent, not
+		// relaunched until an attended retry or reboot.
+		h.consent[id] = reason
+	}
+	hold.pending = false
+	hold.launching = false
+	if h.holds[id] == hold {
+		delete(h.holds, id)
+	}
+}
+
+func tailLines(text string, n int) string {
+	text = strings.TrimRight(text, "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := strings.Join(lines, "\n")
+	if len(out) > 4000 {
+		out = out[len(out)-4000:]
+	}
+	return out
+}
+
 // runSession is the resident session: AlertRunner's hold test in
 // process, or `ios runwda` for DeviceKit.
-func (h *AutomationHost) runSession(ctx context.Context, id string, out io.Writer) error {
+func (h *AutomationHost) runSession(ctx context.Context, id string, out io.Writer, started func(int)) error {
 	if h.holdRun != nil {
 		return h.holdRun(ctx, id, out)
 	}
 	if h.usesDeviceKit(id) {
-		return h.runDeviceKit(ctx, id, out)
+		return h.runDeviceKit(ctx, id, out, started)
 	}
 	return h.runHold(ctx, id)
 }
