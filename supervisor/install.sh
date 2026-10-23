@@ -20,7 +20,15 @@ mkdir -p "$HOME/.local/var/log"
 chmod +x "$REPO/supervisor/run-spyder.sh" "$REPO/supervisor/install.sh"
 
 rm -f "$DEST"
-sed "s|@REPO@|$REPO|g" "$TEMPLATE" >"$DEST"
+# Resident iOS agent backend (🎯T175). Per-host UDIDs come from the
+# installer's environment, never from the template.
+IOS_AGENT_DEVICES="${SPYDER_IOS_AGENT_DEVICES:-}"
+case "$IOS_AGENT_DEVICES" in
+  *[!0-9A-Fa-f,*-]*) echo "SPYDER_IOS_AGENT_DEVICES must be UDIDs separated by commas, or *" >&2; exit 1 ;;
+esac
+if [ -n "$IOS_AGENT_DEVICES" ]; then IOS_AGENT_BACKEND=devicekit; else IOS_AGENT_BACKEND=alertrunner; fi
+sed -e "s|@REPO@|$REPO|g" -e "s|@IOS_AGENT_BACKEND@|$IOS_AGENT_BACKEND|g" \
+  -e "s|@IOS_AGENT_DEVICES@|$IOS_AGENT_DEVICES|g" "$TEMPLATE" >"$DEST"
 echo "rendered $DEST (from $TEMPLATE)"
 
 if [ "${SUPERVISOR_SKIP_CTL:-}" = 1 ]; then

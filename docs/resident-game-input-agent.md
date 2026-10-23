@@ -39,7 +39,11 @@ to the daemon that owns reservations.
 ## Configuration
 
 Set these in the daemon's environment. For :3030 that is the
-`environment=` line in `supervisor/spyder.ini`.
+`environment=` line in the installed
+`/opt/homebrew/etc/supervisor.d/spyder.ini`. The repo template carries
+placeholders, and `SPYDER_IOS_AGENT_DEVICES=<udid,…> supervisor/install.sh`
+renders `devicekit` with those UDIDs. Without it, the installer renders
+`alertrunner`.
 
 | Variable | Values |
 |---|---|
