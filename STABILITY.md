@@ -118,6 +118,9 @@ builtin). `log_stream` is REST SSE only and is not in the verb table.
 | `port_forward_list` | `{device, owner?}`. | JSON `{device, platform, forwards:[…]}`. | Stable (🎯T111/T112) |
 | `system_alert` | `{device}`. | JSON `{device, alert: {showing, owner?, title?, message?, buttons?}}`. iOS only. | Beta (🎯T154) |
 | `system_alert_tap` | `{device, button, title_contains?, wait_ms?, owner?}`. | JSON `{device, tapped, before, after}`; errors when no alert shows or the button is absent. iOS only; needs the alert runner installed. | Beta (🎯T154) |
+| `agent_ensure` | `{device, owner, retry?: bool}`. | JSON agent `Snapshot` `{device_id, condition, runner{bundle_id,pid,install_gen}, runner_healthy, aut_running, lease_held, host_session, owner?, ready, boot_id?, consent?, attempts, relaunched, reinstalled, recovered}`. Reservation holder only. iOS only. | Beta (🎯T163, 🎯T175) |
+| `agent_idle` | `{device, owner}`. | JSON agent `Snapshot`; the runner stays up. Reservation holder only. | Beta (🎯T163) |
+| `agent_status` | `{device}`. | JSON agent `Snapshot`. Read-only. | Beta (🎯T163) |
 | `input_tap` | `{device, x, y, owner?}`. | Android: injected. iOS: clear error → app_input/mobile-mcp. | Stable (🎯T111/T112) |
 | `input_swipe` | `{device, x1, y1, x2, y2, duration_ms?, owner?}`. | Same Android/iOS split as tap. | Stable (🎯T111/T112) |
 | `device_setting` | `{device, key, value?, restore?, get?, owner?}`. Allowlist: `refresh_rate` (Android peak+min). | Android: JSON `{device, platform, result}` with action set/restore/get and current values. Restore **deletes** the pin. Unknown keys rejected (no adb shell). iOS: `"not supported"`. | Stable (🎯T130 / 🎯T112) — platform-honest |
@@ -601,6 +604,22 @@ and any version-specific effect remain undecided. This startup residue is
 separate from acquired process-read cancellation (🎯T160.2.1); it does not
 justify a speculative protocol patch or shared-tunnel restart. Private
 incident and controlled-probe receipts are referenced in 🎯T161.
+
+### Resident iOS automation runner (🎯T175)
+
+`spyder serve` keeps one XCTest runner per tethered iOS device (🎯T163).
+`SPYDER_IOS_AGENT_BACKEND=devicekit` with `SPYDER_IOS_AGENT_DEVICES=<udid,…|*>`
+selects the DeviceKit runner (`com.mobilenext.devicekit-iosUITests.xctrunner`,
+JSON-RPC on device port 12004) for those devices. Unset or `alertrunner` keeps
+AlertRunner everywhere. An invalid value fails closed. The runner is launched
+with the bundled go-ios, has no lifetime limit, and is ready only after an
+explicit JSON-RPC answer. It is relaunched on each tick within the attempt
+cap, which resets on a reboot, a daemon restart, or `agent_ensure` with
+`retry=true`. It is never reinstalled, and a runner from another process is
+never adopted. DeviceKit launch holds the per-device go-ios initializer lock
+for its settle window, which addresses the overlapping-startup residue
+above. The env var names, the `retry` parameter and the snapshot fields are
+**Beta**. Design: [docs/resident-game-input-agent.md](docs/resident-game-input-agent.md).
 
 ## Gaps and prerequisites for 1.0
 
