@@ -260,3 +260,54 @@ func pidOf(t *testing.T, snap map[string]any) int {
 	pid, _ := runner["pid"].(float64)
 	return int(pid)
 }
+
+// retry=true is the attended way out of RetryExhausted (🎯T175). It is
+// still owner-only; plain agent_ensure keeps the cap.
+func TestAgentHandlers_RetryIsAttendedAndOwnerOnly(t *testing.T) {
+	const dev = "00008110-1111222233334444"
+	h, store := newHandlerWithReservations(t, &stubAdapter{}, nil)
+	if _, err := store.Acquire(dev, "alice", time.Hour, ""); err != nil {
+		t.Fatal(err)
+	}
+	consent := true
+	alive := false
+	var launches, resets int
+	h.agents = agent.NewSupervisor(&agent.SupervisorArgs{
+		Probe: func(string) (agent.Observation, error) {
+			return agent.Observation{
+				Tethered: true, LockKnown: true, Installed: true, InstallGen: "gen-1",
+				RunnerAlive: alive, RunnerPID: 7, Authorized: alive && !consent,
+				ConsentRequired: consent, ConsentActionable: consent, ConsentMessage: "Touch ID",
+			}, nil
+		},
+		OwnerOf: func(id string) (string, bool) {
+			r, ok := store.Get(id)
+			if !ok {
+				return "", false
+			}
+			return r.Owner, true
+		},
+		Effects: agent.Effects{
+			Launch: func(string) (int, error) {
+				launches++
+				alive = true
+				return 7, nil
+			},
+			ResetConsent: func(string) {
+				resets++
+				consent = false
+			},
+		},
+	})
+	for i := 0; i <= agent.MaxAttempts; i++ {
+		dispatchJSONMap(t, h, "agent_ensure", map[string]any{"device": dev, "owner": "alice"})
+	}
+	denied := dispatchJSON(t, h, "agent_ensure", map[string]any{"device": dev, "owner": "bob", "retry": true})
+	if !denied.IsError || resets != 0 || launches != 0 {
+		t.Fatalf("non-owner retry: error=%v resets=%d launches=%d", denied.IsError, resets, launches)
+	}
+	snap := dispatchJSONMap(t, h, "agent_ensure", map[string]any{"device": dev, "owner": "alice", "retry": true})
+	if snap["ready"] != true || resets != 1 || launches != 1 {
+		t.Fatalf("retry %+v resets=%d launches=%d", snap, resets, launches)
+	}
+}

@@ -113,7 +113,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// listener so attach/detach reaches the supervisor. The tick loop
 	// waits out agentTickInterval before the first launch.
 	if cfg.SuperviseAgents && mcpHandler != nil {
-		mcpHandler.AttachIOSAgent(resvStore)
+		mcpHandler.AttachIOSAgent(resvStore, iosBin)
 		go superviseIOSAgents(ctx, mcpHandler)
 	}
 

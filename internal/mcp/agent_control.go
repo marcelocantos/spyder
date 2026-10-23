@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"log/slog"
+	"os"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
@@ -15,16 +16,25 @@ import (
 
 // AttachIOSAgent binds the shipped XCTest supervisor to the handler's
 // iOS adapter. A stub adapter (unit tests, daemon.Build without the
-// serve opt-in) is left alone so nothing launches a runner.
-func (h *Handler) AttachIOSAgent(resv *reservations.Store) {
+// serve opt-in) is left alone so nothing launches a runner. iosBin is
+// the daemon's go-ios; the DeviceKit backend (🎯T175) launches its
+// runner with it.
+func (h *Handler) AttachIOSAgent(resv *reservations.Store, iosBin string) {
 	ios, ok := h.ios.(*device.IOSAdapter)
 	if !ok || ios == nil {
 		return
 	}
 	host := device.NewAutomationHost(ios)
+	host.DeviceKit = device.DeviceKitAgentFromEnv(iosBin)
+	if err := host.DeviceKit.Err(); err != nil {
+		slog.Error("resident agent backend misconfigured; supervision fails closed", "error", err)
+	} else if host.DeviceKit != nil {
+		slog.Info("resident agent backend", "backend", "devicekit", "devices", os.Getenv(device.EnvIOSAgentDevices), "ios", iosBin)
+	}
 	sup := agent.NewSupervisor(&agent.SupervisorArgs{
-		Effects: host.Effects(),
-		Probe:   host.Probe,
+		RunnerBundleFor: host.RunnerBundleFor,
+		Effects:         host.Effects(),
+		Probe:           host.Probe,
 		OwnerOf: func(id string) (string, bool) {
 			if resv == nil {
 				return "", false
@@ -161,7 +171,11 @@ func (h *Handler) handleAgentEnsure(args map[string]any) (*mcpgo.CallToolResult,
 	if h.agents == nil {
 		return toolErr("agent supervision is not enabled")
 	}
-	snap, err := h.agents.Ensure(h.agentDeviceKey(dev), owner)
+	ensure := h.agents.Ensure
+	if retry, _ := args["retry"].(bool); retry {
+		ensure = h.agents.Retry
+	}
+	snap, err := ensure(h.agentDeviceKey(dev), owner)
 	if err != nil {
 		return toolErr("agent_ensure on %s: %v", dev, err)
 	}
@@ -209,12 +223,13 @@ func (h *Handler) handleAgentStatus(args map[string]any) (*mcpgo.CallToolResult,
 func agentDefinitions() []mcpgo.Tool {
 	return []mcpgo.Tool{
 		mcpgo.NewTool("agent_ensure",
-			mcpgo.WithDescription("Admit the reservation owner onto the supervised XCTest automation agent for one tethered iOS device (🎯T163). A healthy authorized runner is reused and not reinstalled. Consent required, lock, disconnect, and a dead runner past the retry cap are not reported ready."),
+			mcpgo.WithDescription("Admit the reservation owner onto the daemon's resident XCTest automation agent for one tethered iOS device (🎯T163, 🎯T175). The agent is AlertRunner, or DeviceKit (JSON-RPC on device port 12004) for devices the daemon is configured to run it on. A healthy authorized runner this daemon started is reused, never reinstalled, and never adopted from another process. Consent required, lock, disconnect, and a dead runner past the retry cap are not reported ready. retry=true starts a fresh attempt budget after RetryExhausted or a consent prompt; use it when someone is at the device to approve."),
 			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or UDID")),
 			mcpgo.WithString("owner", mcpgo.Required(), mcpgo.Description("Reservation owner")),
+			mcpgo.WithBoolean("retry", mcpgo.Description("Clear the attempt cap and the recorded consent failure before ensuring (attended use).")),
 		),
 		mcpgo.NewTool("agent_idle",
-			mcpgo.WithDescription("Stop the app under test and drop the build/Unity lease and any host xcodebuild or client testmanagerd session (🎯T163). A healthy runner may stay up. Requires the per-device owner."),
+			mcpgo.WithDescription("Stop the app under test and drop the build/Unity lease and any host xcodebuild or client testmanagerd session (🎯T163). A healthy runner stays up: idle never ends the resident agent. Requires the per-device owner."),
 			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or UDID")),
 			mcpgo.WithString("owner", mcpgo.Required(), mcpgo.Description("Reservation owner")),
 		),
