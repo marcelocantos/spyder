@@ -19,6 +19,9 @@ type harness struct {
 	launchErr error
 	holder    string
 	held      bool
+	onProbe   func()
+	resets    int
+	bundleFor func(string) string
 }
 
 func (h *harness) supervisor() *Supervisor {
@@ -26,7 +29,13 @@ func (h *harness) supervisor() *Supervisor {
 		h.nextPID = 100
 	}
 	return NewSupervisor(&SupervisorArgs{
-		Probe: func(string) (Observation, error) { return h.obs, nil },
+		RunnerBundleFor: h.bundleFor,
+		Probe: func(string) (Observation, error) {
+			if h.onProbe != nil {
+				h.onProbe()
+			}
+			return h.obs, nil
+		},
 		OwnerOf: func(string) (string, bool) {
 			return h.holder, h.held
 		},
@@ -63,6 +72,12 @@ func (h *harness) supervisor() *Supervisor {
 				h.leases++
 				h.obs.LeaseHeld = false
 				return nil
+			},
+			ResetConsent: func(string) {
+				h.resets++
+				h.obs.ConsentRequired = false
+				h.obs.ConsentActionable = false
+				h.obs.ConsentMessage = ""
 			},
 		},
 	})
@@ -477,5 +492,122 @@ func TestSupervisor_InstallsOnlyWhenMissing(t *testing.T) {
 	}
 	if h.installs != 1 || h.launches != 1 {
 		t.Fatalf("second ensure reinstalled or relaunched: installs=%d launches=%d", h.installs, h.launches)
+	}
+}
+
+// A reservation released while the probe ran must not start or stop
+// anything for the previous holder (🎯T175, from d8ed75e3).
+func TestSupervisor_OwnerLostDuringProbeCannotStartOrStop(t *testing.T) {
+	h := &harness{obs: healthyObs(), holder: "alice", held: true}
+	h.obs.RunnerAlive = false
+	h.obs.AUTRunning = true
+	s := h.supervisor()
+	h.onProbe = func() { h.held = false }
+	if _, err := s.Ensure("phone", "alice"); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("ensure after owner lost: %v", err)
+	}
+	h.held = true
+	if _, err := s.Idle("phone", "alice"); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("idle after owner lost: %v", err)
+	}
+	if h.launches != 0 || len(h.stops) != 0 || h.drops != 0 || h.leases != 0 {
+		t.Fatalf("effects ran: launches=%d stops=%v drops=%d leases=%d", h.launches, h.stops, h.drops, h.leases)
+	}
+}
+
+// Retry is the attended way out of RetryExhausted. It still needs the
+// reservation, and plain Ensure keeps the cap.
+func TestSupervisor_RetryStartsFreshBudget(t *testing.T) {
+	h := &harness{obs: healthyObs(), holder: "alice", held: true}
+	h.obs.RunnerAlive = false
+	h.launchErr = errors.New("runner died")
+	s := h.supervisor()
+	for i := 0; i < MaxAttempts+1; i++ {
+		if _, err := s.Ensure("phone", "alice"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if h.launches != MaxAttempts {
+		t.Fatalf("launches=%d want %d", h.launches, MaxAttempts)
+	}
+	if _, err := s.Retry("phone", "bob"); !errors.Is(err, ErrNotOwner) {
+		t.Fatalf("non-owner retry: %v", err)
+	}
+	if h.resets != 0 || h.launches != MaxAttempts {
+		t.Fatalf("non-owner retry reset=%d launches=%d", h.resets, h.launches)
+	}
+	h.launchErr = nil
+	snap, err := s.Retry("phone", "alice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Ready || !snap.Relaunched || h.resets != 1 || h.launches != MaxAttempts+1 {
+		t.Fatalf("retry %+v resets=%d launches=%d", snap, h.resets, h.launches)
+	}
+}
+
+// A consent failure is not retried unattended until the device reboots.
+// The new boot gets its own budget, so the daemon asks again by itself.
+func TestTick_RebootGivesFreshBudget(t *testing.T) {
+	h := &harness{obs: healthyObs()}
+	h.obs.BootID = "boot-a"
+	h.obs.RunnerAlive = false
+	h.launchErr = ErrConsent
+	s := h.supervisor()
+	for i := 0; i < MaxAttempts+2; i++ {
+		if _, err := s.Tick("phone"); err != nil {
+			t.Fatal(err)
+		}
+		// The host remembers the consent failure until reset.
+		h.obs.ConsentRequired = true
+		h.obs.ConsentActionable = true
+	}
+	if h.launches != 1 {
+		t.Fatalf("unattended consent relaunched: launches=%d", h.launches)
+	}
+	snap, _ := s.Snapshot("phone")
+	if snap.Condition != CondRetryExhausted {
+		t.Fatalf("condition %s", snap.Condition)
+	}
+	h.obs.BootID = "boot-b"
+	h.launchErr = nil
+	reboot, err := s.Tick("phone")
+	if err != nil || reboot.Condition != CondRebooted || reboot.Attempts != 0 || h.resets != 1 {
+		t.Fatalf("reboot %+v err=%v resets=%d", reboot, err, h.resets)
+	}
+	up, err := s.Tick("phone")
+	if err != nil || !up.Ready || !up.Relaunched || h.launches != 2 {
+		t.Fatalf("after reboot %+v err=%v launches=%d", up, err, h.launches)
+	}
+}
+
+// Tick relaunches a runner that exited with nobody attached: the daemon,
+// not a client, keeps the agent resident.
+func TestTick_RelaunchesExitedRunnerUnattended(t *testing.T) {
+	h := &harness{obs: healthyObs()}
+	s := h.supervisor()
+	if snap, err := s.Tick("phone"); err != nil || !snap.Ready || h.launches != 0 {
+		t.Fatalf("healthy tick %+v err=%v launches=%d", snap, err, h.launches)
+	}
+	h.obs.RunnerAlive = false
+	h.obs.RunnerPID = 0
+	snap, err := s.Tick("phone")
+	if err != nil || !snap.Ready || !snap.Relaunched || h.launches != 1 {
+		t.Fatalf("exited tick %+v err=%v launches=%d", snap, err, h.launches)
+	}
+}
+
+func TestSupervisor_RunnerBundlePerDevice(t *testing.T) {
+	h := &harness{obs: healthyObs(), bundleFor: func(id string) string {
+		if id == "dk" {
+			return "com.example.devicekit.xctrunner"
+		}
+		return ""
+	}}
+	s := h.supervisor()
+	dk, _ := s.Tick("dk")
+	ar, _ := s.Tick("ar")
+	if dk.Runner.BundleID != "com.example.devicekit.xctrunner" || ar.Runner.BundleID != RunnerBundle {
+		t.Fatalf("bundles dk=%q ar=%q", dk.Runner.BundleID, ar.Runner.BundleID)
 	}
 }

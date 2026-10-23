@@ -123,15 +123,22 @@ type Effects struct {
 	StopAUT         func(deviceID, bundle string) error
 	DropHostSession func(deviceID string) error
 	DropLease       func(deviceID string) error
+	// ResetConsent forgets a recorded consent failure so the next pass
+	// may launch again (🎯T175). It runs with the supervisor lock held
+	// and must not call back into the supervisor.
+	ResetConsent func(deviceID string)
 }
 
 // SupervisorArgs configures a Supervisor. Zero MaxAttempts selects
 // MaxAttempts. A nil Probe or OwnerOf makes Ensure fail closed.
 type SupervisorArgs struct {
 	RunnerBundle string
-	MaxAttempts  int
-	Effects      Effects
-	Probe        func(deviceID string) (Observation, error)
+	// RunnerBundleFor selects the runner per device when backends differ
+	// (🎯T175). Empty results fall back to RunnerBundle.
+	RunnerBundleFor func(deviceID string) string
+	MaxAttempts     int
+	Effects         Effects
+	Probe           func(deviceID string) (Observation, error)
 	// OwnerOf reports the reservation holder. ok is false when nobody
 	// holds the device.
 	OwnerOf func(deviceID string) (owner string, ok bool)
@@ -141,6 +148,7 @@ type SupervisorArgs struct {
 type Supervisor struct {
 	mu           sync.Mutex
 	runnerBundle string
+	bundleFor    func(deviceID string) string
 	max          int
 	effects      Effects
 	probe        func(deviceID string) (Observation, error)
@@ -182,11 +190,33 @@ func NewSupervisor(args *SupervisorArgs) *Supervisor {
 	}
 	return &Supervisor{
 		runnerBundle: bundle,
+		bundleFor:    args.RunnerBundleFor,
 		max:          max,
 		effects:      args.Effects,
 		probe:        args.Probe,
 		ownerOf:      args.OwnerOf,
 		devices:      map[string]*machine{},
+	}
+}
+
+func (s *Supervisor) bundle(id string) string {
+	if s.bundleFor != nil {
+		if b := s.bundleFor(id); b != "" {
+			return b
+		}
+	}
+	return s.runnerBundle
+}
+
+// freshBudget clears the attempt cap and any recorded consent failure.
+// A reboot, a new daemon process, and an attended Retry are the only
+// events that call it, so an unattended device is asked at most
+// MaxAttempts times per boot (🎯T175).
+func (s *Supervisor) freshBudget(m *machine) {
+	m.attempts = 0
+	m.consent = nil
+	if s.effects.ResetConsent != nil {
+		s.effects.ResetConsent(m.id)
 	}
 }
 
@@ -266,12 +296,30 @@ func (s *Supervisor) Ensure(deviceID, owner string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	// The probe can take seconds. A reservation released meanwhile must
+	// not start the runner for the previous holder.
+	if err := s.holds(deviceID, owner); err != nil {
+		return Snapshot{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.machine(deviceID)
 	m.owner = owner
 	m.idle = false
 	return s.advance(m, obs, true)
+}
+
+// Retry is an attended Ensure: the reservation holder is at the device
+// and asks for a fresh attempt budget after RetryExhausted or a consent
+// failure (🎯T175). Plain Ensure keeps the cap.
+func (s *Supervisor) Retry(deviceID, owner string) (Snapshot, error) {
+	if err := s.holds(deviceID, owner); err != nil {
+		return Snapshot{}, err
+	}
+	s.mu.Lock()
+	s.freshBudget(s.machine(deviceID))
+	s.mu.Unlock()
+	return s.Ensure(deviceID, owner)
 }
 
 // Tick is the tether and liveness pass. It restarts only from a
@@ -310,6 +358,9 @@ func (s *Supervisor) Idle(deviceID, owner string) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	obs, obsErr := s.observe(deviceID)
+	if err := s.holds(deviceID, owner); err != nil {
+		return Snapshot{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m := s.machine(deviceID)
@@ -437,6 +488,8 @@ func (s *Supervisor) absorb(m *machine, obs Observation) {
 		m.runner.PID = 0
 		m.healthy = false
 		m.ready = false
+		// Apple asks again after a reboot. Give that boot its own budget.
+		s.freshBudget(m)
 	}
 	if obs.BootID != "" {
 		m.bootID = obs.BootID
@@ -448,11 +501,11 @@ func (s *Supervisor) absorb(m *machine, obs Observation) {
 	m.lease = obs.LeaseHeld
 	m.host = obs.HostSession
 	if obs.RunnerAlive {
-		m.runner = Runner{BundleID: s.runnerBundle, PID: obs.RunnerPID, InstallGen: obs.InstallGen}
+		m.runner = Runner{BundleID: s.bundle(m.id), PID: obs.RunnerPID, InstallGen: obs.InstallGen}
 		m.healthy = obs.Authorized && !obs.ConsentRequired
 	} else if obs.InstallGen != "" {
 		m.runner.InstallGen = obs.InstallGen
-		m.runner.BundleID = s.runnerBundle
+		m.runner.BundleID = s.bundle(m.id)
 		m.healthy = false
 	}
 }
@@ -480,7 +533,7 @@ func (s *Supervisor) advance(m *machine, obs Observation, relaunch bool) (Snapsh
 		m.consent = nil
 		m.attempts = 0
 		m.recovered = false
-		m.runner = Runner{BundleID: s.runnerBundle, PID: obs.RunnerPID, InstallGen: obs.InstallGen}
+		m.runner = Runner{BundleID: s.bundle(m.id), PID: obs.RunnerPID, InstallGen: obs.InstallGen}
 		return m.snapshot(false, false), nil
 	case relaunch && (!obs.RunnerAlive || !obs.Authorized):
 		return s.relaunch(m, obs)
@@ -578,7 +631,7 @@ func (s *Supervisor) relaunch(m *machine, obs Observation) (Snapshot, error) {
 	m.ready = true
 	m.healthy = true
 	m.consent = nil
-	m.runner = Runner{BundleID: s.runnerBundle, PID: pid, InstallGen: obs.InstallGen}
+	m.runner = Runner{BundleID: s.bundle(m.id), PID: pid, InstallGen: obs.InstallGen}
 	return m.snapshot(true, reinstalled), nil
 }
 
