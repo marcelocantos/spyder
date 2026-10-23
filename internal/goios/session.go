@@ -11,7 +11,7 @@
 // Without this layer, every call site would have to repeat the same ~10
 // lines of tunnel-lookup boilerplate that go-ios's CLI does in main.go,
 // and the per-call RSD handshake would dominate the cost of frequent
-// operations like the autoawake convergence loop's foreground-app probe.
+// operations like foreground-app probes during device state polling.
 //
 // The session result is cached per-UDID. Callers should call
 // Invalidate(udid) after a transport-level error, on device unplug, or

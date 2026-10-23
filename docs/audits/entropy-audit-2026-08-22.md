@@ -409,27 +409,20 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 - **Priority:** P2
 - **Dimensions:** Documentation / governance
-- **Status:** observed fact
-- **Evidence:**
-  - `CLAUDE.md:81-82` — `main.go` subcommands `serve` / `run` / `version`
-    only. `main.go:53-93` lists doctor, status, help-agent, and the
-    device CLI.
-  - `docs/plateau-p.md:15` still headlines H.264 relay as plateau-closed
-    stream work; `CLAUDE.md` transport note (2026-07-19) freezes H.264.
-  - `internal/goios/session.go:14` still mentions “autoawake convergence
-    loop”; package `internal/autoawake` is gone.
-- **Mechanism:** New work (and new agents) plan from `CLAUDE.md` /
-  plateau and miss doctor/status/CLI/SP2S.
-- **Blast radius:** agent sessions using `CLAUDE.md` as the map.
-- **Counterevidence checked:** `agents-guide.md` is far closer to the
-  product (app_exec, desktop, USB fields). README MCP section matches
-  T88.
-- **Smallest coherent remediation:** rewrite the Architecture bullet
-  list in `CLAUDE.md`; add a one-line plateau erratum for SP2S; drop
-  autoawake from goios comments.
-- **Verification:** doc grep that `CLAUDE.md` Architecture mentions
-  `doctor`/`status` and `app_exec`.
-- **Ratchet candidate:** weak (docs); prefer ENT-003’s STABILITY test.
+- **Status:** closed (2026-10-23) by `TestCLAUDE_ArchitectureSectionMentionsDoctorStatusAndAppExec` (🎯T132.9).
+  Evidence cited in the 2026-08-22 audit no longer reproduces on the
+  shipped path.
+- **Shipped path:** `CLAUDE.md` Architecture lists `doctor`, `status`,
+  device CLI proxies, and `app_exec`; `docs/plateau-p.md` carries the
+  SP2S default / H.264-frozen erratum (2026-07-19); `internal/goios`
+  session comments no longer reference removed `internal/autoawake`.
+  Hygiene ratchet: `go test -run TestCLAUDE_Architecture`.
+- **Historical evidence (2026-08-22 audit):** observed fact — stale
+  `CLAUDE.md` subcommand list, plateau H.264 headline, and autoawake
+  comment in goios; agents planning from those docs missed
+  doctor/status/CLI/SP2S.
+- **Ratchet candidate:** weak (docs); `TestCLAUDE_Architecture*` plus
+  ENT-003’s STABILITY test.
 
 ### ENT-010: Player and wasm glass are unreleased second products
 

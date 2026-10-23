@@ -12,7 +12,9 @@
 - ged daemon retired (ge 🎯T145); spyder is the only control plane.
 - App-channel tweaks/logs/info for direct-mode apps (T91.2/T91.3).
 - Spyder dashboard for inspect UX (T91.5).
-- H.264 opaque relay + server-mode + native player (T91.4, T92.2.2/2.3).
+- Stream glass: native player + relay (T91.4, T92.2.2/2.3). **Erratum
+  (2026-07-19):** default wire transport is ge **SP2S** command-stream;
+  H.264 opaque relay is frozen in place, not the current stream headline.
 - `app_exec` single MCP entry; desktop + factory launch paths.
 - Graph honesty: deferred futures (pigeon, command-stream, health platform,
   app-channel extensions, browser player polish) set_aside until a deliberate
