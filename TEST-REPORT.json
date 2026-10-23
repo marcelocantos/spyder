@@ -1,19 +1,19 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-10-22T11:18:57Z",
-  "head_sha": "d949e9de7a759f5f8e55043a99a1c4e3ec897c28",
+  "generated_at": "2026-10-23T10:26:56Z",
+  "head_sha": "689ed1649fdebd6bbde7d19218e3b97b12c8ea95",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test -timeout 2m  ./...",
-      "duration_s": 68,
+      "duration_s": 59,
       "status": "pass"
     },
     {
       "name": "player-wire",
       "cmd": "make check-wire && ./scripts/check-wire-ge-test.sh",
-      "duration_s": 1,
+      "duration_s": 2,
       "status": "pass"
     },
     {
