@@ -24,13 +24,15 @@ final class SystemAlertTests: XCTestCase {
     // method so Spyder can reuse one runner process across clients. A
     // command file in Documents names a SpringBoard button to tap; the
     // one-shot test is unchanged for a runner that is not already up.
+    // It has no lifetime of its own (🎯T175): the daemon ends the session
+    // when it stops or replaces the runner.
     func testHoldAgent() {
-        executionTimeAllowance = 3600
+        // Only applies when test timeouts are on; keep it out of the way.
+        executionTimeAllowance = 10 * 365 * 24 * 3600
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let cmdURL = docs.appendingPathComponent("spyder-agent-cmd.txt")
         let resultURL = docs.appendingPathComponent("spyder-agent-result.txt")
-        let deadline = Date().addingTimeInterval(3600)
-        while Date() < deadline {
+        while true {
             if let raw = try? String(contentsOf: cmdURL, encoding: .utf8) {
                 try? FileManager.default.removeItem(at: cmdURL)
                 let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
