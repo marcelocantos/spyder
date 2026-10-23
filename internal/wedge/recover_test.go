@@ -5,16 +5,29 @@ package wedge
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"testing"
 )
 
-// TestAttemptRecovery_NoSudoersFails confirms AttemptRecovery surfaces an
-// error when the helper can't run (the test environment has no sudoers
-// entry and `sudo -n` fails fast). The throttle that used to gate repeat
-// calls was removed in 🎯T72.5 — episode gating now lives in the monitor —
-// so each call is an independent best-effort attempt.
-func TestAttemptRecovery_NoSudoersFails(t *testing.T) {
-	if err := AttemptRecovery(context.Background()); err == nil {
-		t.Skip("AttemptRecovery succeeded (helper + sudoers present); nothing to assert")
+func TestAttemptRecovery_UsesControlledExecutor(t *testing.T) {
+	for _, failure := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		calls := 0
+		cause := errors.New("fixture recovery denied")
+		err := attemptRecovery(ctx, func(actual context.Context, name string, args ...string) ([]byte, error) {
+			calls++
+			if actual != ctx || name != "sudo" || !reflect.DeepEqual(args, []string{"-n", recoveryHelperPath}) {
+				t.Fatalf("wrong recovery command %q %q", name, args)
+			}
+			if failure {
+				return []byte("fixture denial"), cause
+			}
+			return []byte("fixture success"), nil
+		})
+		if calls != 1 || (failure && !errors.Is(err, cause)) || (!failure && err != nil) {
+			t.Fatalf("failure=%v calls=%d err=%v", failure, calls, err)
+		}
 	}
 }
