@@ -90,6 +90,14 @@ DEFAULT_TIMEOUT="-timeout 2m"
 # flakiness (🎯T72.6).
 run_suite go-unit "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS ./..."
 
+# ── Go module vulnerability scan (ENT-012 / 🎯T132.12) ─────────────────────
+# Optional laptop attestation: no go.mod pin; skip closed when govulncheck is absent.
+if command -v govulncheck >/dev/null 2>&1; then
+  run_suite govulncheck "GOWORK=off govulncheck ./..."
+else
+  run_suite_skipped govulncheck "install govulncheck (go install golang.org/x/vuln/cmd/govulncheck@latest) to run"
+fi
+
 # ── Player wire layout (macOS/C++ — ENT-006 / 🎯T132.6) ─────────────────────
 if [[ "$(uname -s)" == Darwin ]]; then
   run_suite player-wire "make check-wire && ./scripts/check-wire-ge-test.sh"

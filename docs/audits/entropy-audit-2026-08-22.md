@@ -477,24 +477,22 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 - **Priority:** P3
 - **Dimensions:** Security / dependencies; Build / release / operations
-- **Status:** observed fact (pin + incident write-up)
-- **Evidence:** `go.mod:64-94` replace
-  `github.com/marcelocantos/go-ios v1.0.214-0.20260524022121-d78573d186a3`;
-  comment records SHA `15d4eb19` being GC’d after rebase; mitigation is
-  `spyder-pin-v*` tags. `govulncheck` is not installed. Indirect deps
-  include `golang.org/x/crypto v0.48.0`. No Dependabot/renovate config
-  in-repo.
-- **Mechanism:** Historical spyder tags can stop building if a pin tag
-  is missing; supply-chain review is manual.
-- **Blast radius:** `go build` of old spyder; all iOS device ops.
-- **Counterevidence checked:** process to tag before bumping is written
-  in `go.mod` itself. `-mod=mod` for `bin/ios` is documented in the
-  Makefile.
-- **Smallest coherent remediation:** keep the tag process; add
-  govulncheck as a laptop `test-report` suite when the binary is
-  present — do not add a dependency from this audit.
-- **Verification:** `govulncheck ./...` when available.
-- **Ratchet candidate:** hygiene `scanner` item later.
+- **Status:** closed (2026-10-24) by optional `govulncheck` in
+  `scripts/test-report.sh` (🎯T132.12). Evidence cited in the 2026-08-22
+  audit no longer reproduces on the shipped path.
+- **Shipped path:** `go.mod` replace pin and `spyder-pin-v*` tag process
+  unchanged. `scripts/test-report.sh` records a `govulncheck` suite when
+  `govulncheck` is on `PATH` (`GOWORK=off govulncheck ./...`); skips
+  closed when the binary is absent (no go.mod dependency). Regression:
+  `./scripts/check-test-report-govulncheck-suite.sh`.
+- **Residual (unchanged):** replace-pinned go-ios fork; supply-chain bumps
+  still need manual tag discipline; hosted CI does not run govulncheck
+  (laptop `TEST-REPORT.json` attestation only).
+- **Historical evidence (2026-08-22 audit):** observed fact — `go.mod:64-94`
+  replace `github.com/marcelocantos/go-ios`; comment records SHA `15d4eb19`
+  being GC’d after rebase; `govulncheck` was not installed; indirect deps
+  include `golang.org/x/crypto v0.48.0`; no Dependabot/renovate in-repo;
+  historical tags could stop building if a pin tag is missing.
 
 ## Redundancy and competing sources of truth
 
@@ -585,7 +583,7 @@ drift the moment those make targets were declared `state: enforced`.
 | Browser player render | none in this repo’s Go tests; `playerweb` has no tests | **not run** (journeys: owner-visible `/player/` and `/dashboard` have no journey harness here) |
 | Recipe mirror identity | none | identical by manual `diff` |
 | Duration cap consistency | none on audit date | drifted on 2026-08-22; source/test closed by `668a1d84`, released surface unobserved |
-| Vulnerability scan | none (`govulncheck` unavailable) | unknown |
+| Vulnerability scan | optional `govulncheck` in `scripts/test-report.sh` | laptop attestation when binary present (ENT-012 closed) |
 | Hygiene floors | undeclared | n/a |
 
 **Owner residue (intent, not mechanical follow-up)**
