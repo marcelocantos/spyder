@@ -428,29 +428,27 @@ elsewhere in this report remain a historical snapshot unless explicitly updated.
 
 - **Priority:** P2
 - **Dimensions:** Build / release / operations; Architecture topology
-- **Status:** observed fact
-- **Evidence:**
-  - `Makefile` `player` / `player-web` are separate from `build`.
-  - `.github/workflows/release.yml` builds `spyder`, `ios`,
-    `spyder-killusbmuxd` only; `go test ./...` on tag; no C++.
-  - `internal/playerweb/playerweb.go` — wasm served from disk;
-    Homebrew packaging is 🎯T102; package has no tests.
-  - 1068 tracked `player/vendor/` files + LFS `.a` + four git
-    submodules.
-- **Mechanism:** `make test` cannot decide player/wire/web behaviour.
-  A broken glass still “releases” via the Go tarball. Vendor volume
-  dominates `git ls-files` (1475 tracked files).
-- **Blast radius:** stream glass users; clone/CI time; LFS hook
-  coupling (`core.hooksPath` warning in global AGENTS.md applies if
-  hooks are redirected).
-- **Counterevidence checked:** vendor-in-tree matches house `cpp.md`
-  (no Homebrew C++ links). Protocol-only coupling with ge is
-  deliberate. Dev-only player is an accepted product choice.
-- **Smallest coherent remediation:** add a `player` suite to
-  `scripts/test-report.sh` (`check-wire` at minimum); leave tarball
-  scope until 🎯T102 is chosen.
-- **Verification:** `TEST-REPORT.json` grows a `player-wire` suite.
-- **Ratchet candidate:** `make_target` for `check-wire`.
+- **Status:** closed (2026-10-24) by `player-wire` in `scripts/test-report.sh`
+  and committed `TEST-REPORT.json` (🎯T132.6 / 🎯T132.10). Evidence cited in the
+  2026-08-22 audit no longer reproduces on the shipped path for the attestation
+  gap (wire oracle not recorded in the laptop report).
+- **Shipped path:** On darwin, `scripts/test-report.sh` runs a `player-wire`
+  suite (`make check-wire && ./scripts/check-wire-ge-test.sh`); other hosts skip
+  with an explicit reason. Committed `TEST-REPORT.json` carries a `player-wire`
+  suite when generated on macOS. Root `make check-wire` (ENT-006) and darwin hooks
+  in `make test` / `make bullseye` exercise the C++ layout oracle. Hygiene
+  ratchet: `make_target: check-wire`. Script ratchet:
+  `TestTestReportScriptRecordsPlayerWire` (🎯T132.10).
+- **Residual (unchanged):** `Makefile` `player` / `player-web` remain separate
+  from `build`; `.github/workflows/release.yml` still ships only Go binaries (no
+  C++ player in the release tarball); `internal/playerweb` wasm glass has no Go
+  tests; vendor/submodule volume and Homebrew player packaging (🎯T102) stay
+  product choices outside this finding.
+- **Historical evidence (2026-08-22 audit):** observed fact — `make test` could
+  not decide player/wire behaviour; laptop `TEST-REPORT.json` had no
+  `player-wire` suite; a broken wire layout could still ship via the Go-only
+  release path. Vendor-in-tree matched house `cpp.md`; protocol-only coupling
+  with ge was deliberate.
 
 ### ENT-011: Deadline table still names removed tools
 
@@ -619,10 +617,10 @@ was instructed not to install.
    satellite lists (CLI allow-list, deadlines) from `toolHandlers`
    first. A package explosion without a second hub does not reduce
    amplification.
-5. **Ops hardening (ENT-008, ENT-010) after oracles are green.**
-   Listen-preflight for CLI auto-start; document brew LAN risk in
-   formula caveats; player suite in the attestation. Authn is a
-   product decision (residue #4).
+5. **ENT-008 closed (🎯T132.8); ENT-010 closed (🎯T132.10).** Listen-preflight
+   for CLI auto-start; brew LAN caveats; `player-wire` in test-report
+   attestation. Non-loopback authn and full player tarball scope remain product
+   decisions (residue #4, 🎯T102).
 6. **Hygiene.yaml only after the make targets are true**, so floors
    do not encode today’s red `fmt-check`/`test` as “enforced”.
 7. **Re-run this audit** on the same section definitions and compare.
