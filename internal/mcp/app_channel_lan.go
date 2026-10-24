@@ -18,7 +18,9 @@ import (
 //
 //   - iOS simulator       → "127.0.0.1" (simulator shares the host loopback)
 //   - Android emulator    → "10.0.2.2" (the emulator's alias for the host)
-//   - Physical iOS / LAN-only Android → SPYDER_APP_CHANNEL_HOST, then the default-route
+//   - Physical iOS        → SPYDER_APP_CHANNEL_HOST, then the Mac's address on
+//     the device's USB network (NCM) link, then the LAN choice below
+//   - LAN-only Android    → SPYDER_APP_CHANNEL_HOST, then the default-route
 //     interface's IPv4, then the first available LAN IPv4
 //
 // Returns an error when the device is physical and no LAN address is
@@ -44,6 +46,15 @@ func pickAppChannelHost(platform, deviceID string) (string, error) {
 		}
 		return ip.To4().String(), nil
 	}
+	if strings.EqualFold(platform, "ios") {
+		// 🎯T176: prefer the cable. The phone reaches the Mac's USB NCM
+		// link-local address whenever it is attached, whereas the Wi-Fi
+		// path silently fails under client isolation, a different SSID or
+		// a VPN. The LAN listener binds the wildcard, so it accepts here.
+		if host, err := iosUSBNetworkHost(deviceID); err == nil && host != "" {
+			return host, nil
+		}
+	}
 	hosts, err := lanHosts()
 	if err != nil {
 		return "", fmt.Errorf("appchannel: enumerate LAN hosts: %w", err)
@@ -66,6 +77,9 @@ func pickAppChannelHost(platform, deviceID string) (string, error) {
 	}
 	return hosts[0], nil
 }
+
+// iosUSBNetworkHost is swapped in tests.
+var iosUSBNetworkHost = device.IOSUSBNetworkHost
 
 // appchannelLANHosts returns the host candidates an app should dial to
 // reach this spyder.

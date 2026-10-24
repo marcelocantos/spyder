@@ -1248,7 +1248,42 @@ type appserviceLaunchConn interface {
 }
 
 func launchViaAppservice(conn appserviceLaunchConn, bundleID string, args []interface{}, env map[string]interface{}) (int, error) {
-	return conn.LaunchApp(bundleID, args, env, nil, appserviceTerminateExisting)
+	return launchViaAppserviceRetry(conn, bundleID, args, env, appserviceLaunchRetryDelays, time.Sleep)
+}
+
+// appserviceLaunchRetryDelays bounds the retries of a launch that CoreDevice
+// rejects as transient (🎯T176). Launching straight after a CoreDevice
+// terminate returns CoreDeviceError 10004 ("The process identifier of the
+// launched application could not be determined. It may have already
+// terminated.") while the previous instance is still tearing down; a
+// relaunch a few hundred ms later succeeds. Total budget ≈ 2.9s.
+var appserviceLaunchRetryDelays = []time.Duration{
+	150 * time.Millisecond,
+	300 * time.Millisecond,
+	450 * time.Millisecond,
+	800 * time.Millisecond,
+	1200 * time.Millisecond,
+}
+
+// isTransientAppserviceLaunchError reports whether err is CoreDevice's
+// "pid could not be determined" launch rejection, which clears once the
+// previous instance has fully exited.
+func isTransientAppserviceLaunchError(err error) bool {
+	var cde *appservice.CoreDeviceError
+	if !errors.As(err, &cde) {
+		return false
+	}
+	return cde.Domain == "com.apple.dt.CoreDeviceError" && cde.Code == 10004
+}
+
+func launchViaAppserviceRetry(conn appserviceLaunchConn, bundleID string, args []interface{}, env map[string]interface{}, delays []time.Duration, sleep func(time.Duration)) (int, error) {
+	pid, err := conn.LaunchApp(bundleID, args, env, nil, appserviceTerminateExisting)
+	for i := 0; err != nil && isTransientAppserviceLaunchError(err) && i < len(delays); i++ {
+		slog.Info("iOS launch rejected as transient; retrying", "bundle_id", bundleID, "attempt", i+2, "delay", delays[i], "error", err)
+		sleep(delays[i])
+		pid, err = conn.LaunchApp(bundleID, args, env, nil, appserviceTerminateExisting)
+	}
+	return pid, err
 }
 
 // launchAppAppservice is the iOS-17+ path (CoreDevice/RemoteXPC).
@@ -1273,7 +1308,12 @@ func (a *IOSAdapter) launchAppAppservice(id, bundleID string, env map[string]str
 		if strings.Contains(msg, "BundleIdentifier") || strings.Contains(strings.ToLower(msg), "not installed") {
 			return fmt.Errorf("app not installed: %s", bundleID)
 		}
-		a.asPool.Invalidate(id)
+		// A CoreDevice-level rejection arrived over a healthy connection;
+		// only transport failures warrant dropping the pooled connection.
+		var cde *appservice.CoreDeviceError
+		if !errors.As(err, &cde) {
+			a.asPool.Invalidate(id)
+		}
 		return fmt.Errorf("launch %s on %s: %w", bundleID, id, err)
 	}
 	return nil
@@ -1533,7 +1573,7 @@ func (a *IOSAdapter) AppPIDContext(ctx context.Context, id, bundleID string) (in
 		}
 		return 0, fmt.Errorf("app not running: %s", bundleID)
 	}
-	acquire := func(id string) (IOSProcessListConn, func(), func(), error) {
+	acquire := func(ctx context.Context, id string) (IOSProcessListConn, func(), func(), error) {
 		lease, err := a.asPool.AcquireLease(ctx, id)
 		if err != nil {
 			a.goios.InvalidateSession(id)
@@ -1543,9 +1583,9 @@ func (a *IOSAdapter) AppPIDContext(ctx context.Context, id, bundleID string) (in
 	}
 	if a.pidProbe != nil {
 		if a.pidProbe.AcquireContext != nil {
-			acquire = func(id string) (IOSProcessListConn, func(), func(), error) { return a.pidProbe.AcquireContext(ctx, id) }
+			acquire = a.pidProbe.AcquireContext
 		} else {
-			acquire = func(id string) (IOSProcessListConn, func(), func(), error) {
+			acquire = func(_ context.Context, id string) (IOSProcessListConn, func(), func(), error) {
 				c, release, err := a.pidProbe.Acquire(id)
 				return c, release, func() { a.pidProbe.Invalidate(id) }, err
 			}
@@ -1553,14 +1593,26 @@ func (a *IOSAdapter) AppPIDContext(ctx context.Context, id, bundleID string) (in
 	}
 	invalidate := func() {}
 	procs, err := retryIOSProcessListContext(ctx, func() ([]appservice.Process, error) {
-		conn, release, retire, err := acquire(id)
+		// 🎯T176: a pooled appservice connection can stop answering right
+		// after a CoreDevice terminate. Bound each attempt so the lease's
+		// cancel-close retires the wedged connection and the retry opens a
+		// fresh one, instead of stalling until the tool's own deadline.
+		attemptCtx, cancel := context.WithTimeout(ctx, iosProcessListAttemptTimeout)
+		defer cancel()
+		conn, release, retire, err := acquire(attemptCtx, id)
 		if err != nil {
+			if ctx.Err() == nil && attemptCtx.Err() != nil {
+				return nil, fmt.Errorf("appservice on %s: %w", id, errIOSProcessListStalled)
+			}
 			return nil, fmt.Errorf("appservice on %s: %w", id, err)
 		}
 		invalidate = retire
 		defer release()
-		ended := goios.LifecyclePhase(ctx, "pid.list_processes", "device_id", id)
+		ended := goios.LifecyclePhase(attemptCtx, "pid.list_processes", "device_id", id)
 		processes, err := conn.ListProcesses()
+		if ctx.Err() == nil && attemptCtx.Err() != nil {
+			err = fmt.Errorf("after %s: %w", iosProcessListAttemptTimeout, errIOSProcessListStalled)
+		}
 		ended(err)
 		return processes, err
 	}, func() { invalidate() })
@@ -1611,7 +1663,18 @@ func retryIOSProcessListContext[T any](ctx context.Context, read func() (T, erro
 	return result, err
 }
 
+// iosProcessListAttemptTimeout bounds one appservice ListProcesses attempt,
+// connection setup included. A healthy call takes well under a second.
+var iosProcessListAttemptTimeout = 10 * time.Second
+
+// errIOSProcessListStalled marks an attempt that hit
+// iosProcessListAttemptTimeout while the caller's context was still live.
+var errIOSProcessListStalled = errors.New("appservice process list stalled")
+
 func retryableIOSProcessListError(err error) bool {
+	if errors.Is(err, errIOSProcessListStalled) {
+		return true
+	}
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return false
 	}

@@ -13,6 +13,7 @@ require (
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
 	golang.org/x/image v0.39.0
+	golang.org/x/net v0.52.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.50.0
 	software.sslmate.com/src/go-pkcs12 v0.2.0
@@ -63,7 +64,6 @@ require (
 	golang.org/x/crypto v0.49.0 // indirect
 	golang.org/x/exp v0.0.0-20230725093048-515e97ebf090 // indirect
 	golang.org/x/mod v0.34.0 // indirect
-	golang.org/x/net v0.52.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
@@ -107,4 +107,4 @@ require (
 //          -f ref=refs/tags/spyder-pin-v<next> -f sha=<new-tip-sha>)
 //   3. `go get github.com/danielpaulus/go-ios@<new-spyder-patches-sha>`
 //      then bump this line.
-replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20261006234638-77dee781d6be
+replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20261024001019-c8c015c6309d

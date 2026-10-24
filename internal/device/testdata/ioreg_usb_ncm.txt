@@ -1,0 +1,42 @@
++-o Root  <class IORegistryEntry, id 0x100000100, retain 30>
+  +-o USB2.0 Hub@01110000  <class IOUSBHostDevice, id 0x1044e3f00, registered, matched, active, busy 0 (1 ms), retain 40>
+  | | {
+  | |   "USB Serial Number" = "HUB0001"
+  | |   "USB Product Name" = "USB2.0 Hub"
+  | | }
+  | |
+  | +-o iPhone@01114400  <class IOUSBHostDevice, id 0x1044e3fa1, registered, matched, active, busy 0 (28291 ms), retain 82>
+  | | | {
+  | | |   "kUSBSerialNumberString" = "000081100014182E0AC2801E"
+  | | |   "USB Serial Number" = "000081100014182E0AC2801E"
+  | | | }
+  | | |
+  | | +-o NCM Control@5  <class IOUSBHostInterface, id 0x1044e3fd0, registered, matched, active, busy 0 (5 ms), retain 9>
+  | | | | {
+  | | | |   "USB Serial Number" = "000081100014182E0AC2801E"
+  | | | | }
+  | | | |
+  | | | +-o en8  <class IOEthernetInterface, id 0x1044e3ff3, registered, matched, active, busy 0 (5 ms), retain 11>
+  | | |     {
+  | | |       "BSD Name" = "en8"
+  | | |     }
+  | | |
+  | | +-o en12  <class IOEthernetInterface, id 0x1044e3ff2, registered, matched, active, busy 0 (4 ms), retain 11>
+  | |       {
+  | |         "BSD Name" = "en12"
+  | |       }
+  | |
+  | +-o en5  <class IOEthernetInterface, id 0x1044e3f99, registered, matched, active, busy 0 (4 ms), retain 11>
+  |       {
+  |         "BSD Name" = "en5"
+  |       }
+  |
+  +-o iPad@01222000  <class IOUSBHostDevice, id 0x1044e3f33, registered, matched, active, busy 0 (28240 ms), retain 82>
+    | {
+    |   "USB Serial Number" = "000081300009702E1110001C"
+    | }
+    |
+    +-o en7  <class IOEthernetInterface, id 0x1044e3f62, registered, matched, active, busy 0 (42 ms), retain 11>
+        {
+          "BSD Name" = "en7"
+        }

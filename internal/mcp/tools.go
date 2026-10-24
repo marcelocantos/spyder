@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"image/png"
 	"log/slog"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -711,9 +712,18 @@ func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID,
 	if addr, ok := env["SPYDER_APP_CHANNEL"]; ok {
 		// Even explicit overrides need a keyed diagnostic record. This listener
 		// may not be the endpoint the override points at; diagnose says so.
-		l, err := h.appChannel.GetOrCreateListener(appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID})
-		if err != nil {
-			return nil, fmt.Errorf("appchannel: %w", err)
+		// 🎯T176: reuse whatever listener this key already has. Asking for a
+		// loopback one failed outright when an earlier auto-injected launch
+		// had created a LAN listener for the same (device, bundle).
+		key := appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID}
+		l, ok := h.appChannel.LookupKeyed(key)
+		if ok {
+			l.Touch()
+		} else {
+			var err error
+			if l, err = h.appChannel.GetOrCreateListener(key); err != nil {
+				return nil, fmt.Errorf("appchannel: %w", err)
+			}
 		}
 		l.RecordInjectedAddress(addr)
 		return env, nil
@@ -1380,7 +1390,7 @@ func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, er
 	if !ok {
 		classified := inventory.ClassifyRaw(ref)
 		if classified.Platform == "android" {
-			return h.android, "android", ref, nil
+			return h.resolveUninventoried(ref)
 		}
 		return h.ios, "ios", ref, nil
 	}
@@ -1398,6 +1408,63 @@ func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, er
 		return h.desktop, "desktop", entry.ExecutablePath, nil
 	default:
 		return nil, "", "", fmt.Errorf("inventory entry %q has unknown platform %q", ref, entry.Platform)
+	}
+}
+
+// connectedListTimeout bounds the connected-device census on an inventory
+// miss; resolveAdapter callers hold h.mu.
+var connectedListTimeout = 4 * time.Second
+
+// resolveUninventoried resolves a ref that is neither an inventory entry nor
+// an iOS identifier (🎯T176). It used to be handed to adb unconditionally,
+// so a daemon with a fresh SPYDER_DATA_DIR ran `adb reverse` for an iPhone
+// named by alias. Now: an adb transport address (emulator-N, host:port) →
+// Android; a connected adb serial → Android; a connected iOS device whose
+// name (or UDID) matches → iOS; anything else is refused.
+func (h *Handler) resolveUninventoried(ref string) (device.Adapter, string, string, error) {
+	if isADBTransportAddress(ref) {
+		return h.android, "android", ref, nil
+	}
+	if h.android != nil {
+		for _, d := range listWithTimeout(h.android, connectedListTimeout) {
+			if d.UUID == ref {
+				return h.android, "android", ref, nil
+			}
+		}
+	}
+	if h.ios != nil {
+		want := strings.ReplaceAll(ref, "-", "")
+		for _, d := range listWithTimeout(h.ios, connectedListTimeout) {
+			if strings.EqualFold(strings.TrimSpace(d.Name), strings.TrimSpace(ref)) ||
+				strings.EqualFold(strings.ReplaceAll(d.UUID, "-", ""), want) {
+				return h.ios, "ios", d.UUID, nil
+			}
+		}
+	}
+	return nil, "", "", fmt.Errorf("unknown device %q: not an inventory alias (%s), a connected iOS device name, or a connected adb serial", ref, paths.InventoryPath())
+}
+
+// isADBTransportAddress matches adb serials that may legitimately be absent
+// from `adb devices` until adb connects: emulators and TCP transports.
+func isADBTransportAddress(ref string) bool {
+	if strings.HasPrefix(ref, "emulator-") {
+		return true
+	}
+	host, port, err := net.SplitHostPort(ref)
+	return err == nil && host != "" && port != ""
+}
+
+func listWithTimeout(a device.Adapter, d time.Duration) []device.Info {
+	ch := make(chan []device.Info, 1)
+	go func() {
+		infos, _ := a.List()
+		ch <- infos
+	}()
+	select {
+	case infos := <-ch:
+		return infos
+	case <-time.After(d):
+		return nil
 	}
 }
 

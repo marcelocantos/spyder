@@ -4,9 +4,13 @@
 package device
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/danielpaulus/go-ios/ios/appservice"
 )
 
 // --- parseDevicectlList ----------------------------------------------------
@@ -419,5 +423,71 @@ func TestLaunchViaAppservice_DoesNotTerminateExisting(t *testing.T) {
 	}
 	if f.terminateExisting {
 		t.Error("terminateExisting = true; want false (not an activate/foreground flag)")
+	}
+}
+
+// scriptedAppserviceLaunch returns the scripted errors in order, then pid 77.
+type scriptedAppserviceLaunch struct {
+	errs  []error
+	calls int
+}
+
+func (f *scriptedAppserviceLaunch) LaunchApp(bundleID string, args []interface{}, env map[string]interface{}, options map[string]interface{}, terminateExisting bool) (int, error) {
+	f.calls++
+	if f.calls <= len(f.errs) {
+		return 0, f.errs[f.calls-1]
+	}
+	return 77, nil
+}
+
+func coreDevice10004() error {
+	return fmt.Errorf("LaunchApp: failed to launch app: launchApp: %w", &appservice.CoreDeviceError{
+		Domain:      "com.apple.dt.CoreDeviceError",
+		Code:        10004,
+		Description: "The process identifier of the launched application could not be determined. It may have already terminated.",
+	})
+}
+
+func TestLaunchViaAppservice_RetriesCoreDevice10004AfterTerminate(t *testing.T) {
+	// 🎯T176: ensure_session terminates the running app and relaunches it
+	// immediately; CoreDevice rejects that launch with 10004 until the old
+	// instance has exited. The launch must retry rather than fail.
+	f := &scriptedAppserviceLaunch{errs: []error{coreDevice10004(), coreDevice10004()}}
+	var slept []time.Duration
+	pid, err := launchViaAppserviceRetry(f, "com.example.app", nil, nil,
+		[]time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond},
+		func(d time.Duration) { slept = append(slept, d) })
+	if err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	if pid != 77 || f.calls != 3 {
+		t.Fatalf("pid=%d calls=%d; want pid 77 after 3 calls", pid, f.calls)
+	}
+	if len(slept) != 2 {
+		t.Fatalf("slept %v; want 2 backoffs", slept)
+	}
+}
+
+func TestLaunchViaAppservice_GivesUpAfterBudgetWithDeviceError(t *testing.T) {
+	f := &scriptedAppserviceLaunch{errs: []error{coreDevice10004(), coreDevice10004(), coreDevice10004()}}
+	_, err := launchViaAppserviceRetry(f, "com.example.app", nil, nil,
+		[]time.Duration{time.Millisecond, time.Millisecond}, func(time.Duration) {})
+	if err == nil {
+		t.Fatal("want error after retry budget is exhausted")
+	}
+	if f.calls != 3 {
+		t.Fatalf("calls=%d; want 3 (1 + 2 retries)", f.calls)
+	}
+	if !strings.Contains(err.Error(), "could not be determined") || strings.Contains(err.Error(), "could not get pid from response") {
+		t.Fatalf("error should carry the CoreDevice reason, got %q", err)
+	}
+}
+
+func TestLaunchViaAppservice_DoesNotRetryOtherErrors(t *testing.T) {
+	f := &scriptedAppserviceLaunch{errs: []error{errors.New("launchApp: failed to read response: EOF")}}
+	_, err := launchViaAppserviceRetry(f, "com.example.app", nil, nil,
+		[]time.Duration{time.Millisecond}, func(time.Duration) { t.Fatal("must not sleep for a non-transient error") })
+	if err == nil || f.calls != 1 {
+		t.Fatalf("err=%v calls=%d; want immediate failure", err, f.calls)
 	}
 }

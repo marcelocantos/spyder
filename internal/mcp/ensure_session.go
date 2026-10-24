@@ -187,6 +187,10 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 				res, _ := toolErr("ensure_session: terminate %s on %s: %v", bundleID, dev, terr)
 				return res
 			}
+			// 🎯T176: a CoreDevice terminate returns before the process has
+			// exited, and an immediate relaunch is rejected (10004). Let the
+			// old instance go first; LaunchApp also retries that rejection.
+			_ = h.waitUntilNotRunningContext(ctx, adapter, id, bundleID, 3*time.Second)
 		}
 		if res := cancelled(); res != nil {
 			return res

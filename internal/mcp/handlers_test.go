@@ -1423,3 +1423,92 @@ func TestHandleTerminateApp_OneShotListProcessesDecodeFailure(t *testing.T) {
 		t.Fatalf("terminate: body=%s reads=%d invalidations=%d generation=%d", resultText(t, &r), reads, invalidations, generation)
 	}
 }
+
+func stubIOSUSBNetworkHost(t *testing.T, fn func(string) (string, error)) {
+	t.Helper()
+	prev := iosUSBNetworkHost
+	iosUSBNetworkHost = fn
+	t.Cleanup(func() { iosUSBNetworkHost = prev })
+}
+
+func stubLANHosts(t *testing.T, hosts ...string) {
+	t.Helper()
+	prev := lanHosts
+	lanHosts = func() ([]string, error) { return hosts, nil }
+	t.Cleanup(func() { lanHosts = prev })
+}
+
+// 🎯T176: a physical iPhone whose Wi-Fi cannot reach the Mac must still get
+// a dialable channel address: the Mac's end of the USB NCM link.
+func TestPickAppChannelHostPrefersUSBLinkForPhysicalIOS(t *testing.T) {
+	t.Setenv("SPYDER_APP_CHANNEL_HOST", "")
+	stubLANHosts(t, "192.168.1.217")
+	var asked string
+	stubIOSUSBNetworkHost(t, func(udid string) (string, error) {
+		asked = udid
+		return "169.254.251.223", nil
+	})
+	got, err := pickAppChannelHost("ios", "00008110-0014182E0AC2801E")
+	if err != nil || got != "169.254.251.223" {
+		t.Fatalf("got %q, %v; want the USB link address", got, err)
+	}
+	if asked != "00008110-0014182E0AC2801E" {
+		t.Fatalf("USB lookup asked for %q", asked)
+	}
+}
+
+func TestPickAppChannelHostFallsBackToLANWithoutUSBLink(t *testing.T) {
+	t.Setenv("SPYDER_APP_CHANNEL_HOST", "")
+	stubLANHosts(t, "192.168.1.217")
+	stubIOSUSBNetworkHost(t, func(string) (string, error) { return "", fmt.Errorf("no USB network interface") })
+	got, err := pickAppChannelHost("ios", "00008110-0014182E0AC2801E")
+	if err != nil || got != "192.168.1.217" {
+		t.Fatalf("got %q, %v; want LAN fallback", got, err)
+	}
+}
+
+func TestPickAppChannelHostOverrideBeatsUSBLink(t *testing.T) {
+	t.Setenv("SPYDER_APP_CHANNEL_HOST", "10.0.0.5")
+	stubIOSUSBNetworkHost(t, func(string) (string, error) {
+		t.Fatal("explicit override must win without probing USB")
+		return "", nil
+	})
+	if got, err := pickAppChannelHost("ios", "00008110-0014182E0AC2801E"); err != nil || got != "10.0.0.5" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+func TestPickAppChannelHostAndroidSkipsUSBLink(t *testing.T) {
+	t.Setenv("SPYDER_APP_CHANNEL_HOST", "")
+	stubLANHosts(t, "192.168.1.217")
+	stubIOSUSBNetworkHost(t, func(string) (string, error) {
+		t.Fatal("android must not probe the iOS USB link")
+		return "", nil
+	})
+	if got, err := pickAppChannelHost("android", "192.168.1.50:5555"); err != nil || got != "192.168.1.217" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
+
+// 🎯T176: an explicit SPYDER_APP_CHANNEL after an auto-injected launch used
+// to fail with "listener ... already uses LAN=true".
+func TestEnsureAppChannelEnvExplicitReusesLANListener(t *testing.T) {
+	h := newHandlerWithStubs(t, &stubAdapter{}, nil)
+	h.appChannel = appchannel.NewManager()
+	t.Cleanup(h.appChannel.Close)
+	key := appchannel.AppKey{DeviceID: "00008110-0014182E0AC2801E", BundleID: "com.foo.bar"}
+	lan, err := h.appChannel.GetOrCreateListenerAt(key, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, err := h.ensureAppChannelEnv(map[string]string{"SPYDER_APP_CHANNEL": "169.254.1.1:9"}, "ios", key.DeviceID, key.BundleID)
+	if err != nil {
+		t.Fatalf("explicit channel rejected: %v", err)
+	}
+	if env["SPYDER_APP_CHANNEL"] != "169.254.1.1:9" {
+		t.Fatalf("explicit address rewritten: %v", env)
+	}
+	if l, _ := h.appChannel.LookupKeyed(key); l != lan {
+		t.Fatal("explicit path replaced the existing listener")
+	}
+}

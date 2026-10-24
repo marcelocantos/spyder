@@ -117,16 +117,52 @@ func TestResolveAdapter_RawCoreDeviceUUID(t *testing.T) {
 }
 
 func TestResolveAdapter_RawAndroidSerial(t *testing.T) {
-	h := newTestHandler(t)
-	_, platform, id, err := h.resolveAdapter("completely-unknown-id")
+	h := newHandlerWithStubs(t, &stubAdapter{}, &stubAdapter{list: func() ([]device.Info, error) {
+		return []device.Info{{UUID: "R58M1234ABC", Platform: "android"}}, nil
+	}})
+	_, platform, id, err := h.resolveAdapter("R58M1234ABC")
 	if err != nil {
 		t.Fatalf("err = %v", err)
 	}
-	if platform != "android" {
-		t.Errorf("platform = %q; want android (fallback)", platform)
+	if platform != "android" || id != "R58M1234ABC" {
+		t.Errorf("got %s/%q; want connected adb serial", platform, id)
 	}
-	if id != "completely-unknown-id" {
-		t.Errorf("id = %q; want echo-back", id)
+}
+
+func TestResolveAdapter_ADBTransportAddressNeedsNoCensus(t *testing.T) {
+	census := &stubAdapter{list: func() ([]device.Info, error) {
+		t.Error("emulator/TCP serials resolve without listing devices")
+		return nil, nil
+	}}
+	h := newHandlerWithStubs(t, census, census)
+	for _, ref := range []string{"emulator-5554", "192.168.1.50:5555"} {
+		if _, platform, id, err := h.resolveAdapter(ref); err != nil || platform != "android" || id != ref {
+			t.Errorf("%s: got %s/%q/%v", ref, platform, id, err)
+		}
+	}
+}
+
+// 🎯T176: a daemon with a fresh SPYDER_DATA_DIR has no aliases. The
+// iPhone's device name must resolve to iOS, not be handed to adb.
+func TestResolveAdapter_UninventoriedIOSNameResolvesToIOS(t *testing.T) {
+	ios := &stubAdapter{list: func() ([]device.Info, error) {
+		return []device.Info{{UUID: "00008110-0014182E0AC2801E", Name: "Minicades Test iPhone", Platform: "ios"}}, nil
+	}}
+	h := newHandlerWithStubs(t, ios, &stubAdapter{})
+	adapter, platform, id, err := h.resolveAdapter("minicades test iphone")
+	if err != nil {
+		t.Fatalf("err = %v", err)
+	}
+	if platform != "ios" || id != "00008110-0014182E0AC2801E" || adapter != device.Adapter(ios) {
+		t.Errorf("got %s/%q; want the iOS UDID", platform, id)
+	}
+}
+
+func TestResolveAdapter_UnknownRefIsRefusedNotSentToADB(t *testing.T) {
+	h := newHandlerWithStubs(t, &stubAdapter{}, &stubAdapter{})
+	_, _, _, err := h.resolveAdapter("Jevons Prime")
+	if err == nil || !strings.Contains(err.Error(), "unknown device") {
+		t.Fatalf("err = %v; want a clear unknown-device refusal", err)
 	}
 }
 
