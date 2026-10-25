@@ -4,6 +4,7 @@
 package device
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
@@ -13,7 +14,7 @@ func TestSettingAllowlist_UnknownNeverTouchesShell(t *testing.T) {
 	var calls int
 	old := androidAdb
 	t.Cleanup(func() { androidAdb = old })
-	androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
+	androidAdb = func(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
 		calls++
 		t.Errorf("adb invoked for unknown key: %v", args)
 		return nil, nil, nil
@@ -48,7 +49,7 @@ func TestAndroidSetting_SetThenRestoreDeletesPin(t *testing.T) {
 	var ops []string
 	old := androidAdb
 	t.Cleanup(func() { androidAdb = old })
-	androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
+	androidAdb = func(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
 		i := indexOf(args, "settings")
 		if i < 0 || i+2 >= len(args) {
 			t.Fatalf("unexpected adb args: %v", args)

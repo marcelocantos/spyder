@@ -38,8 +38,17 @@ type touchInjector interface {
 	InjectSwipe(id string, x1, y1, x2, y2, durationMs int) error
 }
 
+type contextTouchInjector interface {
+	InjectTapContext(ctx context.Context, id string, x, y int) error
+	InjectSwipeContext(ctx context.Context, id string, x1, y1, x2, y2, durationMs int) error
+}
+
 type keyInjector interface {
 	InjectKeyEvent(id string, keyCode int) error
+}
+
+type contextKeyInjector interface {
+	InjectKeyEventContext(ctx context.Context, id string, keyCode int) error
 }
 
 type notificationShadeController interface {
@@ -244,6 +253,10 @@ func (h *Handler) handlePortForwardList(args map[string]any) (*mcpgo.CallToolRes
 
 // handleInputTap OS-level pixel tap (Android real; iOS fail-closed 🎯T112).
 func (h *Handler) handleInputTap(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleInputTapContext(context.Background(), args)
+}
+
+func (h *Handler) handleInputTapContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -268,18 +281,28 @@ func (h *Handler) handleInputTap(args map[string]any) (*mcpgo.CallToolResult, er
 	if res := h.gateAgentAny(owner, agent.MutInput, dev, id); res != nil {
 		return res, nil
 	}
-	inj, ok := adapter.(touchInjector)
-	if !ok {
-		return toolErr("adapter does not support OS input inject")
-	}
-	if err := inj.InjectTap(id, x, y); err != nil {
-		return toolErr("input_tap: %v", err)
+	if cinj, ok := adapter.(contextTouchInjector); ok {
+		if err := cinj.InjectTapContext(ctx, id, x, y); err != nil {
+			return toolErr("input_tap: %v", err)
+		}
+	} else {
+		inj, ok := adapter.(touchInjector)
+		if !ok {
+			return toolErr("adapter does not support OS input inject")
+		}
+		if err := inj.InjectTap(id, x, y); err != nil {
+			return toolErr("input_tap: %v", err)
+		}
 	}
 	return toolJSON(map[string]any{"device": dev, "platform": platform, "x": x, "y": y, "injected": true})
 }
 
 // handleInputSwipe OS-level pixel swipe (Android real; iOS fail-closed 🎯T112).
 func (h *Handler) handleInputSwipe(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleInputSwipeContext(context.Background(), args)
+}
+
+func (h *Handler) handleInputSwipeContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -316,12 +339,18 @@ func (h *Handler) handleInputSwipe(args map[string]any) (*mcpgo.CallToolResult, 
 	if res := h.gateAgentAny(owner, agent.MutInput, dev, id); res != nil {
 		return res, nil
 	}
-	inj, ok := adapter.(touchInjector)
-	if !ok {
-		return toolErr("adapter does not support OS input inject")
-	}
-	if err := inj.InjectSwipe(id, x1, y1, x2, y2, durationMs); err != nil {
-		return toolErr("input_swipe: %v", err)
+	if cinj, ok := adapter.(contextTouchInjector); ok {
+		if err := cinj.InjectSwipeContext(ctx, id, x1, y1, x2, y2, durationMs); err != nil {
+			return toolErr("input_swipe: %v", err)
+		}
+	} else {
+		inj, ok := adapter.(touchInjector)
+		if !ok {
+			return toolErr("adapter does not support OS input inject")
+		}
+		if err := inj.InjectSwipe(id, x1, y1, x2, y2, durationMs); err != nil {
+			return toolErr("input_swipe: %v", err)
+		}
 	}
 	return toolJSON(map[string]any{
 		"device":      dev,
@@ -337,6 +366,10 @@ func (h *Handler) handleInputSwipe(args map[string]any) (*mcpgo.CallToolResult, 
 
 // handleInputKey sends an Android KEYCODE (home, back, recent). iOS fail-closed.
 func (h *Handler) handleInputKey(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleInputKeyContext(context.Background(), args)
+}
+
+func (h *Handler) handleInputKeyContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -358,12 +391,18 @@ func (h *Handler) handleInputKey(args map[string]any) (*mcpgo.CallToolResult, er
 	if errRes != nil {
 		return errRes, nil
 	}
-	inj, ok := adapter.(keyInjector)
-	if !ok {
-		return toolErr("input_key: not supported on %s (Android only)", platform)
-	}
-	if err := inj.InjectKeyEvent(id, code); err != nil {
-		return toolErr("input_key: %v", err)
+	if cinj, ok := adapter.(contextKeyInjector); ok {
+		if err := cinj.InjectKeyEventContext(ctx, id, code); err != nil {
+			return toolErr("input_key: %v", err)
+		}
+	} else {
+		inj, ok := adapter.(keyInjector)
+		if !ok {
+			return toolErr("input_key: not supported on %s (Android only)", platform)
+		}
+		if err := inj.InjectKeyEvent(id, code); err != nil {
+			return toolErr("input_key: %v", err)
+		}
 	}
 	return toolJSON(map[string]any{"device": dev, "platform": platform, "key": keyName, "keycode": code, "injected": true})
 }

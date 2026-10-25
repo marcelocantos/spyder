@@ -7,6 +7,7 @@
 package device
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -16,6 +17,10 @@ import (
 
 // InjectTap injects a tap at pixel coordinates (device display pixels).
 func (a *AndroidAdapter) InjectTap(id string, x, y int) error {
+	return a.InjectTapContext(context.Background(), id, x, y)
+}
+
+func (a *AndroidAdapter) InjectTapContext(ctx context.Context, id string, x, y int) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
@@ -25,7 +30,7 @@ func (a *AndroidAdapter) InjectTap(id string, x, y int) error {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	_, stderr, err := androidAdb("-s", id, "shell", "input", "tap",
+	_, stderr, err := androidAdb(ctx, "-s", id, "shell", "input", "tap",
 		strconv.Itoa(x), strconv.Itoa(y))
 	if err != nil {
 		msg := string(stderr)
@@ -40,6 +45,10 @@ func (a *AndroidAdapter) InjectTap(id string, x, y int) error {
 // InjectSwipe injects a swipe from (x1,y1) to (x2,y2) lasting durationMs
 // (Android `input swipe` duration; default 300 when durationMs <= 0).
 func (a *AndroidAdapter) InjectSwipe(id string, x1, y1, x2, y2, durationMs int) error {
+	return a.InjectSwipeContext(context.Background(), id, x1, y1, x2, y2, durationMs)
+}
+
+func (a *AndroidAdapter) InjectSwipeContext(ctx context.Context, id string, x1, y1, x2, y2, durationMs int) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
@@ -52,7 +61,7 @@ func (a *AndroidAdapter) InjectSwipe(id string, x1, y1, x2, y2, durationMs int) 
 	if _, err := exec.LookPath("adb"); err != nil {
 		return fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	_, stderr, err := androidAdb("-s", id, "shell", "input", "swipe",
+	_, stderr, err := androidAdb(ctx, "-s", id, "shell", "input", "swipe",
 		strconv.Itoa(x1), strconv.Itoa(y1),
 		strconv.Itoa(x2), strconv.Itoa(y2),
 		strconv.Itoa(durationMs))
@@ -68,6 +77,10 @@ func (a *AndroidAdapter) InjectSwipe(id string, x1, y1, x2, y2, durationMs int) 
 
 // InjectKeyEvent sends a key event via `adb shell input keyevent`.
 func (a *AndroidAdapter) InjectKeyEvent(id string, keyCode int) error {
+	return a.InjectKeyEventContext(context.Background(), id, keyCode)
+}
+
+func (a *AndroidAdapter) InjectKeyEventContext(ctx context.Context, id string, keyCode int) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
@@ -77,7 +90,7 @@ func (a *AndroidAdapter) InjectKeyEvent(id string, keyCode int) error {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	_, stderr, err := androidAdb("-s", id, "shell", "input", "keyevent",
+	_, stderr, err := androidAdb(ctx, "-s", id, "shell", "input", "keyevent",
 		strconv.Itoa(keyCode))
 	if err != nil {
 		msg := string(stderr)
@@ -106,7 +119,7 @@ func (a *AndroidAdapter) runStatusBarCmd(id string, subcmd string) error {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	_, stderr, err := androidAdb("-s", id, "shell", "cmd", "statusbar", subcmd)
+	_, stderr, err := androidAdbBG("-s", id, "shell", "cmd", "statusbar", subcmd)
 	if err != nil {
 		msg := string(stderr)
 		if isAndroidDeviceNotConnected(msg) {
@@ -122,7 +135,7 @@ func (a *AndroidAdapter) DisplaySize(id string) (int, int, error) {
 	if id == "" {
 		return 0, 0, errors.New("device identifier is empty")
 	}
-	stdout, stderr, err := androidAdb("-s", id, "shell", "wm", "size")
+	stdout, stderr, err := androidAdbBG("-s", id, "shell", "wm", "size")
 	if err != nil {
 		msg := string(stderr)
 		if isAndroidDeviceNotConnected(msg) {

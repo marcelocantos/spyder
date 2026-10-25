@@ -491,6 +491,10 @@ func (h *Handler) handleDeviceState(args map[string]any) (*mcpgo.CallToolResult,
 }
 
 func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleScreenshotContext(context.Background(), args)
+}
+
+func (h *Handler) handleScreenshotContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -505,7 +509,7 @@ func (h *Handler) handleScreenshot(args map[string]any) (*mcpgo.CallToolResult, 
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	png, err := adapter.Screenshot(id)
+	png, err := device.ScreenshotContext(ctx, adapter, id)
 	if err != nil {
 		return toolErr("screenshot on %s: %v", dev, err)
 	}

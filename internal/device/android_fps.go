@@ -8,6 +8,7 @@
 package device
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -30,9 +32,35 @@ type FrameStats struct {
 	RawExcerpt   string  `json:"raw_excerpt,omitempty"`
 }
 
-// androidAdb runs `adb <args...>` and returns stdout/stderr. Tests replace it.
-var androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
-	return runCapture("adb", args...)
+// androidAdbHook runs `adb <args...>` under ctx. Tests replace androidAdb.
+type androidAdbHook func(ctx context.Context, args ...string) (stdout, stderr []byte, err error)
+
+// runAdbCaptureCtx invokes adb with a process group so deadline cancellation
+// can reap the child (🎯T171).
+func runAdbCaptureCtx(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var outBuf, errBuf bytes.Buffer
+	cmd := exec.CommandContext(ctx, "adb", args...)
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	err = cmd.Run()
+	return outBuf.Bytes(), errBuf.Bytes(), err
+}
+
+var androidAdb androidAdbHook = runAdbCaptureCtx
+
+func androidAdbBG(args ...string) (stdout, stderr []byte, err error) {
+	return androidAdb(context.Background(), args...)
+}
+
+// SetAndroidAdbForTest replaces adb invocation for the duration of a test.
+func SetAndroidAdbForTest(hook androidAdbHook) func() {
+	prev := androidAdb
+	androidAdb = hook
+	return func() { androidAdb = prev }
 }
 
 // androidSleepUntil sleeps until d elapses or ctx is cancelled.
@@ -104,7 +132,7 @@ func (a *AndroidAdapter) MeasureFrameStats(ctx context.Context, id, packageName 
 	}
 
 	// Reset counters so the window is clean.
-	if _, stderr, err := androidAdb("-s", id, "shell", "dumpsys", "gfxinfo", packageName, "reset"); err != nil {
+	if _, stderr, err := androidAdb(ctx, "-s", id, "shell", "dumpsys", "gfxinfo", packageName, "reset"); err != nil {
 		msg := string(stderr)
 		if isAndroidDeviceNotConnected(msg) {
 			return FrameStats{}, fmt.Errorf("device not connected: %s", id)
@@ -116,7 +144,7 @@ func (a *AndroidAdapter) MeasureFrameStats(ctx context.Context, id, packageName 
 		return FrameStats{}, fmt.Errorf("gfxinfo window wait: %w", err)
 	}
 
-	out, stderr, err := androidAdb("-s", id, "shell", "dumpsys", "gfxinfo", packageName)
+	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "dumpsys", "gfxinfo", packageName)
 	if err != nil {
 		msg := string(stderr)
 		if isAndroidDeviceNotConnected(msg) {

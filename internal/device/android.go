@@ -129,7 +129,7 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 
 	var state State
 
-	battOut, battStderr, battErr := runCapture("adb", "-s", id, "shell", "dumpsys", "battery")
+	battOut, battStderr, battErr := androidAdbBG( "-s", id, "shell", "dumpsys", "battery")
 	combined := string(battStderr) + " " + string(battOut)
 	if isAndroidDeviceNotConnected(combined) {
 		return State{}, fmt.Errorf("device not connected: %s", id)
@@ -226,7 +226,7 @@ func parseBatteryScalar(v string) any {
 var fgActivityRE = regexp.MustCompile(`ActivityRecord\{[^}]*\s([a-zA-Z0-9_.]+)/[^}]+\}`)
 
 func androidForegroundApp(id string) (string, error) {
-	out, stderr, err := runCapture("adb", "-s", id, "shell", "dumpsys", "activity", "activities")
+	out, stderr, err := androidAdbBG( "-s", id, "shell", "dumpsys", "activity", "activities")
 	if err != nil {
 		return "", fmt.Errorf("%s", truncate(string(stderr), 120))
 	}
@@ -261,7 +261,7 @@ func (a *AndroidAdapter) ListApps(id string) ([]AppInfo, error) {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return nil, fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	out, stderr, err := runCapture("adb", "-s", id, "shell", "pm", "list", "packages", "-3")
+	out, stderr, err := androidAdbBG( "-s", id, "shell", "pm", "list", "packages", "-3")
 	combined := string(stderr) + " " + string(out)
 	if isAndroidDeviceNotConnected(combined) {
 		return nil, fmt.Errorf("device not connected: %s", id)
@@ -336,7 +336,7 @@ func (a *AndroidAdapter) LaunchApp(id, bundleID string, env map[string]string) e
 			args = append(args, "--es", k, v)
 		}
 	}
-	out, stderr, err := runCapture("adb", args...)
+	out, stderr, err := androidAdbBG( args...)
 	combined := string(stderr) + " " + string(out)
 	if isAndroidDeviceNotConnected(combined) {
 		return fmt.Errorf("device not connected: %s", id)
@@ -394,10 +394,14 @@ func androidLauncherComponent(id, bundleID string) (string, error) {
 
 // TerminateApp stops an app via `adb shell am force-stop <pkg>`.
 func (a *AndroidAdapter) TerminateApp(id, bundleID string) error {
+	return a.TerminateAppContext(context.Background(), id, bundleID)
+}
+
+func (a *AndroidAdapter) TerminateAppContext(ctx context.Context, id, bundleID string) error {
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	_, stderr, err := runCapture("adb", "-s", id, "shell", "am", "force-stop", bundleID)
+	_, stderr, err := androidAdb(ctx, "-s", id, "shell", "am", "force-stop", bundleID)
 	if isAndroidDeviceNotConnected(string(stderr)) {
 		return fmt.Errorf("device not connected: %s", id)
 	}
@@ -427,7 +431,7 @@ func isEmulatorSerial(serial string) bool {
 // androidCurrentRotation reads the emulator's current user_rotation
 // via `adb shell settings get system user_rotation`. Returns 0..3.
 func androidCurrentRotation(serial string) (int, error) {
-	out, stderr, err := runCapture("adb", "-s", serial, "shell", "settings", "get", "system", "user_rotation")
+	out, stderr, err := androidAdbBG( "-s", serial, "shell", "settings", "get", "system", "user_rotation")
 	if err != nil {
 		return 0, fmt.Errorf("adb settings get user_rotation: %v\n%s", err, truncate(string(stderr), 160))
 	}
@@ -464,7 +468,7 @@ func (a *AndroidAdapter) Rotate(id, orientation string) error {
 	// are needed to reach the target orientation from the current one.
 	steps := (target - current + 4) % 4
 	for range steps {
-		_, stderr, err := runCapture("adb", "-s", id, "emu", "rotate")
+		_, stderr, err := androidAdbBG( "-s", id, "emu", "rotate")
 		if err != nil {
 			return fmt.Errorf("adb emu rotate: %v\n%s", err, truncate(string(stderr), 160))
 		}
@@ -508,7 +512,7 @@ func androidTombstoneCrashes(id string, since time.Time, process string) ([]Cras
 	}
 	defer os.RemoveAll(tmp)
 
-	out, stderr, err := runCapture("adb", "-s", id, "pull", "/data/tombstones/.", tmp)
+	out, stderr, err := androidAdbBG( "-s", id, "pull", "/data/tombstones/.", tmp)
 	if err != nil {
 		// Not root or directory doesn't exist — expected on non-rooted devices.
 		return nil, fmt.Errorf("adb pull /data/tombstones: %v\n%s",
@@ -603,7 +607,7 @@ func androidLogcatCrashes(id string, since time.Time, processFilter string) ([]C
 		// adb logcat -T accepts "MM-DD HH:MM:SS.mmm" or a Unix timestamp.
 		args = append(args, "-T", since.Format("01-02 15:04:05.000"))
 	}
-	out, stderr, err := runCapture("adb", args...)
+	out, stderr, err := androidAdbBG( args...)
 	combined := string(stderr) + " " + string(out)
 	if isAndroidDeviceNotConnected(combined) {
 		return nil, fmt.Errorf("device not connected: %s", id)
@@ -699,7 +703,7 @@ func (a *AndroidAdapter) StartRecording(id, dest string) (func() error, int, err
 	}
 
 	// Remove stale recording from a previous interrupted session.
-	_, _, _ = runCapture("adb", "-s", id, "shell", "rm", "-f", androidDeviceRecordPath)
+	_, _, _ = androidAdbBG( "-s", id, "shell", "rm", "-f", androidDeviceRecordPath)
 
 	cmd := exec.Command("adb", "-s", id, "shell", "screenrecord",
 		"--bit-rate", "4000000",
@@ -716,7 +720,7 @@ func (a *AndroidAdapter) StartRecording(id, dest string) (func() error, int, err
 		// SIGINT the local adb shell; it propagates to screenrecord on device.
 		if sigErr := cmd.Process.Signal(syscall.SIGINT); sigErr != nil && !errors.Is(sigErr, os.ErrProcessDone) {
 			// Fall back to killing screenrecord on device via adb killall.
-			_, _, _ = runCapture("adb", "-s", id, "shell", "killall", "-SIGINT", "screenrecord")
+			_, _, _ = androidAdbBG( "-s", id, "shell", "killall", "-SIGINT", "screenrecord")
 		}
 		// Wait for the local adb shell to exit.
 		done := make(chan error, 1)
@@ -728,11 +732,11 @@ func (a *AndroidAdapter) StartRecording(id, dest string) (func() error, int, err
 		case <-done:
 		}
 		// Pull the recorded file to dest.
-		if _, _, pullErr := runCapture("adb", "-s", id, "pull", androidDeviceRecordPath, dest); pullErr != nil {
+		if _, _, pullErr := androidAdbBG( "-s", id, "pull", androidDeviceRecordPath, dest); pullErr != nil {
 			return fmt.Errorf("adb pull %s → %s: %w", androidDeviceRecordPath, dest, pullErr)
 		}
 		// Clean up on device.
-		_, _, _ = runCapture("adb", "-s", id, "shell", "rm", "-f", androidDeviceRecordPath)
+		_, _, _ = androidAdbBG( "-s", id, "shell", "rm", "-f", androidDeviceRecordPath)
 		return nil
 	}
 
@@ -752,7 +756,7 @@ func (a *AndroidAdapter) StopRecording(id string, pid int) error {
 		return fmt.Errorf("adb StopRecording: find process %d: %w", pid, err)
 	}
 	if sigErr := proc.Signal(syscall.SIGINT); sigErr != nil && !errors.Is(sigErr, os.ErrProcessDone) {
-		_, _, _ = runCapture("adb", "-s", id, "shell", "killall", "-SIGINT", "screenrecord")
+		_, _, _ = androidAdbBG( "-s", id, "shell", "killall", "-SIGINT", "screenrecord")
 	}
 	return nil
 }
@@ -772,7 +776,7 @@ func (a *AndroidAdapter) InstallApp(id, path string) error {
 		return fmt.Errorf("adb not found in PATH: %w", err)
 	}
 	suppressPlayProtectPrompts(id)
-	out, stderr, err := runCapture("adb", "-s", id, "install", "-r", path)
+	out, stderr, err := androidAdbBG( "-s", id, "install", "-r", path)
 	combined := string(stderr) + " " + string(out)
 	if isAndroidDeviceNotConnected(combined) {
 		return fmt.Errorf("device not connected: %s", id)
@@ -800,7 +804,7 @@ func suppressPlayProtectPrompts(id string) {
 		{"package_verifier_user_consent", "-1"},
 		{"upload_apk_enable", "0"},
 	} {
-		_, _, _ = runCapture("adb", "-s", id, "shell", "settings", "put", "global", kv[0], kv[1])
+		_, _, _ = androidAdbBG( "-s", id, "shell", "settings", "put", "global", kv[0], kv[1])
 	}
 }
 
@@ -812,7 +816,7 @@ func (a *AndroidAdapter) UninstallApp(id, bundleID string) error {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	out, stderr, err := runCapture("adb", "-s", id, "uninstall", bundleID)
+	out, stderr, err := androidAdbBG( "-s", id, "uninstall", bundleID)
 	combined := string(stderr) + " " + string(out)
 	if isAndroidDeviceNotConnected(combined) {
 		return fmt.Errorf("device not connected: %s", id)
@@ -826,13 +830,17 @@ func (a *AndroidAdapter) UninstallApp(id, bundleID string) error {
 // AppPID returns the process id of a running app via `adb shell pidof <pkg>`.
 // Returns an error if the app is not running or pidof output is empty.
 func (a *AndroidAdapter) AppPID(id, bundleID string) (int, error) {
+	return a.AppPIDContext(context.Background(), id, bundleID)
+}
+
+func (a *AndroidAdapter) AppPIDContext(ctx context.Context, id, bundleID string) (int, error) {
 	if id == "" || bundleID == "" {
 		return 0, errors.New("device id and bundle_id are required")
 	}
 	if _, err := exec.LookPath("adb"); err != nil {
 		return 0, fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	out, stderr, err := runCapture("adb", "-s", id, "shell", "pidof", bundleID)
+	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "pidof", bundleID)
 	if isAndroidDeviceNotConnected(string(stderr)) {
 		return 0, fmt.Errorf("device not connected: %s", id)
 	}
@@ -952,7 +960,7 @@ func (a *AndroidAdapter) ClearNetwork(id string) error {
 // console and will return an error.
 func adbEmu(id string, args ...string) error {
 	cmdArgs := append([]string{"-s", id, "emu"}, args...)
-	out, stderr, err := runCapture("adb", cmdArgs...)
+	out, stderr, err := androidAdbBG( cmdArgs...)
 	if err != nil {
 		combined := string(stderr) + " " + string(out)
 		if isAndroidDeviceNotConnected(combined) {
@@ -1170,13 +1178,17 @@ func reapLogcat(cmd *exec.Cmd) {
 // Screenshot captures a PNG via `adb shell screencap -p`. The subcommand
 // writes the PNG to stdout, which we return unchanged.
 func (a *AndroidAdapter) Screenshot(id string) ([]byte, error) {
+	return a.ScreenshotContext(context.Background(), id)
+}
+
+func (a *AndroidAdapter) ScreenshotContext(ctx context.Context, id string) ([]byte, error) {
 	if id == "" {
 		return nil, errors.New("device identifier is empty")
 	}
 	if _, err := exec.LookPath("adb"); err != nil {
 		return nil, fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	out, stderr, err := runCapture("adb", "-s", id, "shell", "screencap", "-p")
+	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "screencap", "-p")
 	combined := string(stderr) + " " + string(out[:min(len(out), 512)])
 	if isAndroidDeviceNotConnected(combined) {
 		return nil, fmt.Errorf("device not connected: %s", id)

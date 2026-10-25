@@ -760,6 +760,14 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 		return h.handleListAppsContext(ctx, args)
 	case "terminate_app":
 		return h.handleTerminateAppContext(ctx, args)
+	case "screenshot":
+		return h.handleScreenshotContext(ctx, args)
+	case "input_tap":
+		return h.handleInputTapContext(ctx, args)
+	case "input_swipe":
+		return h.handleInputSwipeContext(ctx, args)
+	case "input_key":
+		return h.handleInputKeyContext(ctx, args)
 	case "deploy_app":
 		return h.deployAppContext(ctx, args, false)
 	}

@@ -4,6 +4,7 @@
 package device
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ func TestInjectTapSwipe_CommandBoundary(t *testing.T) {
 	var calls [][]string
 	old := androidAdb
 	t.Cleanup(func() { androidAdb = old })
-	androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
+	androidAdb = func(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
 		calls = append(calls, append([]string{}, args...))
 		return nil, nil, nil
 	}

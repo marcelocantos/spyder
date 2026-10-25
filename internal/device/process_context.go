@@ -48,6 +48,22 @@ func TerminateAppContext(ctx context.Context, adapter Adapter, id, bundleID stri
 	return err
 }
 
+func ScreenshotContext(ctx context.Context, adapter Adapter, id string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if a, ok := adapter.(interface {
+		ScreenshotContext(context.Context, string) ([]byte, error)
+	}); ok {
+		return a.ScreenshotContext(ctx, id)
+	}
+	png, err := adapter.Screenshot(id)
+	if ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
+	return png, err
+}
+
 func ListAppsContext(ctx context.Context, adapter Adapter, id string) ([]AppInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

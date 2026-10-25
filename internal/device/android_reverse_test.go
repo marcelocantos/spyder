@@ -3,6 +3,7 @@
 package device
 
 import (
+	"context"
 	"reflect"
 	"testing"
 )
@@ -11,7 +12,7 @@ func TestReverseTCPCommands(t *testing.T) {
 	old := androidAdb
 	t.Cleanup(func() { androidAdb = old })
 	var calls [][]string
-	androidAdb = func(args ...string) ([]byte, []byte, error) {
+	androidAdb = func(ctx context.Context, args ...string) ([]byte, []byte, error) {
 		calls = append(calls, append([]string(nil), args...))
 		return nil, nil, nil
 	}

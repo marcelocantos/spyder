@@ -63,7 +63,7 @@ func TestMeasureFrameStats_CommandBoundary(t *testing.T) {
 		slept = d
 		return ctx.Err()
 	}
-	androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
+	androidAdb = func(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
 		cp := append([]string{}, args...)
 		calls = append(calls, cp)
 		if len(args) >= 6 && args[len(args)-1] == "reset" {
@@ -110,7 +110,7 @@ func TestMeasureFrameStats_ContextCancel(t *testing.T) {
 		androidAdb = oldAdb
 		androidSleepUntil = oldSleep
 	})
-	androidAdb = func(args ...string) (stdout, stderr []byte, err error) {
+	androidAdb = func(ctx context.Context, args ...string) (stdout, stderr []byte, err error) {
 		return []byte(""), nil, nil
 	}
 	// Real cancel path through androidSleepUntil default would block; use
