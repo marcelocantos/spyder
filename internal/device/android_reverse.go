@@ -17,7 +17,7 @@ func (a *AndroidAdapter) ReverseTCP(id string, port int) error {
 		return fmt.Errorf("adb not found: %w", err)
 	}
 	spec := fmt.Sprintf("tcp:%d", port)
-	out, stderr, err := androidAdb("-s", id, "reverse", spec, spec)
+	out, stderr, err := androidAdbBG("-s", id, "reverse", spec, spec)
 	if err != nil {
 		return fmt.Errorf("adb reverse for %s: %w: %s", id, err, truncate(string(stderr)+string(out), 200))
 	}
@@ -30,7 +30,7 @@ func (a *AndroidAdapter) UnreverseTCP(id string, port int) error {
 		return fmt.Errorf("adb reverse: invalid device or port")
 	}
 	spec := fmt.Sprintf("tcp:%d", port)
-	_, stderr, err := androidAdb("-s", id, "reverse", "--remove", spec)
+	_, stderr, err := androidAdbBG("-s", id, "reverse", "--remove", spec)
 	if err != nil {
 		return fmt.Errorf("adb reverse --remove for %s: %w: %s", id, err, truncate(string(stderr), 200))
 	}

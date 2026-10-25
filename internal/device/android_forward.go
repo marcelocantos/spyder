@@ -38,7 +38,7 @@ func (a *AndroidAdapter) ForwardTCP(id string, localPort, devicePort int) (PortF
 	}
 	localSpec := "tcp:" + strconv.Itoa(localPort)
 	deviceSpec := "tcp:" + strconv.Itoa(devicePort)
-	out, stderr, err := androidAdb("-s", id, "forward", localSpec, deviceSpec)
+	out, stderr, err := androidAdbBG("-s", id, "forward", localSpec, deviceSpec)
 	if err != nil {
 		msg := string(stderr) + string(out)
 		if isAndroidDeviceNotConnected(msg) {
@@ -78,7 +78,7 @@ func (a *AndroidAdapter) UnforwardTCP(id string, localPort int) error {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	_, stderr, err := androidAdb("-s", id, "forward", "--remove", "tcp:"+strconv.Itoa(localPort))
+	_, stderr, err := androidAdbBG("-s", id, "forward", "--remove", "tcp:"+strconv.Itoa(localPort))
 	if err != nil {
 		msg := string(stderr)
 		if isAndroidDeviceNotConnected(msg) {
@@ -95,7 +95,7 @@ func (a *AndroidAdapter) ListForwards(id string) ([]PortForward, error) {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return nil, fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	out, stderr, err := androidAdb("forward", "--list")
+	out, stderr, err := androidAdbBG("forward", "--list")
 	if err != nil {
 		return nil, fmt.Errorf("adb forward --list: %v\n%s", err, truncate(string(stderr), 200))
 	}

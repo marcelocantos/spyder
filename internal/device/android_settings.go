@@ -37,7 +37,7 @@ func (a *AndroidAdapter) GetSystemSetting(id, key string) (SettingResult, error)
 	}
 	curr := map[string]string{}
 	for _, n := range names {
-		out, stderr, err := androidAdb("-s", id, "shell", "settings", "get", n.Namespace, n.Name)
+		out, stderr, err := androidAdbBG("-s", id, "shell", "settings", "get", n.Namespace, n.Name)
 		if err != nil {
 			return SettingResult{}, settingsAdbErr(id, "get", err, stderr)
 		}
@@ -69,14 +69,14 @@ func (a *AndroidAdapter) applySystemSetting(id, key, value string, restore bool)
 	prev := map[string]string{}
 	curr := map[string]string{}
 	for _, n := range names {
-		before, _, _ := androidAdb("-s", id, "shell", "settings", "get", n.Namespace, n.Name)
+		before, _, _ := androidAdbBG("-s", id, "shell", "settings", "get", n.Namespace, n.Name)
 		prev[n.Name] = strings.TrimSpace(string(before))
 
 		var stderr []byte
 		if restore {
-			_, stderr, err = androidAdb("-s", id, "shell", "settings", "delete", n.Namespace, n.Name)
+			_, stderr, err = androidAdbBG("-s", id, "shell", "settings", "delete", n.Namespace, n.Name)
 		} else {
-			_, stderr, err = androidAdb("-s", id, "shell", "settings", "put", n.Namespace, n.Name, value)
+			_, stderr, err = androidAdbBG("-s", id, "shell", "settings", "put", n.Namespace, n.Name, value)
 		}
 		if err != nil {
 			op := "put"
@@ -86,7 +86,7 @@ func (a *AndroidAdapter) applySystemSetting(id, key, value string, restore bool)
 			return SettingResult{}, settingsAdbErr(id, op, err, stderr)
 		}
 
-		after, _, _ := androidAdb("-s", id, "shell", "settings", "get", n.Namespace, n.Name)
+		after, _, _ := androidAdbBG("-s", id, "shell", "settings", "get", n.Namespace, n.Name)
 		curr[n.Name] = strings.TrimSpace(string(after))
 	}
 
