@@ -364,6 +364,19 @@ func TestParseRunArgs_Provenance(t *testing.T) {
 		t.Error("--app-dirty maybe should be rejected")
 	}
 }
+
+func TestAutoStartServeArgvDefault(t *testing.T) {
+	want := []string{"serve", "--addr", defaultAddr}
+	if len(autoStartServeArgv) != len(want) {
+		t.Fatalf("argv=%v want %v", autoStartServeArgv, want)
+	}
+	for i := range want {
+		if autoStartServeArgv[i] != want[i] {
+			t.Fatalf("argv=%v want %v", autoStartServeArgv, want)
+		}
+	}
+}
+
 func TestAutoStartDaemonRefusesWhenPortInUse(t *testing.T) {
 	prev := listenpreflight.Hook
 	defer func() { listenpreflight.Hook = prev }()

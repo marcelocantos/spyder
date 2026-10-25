@@ -21,10 +21,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/marcelocantos/spyder/internal/clidaemon"
 	"github.com/marcelocantos/spyder/internal/cliexit"
 	"github.com/marcelocantos/spyder/internal/clitimeout"
 	"github.com/marcelocantos/spyder/internal/inventory"
-	"github.com/marcelocantos/spyder/internal/listenpreflight"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/selector"
@@ -164,15 +164,11 @@ func postTool(ctx context.Context, tool string, args map[string]any) (*toolResul
 	}
 	base := daemonBaseURL()
 	url := base + rest.Prefix + tool
-	resp, err := postWithCtx(ctx, url, body)
-	if err != nil && isConnRefused(err) && base == defaultDaemonURL {
-		if spawnErr := autoStartDaemon(); spawnErr != nil {
-			return nil, &daemonError{
-				ErrorMessage: fmt.Sprintf("daemon not reachable at %s and auto-start failed: %v — try `brew services start spyder`",
-					base, spawnErr),
-			}
+	resp, err := postWithAutostart(ctx, url, body)
+	if err != nil {
+		if strings.Contains(err.Error(), "auto-start failed") {
+			return nil, &daemonError{ErrorMessage: err.Error()}
 		}
-		resp, err = postWithCtx(ctx, url, body)
 	}
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -213,6 +209,37 @@ func postTool(ctx context.Context, tool string, args map[string]any) (*toolResul
 	return &out, nil
 }
 
+
+// postWithAutostart POSTs to the daemon, waiting out a supervised restart
+// when ~/.spyder already has a persisted listen address, then optionally
+// auto-starts a detached serve on the loopback default only (🎯T173).
+func postWithAutostart(ctx context.Context, url string, body []byte) (*http.Response, error) {
+	resp, err := postWithCtx(ctx, url, body)
+	if err == nil || !isConnRefused(err) || daemonBaseURL() != defaultDaemonURL {
+		return resp, err
+	}
+	if clidaemon.ExistingInstall(paths.ListenAddrPath()) {
+		waitErr := clidaemon.PollWhileConnRefused(ctx, clidaemon.RestartWait, clidaemon.RestartPoll, func() (bool, error) {
+			resp, err = postWithCtx(ctx, url, body)
+			if err == nil {
+				return false, nil
+			}
+			return isConnRefused(err), err
+		})
+		if waitErr != nil && !isConnRefused(waitErr) {
+			return resp, waitErr
+		}
+		if err == nil || !isConnRefused(err) {
+			return resp, err
+		}
+	}
+	if spawnErr := autoStartDaemon(); spawnErr != nil {
+		return nil, fmt.Errorf("daemon not reachable at %s and auto-start failed: %v — try `brew services start spyder`",
+			defaultDaemonURL, spawnErr)
+	}
+	return postWithCtx(ctx, url, body)
+}
+
 // postWithCtx is http.Post with a context. Extracted so the retry path
 // can share the same helper.
 func postWithCtx(ctx context.Context, url string, body []byte) (*http.Response, error) {
@@ -224,21 +251,18 @@ func postWithCtx(ctx context.Context, url string, body []byte) (*http.Response, 
 	return http.DefaultClient.Do(req)
 }
 
-// autoStartDaemon spawns a detached `spyder serve` process, logs its
-// output to ~/.spyder/daemon.log, and polls the listener until it's
-// reachable or a short timeout expires. Refuses to spawn when any TCP
-// listener already owns the default daemon port (IPv4 or IPv6) so a
-// half-dead brew/supervisor bind cannot be joined by a stray tree binary
-// on another address family (ENT-008 / 🎯T132.8).
+// autoStartDaemon spawns a detached `spyder serve --addr <default>` process,
+// logs its output to ~/.spyder/daemon.log, and polls the listener until
+// it's reachable or a short timeout expires. Refuses to spawn when the
+// default HTTP port or the iOS tunnel port already has a TCP listener
+// (ENT-008 / 🎯T132.8, 🎯T173).
+// autoStartServeArgv is the argv slice for a CLI auto-spawned serve child.
+// Tests pin the default bind (🎯T173).
+var autoStartServeArgv = []string{"serve", "--addr", defaultAddr}
+
 func autoStartDaemon() error {
-	if inUse, err := listenpreflight.AnyTCPListener(listenpreflight.DaemonPort); err != nil {
-		return fmt.Errorf("listen preflight on :%d: %w", listenpreflight.DaemonPort, err)
-	} else if inUse {
-		return fmt.Errorf(
-			"port %d already has a TCP listener (see: lsof -nP -iTCP:%d -sTCP:LISTEN); "+
-				"auto-start would risk a second daemon — start or restart the supervised service instead",
-			listenpreflight.DaemonPort, listenpreflight.DaemonPort,
-		)
+	if err := clidaemon.AutoStartPreflight(); err != nil {
+		return err
 	}
 	logPath := filepath.Join(paths.Base(), "daemon.log")
 	if err := os.MkdirAll(paths.Base(), 0o755); err != nil {
@@ -254,7 +278,7 @@ func autoStartDaemon() error {
 		logFile.Close()
 		return fmt.Errorf("resolve self path: %w", err)
 	}
-	cmd := exec.Command(self, "serve")
+	cmd := exec.Command(self, autoStartServeArgv...)
 	cmd.Stdin = nil
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
@@ -1850,12 +1874,7 @@ func streamSSELog(ctx context.Context, body map[string]any, jsonMode bool) {
 	}
 	base := daemonBaseURL()
 	url := base + rest.StreamPath
-	resp, err := postWithCtx(ctx, url, encoded)
-	if err != nil && isConnRefused(err) && base == defaultDaemonURL {
-		if spawnErr := autoStartDaemon(); spawnErr == nil {
-			resp, err = postWithCtx(ctx, url, encoded)
-		}
-	}
+	resp, err := postWithAutostart(ctx, url, encoded)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			cliexit.Errorf(cliexit.ExitTimeout, "spyder log: request timed out: %v", err)
