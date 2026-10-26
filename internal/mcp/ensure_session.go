@@ -162,7 +162,7 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 				return res
 			}
 			if !installed {
-				if ierr := h.installOn(adapter, id, vpath); ierr != nil {
+				if ierr := h.installOn(ctx, adapter, id, vpath); ierr != nil {
 					res, _ := toolErr("ensure_session: install %s on %s: %v", filepath.Base(vpath), dev, ierr)
 					return res
 				}

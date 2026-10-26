@@ -24,6 +24,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/clidaemon"
 	"github.com/marcelocantos/spyder/internal/cliexit"
 	"github.com/marcelocantos/spyder/internal/clitimeout"
+	"github.com/marcelocantos/spyder/internal/installdeadline"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/rest"
@@ -363,6 +364,23 @@ func setupCommand(
 // verbose returns true when the user passed -v or --verbose on this
 // invocation. Used by mutating commands to decide whether to surface
 // the daemon's confirmation text on success (default: silent).
+
+// artifactInstallTimeout raises the CLI request budget when a path is present
+// and the user did not pass an explicit --timeout (🎯T172).
+func artifactInstallTimeout(pf parsedFlags, defaultTimeout time.Duration, artifactPath string, deploy bool) time.Duration {
+	if pf.flags["--timeout"] != "" {
+		return defaultTimeout
+	}
+	if artifactPath == "" {
+		return defaultTimeout
+	}
+	scaled := installdeadline.Budget(artifactPath, "", deploy)
+	if scaled > defaultTimeout {
+		return scaled
+	}
+	return defaultTimeout
+}
+
 func verbose(pf parsedFlags) bool {
 	return pf.bools["-v"] || pf.bools["--verbose"]
 }
@@ -935,6 +953,13 @@ func runTerminateApp(args []string) {
 func runInstall(args []string) {
 	pf, ctx, cancel := setupCommand("install", args, []string{"--as"}, []string{"--all-physical"}, clitimeout.DefaultInstall)
 	defer cancel()
+	if len(pf.positional) >= 2 {
+		if d := artifactInstallTimeout(pf, clitimeout.DefaultInstall, pf.positional[1], false); d != clitimeout.DefaultInstall {
+			cancel()
+			ctx, cancel = clitimeout.Context(d)
+			defer cancel()
+		}
+	}
 	owner := pf.flags["--as"]
 	if owner == "" {
 		owner = deriveOwner("")
@@ -972,6 +997,21 @@ func runUninstall(args []string) {
 func runDeploy(args []string) {
 	pf, ctx, cancel := setupCommand("deploy", args, []string{"--as", "--bundle-id"}, []string{"--all-physical"}, clitimeout.DefaultDeploy)
 	defer cancel()
+	path := ""
+	if pf.bools["--all-physical"] {
+		if len(pf.positional) >= 1 {
+			path = pf.positional[0]
+		}
+	} else if len(pf.positional) >= 2 {
+		path = pf.positional[1]
+	}
+	if path != "" {
+		if d := artifactInstallTimeout(pf, clitimeout.DefaultDeploy, path, true); d != clitimeout.DefaultDeploy {
+			cancel()
+			ctx, cancel = clitimeout.Context(d)
+			defer cancel()
+		}
+	}
 	owner := pf.flags["--as"]
 	if owner == "" {
 		owner = deriveOwner("")

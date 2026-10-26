@@ -1902,6 +1902,10 @@ func validateAppPath(path string) (string, error) {
 }
 
 func (h *Handler) handleInstallApp(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleInstallAppContext(context.Background(), args)
+}
+
+func (h *Handler) handleInstallAppContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -1928,7 +1932,7 @@ func (h *Handler) handleInstallApp(args map[string]any) (*mcpgo.CallToolResult, 
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	if err := h.installOn(adapter, id, path); err != nil {
+	if err := h.installOn(ctx, adapter, id, path); err != nil {
 		return toolErr("install_app on %s: %v", dev, err)
 	}
 	return toolText(fmt.Sprintf("installed %s on %s", filepath.Base(path), dev))
@@ -2106,7 +2110,7 @@ func (h *Handler) deployAppLockedContext(ctx context.Context, dev, path, bundleI
 		return fail("deploy_app cancelled: %v", err)
 	}
 	// Step 2: install (fail fast on error).
-	if err := h.installOn(adapter, id, path); err != nil {
+	if err := h.installOn(ctx, adapter, id, path); err != nil {
 		return fail("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
 	}
 

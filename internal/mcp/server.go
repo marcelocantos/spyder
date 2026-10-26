@@ -358,10 +358,17 @@ func (h *Handler) beatUntilReturned() func() {
 }
 
 // installOn runs adapter.InstallApp while beating the dispatch watchdog.
-func (h *Handler) installOn(adapter device.Adapter, id, path string) error {
+func (h *Handler) installOn(ctx context.Context, adapter device.Adapter, id, path string) error {
+	if op := dispatchOpID(ctx); op != 0 && h.ops != nil {
+		h.ops.setInstalling(op, true)
+		defer h.ops.setInstalling(op, false)
+	}
 	stop := h.beatUntilReturned()
 	defer stop()
-	return adapter.InstallApp(id, path)
+	ended := goios.LifecyclePhase(ctx, "install.transfer")
+	err := adapter.InstallApp(id, path)
+	ended(err)
+	return err
 }
 
 // HasMobileInventory is true when inventory lists an iOS or Android
@@ -508,6 +515,7 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 		h.ops = newOpRegistry()
 	}
 	opID := h.ops.begin(name, dev)
+	ctx = withDispatchOpID(ctx, opID)
 	ctx = goios.LifecycleOperation(ctx, opID, name, dev)
 	defer h.ops.end(opID)
 
@@ -520,7 +528,8 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 		// needs_attention before dump/exit.
 	}
 
-	ctx, cancel := withToolDeadline(ctx, name)
+	usbSpeed := h.cachedUSBSpeedLabel(dev)
+	ctx, cancel := withDispatchDeadline(ctx, name, args, usbSpeed)
 	defer cancel()
 
 	done := make(chan struct{})
@@ -566,7 +575,8 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 			go h.invalidateOnTimeout(name, dev)
 		}
 		close(done)
-		msg := formatTimeoutError(name, dev, elapsed)
+		installing := h.ops != nil && h.ops.isInstalling(opID)
+		msg := formatTimeoutError(name, dev, elapsed, installing)
 		slog.Error("mcp dispatch timeout",
 			"tool", name, "device", dev, "duration_ms", elapsed.Milliseconds())
 		// 🎯T99.3: if the handler is still stuck after a grace period,
@@ -770,6 +780,8 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 		return h.handleInputKeyContext(ctx, args)
 	case "deploy_app":
 		return h.deployAppContext(ctx, args, false)
+	case "install_app":
+		return h.handleInstallAppContext(ctx, args)
 	}
 	fn, ok := h.toolHandlers()[name]
 	if !ok {

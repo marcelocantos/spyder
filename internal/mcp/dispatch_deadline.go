@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/installdeadline"
 )
 
 // Tool-class deadlines (🎯T99.1). Tunable vars so tests can shorten them.
@@ -116,9 +118,10 @@ type opRegistry struct {
 }
 
 type inFlightEntry struct {
-	tool    string
-	device  string
-	started time.Time
+	tool       string
+	device     string
+	started    time.Time
+	installing bool
 }
 
 func newOpRegistry() *opRegistry {
@@ -140,6 +143,30 @@ func (r *opRegistry) end(id uint64) {
 	delete(r.ops, id)
 }
 
+func (r *opRegistry) setInstalling(id uint64, installing bool) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.ops[id]
+	if !ok {
+		return
+	}
+	e.installing = installing
+	r.ops[id] = e
+}
+
+func (r *opRegistry) isInstalling(id uint64) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	e, ok := r.ops[id]
+	return ok && e.installing
+}
+
 func (r *opRegistry) snapshot() []InFlightOp {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -156,24 +183,62 @@ func (r *opRegistry) snapshot() []InFlightOp {
 	return out
 }
 
-// withToolDeadline derives a child context with the tool-class timeout, or
-// returns ctx unchanged when the class deadline is zero.
-func withToolDeadline(ctx context.Context, name string) (context.Context, context.CancelFunc) {
+var installScaledTools = map[string]bool{
+	"install_app":    true,
+	"deploy_app":     true,
+	"ensure_session": true,
+	"launch_player":  true,
+}
+
+// dispatchDeadline returns the wall-clock budget for one dispatch, including
+// artifact/USB scaling for install-class tools (🎯T172).
+func dispatchDeadline(ctx context.Context, name string, args map[string]any, usbSpeedLabel string) time.Duration {
 	d := toolDeadlineClass(name)
-	if d <= 0 {
-		return context.WithCancel(ctx)
+	if installScaledTools[name] {
+		if path, ok := args["path"].(string); ok && path != "" {
+			deploy := name == "deploy_app" || name == "launch_player"
+			if scaled := installdeadline.Budget(path, usbSpeedLabel, deploy); scaled > d {
+				d = scaled
+			}
+		}
 	}
-	// Honour a tighter parent deadline if already set.
-	if dl, ok := ctx.Deadline(); ok && time.Until(dl) < d {
+	if dl, ok := ctx.Deadline(); ok {
+		remain := time.Until(dl)
+		if remain > 0 && remain > d {
+			d = remain
+		}
+	}
+	return d
+}
+
+// withDispatchDeadline derives a child context with the computed dispatch budget.
+func withDispatchDeadline(ctx context.Context, name string, args map[string]any, usbSpeedLabel string) (context.Context, context.CancelFunc) {
+	d := dispatchDeadline(ctx, name, args, usbSpeedLabel)
+	if d <= 0 {
 		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, d)
 }
 
+// withToolDeadline derives a child context with the tool-class timeout, or
+// returns ctx unchanged when the class deadline is zero.
+func withToolDeadline(ctx context.Context, name string) (context.Context, context.CancelFunc) {
+	return withDispatchDeadline(ctx, name, nil, "")
+}
+
 // formatTimeoutError builds the structured agent-visible timeout message.
-func formatTimeoutError(tool, device string, elapsed time.Duration) string {
+func formatTimeoutError(tool, device string, elapsed time.Duration, installInFlight bool) string {
+	base := fmt.Sprintf("tool timeout: %s after %s", tool, elapsed.Round(time.Millisecond))
 	if device != "" {
-		return fmt.Sprintf("tool timeout: %s on %s after %s", tool, device, elapsed.Round(time.Millisecond))
+		base = fmt.Sprintf("tool timeout: %s on %s after %s", tool, device, elapsed.Round(time.Millisecond))
 	}
-	return fmt.Sprintf("tool timeout: %s after %s", tool, elapsed.Round(time.Millisecond))
+	switch tool {
+	case "install_app", "deploy_app", "ensure_session", "launch_player":
+		if installInFlight {
+			return base + "; install transfer may still be running on the device (spyder stopped waiting; transfer was not cancelled)"
+		}
+		return base + "; install step was not in flight at timeout (this call likely did not leave a partial install)"
+	default:
+		return base
+	}
 }
