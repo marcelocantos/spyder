@@ -47,7 +47,7 @@ func TestSessionOverrideExpiresToFreshBaseAndClipsLease(t *testing.T) {
 	if err := c.SetSession(*s, 3*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	if calls[0]["ads"] != "suppressed" || calls[0]["orientation"] != "landscapeRight" || leases[0] != 3*time.Second {
 		t.Fatal(calls, leases)
 	}
@@ -61,7 +61,7 @@ func TestSessionOverrideExpiresToFreshBaseAndClipsLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	*now = now.Add(3 * time.Second)
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	if calls[1]["orientation"] != "landscapeLeft" || len(calls[1]) != 1 || len(c.SessionOverrides()) != 0 {
 		t.Fatal(calls, c.SessionOverrides())
 	}
@@ -160,7 +160,7 @@ func TestSessionAdsUnsupportedDoesNotBreakV1Orientation(t *testing.T) {
 		}
 		return true, nil
 	}
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	got := c.Statuses()[0]
 	if got.UnsupportedFlags["ads"] != "suppressed" || got.Applied["ads"] != "" || got.Applied["orientation"] != "landscapeRight" {
 		t.Fatal(got)
@@ -179,7 +179,7 @@ func TestSessionRevokeOnUSBOrOwnerLossAndRebindOnColdSession(t *testing.T) {
 				last = maps.Clone(f)
 				return true, nil
 			}
-			c.Reconcile(context.Background())
+			c.SyncReconcile(context.Background())
 			if last["ads"] != "suppressed" {
 				t.Fatal(last)
 			}
@@ -188,7 +188,7 @@ func TestSessionRevokeOnUSBOrOwnerLossAndRebindOnColdSession(t *testing.T) {
 			} else {
 				c.AuthorizeSession = func(string, string) error { return errors.New("owner lost") }
 			}
-			c.Reconcile(context.Background())
+			c.SyncReconcile(context.Background())
 			if len(last) != 0 {
 				t.Fatal("renewed lost proof", last)
 			}
@@ -207,7 +207,7 @@ func TestSessionRevokeOnUSBOrOwnerLossAndRebindOnColdSession(t *testing.T) {
 		}
 		return true, nil
 	}
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 }
 
 func TestSessionClearCannotRaceAnOlderRenewal(t *testing.T) {
@@ -232,7 +232,7 @@ func TestSessionClearCannotRaceAnOlderRenewal(t *testing.T) {
 	if err := <-cleared; err != nil {
 		t.Fatal(err)
 	}
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	if c.Statuses()[0].Applied["ads"] != "" {
 		t.Fatal("revived cleared lease", c.Statuses())
 	}

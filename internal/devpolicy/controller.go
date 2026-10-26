@@ -45,11 +45,48 @@ type Controller struct {
 	Authorize        func(device, owner string) error
 	AuthorizeSession func(device, owner string) error
 	Call             func(context.Context, Peer, Flags, time.Duration) (any, error)
+	LogPush          func(PushLog)
 	Now              func() time.Time
 	reconcileMu      sync.Mutex
 	mu               sync.Mutex
+	flightMu         sync.Mutex
+	inFlight         map[string]bool
+	dispatch         sync.WaitGroup
 	sessions         map[sessionKey]SessionOverride
 	statuses         map[string]Status
+}
+
+// WaitDispatches blocks until all peer workers started by the most recent
+// Reconcile waves have finished. Tests use this where Reconcile no longer waits
+// on slow siblings (🎯T174 / goios resolve hold).
+func (c *Controller) WaitDispatches() {
+	c.dispatch.Wait()
+}
+
+// SyncReconcile runs one reconcile wave and waits for every peer dispatch it
+// started. Hermetic tests use this; the daemon poll loop calls Reconcile alone.
+func (c *Controller) SyncReconcile(ctx context.Context) {
+	c.Reconcile(ctx)
+	c.WaitDispatches()
+}
+
+func (c *Controller) tryBeginDispatch(peerID string) bool {
+	c.flightMu.Lock()
+	defer c.flightMu.Unlock()
+	if c.inFlight == nil {
+		c.inFlight = map[string]bool{}
+	}
+	if c.inFlight[peerID] {
+		return false
+	}
+	c.inFlight[peerID] = true
+	return true
+}
+
+func (c *Controller) endDispatch(peerID string) {
+	c.flightMu.Lock()
+	delete(c.inFlight, peerID)
+	c.flightMu.Unlock()
 }
 
 func (c *Controller) Statuses() []Status {
@@ -83,13 +120,13 @@ func (c *Controller) Run(ctx context.Context) {
 // a reachable peer is explicitly revoked, and an unreachable lease expires.
 func (c *Controller) Reconcile(ctx context.Context) {
 	c.reconcileMu.Lock()
-	defer c.reconcileMu.Unlock()
 	cfg, configErr := c.Store.Load()
 	peers := c.Peers()
 	if len(peers) == 0 {
 		c.mu.Lock()
 		c.statuses = map[string]Status{}
 		c.mu.Unlock()
+		c.reconcileMu.Unlock()
 		return
 	}
 	proofAt := time.Now() // monotonic; oldest possible observation in this census
@@ -113,11 +150,15 @@ func (c *Controller) Reconcile(ctx context.Context) {
 		}
 	}
 	c.mu.Unlock()
-	var pending sync.WaitGroup
+	c.reconcileMu.Unlock()
 	for _, p := range peers {
-		pending.Add(1)
+		if !c.tryBeginDispatch(p.ID) {
+			continue
+		}
+		c.dispatch.Add(1)
 		go func(p Peer) {
-			defer pending.Done()
+			defer c.dispatch.Done()
+			defer c.endDispatch(p.ID)
 			prev, seen := previous[p.ID]
 			s := Status{SessionID: p.ID, DeviceID: p.DeviceID, BundleID: p.BundleID, Capable: p.Capable, AdsCapable: p.AdsCapable, USB: (usb[p.DeviceID] || usb[strings.ToUpper(strings.ReplaceAll(p.DeviceID, "-", ""))]) && proofErr == nil, Configured: cfg.Resolve(p.BundleID, nil), Applied: maps.Clone(prev.Applied), Ack: prev.Ack, LeaseExpiresAt: prev.LeaseExpiresAt, CheckedAt: now}
 			if !now.Before(s.LeaseExpiresAt) {
@@ -202,10 +243,17 @@ func (c *Controller) Reconcile(ctx context.Context) {
 						lease = remaining
 					}
 				}
+				outcome := "revoke"
+				if len(desired) > 0 {
+					outcome = "renew"
+				}
+				callStart := time.Now()
 				ack, err := c.Call(callCtx, p, desired, lease)
+				latency := time.Since(callStart)
 				stop()
 				if err != nil {
 					s.Error = "configure: " + err.Error()
+					c.logPush(PushLog{SessionID: p.ID, DeviceID: p.DeviceID, BundleID: p.BundleID, Flags: desired, Lease: lease, Latency: latency, Outcome: "error", Err: err.Error()})
 				} else {
 					s.Ack = ack
 					s.Applied = maps.Clone(desired)
@@ -214,9 +262,9 @@ func (c *Controller) Reconcile(ctx context.Context) {
 					} else {
 						s.LeaseExpiresAt = time.Time{}
 					}
+					c.logPush(PushLog{SessionID: p.ID, DeviceID: p.DeviceID, BundleID: p.BundleID, Flags: desired, Lease: lease, Latency: latency, Outcome: outcome})
 				}
 			}
 		}(p)
 	}
-	pending.Wait()
 }

@@ -95,7 +95,7 @@ func TestLeasesApplyRenewRevokeReconnectAndReservations(t *testing.T) {
 		calls = append(calls, maps.Clone(f))
 		return map[string]any{"applied": true}, errorCall
 	}}
-	sweep := func() { t.Helper(); c.Reconcile(context.Background()); now = now.Add(PollInterval) }
+	sweep := func() { t.Helper(); c.SyncReconcile(context.Background()); now = now.Add(PollInterval) }
 	sweep()
 	sweep()
 	if len(calls) != 2 || calls[1]["orientation"] != "landscapeRight" {
@@ -165,7 +165,7 @@ func TestUnknownUSBAndCorruptPolicyNeverApply(t *testing.T) {
 		}
 		return true, nil
 	}}
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	if c.Statuses()[0].Error == "" {
 		t.Fatal("hid unknown proof")
 	}
@@ -187,19 +187,19 @@ func TestFailedRevokeExpiresAppliedStatus(t *testing.T) {
 		}
 		return true, nil
 	}}
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	if len(c.Statuses()[0].Applied) == 0 {
 		t.Fatal("did not apply")
 	}
 	physical = false
 	reachable = false
 	now = now.Add(PollInterval)
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	if c.Statuses()[0].Error == "" || len(c.Statuses()[0].Applied) == 0 {
 		t.Fatal("hid outstanding lease", c.Statuses())
 	}
 	now = now.Add(Lease)
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	if len(c.Statuses()[0].Applied) != 0 {
 		t.Fatal("reported expired lease as applied", c.Statuses())
 	}
@@ -245,10 +245,32 @@ func TestSlowPeersDoNotDelayHealthyRenewals(t *testing.T) {
 		t.Fatal("healthy renewal waited behind slow peers")
 	}
 	close(release)
+	c.WaitDispatches()
 	select {
 	case <-done:
 	case <-time.After(CallTimeout):
 		t.Fatal("reconcile did not finish after release")
+	}
+}
+
+func TestPushLogRecordsOutcomeAndLatency(t *testing.T) {
+	s := &Store{Path: filepath.Join(t.TempDir(), "policy.json")}
+	cfg := Empty()
+	cfg.Global = Flags{"orientation": "landscapeRight"}
+	if err := s.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	var logs []PushLog
+	c := Controller{
+		Store:   s,
+		LogPush: func(rec PushLog) { logs = append(logs, rec) },
+		Peers:   func() []Peer { return []Peer{{ID: "1", DeviceID: "USB", BundleID: "app", Capable: true}} },
+		USB:     func(context.Context) (map[string]bool, error) { return map[string]bool{"USB": true}, nil },
+		Call:    func(context.Context, Peer, Flags, time.Duration) (any, error) { return true, nil },
+	}
+	c.SyncReconcile(context.Background())
+	if len(logs) != 1 || logs[0].Outcome != "renew" || logs[0].DeviceID != "USB" || logs[0].Latency < 0 {
+		t.Fatal(logs)
 	}
 }
 
@@ -269,7 +291,7 @@ func TestStaleUSBObservationCannotRenewLease(t *testing.T) {
 		sent = maps.Clone(f)
 		return true, nil
 	}}
-	c.Reconcile(context.Background())
+	c.SyncReconcile(context.Background())
 	if len(sent) != 0 || c.Statuses()[0].USB || c.Statuses()[0].Error != "USB proof is stale" {
 		t.Fatal("used stale USB proof", sent, c.Statuses())
 	}

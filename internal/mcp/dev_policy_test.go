@@ -108,7 +108,7 @@ func TestDevPolicyRealChannelRequiresExplicitApplicationAck(t *testing.T) {
 				t.Fatal(err)
 			}
 			c.USB = func(context.Context) (map[string]bool, error) { return map[string]bool{"test-device": true}, nil }
-			c.Reconcile(context.Background())
+			c.SyncReconcile(context.Background())
 			statuses := c.Statuses()
 			if len(statuses) != 1 || statuses[0].SessionID != sid {
 				t.Fatal(statuses)

@@ -45,6 +45,7 @@ func TestHealthyStatusVisibleWhileSiblingCallIsPending(t *testing.T) {
 	go func() { c.Reconcile(context.Background()); close(done) }()
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(release) })
+		c.WaitDispatches()
 		select {
 		case <-done:
 		case <-time.After(MaxProofAge):
@@ -118,6 +119,7 @@ func TestStatusRefreshKeepsPresentPriorACKAndDropsDepartedPeer(t *testing.T) {
 	go func() { c.Reconcile(context.Background()); close(done) }()
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(release) })
+		c.WaitDispatches()
 		select {
 		case <-done:
 		case <-time.After(MaxProofAge):
@@ -138,6 +140,7 @@ func TestStatusRefreshKeepsPresentPriorACKAndDropsDepartedPeer(t *testing.T) {
 		t.Fatal("status reader mutated controller-owned flag state")
 	}
 	releaseOnce.Do(func() { close(release) })
+	c.WaitDispatches()
 	select {
 	case <-done:
 	case <-time.After(MaxProofAge):
