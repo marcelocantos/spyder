@@ -81,3 +81,25 @@ borrowed store needs recovery from the submodule's upstream before repair.
 Do not just delete `objects/info/alternates`: objects reachable only through
 that file would disappear. The fixture regression is
 `./scripts/check-player-submodules-test.sh`.
+
+### Zero-install browser link (development bundle)
+
+Build the optional wasm glass with `make player-web` (Emscripten required) and
+serve it from the daemon at `/player/`. Use a daemon address reachable from the
+phone on the same LAN; `localhost` on a phone refers to the phone, not your Mac.
+The relay's WebSocket origin check requires the link's HTTP host and port to be
+the same as the stream relay. This path is HTTP/WS only; HTTPS/WSS needs a
+separate transport change. For example:
+
+```sh
+python3 scripts/player-pair.py --host 192.168.1.23 --port 3030 --name tiltbuggy --qr /tmp/tiltbuggy.png
+# prints http://192.168.1.23:3030/player/?host=192.168.1.23&port=3030&name=tiltbuggy
+```
+
+Open the printed URL directly or scan the PNG with the phone camera. The page
+auto-connects, with a phone device class by default. `qrencode` is optional
+unless `--qr` is requested; the QR is just a link and does not authenticate or
+create a server. Start the named ge streaming server and ensure the daemon is
+reachable from the phone first. The native player and its Keychain state are
+not used or modified by this browser path. Generating a QR is not proof of a
+successful physical phone scan/play session.
