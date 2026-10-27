@@ -333,6 +333,7 @@ bool PlayerWireBridge::pump() {
             }
 
             auto frameNals = i_->avcc.parse(avccData, avccSize);
+#ifndef __EMSCRIPTEN__
             if (i_->decoder && i_->avcc.paramsDirty && i_->avcc.hasParams()) {
                 i_->decoder->setParameterSets(
                     i_->avcc.sps.data(), i_->avcc.sps.size(),
@@ -340,30 +341,11 @@ bool PlayerWireBridge::pump() {
                 i_->avcc.paramsDirty = false;
                 SPDLOG_INFO("PlayerWireBridge: decoder initialized with SPS/PPS");
             }
-            if (i_->decoder) {
-                static const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
-#ifdef __EMSCRIPTEN__
-                // WebCodecs wants one EncodedVideoChunk per access unit (same
-                // shape as the dashboard SP2V player), not per-slice VT feeds.
-                std::vector<uint8_t> annexB;
-                for (auto& [nalBody, nalSize] : frameNals) {
-                    uint8_t nalType = nalBody[0] & 0x1F;
-                    if (nalType != 1 && nalType != 5) continue;
-                    annexB.insert(annexB.end(), startCode, startCode + 4);
-                    annexB.insert(annexB.end(), nalBody, nalBody + nalSize);
-                }
-                if (!annexB.empty())
-                    i_->decoder->decode(annexB.data(), annexB.size());
-#else
-                for (auto& [nalBody, nalSize] : frameNals) {
-                    uint8_t nalType = nalBody[0] & 0x1F;
-                    if (nalType != 1 && nalType != 5) continue;
-                    std::vector<uint8_t> annexB(4 + nalSize);
-                    std::memcpy(annexB.data(), startCode, 4);
-                    std::memcpy(annexB.data() + 4, nalBody, nalSize);
-                    i_->decoder->decode(annexB.data(), annexB.size());
-                }
 #endif
+            if (i_->decoder) {
+                const bool keyframe =
+                    data.size() > 8 && (static_cast<uint8_t>(data[8]) & 1) != 0;
+                i_->decoder->decodeAccessUnit(avccData, avccSize, keyframe);
             }
             i_->stats.framesThisTick++;
             i_->stats.lastSeq = seq;

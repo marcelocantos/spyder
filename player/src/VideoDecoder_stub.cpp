@@ -24,6 +24,8 @@ VideoDecoder::~VideoDecoder() = default;
 void VideoDecoder::setParameterSets(const uint8_t*, size_t,
                                     const uint8_t*, size_t) {}
 
+void VideoDecoder::decodeAccessUnit(const uint8_t*, size_t, bool) {}
+
 void VideoDecoder::decode(const uint8_t*, size_t) {
     if (!m->warned) {
         m->warned = true;

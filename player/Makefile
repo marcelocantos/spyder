@@ -156,7 +156,8 @@ WEB_LINK_FLAGS = \
 	-sSTACK_SIZE=1048576 \
 	-lwebsocket.js \
 	-sDISABLE_EXCEPTION_CATCHING=0 \
-	-sEXCEPTION_STACK_TRACES=1
+	-sEXCEPTION_STACK_TRACES=1 \
+	-sEXPORTED_FUNCTIONS=['_main','_spyder_wc_on_frame_iyuv','_malloc','_free']
 
 WEB_SDL_LIBS = \
 	$(PLAYER_ROOT)/vendor/sdl3/lib/web-wasm/libSDL3_image.a \

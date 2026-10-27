@@ -125,6 +125,23 @@ void VideoDecoder::setParameterSets(const uint8_t* sps, size_t spsSize,
     SPDLOG_INFO("VideoDecoder: SPS/PPS set ({} + {} bytes), codec opened", spsSize, ppsSize);
 }
 
+void VideoDecoder::decodeAccessUnit(const uint8_t* avccData, size_t avccSize,
+                                  bool /*keyframe*/) {
+    static const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
+    std::vector<uint8_t> annexB;
+    size_t off = 0;
+    while (off + 4 <= avccSize) {
+        uint32_t nalLen = (uint32_t(avccData[off]) << 24) | (uint32_t(avccData[off + 1]) << 16)
+                        | (uint32_t(avccData[off + 2]) << 8) | uint32_t(avccData[off + 3]);
+        off += 4;
+        if (nalLen == 0 || off + nalLen > avccSize) break;
+        annexB.insert(annexB.end(), startCode, startCode + 4);
+        annexB.insert(annexB.end(), avccData + off, avccData + off + nalLen);
+        off += nalLen;
+    }
+    if (!annexB.empty()) decode(annexB.data(), annexB.size());
+}
+
 void VideoDecoder::decode(const uint8_t* nalData, size_t nalSize) {
     if (!m->ctx || !m->opened || !m->parser || nalSize == 0) return;
 

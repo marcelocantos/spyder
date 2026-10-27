@@ -42,6 +42,9 @@ public:
     // Decode a single NAL unit (Annex B format with 0x00000001 start code).
     void decode(const uint8_t* nalData, size_t nalSize);
 
+    // SP2V access unit: AVCC (4-byte BE length + NAL)* with wire keyframe flag.
+    void decodeAccessUnit(const uint8_t* avccData, size_t avccSize, bool keyframe);
+
     // Flush pending frames.
     void flush();
 
