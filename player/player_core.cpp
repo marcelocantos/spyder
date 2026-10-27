@@ -40,6 +40,14 @@ EM_ASYNC_JS(void, spyderWebYield, (), {
         requestAnimationFrame(() => { clearTimeout(t); resolve(); });
     });
 });
+
+// Browser oracles (🎯T101.5): headless Chrome cannot read spdlog; expose
+// present FPS + rung on globalThis for chromedp tests.
+EM_JS(void, spyder_browser_note_fps, (double fps, int cmdstream), {
+    globalThis.spyderTest = globalThis.spyderTest || {};
+    globalThis.spyderTest.lastFPS = fps;
+    globalThis.spyderTest.cmdstream = cmdstream;
+});
 #endif
 
 #include <chrono>
@@ -580,6 +588,9 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
         const double winSec = double(now - fpsWindowStart) / double(freq);
         if (winSec >= 1.0) {
             const double fps = double(fpsWindowFrames) / winSec;
+#ifdef __EMSCRIPTEN__
+            spyder_browser_note_fps(fps, stats.cmdstream ? 1 : 0);
+#endif
             SPDLOG_INFO("PlayerFPS: {:.1f} fps over {:.2f}s ({} frames) "
                         "cmdstream={} last_wire={}B last_seq={}",
                         fps, winSec, fpsWindowFrames,

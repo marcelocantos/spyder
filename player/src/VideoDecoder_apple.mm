@@ -156,6 +156,28 @@ void VideoDecoder::setParameterSets(const uint8_t* sps, size_t spsSize,
     m->createSession();
 }
 
+void VideoDecoder::decodeAccessUnit(const uint8_t* avccData, size_t avccSize,
+                                  bool /*keyframe*/) {
+    static const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
+    size_t off = 0;
+    while (off + 4 <= avccSize) {
+        uint32_t nalLen = (uint32_t(avccData[off]) << 24) | (uint32_t(avccData[off + 1]) << 16)
+                        | (uint32_t(avccData[off + 2]) << 8) | uint32_t(avccData[off + 3]);
+        off += 4;
+        if (nalLen == 0 || off + nalLen > avccSize) break;
+        uint8_t nalType = avccData[off] & 0x1F;
+        if (nalType != 1 && nalType != 5) {
+            off += nalLen;
+            continue;
+        }
+        std::vector<uint8_t> annexB(4 + nalLen);
+        std::memcpy(annexB.data(), startCode, 4);
+        std::memcpy(annexB.data() + 4, avccData + off, nalLen);
+        decode(annexB.data(), annexB.size());
+        off += nalLen;
+    }
+}
+
 void VideoDecoder::decode(const uint8_t* nalData, size_t nalSize) {
     if (!m->session || !m->formatDesc) return;
 
