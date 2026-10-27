@@ -105,7 +105,7 @@ player: $(PLAYER)
 # ── Browser player (🎯T101): same C++ tree compiled to wasm ──────────────
 #
 # Web-specific TUs swap in for the platform ones: browser WebSocket API
-# replaces asio, no H.264 decoder (cmdstream-only v1), no system fonts.
+# replaces asio, WebCodecs H.264 leg (🎯T101.5), no system fonts.
 # SDL3 + freetype are prebuilt for wasm under vendor/sdl3/lib/web-wasm/
 # (built from the vendored sources via emcmake; see README).
 WEB_DIR      := $(PLAYER_ROOT)/web
@@ -120,7 +120,7 @@ WEB_CXX_SRC = \
 	$(PLAYER_ROOT)/src/PlayerRender.cpp \
 	$(PLAYER_ROOT)/src/PlayerWireBridge.cpp \
 	$(PLAYER_ROOT)/src/WebSocketClient_web.cpp \
-	$(PLAYER_ROOT)/src/VideoDecoder_stub.cpp \
+	$(PLAYER_ROOT)/src/VideoDecoder_web.cpp \
 	$(PLAYER_ROOT)/src/FontLoader_web.cpp \
 	$(PLAYER_ROOT)/src/CmdStream.cpp \
 	$(PLAYER_ROOT)/src/Signal.cpp \

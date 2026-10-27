@@ -172,6 +172,11 @@ bool PlayerWireBridge::sendDeviceInfo(const wire::DeviceInfo& devInfo) {
     di.magic = wire::kDeviceInfoMagic;
     di.version = wire::kProtocolVersion;
     di.capabilities = static_cast<uint8_t>(di.capabilities | wire::kCapCommandStream);
+#ifdef __EMSCRIPTEN__
+    // 🎯T101.5: wasm glass decodes SP2V via WebCodecs; advertise H.264 so the
+    // server can select the video rung (same negotiation shape as native VT).
+    di.capabilities = static_cast<uint8_t>(di.capabilities | wire::kCapH264);
+#endif
     wire::MessageHeader hdr{};
     hdr.magic = wire::kDeviceInfoMagic;
     hdr.length = sizeof(wire::DeviceInfo);
@@ -337,6 +342,19 @@ bool PlayerWireBridge::pump() {
             }
             if (i_->decoder) {
                 static const uint8_t startCode[] = {0x00, 0x00, 0x00, 0x01};
+#ifdef __EMSCRIPTEN__
+                // WebCodecs wants one EncodedVideoChunk per access unit (same
+                // shape as the dashboard SP2V player), not per-slice VT feeds.
+                std::vector<uint8_t> annexB;
+                for (auto& [nalBody, nalSize] : frameNals) {
+                    uint8_t nalType = nalBody[0] & 0x1F;
+                    if (nalType != 1 && nalType != 5) continue;
+                    annexB.insert(annexB.end(), startCode, startCode + 4);
+                    annexB.insert(annexB.end(), nalBody, nalBody + nalSize);
+                }
+                if (!annexB.empty())
+                    i_->decoder->decode(annexB.data(), annexB.size());
+#else
                 for (auto& [nalBody, nalSize] : frameNals) {
                     uint8_t nalType = nalBody[0] & 0x1F;
                     if (nalType != 1 && nalType != 5) continue;
@@ -345,6 +363,7 @@ bool PlayerWireBridge::pump() {
                     std::memcpy(annexB.data() + 4, nalBody, nalSize);
                     i_->decoder->decode(annexB.data(), annexB.size());
                 }
+#endif
             }
             i_->stats.framesThisTick++;
             i_->stats.lastSeq = seq;

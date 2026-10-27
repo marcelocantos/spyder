@@ -28,6 +28,7 @@ int main() {
     CHECK(kSdlEventMagic == 0x53503249u);    // "SP2I"
     CHECK(kSessionConfigMagic != 0);
     CHECK(kDeviceInfoMagic != 0);
+    CHECK(kCapH264 == 8u);  // v7+ capability ladder (🎯T101.5)
 
     // Struct sizes — drift here means silent wire breakage.
     CHECK(sizeof(MessageHeader) == 8);
