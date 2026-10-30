@@ -34,6 +34,19 @@
 // fires — still drain the wire a few times a second. setTimeout alone is
 // NOT usable as the pacer: WebKit throttles it to 1 s for inactive pages,
 // which ran the whole main loop at 0.3 Hz.
+// IDBFS is populated before connect/seed. Each server SP2T push is copied
+// into a serialized async syncfs writer; never block the render loop at 2 Hz.
+EM_ASYNC_JS(int, spyderWebDurableInit, (), {
+    return await SpyderDurableState.init(FS, IDBFS) ? 1 : 0;
+});
+EM_JS(void, spyderWebDurableWrite, (const char* path, const uint8_t* data, int size), {
+    SpyderDurableState.write(FS, UTF8ToString(path), HEAPU8.slice(data, data + size));
+});
+EM_ASYNC_JS(void, spyderWebDurableFlush, (), {
+    try { await SpyderDurableState.flush(); }
+    catch (err) { console.error('SP2T: final browser sync failed:', err); }
+});
+
 EM_ASYNC_JS(void, spyderWebYield, (), {
     await new Promise((resolve) => {
         const t = setTimeout(resolve, 250);
@@ -78,6 +91,12 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
         SPDLOG_ERROR("SDL_Init failed: {}", SDL_GetError());
         return 1;
     }
+
+#ifdef __EMSCRIPTEN__
+    // Populate IDBFS before the handshake: even an immediate server push
+    // cannot race a prior browser snapshot into an empty filesystem.
+    const bool webDurableReady = spyderWebDurableInit() != 0;
+#endif
 
     // ── Handshake (🎯T154) — init is seed; discovery is derived ──
     //
@@ -217,8 +236,14 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
     // process immediately after DeviceInfo (iOS: attach→detach in ~40ms with
     // zero SP2S frames). Keep the glass alive on :memory: instead.
     std::string playerDbPath = ":memory:";
-#ifndef __EMSCRIPTEN__
-    // 🎯T101.7 defers browser durable state (OPFS/IDBFS); web runs :memory:.
+#ifdef __EMSCRIPTEN__
+    // A failed IDBFS mount/populate must not create a false empty seed.
+    // Use the same per-catalogue-name path policy as the native player.
+    if (webDurableReady) {
+        playerDbPath = spyder::durableDbPathForPlayer(
+            serverName.c_str(), "/spyder-state/");
+    }
+#else
     if (char* pref = SDL_GetPrefPath("squz", "spyder-player")) {
         playerDbPath = spyder::durableDbPathForPlayer(serverName.c_str(), pref);
         if (playerDbPath != ":memory:") {
@@ -372,8 +397,7 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
     // Documents/ write (fopen/trunc/write at 2 Hz) blocked the loop 30-60 ms
     // per push on iOS flash — measured as 2 Hz hold-then-skip judder in
     // PresentTrace. Latest-wins: an unwritten older snapshot is superseded.
-    // Web: no writer thread (no pthreads in the wasm leg) and no durable
-    // path to write — playerDbPath is pinned to :memory: above.
+    // Web: serialized async IDBFS syncfs writer (no pthreads in wasm).
 #ifndef __EMSCRIPTEN__
     std::mutex sp2tMu;
     std::condition_variable sp2tCv;
@@ -461,7 +485,7 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             break;
         }
         // 🎯T154 SP2T: server→player durable push (stream / detach). Write
-        // immediately to the per-game PrefPath file (fire-and-forget FS).
+        // to the per-game file; web serializes syncfs without render stalls.
         {
             std::vector<uint8_t> push;
             if (wire.pollSp2tSnapshot(push) && !push.empty() &&
@@ -472,6 +496,9 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
                     sp2tPendingBlob = std::move(push); // latest wins
                 }
                 sp2tCv.notify_one();
+#else
+                spyderWebDurableWrite(playerDbPath.c_str(), push.data(),
+                                      static_cast<int>(push.size()));
 #endif
             }
         }
@@ -607,7 +634,10 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
 #endif
     }
 
-#ifndef __EMSCRIPTEN__
+#ifdef __EMSCRIPTEN__
+    // Graceful wire close waits for the last snapshot before onExit reloads.
+    if (playerDbPath != ":memory:") spyderWebDurableFlush();
+#else
     {
         std::lock_guard<std::mutex> lk(sp2tMu);
         sp2tExit = true;

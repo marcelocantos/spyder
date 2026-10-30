@@ -154,7 +154,8 @@ WEB_LINK_FLAGS = \
 	-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 \
 	-sENVIRONMENT=web -sEXIT_RUNTIME=1 \
 	-sSTACK_SIZE=1048576 \
-	-lwebsocket.js \
+	-lwebsocket.js -lidbfs.js \
+	--pre-js $(WEB_DIR)/durable-state.js \
 	-sDISABLE_EXCEPTION_CATCHING=0 \
 	-sEXCEPTION_STACK_TRACES=1 \
 	-sEXPORTED_FUNCTIONS=['_main','_spyder_wc_on_frame_iyuv','_malloc','_free']
@@ -170,7 +171,7 @@ WEB_OBJS    = $(WEB_CXX_OBJ) $(WEB_C_OBJ)
 
 web: $(WEB_DIST)/player.js
 
-$(WEB_DIST)/player.js: $(WEB_OBJS) $(WEB_DIR)/index.html
+$(WEB_DIST)/player.js: $(WEB_OBJS) $(WEB_DIR)/index.html $(WEB_DIR)/durable-state.js
 	@mkdir -p $(WEB_DIST)
 	$(EMCC) $(WEB_CXXFLAGS) $(WEB_OBJS) $(WEB_SDL_LIBS) $(WEB_LINK_FLAGS) \
 	    -o $@
