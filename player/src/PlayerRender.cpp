@@ -358,8 +358,8 @@ void PlayerRender::fillDeviceInfo(wire::DeviceInfo& out) const {
     // gap where no bar exists. SessionConfig.immersive already applied
     // ⇒ ui-safe collapses to draw-safe (cutouts only).
 #ifdef __EMSCRIPTEN__
-    // CSS env() is the browser's live notch/gesture inset. In fullscreen it
-    // remains the cutout; ui-safe and draw-safe both exclude that glass.
+    // CSS env() is the browser's live notch/gesture inset. The bottom
+    // home-indicator exclusion is UI-safe only: content can draw behind it.
     const int l = std::clamp(int(std::lround(spyder_web_inset(0))), 0, int(out.width));
     const int t = std::clamp(int(std::lround(spyder_web_inset(1))), 0, int(out.height));
     const int r = std::clamp(int(std::lround(spyder_web_inset(2))), 0, int(out.width) - l);
@@ -367,7 +367,8 @@ void PlayerRender::fillDeviceInfo(wire::DeviceInfo& out) const {
     out.drawSafeX = out.safeX = l;
     out.drawSafeY = out.safeY = t;
     out.drawSafeW = out.safeW = out.width - l - r;
-    out.drawSafeH = out.safeH = out.height - t - b;
+    out.drawSafeH = out.height - t;
+    out.safeH = out.height - t - b;
 #else
     if (i_->immersive) {
         out.safeX = out.drawSafeX;
