@@ -8,7 +8,7 @@
          http://<spyder-host>:<port>/player/?name=<server-name>
 
      Optional query params: host, port (default: this page's origin),
-     class (device-class override: phone|tablet|desktop, default desktop).
+     class (device-class override: phone|tablet|desktop, auto-detected).
 -->
 <html lang="en">
 <head>
@@ -40,7 +40,10 @@
   const name = params.get('name') || 'server';
   const host = params.get('host') || location.hostname;
   const port = params.get('port') || location.port || '3030';
-  const devClass = params.get('class') || 'desktop';
+  // A scanned link uses the phone's glass unless explicitly overridden.
+  const devClass = params.get('class') ||
+    (/Android|iPhone|iPod/i.test(navigator.userAgent) ? 'phone' :
+     /iPad/i.test(navigator.userAgent) ? 'tablet' : 'desktop');
   document.title = 'spyder player — ' + name;
 
   const statusEl = document.getElementById('status');
