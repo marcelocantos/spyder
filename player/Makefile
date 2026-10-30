@@ -171,11 +171,11 @@ WEB_OBJS    = $(WEB_CXX_OBJ) $(WEB_C_OBJ)
 
 web: $(WEB_DIST)/player.js
 
-$(WEB_DIST)/player.js: $(WEB_OBJS) $(WEB_DIR)/index.html $(WEB_DIR)/durable-state.js
+$(WEB_DIST)/player.js: $(WEB_OBJS) $(WEB_DIR)/index.html $(WEB_DIR)/durable-state.js $(WEB_DIR)/platform.js
 	@mkdir -p $(WEB_DIST)
 	$(EMCC) $(WEB_CXXFLAGS) $(WEB_OBJS) $(WEB_SDL_LIBS) $(WEB_LINK_FLAGS) \
 	    -o $@
-	cp $(WEB_DIR)/index.html $(WEB_DIST)/index.html
+	cp $(WEB_DIR)/index.html $(WEB_DIR)/platform.js $(WEB_DIST)/
 	@echo "built $(WEB_DIST)/{player.js,player.wasm,index.html} (browser glass)"
 
 $(WEB_BUILD)/%.o: $(PLAYER_ROOT)/%.cpp

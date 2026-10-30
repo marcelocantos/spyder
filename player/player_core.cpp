@@ -54,6 +54,22 @@ EM_ASYNC_JS(void, spyderWebYield, (), {
     });
 });
 
+// JS policy is configured only after SessionConfig arrives. Motion is pulled
+// once per render pump, so the wire never receives an uninitialised SDL sensor.
+EM_JS(void, spyder_web_configure, (int sensors, int orientation, int flags), {
+    globalThis.spyderPlatform.configure(sensors, orientation, flags);
+});
+EM_JS(int, spyder_web_motion_revision, (), {
+    return globalThis.spyderPlatform.state.revision;
+});
+EM_JS(double, spyder_web_motion_axis, (int axis), {
+    return globalThis.spyderPlatform.state.motion?.[axis] ?? 0;
+});
+EM_JS(double, spyder_web_inset_signature, (), {
+    const p = globalThis.spyderPlatform.insets();
+    // Changes in any CSS safe inset, including orientation/chrome transitions.
+    return p[0] + p[1]*65536 + p[2]*4294967296 + p[3]*281474976710656;
+});
 // Browser oracles (🎯T101.5): headless Chrome cannot read spdlog; expose
 // present FPS + rung on globalThis for chromedp tests.
 EM_JS(void, spyder_browser_note_fps, (double fps, int cmdstream), {
@@ -64,6 +80,7 @@ EM_JS(void, spyder_browser_note_fps, (double fps, int cmdstream), {
 #endif
 
 #include <chrono>
+#include <cmath>
 #ifndef __EMSCRIPTEN__
 #include <condition_variable>
 #include <mutex>
@@ -156,9 +173,15 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
     // Apply the rest of SessionConfig now that a window/activity exists.
     // Blocking applyImmersive waits for the OS layout/insets pass so the
     // subsequent DeviceInfo read sees the configured surface.
+#ifdef __EMSCRIPTEN__
+    spyder_web_configure(cfg.sensors, cfg.orientation, cfg.flags);
+#else
     if (immersive) spyder::applyImmersive(true);
+#endif
     if (noSaver) SDL_DisableScreenSaver();
+#ifndef __EMSCRIPTEN__
     if (cfg.sensors & wire::kSensorAccelerometer) render.enableAccelerometer();
+#endif
 
     // Direct: playerForceOrientation from DirectRenderHost::send after host
     // is up. Stream: same call after immersive so DeviceInfo is measured on
@@ -435,6 +458,11 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
     uint64_t fpsWindowFrames = 0;
     const uint64_t freq = SDL_GetPerformanceFrequency();
 
+#ifdef __EMSCRIPTEN__
+    int lastMotionRevision = 0;
+    double lastInsetSignature = spyder_web_inset_signature();
+    bool motionDeclared = false;
+#endif
     while (!spyder::shouldQuit()) {
         const uint64_t tEv0 = SDL_GetPerformanceCounter();
         auto pump = render.pumpEvents();
@@ -442,6 +470,31 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             SPDLOG_INFO("player: exit — SDL quit event");
             break;
         }
+#ifdef __EMSCRIPTEN__
+        const double insets = spyder_web_inset_signature();
+        if (insets != lastInsetSignature) {
+            lastInsetSignature = insets;
+            pump.surfaceChanged = true;
+        }
+        const int revision = spyder_web_motion_revision();
+        if ((cfg.sensors & wire::kSensorAccelerometer) && revision > lastMotionRevision) {
+            lastMotionRevision = revision;
+            SDL_Event motion{};
+            motion.type = SDL_EVENT_SENSOR_UPDATE;
+            motion.sensor.data[0] = float(spyder_web_motion_axis(0));
+            motion.sensor.data[1] = float(spyder_web_motion_axis(1));
+            motion.sensor.data[2] = float(spyder_web_motion_axis(2));
+            if (std::isfinite(motion.sensor.data[0]) &&
+                std::isfinite(motion.sensor.data[1]) &&
+                std::isfinite(motion.sensor.data[2])) {
+                wire.sendEvent(motion);
+                if (!motionDeclared) {
+                    motionDeclared = true;
+                    pump.surfaceChanged = true; // capability now usable
+                }
+            }
+        }
+#endif
         if (pump.surfaceChanged) sendViewerDiscovery();
         if (pump.lifecycleKind != 0) {
             wire::ViewerLifecycle life{};

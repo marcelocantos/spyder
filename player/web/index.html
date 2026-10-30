@@ -55,6 +55,8 @@
     canvasEl.height = Math.floor(innerHeight * devicePixelRatio);
   }
   fitCanvas();
+  addEventListener('resize', fitCanvas);
+  if (visualViewport) visualViewport.addEventListener('resize', fitCanvas);
 
   // Reconnect with exponential backoff (matches the native player's
   // policy shape: 1s base, doubling, 30s cap; reset after a session that
@@ -101,6 +103,7 @@
       statusEl.textContent = 'cannot reach server "' + name + '" — retrying';
   }
 </script>
+<script src="platform.js"></script>
 <script src="player.js"></script>
 </body>
 </html>

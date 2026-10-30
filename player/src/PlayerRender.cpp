@@ -13,6 +13,15 @@
 #include "CutoutInsets.h"
 
 #include <SDL3/SDL.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/em_js.h>
+EM_JS(double, spyder_web_inset, (int side), {
+    return globalThis.spyderPlatform ? globalThis.spyderPlatform.insets()[side] : 0;
+});
+EM_JS(int, spyder_web_motion_ready, (), {
+    return !!globalThis.spyderPlatform?.state.motion;
+});
+#endif
 #include <spdlog/spdlog.h>
 
 #if defined(__APPLE__)
@@ -186,6 +195,9 @@ bool PlayerRender::hasAccelerometer() const {
     // glass have a real accelerometer at all? Enumeration only — independent
     // of whether SessionConfig asked us to open it yet. Simulator reports
     // none (realSensorAvailable() is forced false there).
+#ifdef __EMSCRIPTEN__
+    return spyder_web_motion_ready() != 0;
+#endif
     if (!realSensorAvailable()) return false;
     bool found = false;
     int count = 0;
@@ -224,6 +236,9 @@ void PlayerRender::enableAccelerometer() {
             SDL_free(sensors);
         }
     }
+#ifdef __EMSCRIPTEN__
+    if (spyder_web_motion_ready()) return; // browser motion is pumped from JS
+#endif
     if (!i_->accelSensor) {
         SPDLOG_INFO("PlayerRender: no local accelerometer — tilt gestures "
                     "(Shift+drag) forward to the server's synthesizer");
@@ -256,8 +271,10 @@ void PlayerRender::getDeviceDimensions(int& w, int& h, int& pixelRatio) const {
         o == wire::kOrientationLandscape ||
         o == wire::kOrientationLandscapeFlipped ||
         o == wire::kOrientationAnyLandscape;
+#ifndef __EMSCRIPTEN__
     if (wantPortrait  && w > h) std::swap(w, h);
     if (wantLandscape && h > w) std::swap(w, h);
+#endif
 }
 
 void PlayerRender::fillDeviceInfo(wire::DeviceInfo& out) const {
@@ -340,6 +357,18 @@ void PlayerRender::fillDeviceInfo(wire::DeviceInfo& out) const {
     // insets (status bar ~72px) — that would push HUD/title down into a
     // gap where no bar exists. SessionConfig.immersive already applied
     // ⇒ ui-safe collapses to draw-safe (cutouts only).
+#ifdef __EMSCRIPTEN__
+    // CSS env() is the browser's live notch/gesture inset. In fullscreen it
+    // remains the cutout; ui-safe and draw-safe both exclude that glass.
+    const int l = std::clamp(int(std::lround(spyder_web_inset(0))), 0, int(out.width));
+    const int t = std::clamp(int(std::lround(spyder_web_inset(1))), 0, int(out.height));
+    const int r = std::clamp(int(std::lround(spyder_web_inset(2))), 0, int(out.width) - l);
+    const int b = std::clamp(int(std::lround(spyder_web_inset(3))), 0, int(out.height) - t);
+    out.drawSafeX = out.safeX = l;
+    out.drawSafeY = out.safeY = t;
+    out.drawSafeW = out.safeW = out.width - l - r;
+    out.drawSafeH = out.safeH = out.height - t - b;
+#else
     if (i_->immersive) {
         out.safeX = out.drawSafeX;
         out.safeY = out.drawSafeY;
@@ -351,6 +380,7 @@ void PlayerRender::fillDeviceInfo(wire::DeviceInfo& out) const {
             toPx(ui, out.safeX, out.safeY, out.safeW, out.safeH);
         }
     }
+#endif
 }
 
 void PlayerRender::updateVideoTexture(const VideoFrame& frame) {
