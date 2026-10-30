@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/color"
 	"image/png"
 	"io"
 	"io/fs"
@@ -34,8 +33,8 @@ import (
 //	<dir>/<run-id>.tar.zst        tar of <run-id>/…, zstd -10
 //	  <run-id>/archive-files.json name, size, sha256 of every original
 //	                              file + stored_as + codec + restore note
-//	  <run-id>/<x>.jxl            PNGs as lossless JPEG XL (cjxl -d 0 -e 7),
-//	                              decoded back and compared pixel-for-pixel
+//	  <run-id>/<x>.jxl            PNGs as lossy JPEG XL (cjxl -d 3 -e 7),
+//	                              decoded back to verify decoding and dimensions
 //	  <run-id>/<other>            everything else verbatim
 //	<dir>/<run-id>.manifest.json  index record + files + run_manifest
 //	<dir>/index.jsonl             one index record per archive (append-only)
@@ -46,13 +45,15 @@ import (
 // verification is renamed to <run-id>.failed-<ts>.tar.zst and kept.
 
 const (
-	codecJXL       = "jxl-lossless(cjxl -d 0 -e 7)"
+	codecJXL       = "jxl-lossy(cjxl -d 3 -e 7)"
+	jxlDistance    = "3"
+	jxlEffort      = "7"
 	codecCopy      = "copy"
 	methodJXL      = "jxl+tar.zst"
 	methodPlain    = "tar.zst"
-	formatJXL      = "tar+zstd -10; PNG stored as lossless JPEG XL (pixel-verified), archive-files.json maps names+orig sha256"
+	formatJXL      = "tar+zstd -10; PNG stored as lossy JPEG XL (distance 3, effort 7; decode-verified), archive-files.json maps names+orig sha256"
 	formatPlain    = "tar+zstd -10; all files stored verbatim (cjxl unavailable), archive-files.json maps names+orig sha256"
-	restoreNote    = "for PNGs: djxl <stored_as> <name> (pixel-identical, not byte-identical); others copied verbatim"
+	restoreNote    = "for PNGs: djxl <stored_as> <name> (lossy; original PNG hashes are provenance, not restored-file checksums); others copied verbatim"
 	filesJSONName  = "archive-files.json"
 	indexName      = "index.jsonl"
 	passLockName   = ".archive.lock"
@@ -77,7 +78,8 @@ type Verification struct {
 	FileCountMatch    bool   `json:"file_count_match"`
 	SHA256Match       bool   `json:"sha256_match"`
 	EntriesMatch      bool   `json:"entries_sha256_match"`
-	PixelVerifiedPNGs int    `json:"pixel_verified_pngs"`
+	PixelVerifiedPNGs int    `json:"pixel_verified_pngs"` // historical lossless archives only
+	DecodedPNGs       int    `json:"decoded_pngs"`
 	OriginalsSame     bool   `json:"originals_unchanged"`
 	Error             string `json:"error,omitempty"`
 }
@@ -336,7 +338,7 @@ func (a *Archiver) ArchiveRun(runDir string) (*IndexRecord, error) {
 	defer os.RemoveAll(stage)
 
 	a.event("stage")
-	entries, srcOf, storedSHA, pixelOK, err := a.stage(runDir, stage, names, snap)
+	entries, srcOf, storedSHA, decodedOK, err := a.stage(runDir, stage, names, snap)
 	if err != nil {
 		return nil, errSkip{"stage: " + err.Error()}
 	}
@@ -368,7 +370,7 @@ func (a *Archiver) ArchiveRun(runDir string) (*IndexRecord, error) {
 
 	a.event("verify")
 	v := a.verify(apath, asha, rid, entries, storedSHA, filesJSON)
-	v.PixelVerifiedPNGs = pixelOK
+	v.DecodedPNGs = decodedOK
 	v.FileCountOriginal = len(names)
 	if after, err := snapshotDir(runDir); err == nil {
 		v.OriginalsSame = sameSnap(snap, after)
@@ -401,7 +403,7 @@ func (a *Archiver) ArchiveRun(runDir string) (*IndexRecord, error) {
 	return rec, verr
 }
 
-func (a *Archiver) stage(runDir, stage string, names []string, snap map[string]fileSnap) (entries []FileEntry, srcOf map[string]string, storedSHA map[string]string, pixelOK int, err error) {
+func (a *Archiver) stage(runDir, stage string, names []string, snap map[string]fileSnap) (entries []FileEntry, srcOf map[string]string, storedSHA map[string]string, decodedOK int, err error) {
 	srcOf = map[string]string{}
 	storedSHA = map[string]string{}
 	entries = make([]FileEntry, len(names))
@@ -436,7 +438,7 @@ func (a *Archiver) stage(runDir, stage string, names []string, snap map[string]f
 							ent.StoredAs, ent.Codec = jxlName, codecJXL
 							stored, storedSum = dst, s2
 							mu.Lock()
-							pixelOK++
+							decodedOK++
 							mu.Unlock()
 						}
 					} else {
@@ -456,29 +458,29 @@ func (a *Archiver) stage(runDir, stage string, names []string, snap map[string]f
 	}
 	close(jobs)
 	wg.Wait()
-	return entries, srcOf, storedSHA, pixelOK, firstErr
+	return entries, srcOf, storedSHA, decodedOK, firstErr
 }
 
-// toJXL encodes src losslessly, decodes it back with djxl and compares
-// every pixel against the original. Any difference is an error.
+// toJXL encodes at the archive quality setting and verifies that the
+// entire PNG decodes at its original dimensions. Pixel differences are expected.
 func (a *Archiver) toJXL(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
-	if out, err := exec.Command("nice", a.cjxl, "-d", "0", "-e", "7", "--num_threads=2", src, dst).CombinedOutput(); err != nil {
+	if out, err := exec.Command("nice", a.cjxl, "-d", jxlDistance, "-e", jxlEffort, "--num_threads=2", src, dst).CombinedOutput(); err != nil {
 		return fmt.Errorf("cjxl: %v: %s", err, bytes.TrimSpace(out))
 	}
 	back := dst + ".roundtrip.png"
 	defer os.Remove(back)
-	if out, err := exec.Command("nice", a.djxl, dst, back).CombinedOutput(); err != nil {
+	if out, err := exec.Command("nice", a.djxl, dst, back, "--num_threads=2").CombinedOutput(); err != nil {
 		return fmt.Errorf("djxl: %v: %s", err, bytes.TrimSpace(out))
 	}
-	same, err := samePixels(src, back)
+	same, err := sameDimensions(src, back)
 	if err != nil {
 		return err
 	}
 	if !same {
-		return fmt.Errorf("pixel mismatch")
+		return fmt.Errorf("decoded dimensions differ")
 	}
 	return nil
 }
@@ -492,7 +494,7 @@ func decodePNG(p string) (image.Image, error) {
 	return png.Decode(f)
 }
 
-func samePixels(a, b string) (bool, error) {
+func sameDimensions(a, b string) (bool, error) {
 	ia, err := decodePNG(a)
 	if err != nil {
 		return false, err
@@ -501,33 +503,7 @@ func samePixels(a, b string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if ia.Bounds() != ib.Bounds() {
-		return false, nil
-	}
-	// Fast paths for identical concrete 8-bit layouts.
-	switch x := ia.(type) {
-	case *image.RGBA:
-		if y, ok := ib.(*image.RGBA); ok && x.Stride == y.Stride {
-			return bytes.Equal(x.Pix, y.Pix), nil
-		}
-	case *image.NRGBA:
-		if y, ok := ib.(*image.NRGBA); ok && x.Stride == y.Stride {
-			return bytes.Equal(x.Pix, y.Pix), nil
-		}
-	case *image.Gray:
-		if y, ok := ib.(*image.Gray); ok && x.Stride == y.Stride {
-			return bytes.Equal(x.Pix, y.Pix), nil
-		}
-	}
-	r := ia.Bounds()
-	for py := r.Min.Y; py < r.Max.Y; py++ {
-		for px := r.Min.X; px < r.Max.X; px++ {
-			if color.NRGBA64Model.Convert(ia.At(px, py)) != color.NRGBA64Model.Convert(ib.At(px, py)) {
-				return false, nil
-			}
-		}
-	}
-	return true, nil
+	return ia.Bounds() == ib.Bounds(), nil
 }
 
 func (a *Archiver) writeTarZst(dst, rid string, entries []FileEntry, srcOf map[string]string, filesJSON []byte) error {

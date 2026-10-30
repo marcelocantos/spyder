@@ -180,3 +180,14 @@ test-live-process-cancel:
 test-live-agent-reconnect:
 	@test -n "$(SPYDER_LIVE_UDID)" -a -n "$(SPYDER_AGENT_RECONNECT_LOG)" || { echo "set SPYDER_LIVE_UDID and SPYDER_AGENT_RECONNECT_LOG for the isolated :3131 daemon"; exit 2; }
 	SPYDER_AGENT_RECONNECT_LIVE=1 SPYDER_LIVE_UDID="$(SPYDER_LIVE_UDID)" SPYDER_AGENT_RECONNECT_LOG="$(SPYDER_AGENT_RECONNECT_LOG)" go test -v ./internal/daemon -run '^TestAgentReconnectAfterMissedPrompt_Live$$' -count=1 -timeout 11m
+
+# Real codec migration and HTTP/startup-retention journey (T178).
+# The journey requires an existing empty scratch dir and real screenshot paths.
+ARCHIVE_PYTHON ?= $(HOME)/.py/bin/python
+.PHONY: test-archive-migration test-live-runs-archive
+test-archive-migration:
+	PYTHONDONTWRITEBYTECODE=1 $(ARCHIVE_PYTHON) -m unittest discover -s scripts -p test_recompress_run_archives.py -v
+
+test-live-runs-archive:
+	@test -n "$(SPYDER_LIVE_RUNS_ARCHIVE_DIR)" -a -n "$(SPYDER_LIVE_RUNS_ARCHIVE_PNGS)" || { echo "Set SPYDER_LIVE_RUNS_ARCHIVE_DIR (empty scratch) and SPYDER_LIVE_RUNS_ARCHIVE_PNGS (colon-separated)"; exit 2; }
+	go test ./internal/daemon -run '^TestRunsArchive_Live$$' -count=1 -v

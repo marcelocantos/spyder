@@ -4,17 +4,21 @@
 package daemon
 
 import (
-	"bufio"
-	"context"
+	"archive/tar"
+	"bytes"
 	"encoding/json"
+	"image/png"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
-	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
 	"github.com/marcelocantos/spyder/internal/paths"
-	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
 )
 
@@ -22,9 +26,9 @@ import (
 // unless SPYDER_LIVE_RUNS_ARCHIVE_DIR names an empty scratch dir, which
 // becomes SPYDER_DATA_DIR — the user's ~/.spyder is never touched.
 //
-// Flow: reserve (MCP, with script/app provenance) → attach real PNG
+// Flow: reserve (HTTP, with script/app provenance) → attach real PNG
 // screenshots (SPYDER_LIVE_RUNS_ARCHIVE_PNGS, colon-separated) → release
-// (MCP, with outcome) → the daemon's startup retention pass with a tiny
+// (HTTP, with outcome) → the daemon's startup retention pass with a tiny
 // size cap and no quiet period → run dir archived, verified, removed.
 //
 // Optional: SPYDER_LIVE_RUNS_ARCHIVE_DEVICE (default "e2e-sim", a
@@ -35,7 +39,17 @@ func TestRunsArchive_Live(t *testing.T) {
 	if dir == "" {
 		t.Skip("SPYDER_LIVE_RUNS_ARCHIVE_DIR not set")
 	}
+	if items, err := os.ReadDir(dir); err != nil || len(items) != 0 {
+		t.Fatalf("scratch directory must exist and be empty: %v", err)
+	}
+	for _, tool := range []string{"cjxl", "djxl", "zstd"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Fatalf("live archive backend unavailable: %s: %v", tool, err)
+		}
+	}
 	t.Setenv(paths.DataDirEnv, dir)
+	t.Setenv("SPYDER_RUNS_MAX_AGE_DAYS", "0")
+	t.Setenv("SPYDER_RUNS_MAX_SIZE_GB", "0")
 	devRef := envOr("SPYDER_LIVE_RUNS_ARCHIVE_DEVICE", "e2e-sim")
 	script := envOr("SPYDER_LIVE_RUNS_ARCHIVE_SCRIPT", "")
 	var pngs []string
@@ -50,17 +64,32 @@ func TestRunsArchive_Live(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resv, err := reservations.New(filepath.Join(paths.Base(), "reservations.json"))
-	if err != nil {
-		t.Fatal(err)
+	// Use the production daemon mux and persistence, with real codec processes.
+	// Build omits device supervisors: this storage journey does not drive hardware.
+	start := func() *httptest.Server {
+		mux, _, _, logs, channels := Build(Config{Version: "archive-live"})
+		ts := httptest.NewServer(mux)
+		t.Cleanup(func() { ts.Close(); logs.Close(); channels.Close() })
+		return ts
 	}
-	h := spydermcp.NewHandler(spydermcp.WithRuns(store), spydermcp.WithReservations(resv))
-	ctx := context.Background()
+	ts := start()
 	call := func(tool string, args map[string]any) {
 		t.Helper()
-		res, err := h.Dispatch(ctx, tool, args)
-		if err != nil || res.IsError {
-			t.Fatalf("%s: err=%v res=%+v", tool, err, res)
+		body, err := json.Marshal(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client := &http.Client{Timeout: time.Minute}
+		res, err := client.Post(ts.URL+"/api/v1/"+tool, "application/json", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		var result struct {
+			IsError bool `json:"isError"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&result); err != nil || result.IsError || res.StatusCode != http.StatusOK {
+			t.Fatalf("%s: status=%d error=%v result=%+v", tool, res.StatusCode, err, result)
 		}
 	}
 
@@ -88,6 +117,10 @@ func TestRunsArchive_Live(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		live, err := os.ReadFile(filepath.Join(paths.RunsBase(), run.ID, a.Name))
+		if err != nil || !bytes.Equal(live, b) || a.MIMEType != "image/png" {
+			t.Fatalf("live capture changed before archival: %v", err)
+		}
 		shots = append(shots, a.Name)
 	}
 	call("release", map[string]any{
@@ -99,33 +132,85 @@ func TestRunsArchive_Live(t *testing.T) {
 	t.Setenv("SPYDER_RUNS_MAX_AGE_DAYS", "0")
 	t.Setenv("SPYDER_RUNS_MAX_SIZE_GB", "0.000001") // ~1 KiB: forces the size pass
 	t.Setenv("SPYDER_RUNS_ARCHIVE_QUIET_MINUTES", "0")
-	policy := runsPolicyFromEnv()
-	archiver := runs.NewArchiver(paths.RunsArchiveBase())
-	pstore, err := runs.New(paths.RunsBase(), runs.WithPolicy(policy), runs.WithArchiver(archiver))
-	if err != nil {
-		t.Fatal(err)
+	ts.Close()
+	_ = start() // production Build starts retention, including its lock and policy
+	manifest := filepath.Join(paths.RunsArchiveBase(), run.ID+".manifest.json")
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		if _, err := os.Stat(manifest); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("startup retention did not publish a manifest")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
-	pruneRunsOnStartup(pstore, archiver, policy)
-
 	if _, err := os.Stat(filepath.Join(paths.RunsBase(), run.ID)); !os.IsNotExist(err) {
 		t.Fatalf("run dir still present after archive pass: %v", err)
 	}
-	f, err := os.Open(filepath.Join(paths.RunsArchiveBase(), "index.jsonl"))
+
+	data, err := os.ReadFile(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec runs.IndexRecord
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+
+	if rec.RunID != run.ID || !rec.OriginalRemoved || !rec.Verification.OK() {
+		t.Fatalf("index record = %+v", rec)
+	}
+	if rec.Verification.DecodedPNGs != len(pngs) || rec.Verification.PixelVerifiedPNGs != 0 || !strings.Contains(string(data), "jxl-lossy(cjxl -d 3 -e 7)") {
+		t.Fatalf("archive did not use lossy codec: %s", data)
+	}
+	// Restore a frame from the published archive with the real decoder.
+	cmd := exec.Command("zstd", "-dcq", rec.ArchivePath)
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(out)
+	var encoded []byte
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(h.Name, ".jxl") && encoded == nil {
+			encoded, err = io.ReadAll(tr)
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	_, _ = io.Copy(io.Discard, out)
+	if err := cmd.Wait(); err != nil {
+		t.Fatal(err)
+	}
+	jxl := filepath.Join(dir, "restored.jxl")
+	if err := os.WriteFile(jxl, encoded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restored := filepath.Join(dir, "restored.png")
+	if out, err := exec.Command("djxl", jxl, restored).CombinedOutput(); err != nil {
+		t.Fatalf("restore: %v %s", err, out)
+	}
+	f, err := os.Open(restored)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	sc := bufio.NewScanner(f)
-	sc.Buffer(nil, 1<<24)
-	var rec runs.IndexRecord
-	for sc.Scan() {
-		if err := json.Unmarshal(sc.Bytes(), &rec); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := png.Decode(f); err != nil {
+		t.Fatalf("restored frame: %v", err)
 	}
-	if rec.RunID != run.ID || !rec.OriginalRemoved || !rec.Verification.OK() {
-		t.Fatalf("index record = %+v", rec)
-	}
+
 	t.Logf("run=%s archive=%s manifest=%s raw=%d archive=%d", rec.RunID, rec.ArchivePath, rec.ManifestPath, rec.RawBytes, rec.ArchiveBytes)
 }
 

@@ -341,7 +341,7 @@ func TestArchive_JXLManifestAndIndexRecordWritten(t *testing.T) {
 		t.Fatalf("ArchiveRun: %v", err)
 	}
 	v := rec.Verification
-	if !v.OK() || v.PixelVerifiedPNGs != 2 || v.FileCountOriginal != 4 || v.FileCountArchive != 4 {
+	if !v.OK() || v.DecodedPNGs != 2 || v.PixelVerifiedPNGs != 0 || v.FileCountOriginal != 4 || v.FileCountArchive != 4 {
 		t.Fatalf("verification = %+v", v)
 	}
 	if !rec.OriginalRemoved {
@@ -393,7 +393,7 @@ func TestArchive_JXLManifestAndIndexRecordWritten(t *testing.T) {
 		t.Errorf("manifest run_manifest = %v", man["run_manifest"])
 	}
 
-	// Restore one screenshot and compare pixels with the original.
+	// Restore one screenshot. Lossy pixels differ, but dimensions survive.
 	tmp := t.TempDir()
 	if err := os.WriteFile(filepath.Join(tmp, "orig.png"), origShot, 0o600); err != nil {
 		t.Fatal(err)
@@ -423,8 +423,26 @@ func TestArchive_JXLManifestAndIndexRecordWritten(t *testing.T) {
 	if out, err := exec.Command(djxl, filepath.Join(tmp, "x.jxl"), filepath.Join(tmp, "back.png")).CombinedOutput(); err != nil {
 		t.Fatalf("djxl: %v %s", err, out)
 	}
-	if same, err := samePixels(filepath.Join(tmp, "orig.png"), filepath.Join(tmp, "back.png")); err != nil || !same {
-		t.Fatalf("restored pixels differ: same=%v err=%v", same, err)
+	if same, err := sameDimensions(filepath.Join(tmp, "orig.png"), filepath.Join(tmp, "back.png")); err != nil || !same {
+		t.Fatalf("restored dimensions differ: same=%v err=%v", same, err)
+	}
+	orig, _ := decodePNG(filepath.Join(tmp, "orig.png"))
+	back, _ := decodePNG(filepath.Join(tmp, "back.png"))
+	different := false
+	for y := orig.Bounds().Min.Y; y < orig.Bounds().Max.Y; y++ {
+		for x := orig.Bounds().Min.X; x < orig.Bounds().Max.X; x++ {
+			r1, g1, b1, a1 := orig.At(x, y).RGBA()
+			r2, g2, b2, a2 := back.At(x, y).RGBA()
+			if r1 != r2 || g1 != g2 || b1 != b2 || a1 != a2 {
+				different = true
+			}
+		}
+	}
+	if !different {
+		t.Fatal("expected lossy screenshot; lossless encoding regressed")
+	}
+	if !strings.Contains(string(mb), "jxl-lossy(cjxl -d 3 -e 7)") {
+		t.Fatal("manifest does not describe archive quality")
 	}
 }
 
@@ -468,14 +486,13 @@ func TestArchive_LegacyManifestRecordsUnknown(t *testing.T) {
 	}
 }
 
-func TestArchive_PixelMismatchStoresPNGVerbatim(t *testing.T) {
+func TestArchive_InvalidDecodeStoresPNGVerbatim(t *testing.T) {
 	cjxl := needTool(t, "cjxl")
 	z := needTool(t, "zstd")
-	// A djxl that "decodes" to a different image: the round-trip check
-	// must catch it and fall back to storing the PNG byte-for-byte.
+	// A broken decoder must fall back to storing the PNG byte-for-byte.
 	bin := t.TempDir()
 	other := filepath.Join(bin, "other.png")
-	_ = os.WriteFile(other, pngBytes(t, false, 99), 0o600)
+	_ = os.WriteFile(other, []byte("not a PNG"), 0o600)
 	fake := filepath.Join(bin, "djxl")
 	_ = os.WriteFile(fake, []byte("#!/bin/sh\ncp '"+other+"' \"$2\"\n"), 0o700)
 
@@ -487,8 +504,8 @@ func TestArchive_PixelMismatchStoresPNGVerbatim(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec.Verification.PixelVerifiedPNGs != 0 {
-		t.Errorf("pixel_verified_pngs = %d; want 0", rec.Verification.PixelVerifiedPNGs)
+	if rec.Verification.DecodedPNGs != 0 {
+		t.Errorf("decoded_pngs = %d; want 0", rec.Verification.DecodedPNGs)
 	}
 	mb, _ := os.ReadFile(rec.ManifestPath)
 	if strings.Contains(string(mb), codecJXL) || !strings.Contains(string(mb), `"stored_as": "fail-2.png"`) {

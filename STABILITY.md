@@ -513,15 +513,33 @@ Retention is enforced on daemon startup (in the background) by
   been closed, and its files untouched, this long before it is eligible.
 
 Archives live in `~/.spyder/archive/runs/`: `<run-id>.tar.zst` (PNGs
-re-encoded as lossless JPEG XL and pixel-verified when `cjxl`/`djxl`
+re-encoded as lossy JPEG XL (`cjxl -d 3 -e 7`) and decode-verified when `cjxl`/`djxl`
 are installed, else stored verbatim; `archive-files.json` inside maps
 original names and sha256s), `<run-id>.manifest.json`, and an
-append-only `index.jsonl` with one record per archive. A run directory
+append-only `index.jsonl` (the latest record for each run is authoritative). A run directory
 is removed only after its archive passes `zstd -t`, a full tar
 read-back with per-entry sha256 match, a file-count match and an
 unchanged-originals check. Runs with open file handles (`lsof`) or an
 existing archive are skipped. Spyder never deletes archives; an archive
 that fails verification is kept as `<run-id>.failed-<ts>.tar.zst`.
+
+Live screenshots stay PNG. The lossy archive preserves screen content and
+size, not original pixels; original PNG hashes are provenance, not checksums
+for restored PNGs. `decoded_pngs` counts successful full decodes at the
+original dimensions; `pixel_verified_pngs` applies only to old lossless data.
+
+To migrate old lossless archives, run
+`python scripts/recompress-run-archives.py --archive-dir ~/.spyder/archive/runs`
+with the Python environment containing Pillow; add `--apply` to write. The migration shares retention's lock, checks
+`zstd -t`, exact member names and per-member hashes, and preserves all
+non-image members byte for byte, including the embedded historical
+`archive-files.json`. After migration, the external `.manifest.json` gives
+the current codecs, prior/current sizes and verification results; the embedded
+mapping remains original provenance. Publication retains hard-linked originals
+and a journal until archive, sidecar and index are written. Rerunning resumes
+an interrupted publication and skips archives already migrated. Tests:
+`make test-archive-migration` and `make test-live-runs-archive` (with the scratch
+and screenshot environment variables documented in the Makefile).
 
 Each manifest records source versions under `versions` (`app`,
 `spyder`, `script`, `device_os`) at open and the outcome under
