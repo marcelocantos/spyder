@@ -7,6 +7,7 @@
 // H.264, sockets, or SDL windowing.
 
 #include "player_core.h"
+#include <player/AccelScreen.h>
 #include "src/InputScript.h"
 #include <optional>
 #include "player_orientation.h"
@@ -487,6 +488,10 @@ int playerCore(const std::string& host, int port, const std::string& serverName,
             if (std::isfinite(motion.sensor.data[0]) &&
                 std::isfinite(motion.sensor.data[1]) &&
                 std::isfinite(motion.sensor.data[2])) {
+                SDL_DisplayOrientation o = SDL_ORIENTATION_UNKNOWN;
+                if (SDL_DisplayID disp = SDL_GetDisplayForWindow(render.window()))
+                    o = SDL_GetCurrentDisplayOrientation(disp);
+                spyder::rotateAccelToScreen(o, motion.sensor.data);
                 wire.sendEvent(motion);
                 if (!motionDeclared) {
                     motionDeclared = true;

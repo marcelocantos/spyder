@@ -14,7 +14,17 @@
   const probe = document.createElement('div');
   probe.style.cssText = 'position:fixed;pointer-events:none;visibility:hidden;padding:env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px)';
   document.body.append(probe);
-  const report = (message) => { state.error = message; console.warn('spyder glass: ' + message); };
+  const notice = document.createElement('div');
+  notice.id = 'glass-notice';
+  notice.setAttribute('role', 'status');
+  notice.style.cssText = 'position:fixed;z-index:5;top:calc(12px + env(safe-area-inset-top, 0px));left:env(safe-area-inset-left, 0px);right:env(safe-area-inset-right, 0px);color:white;background:#500b;padding:8px;font:14px system-ui';
+  notice.hidden = true;
+  document.body.append(notice);
+  const report = (message) => {
+    state.error = notice.textContent = message;
+    notice.hidden = false;
+    console.warn('spyder glass: ' + message);
+  };
   const supported = () => g.isSecureContext && typeof g.DeviceMotionEvent !== 'undefined';
   function motion(e) {
     const a = e.accelerationIncludingGravity;
@@ -61,11 +71,15 @@
   // even when motion isn't requested, so no request is silently lost.
   const policyButton = document.createElement('button');
   policyButton.id = 'glass-policy';
-  policyButton.textContent = 'Enter immersive mode';
+  policyButton.textContent = 'Apply display policy';
   policyButton.style.cssText = 'position:fixed;z-index:5;right:env(safe-area-inset-right, 0px);bottom:calc(20px + env(safe-area-inset-bottom, 0px));font:16px system-ui;padding:12px';
   policyButton.hidden = true;
   document.body.append(policyButton);
-  policyButton.addEventListener('click', () => { immersive(); orient(); wake(); policyButton.hidden = true; });
+  policyButton.addEventListener('click', () => {
+    notice.hidden = true; state.error = '';
+    immersive(); orient(); wake();
+    policyButton.hidden = true;
+  });
   function insets() {
     const s = getComputedStyle(probe);
     return [s.paddingLeft, s.paddingTop, s.paddingRight, s.paddingBottom].map(x => Math.max(0, parseFloat(x) || 0) * (g.devicePixelRatio || 1));

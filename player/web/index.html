@@ -39,7 +39,7 @@
   const params = new URLSearchParams(location.search);
   const name = params.get('name') || 'server';
   const host = params.get('host') || location.hostname;
-  const port = params.get('port') || location.port || '3030';
+  const port = params.get('port') || location.port || (location.protocol === 'https:' ? '443' : '3030');
   // A scanned link uses the phone's glass unless explicitly overridden.
   const devClass = params.get('class') ||
     (/Android|iPhone|iPod/i.test(navigator.userAgent) ? 'phone' :

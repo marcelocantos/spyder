@@ -20,11 +20,16 @@
 #include <player/WebSocketClient.h>
 
 #include <emscripten/emscripten.h>
+#include <emscripten/em_js.h>
 #include <emscripten/websocket.h>
 #include <spdlog/spdlog.h>
 
 #include <deque>
 #include <vector>
+
+EM_JS(int, spyderWebSecurePage, (), {
+    return globalThis.location.protocol === 'https:' ? 1 : 0;
+});
 
 namespace spyder {
 
@@ -136,8 +141,11 @@ std::shared_ptr<WsConnection> connectWebSocket(
         return nullptr;
     }
 
+    // HTTPS forbids insecure ws:// mixed content. The Safari motion prompt
+    // requires a secure context, so the wire must use the same security tier.
     const std::string url =
-        "ws://" + host + ":" + std::to_string(port) + path;
+        std::string(spyderWebSecurePage() ? "wss://" : "ws://") + host +
+        ":" + std::to_string(port) + path;
 
     EmscriptenWebSocketCreateAttributes attrs;
     emscripten_websocket_init_create_attributes(&attrs);

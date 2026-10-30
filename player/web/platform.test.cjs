@@ -10,7 +10,7 @@ function glass({secure = true, permission = 'granted', motion = true, inset = [4
   const document = {
     getElementById(id) { return elements[id]; },
     body: {append(el) { if (el.id) elements[el.id] = el; }},
-    createElement() { return {style: {}, hidden: false, addEventListener(type, cb) { this[type] = cb; }}; },
+    createElement() { return {style: {}, hidden: false, setAttribute() {}, addEventListener(type, cb) { this[type] = cb; }}; },
     addEventListener(type, cb) { listeners[type] = cb; }, hidden: false,
   };
   const canvas = {requestFullscreen() { calls.push('fullscreen'); return Promise.resolve(); }};
