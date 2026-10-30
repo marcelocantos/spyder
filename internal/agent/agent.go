@@ -233,9 +233,8 @@ func (s *Supervisor) bundle(id string) string {
 }
 
 // freshBudget clears the attempt cap and any recorded consent failure.
-// A reboot, a new daemon process, and an attended Retry are the only
-// events that call it, so an unattended device is asked at most
-// MaxAttempts times per boot (🎯T175).
+// A reboot, a confirmed USB reconnect, and an attended Retry start a
+// fresh budget. Ordinary ticks and startup enumeration retain the cap.
 func (s *Supervisor) freshBudget(m *machine) {
 	m.attempts = 0
 	m.consent = nil
@@ -468,6 +467,17 @@ func (s *Supervisor) NoteTether(deviceID string, up bool) (Snapshot, error) {
 	return s.applyLocked(s.machine(deviceID), CondReconnected, obs), nil
 }
 
+// Reconnect grants a fresh attempt after a real USB detach/attach and
+// successful tunnel rebuild. A startup snapshot or duplicate attach must
+// use NoteTether instead. Reset before probing so the host does not return
+// the old consent failure. The next tick launches only if it is needed.
+func (s *Supervisor) Reconnect(deviceID string) (Snapshot, error) {
+	s.mu.Lock()
+	s.freshBudget(s.machine(deviceID))
+	s.mu.Unlock()
+	return s.NoteTether(deviceID, true)
+}
+
 // Apply lands a named condition in exactly one bounded state.
 func (s *Supervisor) Apply(deviceID string, c Condition, obs Observation) Snapshot {
 	s.mu.Lock()
@@ -601,7 +611,7 @@ func (s *Supervisor) notePending(m *machine, obs Observation) Snapshot {
 
 // noteConsent records a launch that ended on Apple's consent gate.
 // Observing it again on a tick is not another attempt; only a launch
-// counts (🎯T175). It is not relaunched until reboot or attended retry.
+// counts (🎯T175). It is not relaunched until reconnect, reboot or retry.
 func (s *Supervisor) noteConsent(m *machine, obs Observation) (Snapshot, error) {
 	m.condition = CondConsentRequired
 	m.ready = false
@@ -665,7 +675,8 @@ func (s *Supervisor) relaunch(m *machine, obs Observation) (Snapshot, error) {
 		}
 		if errors.Is(err, ErrConsent) {
 			obs.ConsentRequired = true
-			obs.ConsentActionable = true
+			// Launch ended: there is no longer a live prompt to approve.
+			obs.ConsentActionable = false
 			if obs.ConsentMessage == "" {
 				obs.ConsentMessage = err.Error()
 			}

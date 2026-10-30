@@ -338,7 +338,7 @@ func (h *AutomationHost) approve(id string, hold *runnerHold, pid int) {
 }
 
 // expirePending stops a launch whose consent window passed and records
-// consent, so the next prompt waits for an attended retry or reboot.
+// consent, so the next prompt waits for reconnect, retry or reboot.
 func (h *AutomationHost) expirePending(id string, hold *runnerHold) {
 	window := h.DeviceKit.consentWindow()
 	h.mu.Lock()
@@ -348,7 +348,7 @@ func (h *AutomationHost) expirePending(id string, hold *runnerHold) {
 	}
 	hold.expired = true
 	hostPID := hold.hostPID
-	msg := fmt.Sprintf("no Enable UI Automation approval within %s of launching (host pid %d); launch stopped. Use agent_ensure retry=true with someone at the device.", window, hostPID)
+	msg := fmt.Sprintf("no Enable UI Automation approval within %s of launching (host pid %d); launch stopped. Reconnect USB or use agent_ensure retry=true with someone at the device.", window, hostPID)
 	h.consent[id] = msg
 	if h.holds[id] == hold {
 		delete(h.holds, id)

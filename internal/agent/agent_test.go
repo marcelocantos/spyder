@@ -541,6 +541,56 @@ func TestSupervisor_RetryStartsFreshBudget(t *testing.T) {
 	}
 }
 
+func TestSupervisor_ReconnectRecoversConsentAndExhaustedBudget(t *testing.T) {
+	for _, consent := range []bool{false, true} {
+		t.Run(map[bool]string{false: "exhausted", true: "consent"}[consent], func(t *testing.T) {
+			h := &harness{obs: healthyObs()}
+			h.obs.RunnerAlive = false
+			h.launchErr = errors.New("runner died")
+			if consent {
+				h.launchErr = ErrConsent
+			}
+			s := h.supervisor()
+			for i := 0; i < MaxAttempts; i++ {
+				if _, err := s.Tick("phone"); err != nil {
+					t.Fatal(err)
+				}
+				if consent {
+					h.obs.ConsentRequired = true
+				}
+			}
+			launches := h.launches
+			// Startup snapshots, duplicate attaches, and plain ticks retain
+			// the failure. They must not produce another prompt.
+			for i := 0; i < MaxAttempts+1; i++ {
+				if _, err := s.NoteTether("phone", true); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.Tick("phone"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if h.launches != launches || h.resets != 0 {
+				t.Fatalf("duplicate attach retried: launches=%d resets=%d", h.launches, h.resets)
+			}
+			h.launchErr = nil
+			// The listener has confirmed the detach/attach pair, even if
+			// failed tunnel cleanup prevented delivery of NoteTether(false).
+			up, err := s.Reconnect("phone")
+			if err != nil || up.Ready || up.Attempts != 0 || up.Consent != nil || h.resets != 1 {
+				t.Fatalf("reconnect %+v err=%v resets=%d", up, err, h.resets)
+			}
+			snap, err := s.Tick("phone")
+			if err != nil || !snap.Ready || !snap.Relaunched || h.launches != launches+1 {
+				t.Fatalf("after reconnect %+v err=%v launches=%d", snap, err, h.launches)
+			}
+			if h.installs != 0 {
+				t.Fatalf("reinstalled on reconnect: %d", h.installs)
+			}
+		})
+	}
+}
+
 // A consent failure is not retried unattended until the device reboots.
 // The new boot gets its own budget, so the daemon asks again by itself.
 func TestTick_RebootGivesFreshBudget(t *testing.T) {

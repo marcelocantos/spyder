@@ -75,7 +75,8 @@ device; the supervisor never installs or reinstalls it.
 - **Unattended relaunch.** Every 30 s tick restarts a dead runner, up to
   the attempt cap (3). Each launch counts as one attempt, however long it
   waits for consent; observing the same state again on a tick does not
-  count. A daemon restart, a device reboot (new boot id), or
+  count. A daemon restart, a device reboot (new boot id), a USB
+  detach/attach followed by a successful tunnel rebuild, or
   `agent_ensure` with `retry=true` from the reservation holder gives a
   fresh budget. A plain `agent_ensure` does not reset the cap.
 - **Ownership is the launch.** The daemon owns a runner while the
@@ -122,13 +123,31 @@ consent message is cleared.
 
 If the window passes, the launch is stopped and the condition becomes
 `consent_required`. A launch that exits with Apple's consent refusal in its
-output also records `consent_required`. Neither is relaunched unattended:
-with someone at the device, call `agent_ensure(device, owner, retry=true)`.
+output also records `consent_required`. Apple may end the attempt before
+Spyder's configured window (the observed automation-mode timeout was about
+one minute). These ended attempts have no actionable `consent` prompt;
+their reason remains in `last_exit`. With someone at the device, unplug and
+replug USB, or call `agent_ensure(device, owner, retry=true)`. A successful
+rebuild after the physical reconnect clears the recorded failure and grants
+a fresh budget. Startup enumeration, duplicate attaches and ordinary ticks
+do not grant extra attempts. The listener remembers the detach even if
+cleaning up its old tunnel failed.
 A launch that exits for any other reason is relaunched on the next tick
 within the attempt cap; see `last_exit` for why it ended.
 
-Expect one approval per device after each reboot or new DeviceKit install,
-and none after that.
+Apple may ask again after a reboot, runner install, or a USB disconnect that
+ends the XCTest session. Spyder reuses a healthy session while it remains
+connected; it cannot preserve that session across a lost transport.
+
+`make test-live-agent-reconnect` checks the real missed-prompt/replug path
+against an isolated tree-built daemon on `127.0.0.1:3131`. Stop the daily
+daemon first; use a disposable `SPYDER_DATA_DIR`, the bundled go-ios, and
+the DeviceKit backend. Set `SPYDER_LIVE_UDID` and
+`SPYDER_AGENT_RECONNECT_LOG` to that daemon's log. Leave the first prompt
+unanswered; when the test prints `REPLUG`, reconnect USB and approve the
+new prompt. The test requires an expired non-actionable consent state,
+the real listener's reconnect evidence, and a live owned runner answering
+over USB, without calling `agent_ensure` or injecting tether events.
 
 ## Harness use
 

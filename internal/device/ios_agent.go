@@ -153,7 +153,7 @@ func (h *AutomationHost) Effects() agent.Effects {
 }
 
 // ResetConsent forgets a recorded consent failure. The supervisor calls
-// it on a reboot and on an attended agent_ensure retry.
+// it on a reboot, a confirmed USB reconnect, and an attended retry.
 func (h *AutomationHost) ResetConsent(id string) {
 	h.mu.Lock()
 	delete(h.consent, id)
@@ -362,7 +362,7 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 		RunnerAlive:       alive,
 		Authorized:        authorized,
 		ConsentRequired:   consent != "" && !pending,
-		ConsentActionable: consent != "" || pending,
+		ConsentActionable: pending,
 		ConsentMessage:    consentMsg,
 		ConsentPending:    pending,
 		HostPID:           hostPID,
@@ -935,7 +935,7 @@ func (h *AutomationHost) noteExit(id string, hold *runnerHold, ctx context.Conte
 	h.lastExit[id] = summary
 	if pending && ctx.Err() == nil && (consentish(err) || consentish(errors.New(text))) {
 		// The prompt was refused or dismissed: recorded consent, not
-		// relaunched until an attended retry or reboot.
+		// relaunched until reconnect, attended retry or reboot.
 		h.consent[id] = reason
 	}
 	hold.pending = false

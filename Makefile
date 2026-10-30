@@ -173,3 +173,10 @@ test-live-session-cancel:
 test-live-process-cancel:
 	@test -n "$(SPYDER_LIVE_UDID)" || { echo "set SPYDER_LIVE_UDID to the reserved canonical iOS hardware UDID"; exit 2; }
 	SPYDER_LIVE_UDID="$(SPYDER_LIVE_UDID)" SPYDER_LIVE_PROCESS_CANCEL=1 go test -v ./internal/device -run '^TestIOSAcquiredProcessReadCancellation_Live$$' -count=1 -timeout 90s
+
+# Attended hardware journey against an isolated tree-built daemon on :3131.
+# Ignore its first prompt; replug/approve only when the test prints REPLUG.
+.PHONY: test-live-agent-reconnect
+test-live-agent-reconnect:
+	@test -n "$(SPYDER_LIVE_UDID)" -a -n "$(SPYDER_AGENT_RECONNECT_LOG)" || { echo "set SPYDER_LIVE_UDID and SPYDER_AGENT_RECONNECT_LOG for the isolated :3131 daemon"; exit 2; }
+	SPYDER_AGENT_RECONNECT_LIVE=1 SPYDER_LIVE_UDID="$(SPYDER_LIVE_UDID)" SPYDER_AGENT_RECONNECT_LOG="$(SPYDER_AGENT_RECONNECT_LOG)" go test -v ./internal/daemon -run '^TestAgentReconnectAfterMissedPrompt_Live$$' -count=1 -timeout 11m

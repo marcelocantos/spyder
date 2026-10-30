@@ -23,12 +23,12 @@ import (
 func TestNotifyTether_ReachesHook(t *testing.T) {
 	a := &IOSAdapter{}
 	var got []string
-	a.SetTetherNotify(func(udid string, up bool) {
+	a.SetTetherNotify(func(udid string, up, reconnected bool) {
 		got = append(got, udid+":"+boolWord(up))
 	})
-	a.notifyTether("phone", false)
-	a.notifyTether("phone", true)
-	a.notifyTether("", true)
+	a.notifyTether("phone", false, false)
+	a.notifyTether("phone", true, false)
+	a.notifyTether("", true, false)
 	if strings.Join(got, ",") != "phone:down,phone:up" {
 		t.Fatalf("hook saw %v", got)
 	}
@@ -556,7 +556,7 @@ func TestDropTunnel_LeavesUsbmuxSerials(t *testing.T) {
 		return stubDevices("phone", "pad"), nil
 	}
 	var got []string
-	a.SetTetherNotify(func(udid string, up bool) {
+	a.SetTetherNotify(func(udid string, up, reconnected bool) {
 		got = append(got, udid+":"+boolWord(up))
 	})
 	l := goios.NewListener(iosTunnelRecovery{a})
@@ -596,7 +596,7 @@ func TestListenerDetach_FailedDropDoesNotNotify(t *testing.T) {
 
 	a := tunnelAdapter(t, srv)
 	var got []string
-	a.SetTetherNotify(func(udid string, up bool) {
+	a.SetTetherNotify(func(udid string, up, reconnected bool) {
 		got = append(got, udid+":"+boolWord(up))
 	})
 	l := goios.NewListener(iosTunnelRecovery{a})
@@ -609,5 +609,70 @@ func TestListenerDetach_FailedDropDoesNotNotify(t *testing.T) {
 	}
 	if strings.Join(got, ",") != "phone:up" {
 		t.Fatalf("hook saw %v", got)
+	}
+}
+
+// A failed tunnel DELETE must not hide a genuine replug. Conversely, a
+// duplicate startup attach and a failed rebuild cannot grant new attempts.
+func TestListenerReconnect_ResetsConsentOnlyAfterSuccessfulRebuild(t *testing.T) {
+	var failDelete atomic.Bool
+	var failLookup atomic.Bool
+	failDelete.Store(true)
+	failLookup.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodDelete {
+			if failDelete.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+			return
+		}
+		if failLookup.Load() {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"address":"::1","rsdPort":1,"udid":"phone"}`)
+	}))
+	t.Cleanup(srv.Close)
+	a := tunnelAdapter(t, srv)
+	consent := true
+	resets, launches := 0, 0
+	sup := agent.NewSupervisor(&agent.SupervisorArgs{
+		Probe: func(string) (agent.Observation, error) {
+			return agent.Observation{Tethered: true, LockKnown: true, Installed: true, ConsentRequired: consent}, nil
+		},
+		Effects: agent.Effects{
+			ResetConsent: func(string) { consent = false; resets++ },
+			Launch:       func(string) (int, error) { launches++; return 42, nil },
+		},
+	})
+	a.BindSupervisor(sup)
+	l := goios.NewListener(iosTunnelRecovery{a})
+	feed := func(events ...goios.DeviceEvent) {
+		t.Helper()
+		l.RunSync(context.Background(), &goios.ScriptedSource{Events: events})
+	}
+	attach := goios.DeviceEvent{DeviceID: 1, UDID: "phone", Attached: true}
+	detach := goios.DeviceEvent{DeviceID: 1}
+	feed(attach, attach)
+	if _, err := sup.Tick("phone"); err != nil || resets != 0 || launches != 0 {
+		t.Fatalf("startup or duplicate attach retried: resets=%d launches=%d err=%v", resets, launches, err)
+	}
+	feed(detach, attach) // DELETE fails on both detach and rebuild.
+	if resets != 0 {
+		t.Fatal("failed rebuild refreshed the budget")
+	}
+	feed(detach) // Cleanup still fails, but the listener saw the unplug.
+	failDelete.Store(false)
+	failLookup.Store(false)
+	feed(attach)
+	if resets != 1 || consent || launches != 0 {
+		t.Fatalf("reconnect did not reset before probing: resets=%d consent=%v launches=%d", resets, consent, launches)
+	}
+	snap, err := sup.Tick("phone")
+	if err != nil || !snap.Ready || !snap.Relaunched || launches != 1 {
+		t.Fatalf("no automatic recovery: %+v err=%v launches=%d", snap, err, launches)
 	}
 }

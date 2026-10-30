@@ -279,7 +279,7 @@ func TestDeviceKit_LaunchWaitsForReadiness(t *testing.T) {
 }
 
 // Apple's approval refusal is consent, recorded once; the daemon does
-// not relaunch into a second prompt until reboot or an attended retry.
+// not relaunch into a second prompt until reconnect, reboot or retry.
 func TestDeviceKit_ConsentFailureIsAskedOncePerBudget(t *testing.T) {
 	var pid atomic.Int64
 	host := dkHost(t, &pid)
@@ -292,7 +292,7 @@ func TestDeviceKit_ConsentFailureIsAskedOncePerBudget(t *testing.T) {
 	}
 	sup := dkSupervisor(host)
 	snap, err := sup.Ensure("dut", "alice")
-	if err != nil || snap.Ready || snap.Condition != agent.CondConsentRequired || snap.Consent == nil {
+	if err != nil || snap.Ready || snap.Condition != agent.CondConsentRequired || snap.Consent != nil || snap.ConsentPending {
 		t.Fatalf("consent %+v err=%v", snap, err)
 	}
 	for i := 0; i < agent.MaxAttempts+2; i++ {

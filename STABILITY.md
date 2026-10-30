@@ -614,12 +614,18 @@ JSON-RPC on device port 12004) for those devices. Unset or `alertrunner` keeps
 AlertRunner everywhere. An invalid value fails closed. The runner is launched
 with the bundled go-ios, has no lifetime limit, and is ready only after an
 explicit JSON-RPC answer. It is relaunched on each tick within the attempt
-cap, which resets on a reboot, a daemon restart, or `agent_ensure` with
-`retry=true`. It is never reinstalled, and a runner from another process is
+cap, which resets on a reboot, a daemon restart, a confirmed USB
+detach/attach with a successfully rebuilt tunnel, or `agent_ensure` with
+`retry=true`. Reconnecting also clears a previous consent timeout. Startup
+enumeration and duplicate attach events do not reset either failure.
+It is never reinstalled, and a runner from another process is
 never adopted. Ownership is the `runwda` host the daemon spawned: a live
 launch waiting for Enable UI Automation reports `consent_pending` for up to
 `SPYDER_IOS_AGENT_CONSENT_WINDOW` (default 10m) and is not relaunched or
-re-counted meanwhile. A stale on-device runner with no host is killed on the
+re-counted meanwhile. Apple may end the attempt earlier; an expired attempt
+reports `consent_required` with `last_exit`, without an actionable `consent`
+prompt. Replug USB to ask again, or use an attended retry.
+A stale on-device runner with no host is killed on the
 device and an orphaned `runwda` from a previous spyder daemon is terminated
 before relaunch. Every launch exit is logged with its status and output tail
 and surfaced as `last_exit`. DeviceKit launch holds the per-device go-ios initializer lock

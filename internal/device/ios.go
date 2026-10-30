@@ -111,9 +111,9 @@ type IOSAdapter struct {
 	automation *AutomationHost
 
 	// onTether reports USB attach/detach to the agent supervisor.
-	// The listener still owns tunnel drop and rebuild; this hook only
-	// records the tether bit. Nil when supervision is off.
-	onTether func(udid string, up bool)
+	// reconnected distinguishes a successful rebuild after a real
+	// detach/attach pair from startup enumeration. Nil without supervision.
+	onTether func(udid string, up, reconnected bool)
 
 	// listDevices overrides the go-ios usbmux enumeration. Nil calls
 	// ListDevices. The live journey leaves it nil so List cannot
@@ -376,7 +376,7 @@ func (r iosTunnelRecovery) Invalidate(udid string) {
 	// present, so reflect it as healthy — clearing any prior absent state.
 	r.a.reportAttach(udid)
 	r.a.runwdaAttached(udid)
-	r.a.notifyTether(udid, true)
+	r.a.notifyTether(udid, true, false)
 }
 
 func (r iosTunnelRecovery) DropTunnel(udid string) error {
@@ -392,7 +392,7 @@ func (r iosTunnelRecovery) DropTunnel(udid string) error {
 		return err
 	}
 	r.a.runwdaDisappeared(udid)
-	r.a.notifyTether(udid, false)
+	r.a.notifyTether(udid, false, false)
 	return nil
 }
 
@@ -407,13 +407,16 @@ func (r iosTunnelRecovery) ReestablishTunnel(udid string) error {
 		return err
 	}
 	r.a.runwdaReappeared(udid)
-	r.a.notifyTether(udid, true)
+	// Reestablish is dispatched only after a usbmux detach/attach pair.
+	// It remains a reconnect even when the preceding DELETE failed.
+	r.a.notifyTether(udid, true, true)
 	return nil
 }
 
 // SetTetherNotify registers the USB attach/detach edge for agent
-// supervision (🎯T163). Passing nil clears it.
-func (a *IOSAdapter) SetTetherNotify(fn func(udid string, up bool)) {
+// supervision (🎯T163). reconnected is true only after a successful
+// rebuild following an observed detach/attach pair. Passing nil clears it.
+func (a *IOSAdapter) SetTetherNotify(fn func(udid string, up, reconnected bool)) {
 	if a == nil {
 		return
 	}
@@ -422,7 +425,7 @@ func (a *IOSAdapter) SetTetherNotify(fn func(udid string, up bool)) {
 	a.mu.Unlock()
 }
 
-func (a *IOSAdapter) notifyTether(udid string, up bool) {
+func (a *IOSAdapter) notifyTether(udid string, up, reconnected bool) {
 	if a == nil || udid == "" {
 		return
 	}
@@ -430,7 +433,7 @@ func (a *IOSAdapter) notifyTether(udid string, up bool) {
 	fn := a.onTether
 	a.mu.Unlock()
 	if fn != nil {
-		fn(udid, up)
+		fn(udid, up, reconnected)
 	}
 }
 
@@ -445,8 +448,15 @@ func (a *IOSAdapter) BindSupervisor(sup *agent.Supervisor) {
 		a.SetTetherNotify(nil)
 		return
 	}
-	a.SetTetherNotify(func(udid string, up bool) {
-		if _, err := sup.NoteTether(udid, up); err != nil {
+	a.SetTetherNotify(func(udid string, up, reconnected bool) {
+		var err error
+		if reconnected {
+			_, err = sup.Reconnect(udid)
+			slog.Info("agent USB reconnect: fresh attempt budget", "device", udid)
+		} else {
+			_, err = sup.NoteTether(udid, up)
+		}
+		if err != nil {
 			slog.Warn("agent tether", "device", udid, "up", up, "error", err)
 		}
 	})

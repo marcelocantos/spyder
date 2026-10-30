@@ -93,7 +93,8 @@ func TestDeviceKit_ConsentWindowStopsLaunchOnce(t *testing.T) {
 	var pid atomic.Int64
 	host := pendingHost(t, &pid)
 	host.DeviceKit.ConsentWindow = 600 * time.Millisecond
-	host.readyProbe = func(string, int) bool { return false }
+	var approved atomic.Bool
+	host.readyProbe = func(string, int) bool { return approved.Load() }
 	var starts atomic.Int64
 	host.holdRun = func(ctx context.Context, _ string, out io.Writer) error {
 		starts.Add(1)
@@ -119,11 +120,24 @@ func TestDeviceKit_ConsentWindowStopsLaunchOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if snap.Condition != agent.CondConsentRequired || snap.Consent == nil || !strings.Contains(snap.Consent.Message, "no Enable UI Automation approval") || !strings.Contains(snap.LastExit, "consent window") {
+	if snap.Condition != agent.CondConsentRequired || snap.Consent != nil || snap.ConsentPending || !strings.Contains(snap.LastExit, "consent window") {
 		t.Fatalf("expired %+v", snap)
 	}
 	if starts.Load() != 1 {
 		t.Fatalf("unattended relaunch after window: starts=%d", starts.Load())
+	}
+	// A real reconnect is a new opportunity to approve, without an
+	// owner calling Ensure or Retry and without reinstalling anything.
+	if snap, err := sup.Reconnect("dut"); err != nil || snap.Consent != nil || snap.Attempts != 0 {
+		t.Fatalf("reconnect retained failure: %+v err=%v", snap, err)
+	}
+	if snap, err := sup.Tick("dut"); err != nil || snap.Condition != agent.CondConsentPending || starts.Load() != 2 {
+		t.Fatalf("reconnect did not launch: %+v err=%v starts=%d", snap, err, starts.Load())
+	}
+	approved.Store(true)
+	waitFor(t, "reconnected runner approval", func() bool { _, ok := host.heldPID("dut"); return ok })
+	if snap, err := sup.Tick("dut"); err != nil || !snap.Ready || snap.Attempts != 0 || host.InstallCount() != 0 {
+		t.Fatalf("reconnect approval not ready: %+v err=%v installs=%d", snap, err, host.InstallCount())
 	}
 }
 
