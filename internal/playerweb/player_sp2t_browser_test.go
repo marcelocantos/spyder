@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -177,6 +178,7 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 	// IndexedDB is the actual persistence oracle; read it from the browser.
 	const readAlphaIDB = `new Promise(resolve => { const q = indexedDB.open('/spyder-state'); q.onerror = () => resolve(''); q.onsuccess = () => { const d=q.result; if (!d.objectStoreNames.contains('FILE_DATA')) { d.close(); resolve(''); return; } const tx=d.transaction('FILE_DATA'); const get=tx.objectStore('FILE_DATA').get('/spyder-state/games/alpha.db'); get.onsuccess=()=>{const bytes=get.result?.contents; d.close(); resolve(bytes ? btoa(String.fromCharCode(...bytes)) : '')}; get.onerror=()=>{d.close(); resolve('')}; }; })`
 	var persisted bool
+	var persistedBytes []byte
 	for time.Now().Before(deadline) {
 		encoded, err := chromedp.Run(ctx, chromedp.Evaluate[string](readAlphaIDB, chromedp.EvalAwaitPromise))
 		if err == nil && encoded != "" {
@@ -184,9 +186,8 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 			if decodeErr != nil {
 				t.Fatal(decodeErr)
 			}
-			if !bytes.Equal(stored, seed) {
-				t.Fatalf("IndexedDB alpha.db differs from pushed user-table fixture: got %d bytes, want %d", len(stored), len(seed))
-			}
+			assertSP2TUserState(t, stored, seed)
+			persistedBytes = stored
 			persisted = true
 			break
 		}
@@ -214,8 +215,8 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 		t.Fatalf("probe reopened browser profile: %v", err)
 	}
 	reopenedBytes, err := base64.StdEncoding.DecodeString(reopenedIDB)
-	if err != nil || !bytes.Equal(reopenedBytes, seed) {
-		t.Fatalf("reopened tab lacks first tab's IndexedDB bytes before player boot: got %d bytes, decode error %v; want %d", len(reopenedBytes), err, len(seed))
+	if err != nil || !bytes.Equal(reopenedBytes, persistedBytes) {
+		t.Fatalf("reopened tab lacks first tab's IndexedDB bytes before player boot: got %d bytes, decode error %v; want %d", len(reopenedBytes), err, len(persistedBytes))
 	}
 	if _, err := chromedp.Run(ctx, chromedp.Navigate(url("alpha"))); err != nil {
 		t.Fatalf("reopen alpha: %v", err)
@@ -225,9 +226,7 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 		if got.connection != 2 {
 			t.Fatalf("SP2T seed belongs to connection %d, not reopened alpha connection 2", got.connection)
 		}
-		if !bytes.Equal(got.data, seed) {
-			t.Fatalf("reopened alpha seed differs: got %d bytes, want %d", len(got.data), len(seed))
-		}
+		assertSP2TUserState(t, got.data, seed)
 	case <-time.After(20 * time.Second):
 		logs, _ := chromedp.Run(ctx, chromedp.Evaluate[string](`JSON.stringify({status:document.getElementById('status')?.textContent,logs:globalThis.sp2tLogs?.slice(-30)})`))
 		mu.Lock()
@@ -261,4 +260,108 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 		t.Fatalf("beta or prior connection sent unexpected SP2T seed: connection=%d bytes=%d", got.connection, len(got.data))
 	case <-time.After(1500 * time.Millisecond):
 	}
+}
+
+// assertSP2TUserState compares the complete user-visible state of this fixture,
+// not raw SQLite file bytes. Opening the snapshot through sqlpipe may add its
+// own metadata tables/pages; those must not make a valid user-state round trip
+// fail, but an empty/wrong/extra user table or a changed row still must fail.
+func assertSP2TUserState(t *testing.T, snapshot, fixture []byte) {
+	t.Helper()
+	read := func(label string, image []byte) (objects []string, levels []int64) {
+		t.Helper()
+		if !bytes.HasPrefix(image, []byte("SQLite format 3\x00")) {
+			t.Fatalf("%s is not a SQLite image (%d bytes)", label, len(image))
+		}
+		path := filepath.Join(t.TempDir(), label+".db")
+		if err := os.WriteFile(path, image, 0600); err != nil {
+			t.Fatal(err)
+		}
+		db, err := sql.Open("sqlite", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		var integrity string
+		if err := db.QueryRow(`PRAGMA integrity_check`).Scan(&integrity); err != nil || integrity != "ok" {
+			t.Fatalf("%s SQLite integrity: %q, %v", label, integrity, err)
+		}
+		rows, err := db.Query(`SELECT type || ':' || name || ':' || coalesce(sql, '') FROM sqlite_master
+			WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '\_sqlpipe\_%' ESCAPE '\'
+			ORDER BY type, name`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for rows.Next() {
+			var object string
+			if err := rows.Scan(&object); err != nil {
+				t.Fatal(err)
+			}
+			objects = append(objects, object)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		rows.Close()
+		rows, err = db.Query(`SELECT level FROM progress ORDER BY rowid`)
+		if err != nil {
+			t.Fatalf("%s progress query: %v", label, err)
+		}
+		for rows.Next() {
+			var level int64
+			if err := rows.Scan(&level); err != nil {
+				t.Fatal(err)
+			}
+			levels = append(levels, level)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		rows.Close()
+		return objects, levels
+	}
+	wantObjects, wantLevels := read("fixture", fixture)
+	gotObjects, gotLevels := read("snapshot", snapshot)
+	if !reflect.DeepEqual(gotObjects, wantObjects) || !reflect.DeepEqual(gotLevels, wantLevels) {
+		t.Fatalf("SP2T user-state mismatch: objects=%q levels=%v; want objects=%q levels=%v (snapshot=%d bytes, fixture=%d)", gotObjects, gotLevels, wantObjects, wantLevels, len(snapshot), len(fixture))
+	}
+}
+
+// The player opens pushed SQLite through sqlpipe::Database, whose constructor
+// creates _sqlpipe_meta. A valid persisted snapshot can therefore have a
+// different page count from the wire fixture while retaining all user state.
+func TestSP2TUserStateAllowsSqlpipeMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "fixture.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE progress (level INTEGER NOT NULL); INSERT INTO progress VALUES (42)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fixture, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE _sqlpipe_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO _sqlpipe_meta VALUES ('seq', '0')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(snapshot, fixture) {
+		t.Fatal("test setup did not alter SQLite file layout")
+	}
+	assertSP2TUserState(t, snapshot, fixture)
 }
