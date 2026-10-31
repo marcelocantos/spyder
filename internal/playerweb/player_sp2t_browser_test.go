@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/binary"
 	"fmt"
 	"net/http"
@@ -60,7 +61,11 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 
 	var mu sync.Mutex
 	var connections int
-	received := make(chan []byte, 8)
+	type wireSeed struct {
+		connection int
+		data       []byte
+	}
+	received := make(chan wireSeed, 16)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws/wire", func(w http.ResponseWriter, r *http.Request) {
 		c, err := websocket.Accept(w, r, nil)
@@ -99,12 +104,27 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 			case sp2tMagic:
 				// A player seed must be a complete, correctly framed SQLite image.
 				if int(binary.LittleEndian.Uint32(msg[4:])) != len(msg)-8 {
-					received <- nil
+					received <- wireSeed{connection: n}
 				} else {
-					received <- bytes.Clone(msg[8:])
+					received <- wireSeed{connection: n, data: bytes.Clone(msg[8:])}
 				}
 			}
 		}
+	})
+	// Capture the compiled player's own logs in the tab for a useful failure
+	// diagnosis without changing production code or interpreting an empty wire.
+	index, err := os.ReadFile(filepath.Join(dist, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	capture := `<script>globalThis.sp2tLogs=[]; for(const k of ['log','error']) { const prior=console[k].bind(console); console[k]=function(...xs){globalThis.sp2tLogs.push(xs.join(' '));prior(...xs)} }</script>`
+	if !bytes.Contains(index, []byte(`<script src="player.js"></script>`)) {
+		t.Fatal("player index missing script anchor")
+	}
+	index = bytes.Replace(index, []byte(`<script src="player.js"></script>`), []byte(capture+`<script src="player.js"></script>`), 1)
+	mux.HandleFunc("/player/index.html", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(index)
 	})
 	mux.Handle("/player/", http.StripPrefix("/player/", http.FileServer(http.Dir(dist))))
 	srv := httptest.NewServer(mux)
@@ -147,8 +167,15 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 	// IndexedDB is the actual persistence oracle; read it from the browser.
 	var persisted bool
 	for time.Now().Before(deadline) {
-		result, err := chromedp.Run(ctx, chromedp.Evaluate[bool](`new Promise(resolve => { const q = indexedDB.open('/spyder-state'); q.onerror = () => resolve(false); q.onsuccess = () => { const d=q.result; if (!d.objectStoreNames.contains('FILE_DATA')) { d.close(); resolve(false); return; } const tx=d.transaction('FILE_DATA'); const get=tx.objectStore('FILE_DATA').get('/spyder-state/games/alpha.db'); get.onsuccess=()=>{const ok=!!get.result; d.close(); resolve(ok)}; get.onerror=()=>{d.close(); resolve(false)}; }; })`, chromedp.EvalAwaitPromise))
-		if err == nil && result {
+		encoded, err := chromedp.Run(ctx, chromedp.Evaluate[string](`new Promise(resolve => { const q = indexedDB.open('/spyder-state'); q.onerror = () => resolve(''); q.onsuccess = () => { const d=q.result; if (!d.objectStoreNames.contains('FILE_DATA')) { d.close(); resolve(''); return; } const tx=d.transaction('FILE_DATA'); const get=tx.objectStore('FILE_DATA').get('/spyder-state/games/alpha.db'); get.onsuccess=()=>{const bytes=get.result?.contents; d.close(); resolve(bytes ? btoa(String.fromCharCode(...bytes)) : '')}; get.onerror=()=>{d.close(); resolve('')}; }; })`, chromedp.EvalAwaitPromise))
+		if err == nil && encoded != "" {
+			stored, decodeErr := base64.StdEncoding.DecodeString(encoded)
+			if decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			if !bytes.Equal(stored, seed) {
+				t.Fatalf("IndexedDB alpha.db differs from pushed user-table fixture: got %d bytes, want %d", len(stored), len(seed))
+			}
 			persisted = true
 			break
 		}
@@ -156,6 +183,12 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 	}
 	if !persisted {
 		t.Fatal("SP2T snapshot did not persist in real IndexedDB before tab close")
+	}
+	// Do not allow a first-connection seed to satisfy the reopen assertion.
+	select {
+	case got := <-received:
+		t.Fatalf("first attach unexpectedly sent SP2T seed on connection %d (%d bytes)", got.connection, len(got.data))
+	default:
 	}
 	closeTab()
 	ctx, closeTab = newTab()
@@ -165,11 +198,18 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 	}
 	select {
 	case got := <-received:
-		if !bytes.Equal(got, seed) {
-			t.Fatalf("reopened alpha seed differs: got %d bytes, want %d", len(got), len(seed))
+		if got.connection != 2 {
+			t.Fatalf("SP2T seed belongs to connection %d, not reopened alpha connection 2", got.connection)
+		}
+		if !bytes.Equal(got.data, seed) {
+			t.Fatalf("reopened alpha seed differs: got %d bytes, want %d", len(got.data), len(seed))
 		}
 	case <-time.After(20 * time.Second):
-		t.Fatal("reopened alpha did not send SP2T seed")
+		logs, _ := chromedp.Run(ctx, chromedp.Evaluate[string](`JSON.stringify({status:document.getElementById('status')?.textContent,logs:globalThis.sp2tLogs?.slice(-30)})`))
+		mu.Lock()
+		count := connections
+		mu.Unlock()
+		t.Fatalf("reopened alpha did not send SP2T seed; connections=%d browser=%s", count, logs)
 	}
 	closeTab()
 	ctx, closeTab = newTab()
@@ -194,7 +234,7 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 	}
 	select {
 	case got := <-received:
-		t.Fatalf("beta leaked alpha SP2T seed (%d bytes)", len(got))
+		t.Fatalf("beta or prior connection sent unexpected SP2T seed: connection=%d bytes=%d", got.connection, len(got.data))
 	case <-time.After(1500 * time.Millisecond):
 	}
 }
