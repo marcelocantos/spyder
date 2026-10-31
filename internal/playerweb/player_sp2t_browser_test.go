@@ -126,6 +126,11 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(index)
 	})
+	// Blank same-origin page checks browser-profile continuity without booting wasm.
+	mux.HandleFunc("/player/profile-probe", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<!doctype html><title>profile probe</title>"))
+	})
 	mux.Handle("/player/", http.StripPrefix("/player/", http.FileServer(http.Dir(dist))))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
@@ -140,6 +145,11 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 	defer cancelAlloc()
 	browser, cancelBrowser := chromedp.NewContext(alloc)
 	defer cancelBrowser()
+	// Allocate the browser on the parent BEFORE making children. Otherwise each
+	// child's first Run allocates its own Chrome/profile and loses IndexedDB.
+	if _, err := chromedp.Run(browser, chromedp.Navigate("about:blank")); err != nil {
+		t.Fatalf("allocate shared Chrome browser: %v", err)
+	}
 	newTab := func() (context.Context, context.CancelFunc) {
 		tab, closeTab := chromedp.NewContext(browser)
 		ctx, cancelTimeout := context.WithTimeout(tab, 70*time.Second)
@@ -165,9 +175,10 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 	}
 	// Wait for IDBFS's asynchronous syncfs(false), not just the wire write.
 	// IndexedDB is the actual persistence oracle; read it from the browser.
+	const readAlphaIDB = `new Promise(resolve => { const q = indexedDB.open('/spyder-state'); q.onerror = () => resolve(''); q.onsuccess = () => { const d=q.result; if (!d.objectStoreNames.contains('FILE_DATA')) { d.close(); resolve(''); return; } const tx=d.transaction('FILE_DATA'); const get=tx.objectStore('FILE_DATA').get('/spyder-state/games/alpha.db'); get.onsuccess=()=>{const bytes=get.result?.contents; d.close(); resolve(bytes ? btoa(String.fromCharCode(...bytes)) : '')}; get.onerror=()=>{d.close(); resolve('')}; }; })`
 	var persisted bool
 	for time.Now().Before(deadline) {
-		encoded, err := chromedp.Run(ctx, chromedp.Evaluate[string](`new Promise(resolve => { const q = indexedDB.open('/spyder-state'); q.onerror = () => resolve(''); q.onsuccess = () => { const d=q.result; if (!d.objectStoreNames.contains('FILE_DATA')) { d.close(); resolve(''); return; } const tx=d.transaction('FILE_DATA'); const get=tx.objectStore('FILE_DATA').get('/spyder-state/games/alpha.db'); get.onsuccess=()=>{const bytes=get.result?.contents; d.close(); resolve(bytes ? btoa(String.fromCharCode(...bytes)) : '')}; get.onerror=()=>{d.close(); resolve('')}; }; })`, chromedp.EvalAwaitPromise))
+		encoded, err := chromedp.Run(ctx, chromedp.Evaluate[string](readAlphaIDB, chromedp.EvalAwaitPromise))
 		if err == nil && encoded != "" {
 			stored, decodeErr := base64.StdEncoding.DecodeString(encoded)
 			if decodeErr != nil {
@@ -193,6 +204,19 @@ func TestPlayer_SP2T_IDBFS_TabReopenSeedsServer(t *testing.T) {
 	closeTab()
 	ctx, closeTab = newTab()
 	defer func() { closeTab() }()
+	// A same-origin blank tab must see the first tab's exact IndexedDB bytes
+	// before the player runs: this guards the test's shared-profile premise.
+	if _, err := chromedp.Run(ctx, chromedp.Navigate(srv.URL+"/player/profile-probe")); err != nil {
+		t.Fatalf("navigate reopened browser profile: %v", err)
+	}
+	reopenedIDB, err := chromedp.Run(ctx, chromedp.Evaluate[string](readAlphaIDB, chromedp.EvalAwaitPromise))
+	if err != nil {
+		t.Fatalf("probe reopened browser profile: %v", err)
+	}
+	reopenedBytes, err := base64.StdEncoding.DecodeString(reopenedIDB)
+	if err != nil || !bytes.Equal(reopenedBytes, seed) {
+		t.Fatalf("reopened tab lacks first tab's IndexedDB bytes before player boot: got %d bytes, decode error %v; want %d", len(reopenedBytes), err, len(seed))
+	}
 	if _, err := chromedp.Run(ctx, chromedp.Navigate(url("alpha"))); err != nil {
 		t.Fatalf("reopen alpha: %v", err)
 	}
