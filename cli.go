@@ -210,7 +210,6 @@ func postTool(ctx context.Context, tool string, args map[string]any) (*toolResul
 	return &out, nil
 }
 
-
 // postWithAutostart POSTs to the daemon, waiting out a supervised restart
 // when ~/.spyder already has a persisted listen address, then optionally
 // auto-starts a detached serve on the loopback default only (🎯T173).

@@ -1857,8 +1857,8 @@ spyder runs artefacts 20260419-143022-a3f1b2
 
 Retention is enforced when the daemon starts up. It **archives** runs
 rather than deleting them (🎯T166): a closed, quiet run is packed into
-`~/.spyder/archive/runs/<run-id>.tar.zst` (screenshots as lossless JPEG
-XL when `cjxl` is installed), verified, indexed in
+`~/.spyder/archive/runs/<run-id>.tar.zst` (screenshots as lossy JPEG
+XL, `cjxl -d 3 -e 7`, when `cjxl` is installed), verified, indexed in
 `~/.spyder/archive/runs/index.jsonl`, and only then removed from
 `~/.spyder/runs`. Archives are never deleted. Bounds, configured via
 environment:

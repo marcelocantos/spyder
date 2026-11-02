@@ -31,7 +31,7 @@ func Budget(artifactPath string, usbSpeedLabel string, deploy bool) time.Duratio
 		}
 		return BaseInstall
 	}
-	transfer := time.Duration(float64(bytes)/float64(effectiveBytesPerSec(usbSpeedLabel)) * float64(time.Second))
+	transfer := time.Duration(float64(bytes) / float64(effectiveBytesPerSec(usbSpeedLabel)) * float64(time.Second))
 	margin := 3 * time.Minute
 	if deploy {
 		margin += 2 * time.Minute
