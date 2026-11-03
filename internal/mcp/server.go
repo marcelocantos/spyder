@@ -778,6 +778,14 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 		return h.handleInputSwipeContext(ctx, args)
 	case "input_key":
 		return h.handleInputKeyContext(ctx, args)
+	case "input_text":
+		return h.handleInputTextContext(ctx, args)
+	case "ui_tree":
+		return h.handleUITreeContext(ctx, args)
+	case "ui_tap":
+		return h.handleUITapContext(ctx, args)
+	case "screen_secure":
+		return h.handleScreenSecureContext(ctx, args)
 	case "deploy_app":
 		return h.deployAppContext(ctx, args, false)
 	case "install_app":
@@ -851,6 +859,10 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"agent_status":           h.handleAgentStatus,
 		"input_swipe":            h.handleInputSwipe,
 		"input_key":              h.handleInputKey,
+		"input_text":             h.handleInputText,
+		"ui_tree":                h.handleUITree,
+		"ui_tap":                 h.handleUITap,
+		"screen_secure":          h.handleScreenSecure,
 		"notification_shade":     h.handleNotificationShade,
 		"notification_tap_first": h.handleNotificationTapFirst,
 		"device_setting":         h.handleDeviceSetting,
@@ -1306,10 +1318,41 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("owner", mcpgo.Description("Reservation owner when the device is reserved")),
 		),
 		mcpgo.NewTool("input_key",
-			mcpgo.WithDescription("Capability: Android KEYCODE via adb shell input keyevent (home, back, recent). iOS: fails closed."),
+			mcpgo.WithDescription("Capability: Android KEYCODE via adb shell input keyevent. Named keys: home, back, recent, enter, delete/backspace, forward_delete, tab, escape, space, dpad_up/down/left/right/center, menu, search, move_home, move_end, page_up, page_down, power, wakeup, volume_up/down — or a numeric KEYCODE. Gated like input_tap. iOS: fails closed."),
 			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or platform id")),
-			mcpgo.WithString("key", mcpgo.Required(), mcpgo.Description("home | back | recent")),
+			mcpgo.WithString("key", mcpgo.Required(), mcpgo.Description("Key name (e.g. enter, back, delete, tab) or numeric KEYCODE")),
+			mcpgo.WithNumber("repeat", mcpgo.Description("Press the key N times in one keyevent call (1..200, default 1) — e.g. delete ×20 to clear a field")),
 			mcpgo.WithString("owner", mcpgo.Description("Reservation owner when the device is reserved")),
+		),
+		mcpgo.NewTool("input_text",
+			mcpgo.WithDescription("Capability (🎯T180): type text into the focused field of any Android app via adb shell input text (shell-escaped; spaces/%s handled; \\n → ENTER, \\t → TAB). mode=auto types digit-only text (PINs) as keyevents for reliability. The text is never echoed in responses, errors, logs or run artefacts; secret=true (or PIN-like text) marks the response redacted. Printable ASCII only. Reservation-gated. iOS: fails closed."),
+			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or platform id")),
+			mcpgo.WithString("text", mcpgo.Required(), mcpgo.Description("Text to type (printable ASCII; \\n and \\t become ENTER/TAB)")),
+			mcpgo.WithBoolean("secret", mcpgo.Description("Treat as secret (password/PIN): response reports redacted=true. Digit-only 3–24 char text is treated as secret automatically.")),
+			mcpgo.WithString("mode", mcpgo.Description("auto (default: digits → keyevents, else input text) | text | keys (keyevents only: digits, a-z, space, a few symbols)")),
+			mcpgo.WithString("owner", mcpgo.Description("Reservation owner when the device is reserved")),
+		),
+		mcpgo.NewTool("ui_tree",
+			mcpgo.WithDescription("Capability (🎯T180): Android accessibility tree of the foreground app via uiautomator dump (exec-out, temp-file fallback; retries 'could not get idle state'). Returns JSON nodes {class, text, content-desc, resource-id, package, bounds [x1,y1,x2,y2], center [x,y], clickable, enabled, focused, checked, password, children}. Password-field text is redacted. compact=true drops empty layout nodes. Observational (not reservation-gated). Apps using FLAG_SECURE or custom rendering (Flutter/games) may expose little. iOS: fails closed."),
+			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or platform id")),
+			mcpgo.WithBoolean("compact", mcpgo.Description("Drop non-interactive nodes with no text/desc, hoisting their children (default false)")),
+			mcpgo.WithString("owner", mcpgo.Description("Accepted for symmetry; ui_tree is observational and ungated")),
+		),
+		mcpgo.NewTool("ui_tap",
+			mcpgo.WithDescription("Capability (🎯T180): dump the Android UI tree and tap the centre of the unique on-screen node matching text / resource_id / desc (combined with AND). Fails clearly on zero matches, on multiple matches (listing candidates) unless index is given, and on disabled nodes. Reservation-gated. iOS: fails closed."),
+			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or platform id")),
+			mcpgo.WithString("text", mcpgo.Description("Node text (exact unless contains=true)")),
+			mcpgo.WithString("resource_id", mcpgo.Description("Resource id: full (pkg:id/name), id/name, or bare name")),
+			mcpgo.WithString("desc", mcpgo.Description("content-desc (exact unless contains=true)")),
+			mcpgo.WithBoolean("contains", mcpgo.Description("Case-insensitive substring match for text/desc (default false)")),
+			mcpgo.WithNumber("index", mcpgo.Description("0-based pick among multiple matches (document order); omit to require a unique match")),
+			mcpgo.WithString("owner", mcpgo.Description("Reservation owner when the device is reserved")),
+		),
+		mcpgo.NewTool("screen_secure",
+			mcpgo.WithDescription("Capability (🎯T180): does the foreground Android window set FLAG_SECURE? Parses dumpsys window for the focused window's flags (symbolic or OEM hex), lists all SECURE windows, and (screenshot=true, default) checks whether a screencap is all black. verdict: secure | likely_secure (black capture, no flag) | not_secure | screen_off | unknown. Observational. iOS: fails closed."),
+			mcpgo.WithString("device", mcpgo.Required(), mcpgo.Description("Device alias or platform id")),
+			mcpgo.WithBoolean("screenshot", mcpgo.Description("Also run the all-black screencap heuristic (default true)")),
+			mcpgo.WithString("owner", mcpgo.Description("Accepted for symmetry; screen_secure is observational and ungated")),
 		),
 		mcpgo.NewTool("notification_shade",
 			mcpgo.WithDescription("Expand or collapse the Android notification shade (cmd statusbar). iOS: fails closed."),

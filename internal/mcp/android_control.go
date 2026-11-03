@@ -12,6 +12,9 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strconv"
+	"strings"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -58,10 +61,58 @@ type notificationShadeController interface {
 }
 
 // androidKeyCodes maps friendly names to Android KEYCODE_* values.
+// 🎯T180 extended the original home/back/recent set with the editing and
+// navigation keys native-app form filling needs.
 var androidKeyCodes = map[string]int{
-	"home":   3,
-	"back":   4,
-	"recent": 187, // APP_SWITCH
+	"home":           3,
+	"back":           4,
+	"recent":         187, // APP_SWITCH
+	"enter":          66,
+	"delete":         67, // DEL = backspace
+	"backspace":      67,
+	"forward_delete": 112,
+	"tab":            61,
+	"escape":         111,
+	"space":          62,
+	"dpad_up":        19,
+	"dpad_down":      20,
+	"dpad_left":      21,
+	"dpad_right":     22,
+	"dpad_center":    23,
+	"menu":           82,
+	"search":         84,
+	"move_home":      122,
+	"move_end":       123,
+	"page_up":        92,
+	"page_down":      93,
+	"power":          26,
+	"wakeup":         224,
+	"volume_up":      24,
+	"volume_down":    25,
+}
+
+// androidKeyNames lists androidKeyCodes keys for error messages.
+func androidKeyNames() string {
+	names := make([]string, 0, len(androidKeyCodes))
+	for k := range androidKeyCodes {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
+}
+
+// resolveAndroidKey maps a key name (case-insensitive) or a numeric
+// KEYCODE to its code.
+func resolveAndroidKey(name string) (int, bool) {
+	n := strings.ToLower(strings.TrimSpace(name))
+	n = strings.TrimPrefix(n, "keycode_")
+	if c, ok := androidKeyCodes[n]; ok {
+		return c, true
+	}
+	if c, err := strconv.Atoi(n); err == nil && c >= 0 && c <= 400 {
+		return c, true
+	}
+	return 0, false
 }
 
 // requireOSControlCap authorizes and resolves a device for the shared OS
@@ -379,9 +430,17 @@ func (h *Handler) handleInputKeyContext(ctx context.Context, args map[string]any
 	if err != nil {
 		return nil, err
 	}
-	code, ok := androidKeyCodes[keyName]
+	code, ok := resolveAndroidKey(keyName)
 	if !ok {
-		return toolErr("input_key: unknown key %q — use home, back, or recent", keyName)
+		return toolErr("input_key: unknown key %q — use a numeric KEYCODE or one of: %s", keyName, androidKeyNames())
+	}
+	repeat := 1
+	if _, has := args["repeat"]; has {
+		r, rerr := requireInt(args, "repeat")
+		if rerr != nil || r < 1 || r > 200 {
+			return toolErr("input_key: repeat must be 1..200")
+		}
+		repeat = r
 	}
 
 	h.mu.Lock()
@@ -391,18 +450,35 @@ func (h *Handler) handleInputKeyContext(ctx context.Context, args map[string]any
 	if errRes != nil {
 		return errRes, nil
 	}
-	if cinj, ok := adapter.(contextKeyInjector); ok {
-		if err := cinj.InjectKeyEventContext(ctx, id, code); err != nil {
-			return toolErr("input_key: %v", err)
+	if repeat > 1 {
+		if minj, ok := adapter.(multiKeyInjector); ok {
+			codes := make([]int, repeat)
+			for i := range codes {
+				codes[i] = code
+			}
+			if err := minj.InjectKeyEventsContext(ctx, id, codes); err != nil {
+				return toolErr("input_key: %v", err)
+			}
+			return toolJSON(map[string]any{"device": dev, "platform": platform, "key": keyName, "keycode": code, "repeat": repeat, "injected": true})
 		}
-	} else {
-		inj, ok := adapter.(keyInjector)
-		if !ok {
-			return toolErr("input_key: not supported on %s (Android only)", platform)
+	}
+	for range repeat {
+		if cinj, ok := adapter.(contextKeyInjector); ok {
+			if err := cinj.InjectKeyEventContext(ctx, id, code); err != nil {
+				return toolErr("input_key: %v", err)
+			}
+		} else {
+			inj, ok := adapter.(keyInjector)
+			if !ok {
+				return toolErr("input_key: not supported on %s (Android only)", platform)
+			}
+			if err := inj.InjectKeyEvent(id, code); err != nil {
+				return toolErr("input_key: %v", err)
+			}
 		}
-		if err := inj.InjectKeyEvent(id, code); err != nil {
-			return toolErr("input_key: %v", err)
-		}
+	}
+	if repeat > 1 {
+		return toolJSON(map[string]any{"device": dev, "platform": platform, "key": keyName, "keycode": code, "repeat": repeat, "injected": true})
 	}
 	return toolJSON(map[string]any{"device": dev, "platform": platform, "key": keyName, "keycode": code, "injected": true})
 }

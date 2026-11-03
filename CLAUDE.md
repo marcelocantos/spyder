@@ -32,7 +32,10 @@ often fails; Android is supported via `adb`.
 
 ## What it does NOT own
 
-- UI automation (tap/swipe/type/UI tree) — that's mobile-mcp
+- General UI automation — that's mobile-mcp. Exception (🎯T180): Android
+  `input_text` / `input_key` / `ui_tree` / `ui_tap` / `screen_secure` are
+  first-class verbs so scripts can drive third-party native apps; iOS
+  still fails closed to `app_input` / mobile-mcp
 - xcodebuild invocations — that's XcodeBuildMCP
 - iOS protocol implementations — that's go-ios (vendored as a Go
   module dependency); spyder is just its consumer

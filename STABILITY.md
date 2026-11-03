@@ -172,7 +172,11 @@ builtin). `log_stream` is REST SSE only and is not in the verb table.
 | `app_call` | `{session_id?…, method: string (required), params?: object, timeout_ms?}`. | JSON `{session_id, method, result}` from the app's handler. | Stable — generic pass-through; method must appear in hello; not a per-game MCP tool |
 | `app_calls_batch` | `{session_id?…, calls: [{method, params?, timeout_ms?}], stop_on_error?: bool}`. Max 32 calls. | JSON `{session_id, results: [{method, result}|{method, error}]}`. | Needs review — hybrid device smoke |
 | `wait_app_session` | `{device, bundle_id, timeout_ms?, poll_ms?}`. | JSON `{session_id, listener_id, port, …}` when connected. | Needs review — hybrid device smoke |
-| `input_key` | `{device, key: home\|back\|recent, owner?}`. | Android keyevent inject. | Needs review — hybrid device smoke |
+| `input_key` | `{device, key: home\|back\|recent\|enter\|delete\|tab\|…\|KEYCODE_*\|N, repeat?, owner?}`. | Android keyevent inject; iOS fails closed. | Beta (🎯T180) |
+| `input_text` | `{device, text, secret?, mode?: auto\|text\|keys, owner?}`. | `{chars, mode, steps, redacted, injected}` — never the text. Android only. | Beta (🎯T180) |
+| `ui_tree` | `{device, compact?, owner?}`. | `{package, rotation, node_count, raw_count, nodes}` via uiautomator. Android only. | Beta (🎯T180) |
+| `ui_tap` | `{device, text?, resource_id?, desc?, contains?, index?, owner?}`. | `{x, y, matches, index, node}`. Android only. | Beta (🎯T180) |
+| `screen_secure` | `{device, screenshot?}`. | `{secure_flag, verdict, focused_window, …}`. Android only. | Beta (🎯T180) |
 | `notification_shade` | `{device, action?: expand\|collapse, owner?}`. | Android status bar. | Needs review |
 | `notification_tap_first` | `{device, y_fraction?, owner?}`. | Heuristic first-notification tap. | Needs review |
 | `list_scripts` | (no args). | JSON list of durable host Starlark recipes (bundled + `~/.spyder/scripts`). | Stable (🎯T108) |
@@ -311,6 +315,11 @@ exact-package crash evidence; it does not keep its own logcat grammar.
 | `spyder system-alert <device> [--tap LABEL [--title-contains TEXT] [--wait-ms N]] [--as OWNER] [--json]` | REST proxy to `system_alert` / `system_alert_tap`. | Beta (🎯T154) |
 | `spyder input-tap <device> --x N --y N [--as OWNER]` | REST proxy to `input_tap`. Android only; iOS fails closed. | Stable (🎯T111/T112) |
 | `spyder input-swipe <device> --x1 N --y1 N --x2 N --y2 N [--duration-ms N] [--as OWNER]` | REST proxy to `input_swipe`. | Stable (🎯T111/T112) |
+| `spyder input-text <device> --text TEXT\|- [--secret] [--mode M] [--as OWNER]` | REST proxy to `input_text`. `-` reads stdin. | Beta (🎯T180) |
+| `spyder input-key <device> <key> [--repeat N] [--as OWNER]` | REST proxy to `input_key`. | Beta (🎯T180) |
+| `spyder ui-tree <device> [--compact] [--json]` | REST proxy to `ui_tree`. | Beta (🎯T180) |
+| `spyder ui-tap <device> (--text T\|--id RID\|--desc D) [--contains] [--index N] [--as OWNER]` | REST proxy to `ui_tap`. | Beta (🎯T180) |
+| `spyder screen-secure <device> [--no-screenshot] [--json]` | REST proxy to `screen_secure`. | Beta (🎯T180) |
 | `spyder app-perf-get [--session-id ID] [--json]` | REST proxy to `app_perf_get`. | Stable (🎯T110) |
 | `spyder wait-state [--session-id ID \| --device D --bundle-id B] --slice S [--select JQ] [--timeout-ms N] [--poll-ms N] [--json]` | REST proxy to `wait_state`. | Stable (🎯T129) |
 | `spyder device-setting <device> set\|restore\|get --key refresh_rate [--value N] [--as OWNER] [--json]` | REST proxy to `device_setting`. | Stable (🎯T130) |

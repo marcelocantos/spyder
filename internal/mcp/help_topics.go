@@ -146,7 +146,8 @@ emit(c)
 Policy (🎯T116): reservations gate device-state-mutating verbs ONLY
 (launch_app, terminate_app, install_app, uninstall_app, deploy_app,
 launch_player, rotate, network, perf_fps, port_forward_*, input_tap,
-input_swipe). Observational verbs (screenshot, record_*, logs, state
+input_swipe, input_key, input_text, ui_tap). Observational verbs
+(screenshot, record_*, logs, ui_tree, screen_secure, state
 reads) always succeed regardless of who holds the device. app_exec
 does NOT auto-reserve: verbs inside a script pass owner= exactly like
 direct calls, and a foreign hold fails the verb immediately with a

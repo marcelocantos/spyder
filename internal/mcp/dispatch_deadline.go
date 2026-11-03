@@ -71,6 +71,7 @@ var toolDeadlineByName = func() map[string]func() time.Duration {
 		"rotate", "network", "record_start", "record_stop",
 		"port_forward_start", "port_forward_stop", "input_tap", "input_swipe",
 		"input_key", "notification_shade", "notification_tap_first",
+		"input_text", "ui_tree", "ui_tap", "screen_secure",
 		"crashes", "logs", "baseline_update", "diff",
 		"reserve", "release", "renew",
 		"sim_list", "sim_create", "sim_boot", "sim_shutdown",

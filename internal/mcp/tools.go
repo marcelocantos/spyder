@@ -1279,6 +1279,8 @@ var reservationGatedVerbs = []string{
 	"input_tap",
 	"system_alert_tap",
 	"input_key",
+	"input_text",
+	"ui_tap",
 	"notification_shade",
 	"notification_tap_first",
 	"install_app",
