@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -113,7 +114,7 @@ func TestConnectionRetriesStableEventAndRedactsCredentials(t *testing.T) {
 		t.Fatalf("bad delivery: %+v", delivered)
 	}
 	one, two := <-events, <-events
-	if one != two || one.EventID != s.ID || one.Event != "device.connected" {
+	if !reflect.DeepEqual(one, two) || one.EventID != s.ID || one.Event != "device.connected" {
 		t.Fatalf("unstable payload: %+v %+v", one, two)
 	}
 	b, _ := json.Marshal(m.List())

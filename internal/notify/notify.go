@@ -1,7 +1,7 @@
 // Copyright 2026 Marcelo Cantos
 // SPDX-License-Identifier: Apache-2.0
 
-// Package notify delivers durable, one-shot device connection callbacks.
+// Package notify delivers durable event subscriptions and device callbacks.
 package notify
 
 import (
@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -33,34 +34,44 @@ const (
 
 // Subscription omits the callback URL: T3 webhook URLs are bearer credentials.
 type Subscription struct {
-	ID          string     `json:"id"`
-	Event       string     `json:"event"`
-	Device      string     `json:"device"`
-	DeviceID    string     `json:"device_id"`
-	Platform    string     `json:"platform"`
-	State       string     `json:"state"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	ConnectedAt *time.Time `json:"connected_at,omitempty"`
-	DeliveredAt *time.Time `json:"delivered_at,omitempty"`
-	Attempts    int        `json:"attempts"`
-	LastError   string     `json:"last_error,omitempty"`
+	Events      []string          `json:"events,omitempty"`
+	Match       map[string]string `json:"match,omitempty"`
+	Recurring   bool              `json:"recurring,omitempty"`
+	Pending     int               `json:"pending,omitempty"`
+	Delivered   int               `json:"delivered,omitempty"`
+	Dropped     int               `json:"dropped,omitempty"`
+	LastEventID string            `json:"last_event_id,omitempty"`
+	ID          string            `json:"id"`
+	Event       string            `json:"event"`
+	Device      string            `json:"device"`
+	DeviceID    string            `json:"device_id"`
+	Platform    string            `json:"platform"`
+	State       string            `json:"state"`
+	CreatedAt   time.Time         `json:"created_at"`
+	ExpiresAt   time.Time         `json:"expires_at"`
+	ConnectedAt *time.Time        `json:"connected_at,omitempty"`
+	DeliveredAt *time.Time        `json:"delivered_at,omitempty"`
+	Attempts    int               `json:"attempts"`
+	LastError   string            `json:"last_error,omitempty"`
 }
 
 type record struct {
 	Subscription
-	WebhookURL string `json:"webhook_url"`
+	WebhookURL string  `json:"webhook_url"`
+	Queue      []Event `json:"pending_events,omitempty"`
 }
 
 // Event is the callback body. EventID is stable across retries and restarts;
 // configure T3's replayKey as {{body.event_id}} for duplicate suppression.
 type Event struct {
-	EventID     string    `json:"event_id"`
-	Event       string    `json:"event"`
-	Device      string    `json:"device"`
-	DeviceID    string    `json:"device_id"`
-	Platform    string    `json:"platform"`
-	ConnectedAt time.Time `json:"connected_at"`
+	OccurredAt  time.Time         `json:"occurred_at,omitzero"`
+	Data        map[string]string `json:"data,omitempty"`
+	EventID     string            `json:"event_id"`
+	Event       string            `json:"event"`
+	Device      string            `json:"device"`
+	DeviceID    string            `json:"device_id"`
+	Platform    string            `json:"platform"`
+	ConnectedAt time.Time         `json:"connected_at,omitzero"`
 }
 
 type Request struct {
@@ -76,17 +87,19 @@ type Request struct {
 type WaitConnected func(ctx context.Context, platform, id string) error
 
 type Manager struct {
-	mu      sync.Mutex
-	path    string
-	records map[string]record
-	jobs    map[string]context.CancelFunc
-	wake    chan struct{}
-	wait    WaitConnected
-	client  *http.Client
+	mu         sync.Mutex
+	path       string
+	records    map[string]record
+	jobs       map[string]context.CancelFunc
+	wake       chan struct{}
+	notices    map[string]chan struct{}
+	sourceWake chan struct{}
+	wait       WaitConnected
+	client     *http.Client
 }
 
 func Open(path string, wait WaitConnected) (*Manager, error) {
-	m := &Manager{path: path, records: map[string]record{}, jobs: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), wait: wait,
+	m := &Manager{path: path, records: map[string]record{}, jobs: map[string]context.CancelFunc{}, wake: make(chan struct{}, 1), notices: map[string]chan struct{}{}, sourceWake: make(chan struct{}, 1), wait: wait,
 		client: &http.Client{Timeout: deliveryTimeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}
 	b, err := os.ReadFile(path)
 	if err == nil {
@@ -97,17 +110,32 @@ func Open(path string, wait WaitConnected) (*Manager, error) {
 			return nil, errors.New("invalid notifications store")
 		}
 		for id, r := range m.records {
-			if id != r.ID || r.Event != "device.connected" || r.DeviceID == "" || r.ExpiresAt.IsZero() {
+			if id != r.ID || r.ExpiresAt.IsZero() || (len(r.Events) == 0 && (r.Event != "device.connected" || r.DeviceID == "")) {
 				return nil, errors.New("invalid notification record")
 			}
 			switch r.State {
 			case "waiting", "ready":
-				if r.WebhookURL == "" || (r.Platform != "ios" && r.Platform != "android") || (r.State == "ready" && r.ConnectedAt == nil) {
+				if r.WebhookURL == "" || (len(r.Events) == 0 && ((r.Platform != "ios" && r.Platform != "android") || (r.State == "ready" && r.ConnectedAt == nil))) {
 					return nil, errors.New("invalid pending notification")
+				}
+				if err := validateCallback(r.WebhookURL, DefaultTTL); err != nil {
+					return nil, errors.New("invalid stored notification callback")
 				}
 			case "delivered", "cancelled", "expired":
 			default:
 				return nil, errors.New("invalid notification state")
+			}
+			if len(r.Events) > 0 {
+				if len(r.Queue) > maxPendingEvents {
+					return nil, errors.New("invalid stored notification queue")
+				}
+				for _, e := range r.Queue {
+					if e.EventID == "" || !knownEvent(e.Event) {
+						return nil, errors.New("invalid stored event")
+					}
+				}
+				r.Pending = len(r.Queue)
+				m.records[id] = r
 			}
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -123,18 +151,11 @@ func (m *Manager) Add(r Request) (Subscription, error) {
 	if r.DeviceID == "" {
 		return Subscription{}, errors.New("device identifier is empty")
 	}
-	if len(r.WebhookURL) > MaxWebhookURLBytes {
-		return Subscription{}, errors.New("webhook URL too long")
-	}
-	u, err := url.Parse(r.WebhookURL)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"))) {
-		return Subscription{}, errors.New("webhook_url must be HTTPS (HTTP allowed on loopback), without user info or fragment")
+	if err := validateCallback(r.WebhookURL, r.TTL); err != nil {
+		return Subscription{}, err
 	}
 	if r.TTL == 0 {
 		r.TTL = DefaultTTL
-	}
-	if r.TTL < time.Second || r.TTL > MaxTTL {
-		return Subscription{}, errors.New("ttl must be between 1 second and 7 days")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -143,7 +164,7 @@ func (m *Manager) Add(r Request) (Subscription, error) {
 	for _, s := range m.records {
 		if (s.State == "waiting" || s.State == "ready") && now.Before(s.ExpiresAt) {
 			active++
-			if s.DeviceID == r.DeviceID && s.Platform == r.Platform && s.WebhookURL == r.WebhookURL {
+			if len(s.Events) == 0 && s.DeviceID == r.DeviceID && s.Platform == r.Platform && s.WebhookURL == r.WebhookURL {
 				return s.Subscription, nil
 			}
 		}
@@ -162,12 +183,32 @@ func (m *Manager) Add(r Request) (Subscription, error) {
 	return s.Subscription, nil
 }
 
+func validateCallback(webhook string, ttl time.Duration) error {
+	if len(webhook) > MaxWebhookURLBytes {
+		return errors.New("webhook URL too long")
+	}
+	u, err := url.Parse(webhook)
+	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || (u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1" || u.Hostname() == "::1"))) {
+		return errors.New("webhook_url must be HTTPS (HTTP allowed on loopback), without user info or fragment")
+	}
+	if ttl == 0 {
+		ttl = DefaultTTL
+	}
+	if ttl < time.Second || ttl > MaxTTL {
+		return errors.New("ttl must be between 1 second and 7 days")
+	}
+	return nil
+}
+
 func (m *Manager) List() []Subscription {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	out := make([]Subscription, 0, len(m.records))
 	for _, s := range m.records {
-		out = append(out, s.Subscription)
+		view := s.Subscription
+		view.Events = slices.Clone(view.Events)
+		view.Match = maps.Clone(view.Match)
+		out = append(out, view)
 	}
 	slices.SortFunc(out, func(a, b Subscription) int { return a.CreatedAt.Compare(b.CreatedAt) })
 	return out
@@ -188,6 +229,8 @@ func (m *Manager) Cancel(id string) (Subscription, error) {
 	previous := s
 	s.State = "cancelled"
 	s.WebhookURL = ""
+	s.Queue = nil
+	s.Pending = 0
 	m.records[id] = s
 	if err := m.saveLocked(); err != nil {
 		m.records[id] = previous
@@ -202,6 +245,10 @@ func (m *Manager) Cancel(id string) (Subscription, error) {
 func (m *Manager) signal() {
 	select {
 	case m.wake <- struct{}{}:
+	default:
+	}
+	select {
+	case m.sourceWake <- struct{}{}:
 	default:
 	}
 }
@@ -232,13 +279,20 @@ func (m *Manager) Run(ctx context.Context) {
 			}
 			jobCtx, cancel := context.WithDeadline(ctx, s.ExpiresAt)
 			m.jobs[id] = cancel
+			notice := make(chan struct{}, 1)
+			m.notices[id] = notice
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				defer cancel()
-				m.runJob(jobCtx, id)
+				if len(s.Events) > 0 {
+					m.runSubscription(jobCtx, id, notice)
+				} else {
+					m.runJob(jobCtx, id)
+				}
 				m.mu.Lock()
 				delete(m.jobs, id)
+				delete(m.notices, id)
 				m.mu.Unlock()
 			}()
 		}
@@ -350,16 +404,20 @@ func (m *Manager) change(id string, update func(*record)) error {
 }
 
 func (m *Manager) deliver(ctx context.Context, s record) error {
-	body, err := json.Marshal(Event{EventID: s.ID, Event: s.Event, Device: s.Device, DeviceID: s.DeviceID, Platform: s.Platform, ConnectedAt: *s.ConnectedAt})
+	return m.deliverEvent(ctx, s.WebhookURL, Event{EventID: s.ID, Event: s.Event, Device: s.Device, DeviceID: s.DeviceID, Platform: s.Platform, ConnectedAt: *s.ConnectedAt, OccurredAt: *s.ConnectedAt})
+}
+
+func (m *Manager) deliverEvent(ctx context.Context, webhook string, event Event) error {
+	body, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.WebhookURL, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, webhook, bytes.NewReader(body))
 	if err != nil {
 		return errors.New("invalid callback request")
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Spyder-Event-ID", s.ID)
+	req.Header.Set("X-Spyder-Event-ID", event.EventID)
 	res, err := m.client.Do(req)
 	if err != nil {
 		return errors.New("callback transport failed (URL redacted)")

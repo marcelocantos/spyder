@@ -33,7 +33,9 @@ func TestDeviceNotification_Live(t *testing.T) {
 		t.Fatal(err)
 	}
 	deviceID, platform := os.Getenv("SPYDER_NOTIFY_DEVICE_ID"), os.Getenv("SPYDER_NOTIFY_PLATFORM")
-	if deviceID == "" || (platform != "ios" && platform != "android") {
+	generic := os.Getenv("SPYDER_NOTIFY_EVENT_LIVE") == "1"
+	genericDevice := os.Getenv("SPYDER_NOTIFY_DEVICE_EVENT_LIVE") == "1"
+	if !generic && (deviceID == "" || (platform != "ios" && platform != "android")) {
 		t.Fatal("set device hardware ID and platform")
 	}
 	webhook, err := os.ReadFile(os.Getenv("SPYDER_NOTIFY_WEBHOOK_FILE"))
@@ -118,13 +120,66 @@ func TestDeviceNotification_Live(t *testing.T) {
 		return b
 	}
 	registeredAt := time.Now()
-	b := run(string(webhook), "notify", "connected", deviceID, "--platform", platform, "--webhook-url", "-", "--ttl", "1m")
+	var b []byte
+	if generic {
+		b = run(string(webhook), "notify", "subscribe", "verify.completed", "--match", "workflow=notification-live", "--match", "status=passed", "--recurring", "--webhook-url", "-", "--ttl", "1m")
+	} else if genericDevice {
+		b = run(string(webhook), "notify", "subscribe", "device.connected", "--match", "device_id="+deviceID, "--match", "platform="+platform, "--webhook-url", "-", "--ttl", "1m")
+	} else {
+		b = run(string(webhook), "notify", "connected", deviceID, "--platform", platform, "--webhook-url", "-", "--ttl", "1m")
+	}
 	var subscription notify.Subscription
 	if err := json.Unmarshal(b, &subscription); err != nil {
 		t.Fatalf("decode registration: %v %s", err, b)
 	}
 	if subscription.ID == "" {
 		t.Fatal("no notification ID")
+	}
+	if generic {
+		workflow := filepath.Join(root, "event-workflow.yaml")
+		if err := os.WriteFile(workflow, []byte("name: notification-live\nsteps:\n  - id: ready\n    type: shell\n    argv: [/usr/bin/true]\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		var eventIDs []string
+		for i := 1; i <= 2; i++ {
+			run("", "verify", workflow, "--cwd", root, "--as", "notification-journey", "--json")
+			deadline = time.Now().Add(15 * time.Second)
+			for {
+				var rows []notify.Subscription
+				if err := json.Unmarshal(run("", "notify", "list"), &rows); err != nil {
+					t.Fatal(err)
+				}
+				if len(rows) != 1 {
+					t.Fatalf("unexpected subscriptions: %+v", rows)
+				}
+				if rows[0].Delivered == i && rows[0].State == "waiting" {
+					if rows[0].LastEventID == "" || rows[0].Dropped != 0 || rows[0].Pending != 0 {
+						t.Fatalf("bad recurring delivery: %+v", rows)
+					}
+					eventIDs = append(eventIDs, rows[0].LastEventID)
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("recurring callback not accepted: %+v", rows)
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+		if eventIDs[0] == eventIDs[1] {
+			t.Fatal("distinct occurrences share a replay key")
+		}
+		run("", "notify", "cancel", subscription.ID)
+		if receipt := os.Getenv("SPYDER_NOTIFY_RECEIPT_FILE"); receipt != "" {
+			data, err := json.Marshal(eventIDs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(receipt, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Logf("live recurring verify.completed callbacks accepted: events=%v elapsed=%s", eventIDs, time.Since(registeredAt))
+		return
 	}
 	deadline = time.Now().Add(15 * time.Second)
 	for {
@@ -136,10 +191,14 @@ func TestDeviceNotification_Live(t *testing.T) {
 			t.Fatalf("unexpected registrations: %+v", rows)
 		}
 		if rows[0].State == "delivered" {
-			if rows[0].ID != subscription.ID || rows[0].Attempts != 1 || rows[0].ConnectedAt == nil {
+			if rows[0].ID != subscription.ID || rows[0].Attempts != 1 || (!genericDevice && rows[0].ConnectedAt == nil) || (genericDevice && rows[0].LastEventID == "") {
 				t.Fatalf("bad callback receipt: %+v", rows)
 			}
-			t.Logf("live T3 callback accepted: event_id=%s platform=%s device=%s elapsed=%s", subscription.ID, platform, deviceID, time.Since(registeredAt))
+			eventID := subscription.ID
+			if genericDevice {
+				eventID = rows[0].LastEventID
+			}
+			t.Logf("live T3 callback accepted: event_id=%s platform=%s device=%s elapsed=%s", eventID, platform, deviceID, time.Since(registeredAt))
 			if receipt := os.Getenv("SPYDER_NOTIFY_RECEIPT_FILE"); receipt != "" {
 				data, err := json.Marshal(rows[0])
 				if err != nil {

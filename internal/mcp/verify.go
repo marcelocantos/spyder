@@ -13,6 +13,7 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
+	"github.com/marcelocantos/spyder/internal/notify"
 	"github.com/marcelocantos/spyder/internal/verify"
 )
 
@@ -27,6 +28,9 @@ func (h *Handler) VerifyHub() *verify.Hub {
 			model = h.verifyModelOverride
 		}
 		h.verifyHub = verify.NewHub(verify.HubArgs{
+			OnEvent: func(e verify.Event) {
+				h.publishNotification(notify.Event{Event: "verify." + e.Kind, Device: e.Device, Data: map[string]string{"run_id": e.RunID, "workflow": e.Workflow, "owner": e.Owner, "step_id": e.StepID, "status": e.Status}})
+			},
 			Script:   h.execVerifyScript,
 			Model:    model,
 			StateDir: h.verifyStateDir,

@@ -55,7 +55,7 @@ var cliCommands []cliCommand
 func init() {
 	cliCommands = []cliCommand{
 		{"devices", "spyder devices [--platform ios|android|all] [--json]", runDevices},
-		{"notify", "spyder notify connected <device> --webhook-url URL|- [--platform ios|android] [--ttl 24h] | list | cancel <id>  (URL - reads stdin)", runNotify},
+		{"notify", "spyder notify subscribe EVENTS --webhook-url URL|- [--match FIELD=VALUE]... [--recurring] [--ttl 24h] | connected DEVICE --webhook-url URL|- [--platform ios|android] | events | publish custom.NAME [--data FIELD=VALUE]... [--device DEVICE] | list | cancel ID", runNotify},
 		{"resolve", "spyder resolve (<name>|--on PREDICATE) [--json]", runResolve},
 		{"device-state", "spyder device-state <device> [--json]", runDeviceState},
 		{"battery-history", "spyder battery-history [--since -24h] [--until now] [--device ALIAS] [--bucket-s N] [--sample] [--json]", runBatteryHistory},

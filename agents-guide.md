@@ -230,7 +230,7 @@ factory path targets an abstract instance, not a device, and is not.
 
 ## The `app_exec` entry point
 
-### Resume a T3 Code thread when a device connects
+### Notify T3 Code threads about Spyder events
 
 Create a thread-bound webhook with T3 Code's `schedule_task`:
 
@@ -251,31 +251,94 @@ remote access must be enabled for the tool to return `webhookUrl`. Register that
 URL with Spyder through `app_exec`:
 
 ```python
+# Discover supported events and filter fields.
+emit(notification_events())
+
+# First matching verification failure.
+emit(notification_subscribe(events=["verify.completed"],
+    match={"status":"failed"}, webhook_url=params["webhook_url"]))
+
+# Every app session change for one bundle until cancelled or expired.
+emit(notification_subscribe(events=["app.*"],
+    match={"bundle_id":"com.example.game"}, recurring=True,
+    webhook_url=params["webhook_url"], ttl="24h"))
+
+# Existing convenience: notify when connected, including if already present.
 emit(notify_when_connected(device="iPad", webhook_url=params["webhook_url"], ttl="24h"))
 emit(notifications())
 # To stop a pending wait or retry:
 notification_cancel(id=params["notification_id"])
+
+# Scripts/workflows can publish additional named events.
+event_publish(event="custom.build.ready", data={"artifact":"game.apk"})
 ```
+
+The initial event catalogue is:
+
+| Family | Events | Useful exact-match fields |
+|---|---|---|
+| Device | `device.connected`, `device.disconnected` | `device`, `device_id`, `platform` |
+| App channel | `app.connected`, `app.disconnected` | `device`, `device_id`, `bundle_id`, `session_id`, `owner` |
+| Reservation | `reservation.acquired`, `.renewed`, `.released`, `.expired` | `device`, `device_id`, `owner` |
+| Health | `health.changed` | `kind`, `name`, `layer`, `from`, `state` |
+| Verification | `verify.started`, `verify.completed`, `verify.waiting` | `workflow`, `run_id`, `owner`, `device`; completion adds `status`, waiting adds `step_id` |
+| Scripts/workflows | Named `custom.*` events | Publisher-defined string data fields |
+
+Event names can be exact, a family such as `app.*`, or `*` for every event.
+All `match` entries must match exactly; an absent field never matches, even an
+empty string. Unknown event names and built-in filter fields are rejected.
+Subscriptions are one-shot by default; `recurring=True` keeps listening until
+cancellation or expiry. Custom events cannot impersonate built-in lifecycle
+events. Do not include secrets in published data.
+
+Callbacks contain `event_id`, `event`, `occurred_at`, device identity when
+applicable, and a `data` object for family-specific fields. T3 prompts can use
+`{{body.event}}`, `{{body.device}}`, `{{body.data.workflow}}` or
+`{{body.data.status}}`. Keep `{{body.event_id}}` as the replay key: a recurring
+subscription has a distinct event ID for each occurrence, stable on retries.
+
+For example, the CLI supports:
+
+```text
+spyder notify events
+spyder notify subscribe verify.completed --match status=failed --webhook-url -
+spyder notify subscribe 'app.*' --match bundle_id=com.example.game --recurring --webhook-url -
+spyder notify publish custom.build.ready --data artifact=game.apk
+```
+
+Generic subscriptions observe new events after registration. Device sources
+also emit sightings when their native stream starts or reconnects; use the
+connected convenience call when an already-connected device should satisfy a
+new request. App events report accepted app-channel sessions, not arbitrary OS
+process launches/crashes. Health events report state changes, not each probe.
+Reservation expiry is detected within the daemon's one-second sweep.
+Reservation events cover daemon-managed holds. The standalone `spyder run`
+wrapper and direct edits to the reservation file are not watched event sources.
 
 The CLI equivalents are `spyder notify connected iPad --webhook-url - --ttl 24h`
 (URL from stdin), `spyder notify list`, and `spyder notify cancel ID`. REST verbs
-are `notify_when_connected`, `notifications` and `notification_cancel`. Inventory
+include `notification_subscribe`, `notification_events`, `event_publish`,
+`notify_when_connected`, `notifications` and `notification_cancel`. Inventory
 aliases work while offline; raw hardware IDs require `platform="ios"` or
 `platform="android"`. An iOS CoreDevice UUID is not a hardware UDID.
 
 Registration returns immediately. The daemon waits on usbmux/ADB events,
 including devices already connected, without requiring an agent polling loop.
-Requests and observed events survive daemon restart. A failed callback retries
+Subscriptions and already-enqueued events survive daemon restart. Events that
+happen while Spyder is stopped cannot be reconstructed. A failed callback retries
 with the same `event_id` (at least once delivery); T3's replay key suppresses
 duplicates. Default expiry is 24 hours; maximum 168 hours. `notifications()`
 reports waiting, ready (delivery pending), delivered, cancelled or expired,
-attempt counts and errors. A delivered state means the endpoint accepted the
+attempt counts, pending/delivered/dropped counts, last event ID and errors.
+Recurring subscriptions return to waiting after their queue drains. Each has a
+bounded 256-event queue; overflow increments `dropped` and logs an error.
+A delivered state means the endpoint accepted the
 request; the T3 task must be enabled and configured without rejecting filters.
 T3 starts idle threads and queues the notification as a new turn in busy threads.
 
 The callback URL is a bearer credential. Spyder stores it in a mode-0600 file at
 `~/.spyder/notifications.json`, omits it from responses and logs, and clears it
-after delivery, cancellation or expiry. Do not commit URLs. Cancellation cannot
+after one-shot delivery, cancellation or expiry. Do not commit URLs. Cancellation cannot
 recall an accepted callback. Delete the T3 webhook task when no longer needed.
 Connection means transport presence (Android must be authorized); unlock,
 iOS tunnels, automation readiness and device reservations are separate checks.
@@ -283,6 +346,8 @@ iOS tunnels, automation readiness and device reservations are separate checks.
 `help("notifications")` gives the in-product recipe. The read-only live gate is
 `make test-live-notify`, using a tree binary, a connected device hardware ID,
 platform, and a scratch credential file (see the Makefile target).
+`make test-live-events` verifies a recurring subscription from two real shell
+verification runs through an isolated daemon into a live T3 webhook.
 
 ### Starlark execution
 

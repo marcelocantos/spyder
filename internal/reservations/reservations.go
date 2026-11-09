@@ -47,15 +47,29 @@ type Normalizer func(ref string) string
 // Store is a concurrent-safe reservation book with file-backed
 // persistence.
 type Store struct {
-	mu    sync.Mutex
-	path  string
-	now   func() time.Time
-	norm  Normalizer
-	state map[string]Reservation // canonical device → reservation
+	onChange func(string, Reservation)
+	mu       sync.Mutex
+	path     string
+	now      func() time.Time
+	norm     Normalizer
+	state    map[string]Reservation // canonical device → reservation
 }
 
 // Option configures a Store at construction.
 type Option func(*Store)
+
+// SetOnChange installs a synchronous lifecycle observer. It runs under the
+// store lock and must not re-enter the store or perform network I/O.
+func (s *Store) SetOnChange(fn func(string, Reservation)) {
+	s.mu.Lock()
+	s.onChange = fn
+	s.mu.Unlock()
+}
+func (s *Store) changedLocked(kind string, r Reservation) {
+	if s.onChange != nil {
+		s.onChange(kind, r)
+	}
+}
 
 // WithNow injects a clock. Defaults to time.Now.
 func WithNow(now func() time.Time) Option { return func(s *Store) { s.now = now } }
@@ -140,9 +154,13 @@ func (s *Store) Acquire(device, owner string, ttl time.Duration, note string) (R
 		}
 		s.state[key] = existing
 		_ = s.saveLocked()
+		s.changedLocked("renewed", existing)
 		slog.Info("reservation renewed (acquire by same owner)",
 			"device", key, "owner", owner, "ttl", ttl)
 		return existing, nil
+	}
+	if expired, ok := s.state[key]; ok {
+		s.changedLocked("expired", expired)
 	}
 	r := Reservation{
 		Device:    key,
@@ -153,6 +171,7 @@ func (s *Store) Acquire(device, owner string, ttl time.Duration, note string) (R
 	}
 	s.state[key] = r
 	_ = s.saveLocked()
+	s.changedLocked("acquired", r)
 	slog.Info("reservation acquired",
 		"device", key, "owner", owner, "ttl", ttl, "note", note)
 	return r, nil
@@ -174,6 +193,7 @@ func (s *Store) Release(device, owner string) error {
 	if s.now().After(existing.ExpiresAt) {
 		delete(s.state, key)
 		_ = s.saveLocked()
+		s.changedLocked("expired", existing)
 		slog.Info("reservation released (already expired)",
 			"device", key, "prev_owner", existing.Owner)
 		return nil
@@ -183,6 +203,7 @@ func (s *Store) Release(device, owner string) error {
 	}
 	delete(s.state, key)
 	_ = s.saveLocked()
+	s.changedLocked("released", existing)
 	slog.Info("reservation released", "device", key, "owner", owner)
 	return nil
 }
@@ -212,6 +233,7 @@ func (s *Store) Renew(device, owner string, ttl time.Duration) (Reservation, err
 	existing.ExpiresAt = s.now().Add(ttl)
 	s.state[key] = existing
 	_ = s.saveLocked()
+	s.changedLocked("renewed", existing)
 	slog.Info("reservation renewed",
 		"device", key, "owner", owner, "ttl", ttl)
 	return existing, nil
@@ -234,6 +256,7 @@ func (s *Store) Authorize(device, owner string) error {
 	if s.now().After(existing.ExpiresAt) {
 		delete(s.state, key)
 		_ = s.saveLocked()
+		s.changedLocked("expired", existing)
 		return nil
 	}
 	if existing.Owner == owner {
@@ -262,6 +285,7 @@ func (s *Store) Get(device string) (Reservation, bool) {
 	if s.now().After(r.ExpiresAt) {
 		delete(s.state, key)
 		_ = s.saveLocked()
+		s.changedLocked("expired", r)
 		return Reservation{}, false
 	}
 	return r, true
@@ -284,6 +308,7 @@ func (s *Store) listLocked() []Reservation {
 	for k, r := range s.state {
 		if now.After(r.ExpiresAt) {
 			delete(s.state, k)
+			s.changedLocked("expired", r)
 			dirty = true
 			continue
 		}

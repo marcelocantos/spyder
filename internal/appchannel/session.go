@@ -572,9 +572,10 @@ const maxEndedSessions = 256
 // Manager owns the per-session table and the listener that produces
 // new sessions. One per daemon.
 type Manager struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
-	keyed    map[AppKey]*Listener
+	onSession func(string, *Session)
+	mu        sync.Mutex
+	sessions  map[string]*Session
+	keyed     map[AppKey]*Listener
 
 	// ended remembers the AppKey each recently ended session was
 	// accepted under, so a stale session_id can be diagnosed with the
@@ -622,6 +623,23 @@ func (m *Manager) progressHook() func() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.onProgress
+}
+
+// SetOnSession installs a lifecycle observer before serving. The callback runs
+// after hello acceptance / session removal, outside the manager lock.
+func (m *Manager) SetOnSession(fn func(string, *Session)) {
+	m.mu.Lock()
+	m.onSession = fn
+	m.mu.Unlock()
+}
+
+func (m *Manager) sessionEvent(kind string, s *Session) {
+	m.mu.Lock()
+	fn := m.onSession
+	m.mu.Unlock()
+	if fn != nil {
+		fn(kind, s)
+	}
 }
 
 // StartParams configures a new listener.
@@ -952,6 +970,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	l.mgr.mu.Lock()
 	l.mgr.sessions[id] = s
 	l.mgr.mu.Unlock()
+	l.mgr.sessionEvent("connected", s)
 
 	s.readLoop(sCtx)
 
@@ -971,6 +990,7 @@ func (l *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	}
 	l.lastTouched = time.Now()
 	l.mu.Unlock()
+	l.mgr.sessionEvent("disconnected", s)
 }
 
 // noteEndedLocked records that session id (accepted under key) has

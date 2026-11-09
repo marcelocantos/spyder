@@ -20,14 +20,15 @@ import (
 // Hub is the daemon-wide scheduler: one pool, one human_gate lock, many
 // concurrent workflow graphs.
 type Hub struct {
-	mu     sync.Mutex
-	pool   *resourcePool
-	runs   map[string]*Run
-	shell  StepRunner
-	script StepRunner
-	model  StepRunner
-	sleep  func(time.Duration)
-	now    func() time.Time
+	onEvent func(Event)
+	mu      sync.Mutex
+	pool    *resourcePool
+	runs    map[string]*Run
+	shell   StepRunner
+	script  StepRunner
+	model   StepRunner
+	sleep   func(time.Duration)
+	now     func() time.Time
 	// stateDir holds the retained-run index and review database; empty
 	// keeps both in memory only (tests).
 	stateDir string
@@ -44,6 +45,7 @@ type Hub struct {
 
 // HubArgs configures a Hub. Zero values pick production defaults.
 type HubArgs struct {
+	OnEvent    func(Event)
 	MaxWorkers int
 	Shell      StepRunner
 	Script     StepRunner
@@ -70,6 +72,7 @@ func NewHub(args HubArgs) *Hub {
 		now = time.Now
 	}
 	h := &Hub{
+		onEvent:  args.OnEvent,
 		pool:     newPool(args.MaxWorkers),
 		runs:     map[string]*Run{},
 		shell:    shell,
@@ -174,6 +177,7 @@ func (h *Hub) Start(ctx context.Context, args StartArgs) (*Run, error) {
 	h.saveRunIndexLocked()
 	h.mu.Unlock()
 	h.notify()
+	run.lifecycleEvent("started", "")
 	go run.drive()
 	return run, nil
 }

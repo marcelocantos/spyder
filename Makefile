@@ -181,6 +181,17 @@ test-live-notify:
 	@test -x "$(SPYDER_LIVE_BINARY)" -a -n "$(SPYDER_NOTIFY_DEVICE_ID)" -a -n "$(SPYDER_NOTIFY_PLATFORM)" -a -f "$(SPYDER_NOTIFY_WEBHOOK_FILE)" || { echo "Set SPYDER_LIVE_BINARY, SPYDER_NOTIFY_DEVICE_ID, SPYDER_NOTIFY_PLATFORM and SPYDER_NOTIFY_WEBHOOK_FILE (scratch file)"; exit 2; }
 	SPYDER_NOTIFY_LIVE=1 go test -v ./internal/daemon -run '^TestDeviceNotification_Live$$' -count=1 -timeout 45s
 
+# Generic recurring subscription: two real shell verification runs -> live T3.
+.PHONY: test-live-events
+test-live-events:
+	@test -x "$(SPYDER_LIVE_BINARY)" -a -f "$(SPYDER_NOTIFY_WEBHOOK_FILE)" || { echo "Set SPYDER_LIVE_BINARY and SPYDER_NOTIFY_WEBHOOK_FILE (scratch file)"; exit 2; }
+	SPYDER_NOTIFY_LIVE=1 SPYDER_NOTIFY_EVENT_LIVE=1 go test -v ./internal/daemon -run '^TestDeviceNotification_Live$$' -count=1 -timeout 45s
+
+.PHONY: test-live-device-events
+test-live-device-events:
+	@test -x "$(SPYDER_LIVE_BINARY)" -a -n "$(SPYDER_NOTIFY_DEVICE_ID)" -a -n "$(SPYDER_NOTIFY_PLATFORM)" -a -f "$(SPYDER_NOTIFY_WEBHOOK_FILE)" || { echo "Set tree binary, device hardware ID, platform and scratch webhook file"; exit 2; }
+	SPYDER_NOTIFY_LIVE=1 SPYDER_NOTIFY_DEVICE_EVENT_LIVE=1 go test -v ./internal/daemon -run '^TestDeviceNotification_Live$$' -count=1 -timeout 45s
+
 # Attended hardware journey against an isolated tree-built daemon on :3131.
 # Ignore its first prompt; replug/approve only when the test prints REPLUG.
 .PHONY: test-live-agent-reconnect

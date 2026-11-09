@@ -542,6 +542,7 @@ type stepOutcome struct {
 
 func (r *Run) drive() {
 	defer close(r.done)
+	defer r.lifecycleEvent("completed", "")
 	defer r.cancel()
 	defer r.hub.notify()
 	_ = os.MkdirAll(r.shotsDir(), 0o755)
@@ -978,6 +979,7 @@ func (r *Run) humanGate(step Step) stepOutcome {
 		ans = preset
 		answeredBy = AnsweredByPreset
 	} else {
+		r.lifecycleEvent("waiting", step.ID)
 		var timeout <-chan time.Time
 		if step.TimeoutSec != nil {
 			t := time.NewTimer(time.Duration(*step.TimeoutSec * float64(time.Second)))

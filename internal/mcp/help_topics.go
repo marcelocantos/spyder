@@ -17,7 +17,7 @@ import (
 // runnable (TestExec_HelpTopics* and the seed-compile test guard the
 // verbs they reference).
 var helpTopics = map[string]string{
-	"notifications": `notifications — resume a T3 Code thread on device connection
+	"notifications": `notifications — resume T3 Code threads on Spyder events
 
 1. In T3 Code call schedule_task with bindToCurrentThread=True,
    schedule={"type":"webhook","dedupe":{"replayKey":"{{body.event_id}}"}},
@@ -25,6 +25,16 @@ var helpTopics = map[string]string{
    No coalesce key (immediate delivery). T3 queues a new turn in busy threads.
 2. Pass the returned webhookUrl to Spyder:
 recipes:
+emit(notification_events())
+# A failed verification run (one-shot by default).
+emit(notification_subscribe(events=["verify.completed"], match={"status":"failed"},
+    webhook_url=params["webhook_url"]))
+# Every session change for one app.
+emit(notification_subscribe(events=["app.*"], match={"bundle_id":"com.example.game"},
+    recurring=True, webhook_url=params["webhook_url"], ttl="24h"))
+# Workflow-specific events use the same delivery path.
+event_publish(event="custom.build.ready", data={"artifact":"game.apk"})
+# Convenience: already-connected devices also satisfy this wait.
 emit(notify_when_connected(device="iPad", webhook_url=params["webhook_url"], ttl="24h"))
 3. The thread resumes when the device connects, including if already present.
 emit(notifications())
