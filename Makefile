@@ -174,6 +174,13 @@ test-live-process-cancel:
 	@test -n "$(SPYDER_LIVE_UDID)" || { echo "set SPYDER_LIVE_UDID to the reserved canonical iOS hardware UDID"; exit 2; }
 	SPYDER_LIVE_UDID="$(SPYDER_LIVE_UDID)" SPYDER_LIVE_PROCESS_CANCEL=1 go test -v ./internal/device -run '^TestIOSAcquiredProcessReadCancellation_Live$$' -count=1 -timeout 90s
 
+# Read-only shipped CLI/daemon/provider -> live T3 webhook journey. The callback
+# credential is read from a scratch file; no URL appears in process arguments.
+.PHONY: test-live-notify
+test-live-notify:
+	@test -x "$(SPYDER_LIVE_BINARY)" -a -n "$(SPYDER_NOTIFY_DEVICE_ID)" -a -n "$(SPYDER_NOTIFY_PLATFORM)" -a -f "$(SPYDER_NOTIFY_WEBHOOK_FILE)" || { echo "Set SPYDER_LIVE_BINARY, SPYDER_NOTIFY_DEVICE_ID, SPYDER_NOTIFY_PLATFORM and SPYDER_NOTIFY_WEBHOOK_FILE (scratch file)"; exit 2; }
+	SPYDER_NOTIFY_LIVE=1 go test -v ./internal/daemon -run '^TestDeviceNotification_Live$$' -count=1 -timeout 45s
+
 # Attended hardware journey against an isolated tree-built daemon on :3131.
 # Ignore its first prompt; replug/approve only when the test prints REPLUG.
 .PHONY: test-live-agent-reconnect

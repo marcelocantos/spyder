@@ -64,6 +64,7 @@ var toolDeadlineByName = func() map[string]func() time.Duration {
 	add(func() time.Duration { return maxExecDuration + 5*time.Second }, "app_exec", "run_script", "list_scripts")
 	add(func() time.Duration { return DeadlineFastRead },
 		"devices", "resolve", "device_state", "battery_history", "list_apps", "is_running",
+		"notify_when_connected", "notifications", "notification_cancel",
 		"reservations", "runs_list", "runs_show",
 		"app_channel_list", "app_channel_diagnose", "agent_status")
 	add(func() time.Duration { return DeadlineDeviceOp },

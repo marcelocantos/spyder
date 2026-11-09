@@ -29,6 +29,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	"github.com/marcelocantos/spyder/internal/network"
+	"github.com/marcelocantos/spyder/internal/notify"
 	"github.com/marcelocantos/spyder/internal/recording"
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
@@ -60,14 +61,15 @@ type PoolManager interface {
 
 // Handler implements the spyder tool handler.
 type Handler struct {
-	devPolicy    *devpolicy.Controller
-	mu           sync.Mutex
-	inventory    *inventory.Store
-	ios          device.Adapter
-	android      device.Adapter
-	desktop      device.Adapter
-	reservations *reservations.Store
-	runs         *runs.Store
+	notifications *notify.Manager // attached by daemon Build; Run owns its lifecycle
+	devPolicy     *devpolicy.Controller
+	mu            sync.Mutex
+	inventory     *inventory.Store
+	ios           device.Adapter
+	android       device.Adapter
+	desktop       device.Adapter
+	reservations  *reservations.Store
+	runs          *runs.Store
 	// noProvenanceProbe disables reserve's device OS / app version
 	// probes (🎯T166). Unit tests set it so they never exec adb/go-ios.
 	noProvenanceProbe bool
@@ -804,23 +806,26 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 // the definitions use.
 func (h *Handler) toolHandlers() map[string]toolFunc {
 	return map[string]toolFunc{
-		"dev_policy":      h.handleDevPolicy,
-		"devices":         h.handleDevices,
-		"resolve":         h.handleResolve,
-		"device_state":    h.handleDeviceState,
-		"battery_history": h.handleBatteryHistory,
-		"screenshot":      h.handleScreenshot,
-		"list_apps":       h.handleListApps,
-		"launch_app":      h.handleLaunchApp,
-		"terminate_app":   h.handleTerminateApp,
-		"install_app":     h.handleInstallApp,
-		"uninstall_app":   h.handleUninstallApp,
-		"deploy_app":      h.handleDeployApp,
-		"launch_player":   h.handleLaunchPlayer,
-		"reserve":         h.handleReserve,
-		"release":         h.handleRelease,
-		"renew":           h.handleRenew,
-		"reservations":    h.handleReservations,
+		"dev_policy":            h.handleDevPolicy,
+		"devices":               h.handleDevices,
+		"notify_when_connected": h.handleNotifyWhenConnected,
+		"notifications":         h.handleNotifications,
+		"notification_cancel":   h.handleNotificationCancel,
+		"resolve":               h.handleResolve,
+		"device_state":          h.handleDeviceState,
+		"battery_history":       h.handleBatteryHistory,
+		"screenshot":            h.handleScreenshot,
+		"list_apps":             h.handleListApps,
+		"launch_app":            h.handleLaunchApp,
+		"terminate_app":         h.handleTerminateApp,
+		"install_app":           h.handleInstallApp,
+		"uninstall_app":         h.handleUninstallApp,
+		"deploy_app":            h.handleDeployApp,
+		"launch_player":         h.handleLaunchPlayer,
+		"reserve":               h.handleReserve,
+		"release":               h.handleRelease,
+		"renew":                 h.handleRenew,
+		"reservations":          h.handleReservations,
 		// --- reservation observability (🎯T116) ---
 		"reservation_status": h.handleReservationStatus,
 		"runs_list":          h.handleRunsList,
@@ -966,6 +971,7 @@ func legacyDefinitions() []mcpgo.Tool {
 	defs = append(defs, appChannelDefinitions()...)
 	defs = append(defs, systemAlertDefinitions()...)
 	defs = append(defs, agentDefinitions()...)
+	defs = append(defs, notificationDefinitions()...)
 	return append(defs, verifyDefinitions()...)
 }
 

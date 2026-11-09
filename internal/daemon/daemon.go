@@ -35,6 +35,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/listenaddr"
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
+	"github.com/marcelocantos/spyder/internal/notify"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/playerweb"
 	"github.com/marcelocantos/spyder/internal/pool"
@@ -84,6 +85,13 @@ func Run(ctx context.Context, cfg Config) error {
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version)
 	httpHandler, resvStore, mcpHandler, logCapMgr, appChanMgr := Build(cfg)
+	// Independent event waits and callbacks must finish before Run returns.
+	if mcpHandler != nil {
+		notificationsDone := make(chan struct{})
+		notificationCtx, stopNotifications := context.WithCancel(ctx)
+		go func() { mcpHandler.RunNotifications(notificationCtx); close(notificationsDone) }()
+		defer func() { stopNotifications(); <-notificationsDone }()
+	}
 
 	// Bundled go-ios tunnel daemon. Spawned as a child process so its
 	// lifecycle is tied to spyder's — stop on shutdown. Missing binary
@@ -361,6 +369,11 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	}
 
 	handler := spydermcp.NewHandler(handlerOpts...)
+	if notifications, err := notify.Open(filepath.Join(paths.Base(), "notifications.json"), notify.WaitDevice); err != nil {
+		slog.Error("notifications unavailable", "error", err)
+	} else {
+		handler.SetNotifications(notifications)
+	}
 	handler.SetVerifyStateDir(paths.VerifyDir())
 
 	// Kick off pool adoption in the background so startup latency stays

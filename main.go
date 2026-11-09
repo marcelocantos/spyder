@@ -68,6 +68,7 @@ Commands:
 
 Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   devices       List connected devices (--platform ios|android|all, --json)
+  notify        Notify a T3 Code thread when a device connects (connected|list|cancel)
   resolve       Resolve a device alias to platform identifiers
   device-state  Report battery, thermal, foreground app
   battery-history  Fleet battery charge history (--since, --device, --json)
