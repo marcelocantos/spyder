@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"sync"
@@ -23,7 +24,7 @@ type alertStub struct {
 
 var localNetwork = device.SystemAlert{Showing: true, Owner: "SpringBoard", Title: "Allow “Stock Cars” to find devices on local networks?", Buttons: []string{"Don’t Allow", "Allow"}}
 
-func (s *alertStub) SystemAlert(string) (device.SystemAlert, error) {
+func (s *alertStub) SystemAlert(context.Context, string) (device.SystemAlert, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reads++
@@ -33,8 +34,8 @@ func (s *alertStub) SystemAlert(string) (device.SystemAlert, error) {
 	return device.SystemAlert{}, nil
 }
 
-func (s *alertStub) TapSystemAlertButton(_ string, button, titleContains string) (device.SystemAlert, device.SystemAlert, error) {
-	before, _ := s.SystemAlert("")
+func (s *alertStub) TapSystemAlertButton(_ context.Context, _ string, button, titleContains string) (device.SystemAlert, device.SystemAlert, error) {
+	before, _ := s.SystemAlert(context.Background(), "")
 	if !before.Showing {
 		return before, device.SystemAlert{}, device.ErrNoSystemAlert
 	}

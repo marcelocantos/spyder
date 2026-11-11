@@ -97,8 +97,14 @@ func (h *Handler) handleAppExecContext(parent context.Context, args map[string]a
 
 	ctx, cancel := context.WithTimeout(parent, dur)
 	defer cancel()
-	verbs["ensure_session"] = func(callArgs map[string]any) (*mcpgo.CallToolResult, error) {
-		return h.handleEnsureSessionContext(ctx, callArgs)
+	// Verbs that can wait run under the script's context, which itself ends
+	// no later than the caller's dispatch deadline.
+	for name, fn := range h.contextHandlers() {
+		if _, ok := verbs[name]; ok {
+			verbs[name] = func(callArgs map[string]any) (*mcpgo.CallToolResult, error) {
+				return fn(ctx, callArgs)
+			}
+		}
 	}
 	// Builtins call handlers directly; share Dispatch's per-device lifecycle
 	// gate with this interpreter's cancellation context.

@@ -31,6 +31,9 @@ var (
 	// a poll/fetch margin so a last attempt is not killed by dispatch.
 	DeadlineWaitState       = 150 * time.Second
 	DeadlineWaitStateMargin = 30 * time.Second
+	// DeadlineSystemAlertTap covers system_alert_tap: an optional wait for
+	// the alert, then the XCUITest alert runner (🎯T154).
+	DeadlineSystemAlertTap = 5 * time.Minute
 )
 
 // toolDeadlineByName lists explicit deadline classes. Unlisted verbs use
@@ -53,7 +56,8 @@ var toolDeadlineByName = func() map[string]func() time.Duration {
 	add(func() time.Duration { return 0 }, "verify")
 	// Optional wait for the alert, then the XCUITest runner (🎯T154).
 	// agent_ensure may install and start the resident runner (🎯T163).
-	add(func() time.Duration { return 5 * time.Minute }, "system_alert_tap", "agent_ensure")
+	add(func() time.Duration { return DeadlineSystemAlertTap }, "system_alert_tap")
+	add(func() time.Duration { return 5 * time.Minute }, "agent_ensure")
 	add(func() time.Duration { return DeadlineDeviceOp }, "system_alert")
 	add(func() time.Duration { return DeadlineFastRead },
 		"verify_status", "verify_answer", "verify_abort", "verify_dismiss", "verify_detail",

@@ -10,6 +10,7 @@ import (
 	"runtime/pprof"
 	"time"
 
+	"github.com/marcelocantos/spyder/internal/exitlog"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/wedge"
 )
@@ -32,4 +33,5 @@ func persistSelfRestartEvidence(reason string) {
 	}
 	// Wedge snapshot path used by the usbmux monitor; trigger records reason.
 	wedge.Capture("", "self-restart:"+reason)
+	exitlog.Record(1, "self-restart: "+reason)
 }

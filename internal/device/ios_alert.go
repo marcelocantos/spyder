@@ -61,8 +61,9 @@ const (
 var iosSystemProcesses = []string{"SpringBoard"}
 
 // axMu keeps one accessibility session per device at a time: two sessions
-// would move the same inspector focus.
-var axMu sync.Map // udid -> *sync.Mutex
+// would move the same inspector focus. Each entry is a one-slot semaphore so
+// a waiter can give up when its context ends.
+var axMu sync.Map // udid -> chan struct{}
 
 type axQuiet struct{}
 
@@ -70,9 +71,11 @@ func (axQuiet) HostAppStateChanged(accessibility.Notification)               {}
 func (axQuiet) HostInspectorNotificationReceived(accessibility.Notification) {}
 
 // SystemAlert reports the system alert showing on an iOS device, if any.
-func (a *IOSAdapter) SystemAlert(id string) (SystemAlert, error) {
+// ctx bounds the whole read: when it ends the call returns promptly and the
+// abandoned device session is closed behind it.
+func (a *IOSAdapter) SystemAlert(ctx context.Context, id string) (SystemAlert, error) {
 	var alert SystemAlert
-	err := a.withAccessibility(id, func(ax *accessibility.ControlInterface, owners map[int]string) error {
+	err := a.withAccessibility(ctx, id, func(ax *accessibility.ControlInterface, owners map[int]string) error {
 		elems, closed, err := axWalk(ax)
 		if err != nil {
 			return err
@@ -85,9 +88,10 @@ func (a *IOSAdapter) SystemAlert(id string) (SystemAlert, error) {
 
 // TapSystemAlertButton presses the named button of the system alert that is
 // showing, then confirms that alert went away (a different alert may follow).
-func (a *IOSAdapter) TapSystemAlertButton(id, button, titleContains string) (SystemAlert, SystemAlert, error) {
+// ctx bounds every step, including the alert runner.
+func (a *IOSAdapter) TapSystemAlertButton(ctx context.Context, id, button, titleContains string) (SystemAlert, SystemAlert, error) {
 	var before SystemAlert
-	err := a.withAccessibility(id, func(ax *accessibility.ControlInterface, owners map[int]string) error {
+	err := a.withAccessibility(ctx, id, func(ax *accessibility.ControlInterface, owners map[int]string) error {
 		elems, closed, err := axWalk(ax)
 		if err != nil {
 			return err
@@ -109,11 +113,17 @@ func (a *IOSAdapter) TapSystemAlertButton(id, button, titleContains string) (Sys
 	if err != nil {
 		return before, SystemAlert{}, err
 	}
-	if err := a.runAlertRunner(id, button); err != nil {
+	if err := a.runAlertRunner(ctx, id, button); err != nil {
 		return before, SystemAlert{}, err
 	}
-	time.Sleep(axSettle)
-	after, err := a.SystemAlert(id)
+	settle := time.NewTimer(axSettle)
+	select {
+	case <-settle.C:
+	case <-ctx.Done():
+		settle.Stop()
+		return before, SystemAlert{}, fmt.Errorf("tapped %q, but %w before the screen could be re-read", button, ctx.Err())
+	}
+	after, err := a.SystemAlert(ctx, id)
 	if err != nil {
 		return before, after, fmt.Errorf("tapped %q, but reading the screen afterwards failed: %w", button, err)
 	}
@@ -127,7 +137,11 @@ func (a *IOSAdapter) TapSystemAlertButton(id, button, titleContains string) (Sys
 // runner. iOS must allow UI automation: the first run after a reboot asks the
 // owner to authorise it on the device (Touch ID or passcode) unless
 // Settings > Developer > Enable UI Automation is on.
-func (a *IOSAdapter) runAlertRunner(id, button string) error {
+//
+// ctx bounds the run. go-ios honours it only once the test plan is executing,
+// so the run happens on its own goroutine: when ctx ends first this returns
+// at once, and go-ios kills the runner when it reaches its wait.
+func (a *IOSAdapter) runAlertRunner(parent context.Context, id, button string) error {
 	// A healthy resident runner already owns UI automation. Delegate
 	// the tap to it and fail closed: a second RunTestWithConfig would
 	// kill that process (go-ios always killTestRunner when the test ends).
@@ -144,7 +158,7 @@ func (a *IOSAdapter) runAlertRunner(id, button string) error {
 			return nil
 		}
 	}
-	apps, err := a.ListApps(id)
+	apps, err := a.ListAppsContext(parent, id)
 	if err != nil {
 		return fmt.Errorf("list apps on %s: %w", id, err)
 	}
@@ -159,18 +173,33 @@ func (a *IOSAdapter) runAlertRunner(id, button string) error {
 	if err != nil {
 		return fmt.Errorf("system alert tap on %s: %w", id, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), alertRunnerTimeout)
+	ctx, cancel := context.WithTimeout(parent, alertRunnerTimeout)
 	defer cancel()
-	listener := testmanagerd.NewTestListener(io.Discard, io.Discard, os.TempDir())
-	suites, err := testmanagerd.RunTestWithConfig(ctx, testmanagerd.TestConfig{
-		BundleId:           alertHostBundle,
-		TestRunnerBundleId: alertRunnerBundle,
-		XctestConfigName:   alertRunnerConfig,
-		Env:                map[string]any{"SPYDER_ALERT_BUTTON": button, "SPYDER_ALERT_WAIT_SEC": strconv.Itoa(alertButtonWait)},
-		TestsToRun:         []string{alertRunnerTest},
-		Device:             dev,
-		Listener:           listener,
-	})
+	type runResult struct {
+		suites []testmanagerd.TestSuite
+		err    error
+	}
+	finished := make(chan runResult, 1)
+	go func() {
+		listener := testmanagerd.NewTestListener(io.Discard, io.Discard, os.TempDir())
+		suites, err := testmanagerd.RunTestWithConfig(ctx, testmanagerd.TestConfig{
+			BundleId:           alertHostBundle,
+			TestRunnerBundleId: alertRunnerBundle,
+			XctestConfigName:   alertRunnerConfig,
+			Env:                map[string]any{"SPYDER_ALERT_BUTTON": button, "SPYDER_ALERT_WAIT_SEC": strconv.Itoa(alertButtonWait)},
+			TestsToRun:         []string{alertRunnerTest},
+			Device:             dev,
+			Listener:           listener,
+		})
+		finished <- runResult{suites, err}
+	}()
+	var suites []testmanagerd.TestSuite
+	select {
+	case r := <-finished:
+		suites, err = r.suites, r.err
+	case <-ctx.Done():
+		return fmt.Errorf("alert runner on %s: %w", id, ctx.Err())
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "enabling automation mode") {
 			return fmt.Errorf("iOS did not allow UI automation on %s: authorise it on the device (Touch ID or passcode prompt), or turn on Settings > Developer > Enable UI Automation, then retry", id)
@@ -191,28 +220,42 @@ func (a *IOSAdapter) runAlertRunner(id, button string) error {
 // withAccessibility opens an accessibility inspector session on the device,
 // runs fn, and turns the inspector off again, all under axSessionTimeout.
 // owners maps the pids of system processes to their names.
-func (a *IOSAdapter) withAccessibility(id string, fn func(*accessibility.ControlInterface, map[int]string) error) error {
+func (a *IOSAdapter) withAccessibility(parent context.Context, id string, fn func(*accessibility.ControlInterface, map[int]string) error) error {
 	if id == "" {
 		return errors.New("device identifier is empty")
 	}
-	lock, _ := axMu.LoadOrStore(id, &sync.Mutex{})
-	lock.(*sync.Mutex).Lock()
-	defer lock.(*sync.Mutex).Unlock()
+	sem, _ := axMu.LoadOrStore(id, make(chan struct{}, 1))
+	select {
+	case sem.(chan struct{}) <- struct{}{}:
+	case <-parent.Done():
+		return fmt.Errorf("accessibility session on %s: %w", id, parent.Err())
+	}
+	defer func() { <-sem.(chan struct{}) }()
 
-	owners, err := a.systemProcesses(id)
-	if err != nil {
-		return err
-	}
-	dev, err := a.goios.Session(id)
-	if err != nil {
-		return fmt.Errorf("system alert on %s: %w", id, err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
+	// Every step runs on the session goroutine so that neither a slow
+	// process listing nor a hung device stalls the caller past its budget.
+	// Cancelling ctx on return stops an abandoned goroutine from opening a
+	// session after this call has given up.
+	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	var mu sync.Mutex
 	var conn *accessibility.ControlInterface
 	done := make(chan error, 1)
 	go func() {
+		owners, err := a.systemProcesses(id)
+		if err != nil {
+			done <- err
+			return
+		}
+		dev, err := a.goios.Session(id)
+		if err != nil {
+			done <- fmt.Errorf("system alert on %s: %w", id, err)
+			return
+		}
+		if ctx.Err() != nil {
+			done <- ctx.Err()
+			return
+		}
 		ax, err := accessibility.New(ctx, dev, axQuiet{})
 		if err != nil {
 			done <- fmt.Errorf("accessibility service on %s: %w", id, wrapMissingDDI(err))
@@ -227,10 +270,15 @@ func (a *IOSAdapter) withAccessibility(id string, fn func(*accessibility.Control
 		ax.TurnOff() // hide the inspector's focus highlight
 		done <- err
 	}()
+	timeout := time.NewTimer(axSessionTimeout)
+	defer timeout.Stop()
+	var err error
 	select {
 	case err = <-done:
-	case <-time.After(axSessionTimeout):
+	case <-timeout.C:
 		err = fmt.Errorf("accessibility session on %s timed out after %s", id, axSessionTimeout)
+	case <-parent.Done():
+		err = fmt.Errorf("accessibility session on %s: %w", id, parent.Err())
 	}
 	mu.Lock()
 	if conn != nil {

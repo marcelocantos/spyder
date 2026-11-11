@@ -751,8 +751,6 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 	}
 	// These handlers own cancellable waits beyond the lifecycle gate.
 	switch name {
-	case "ensure_session":
-		return h.handleEnsureSessionContext(ctx, args)
 	case "launch_app":
 		// Legacy launch has no context-capable adapter yet. Keep that fact
 		// explicit: this span ends only when the actual handler returns.
@@ -766,38 +764,49 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 		return result, err
 	case "app_exec":
 		return h.handleAppExecContext(ctx, args)
-	case "is_running":
-		return h.handleIsRunningContext(ctx, args)
-	case "list_apps":
-		return h.handleListAppsContext(ctx, args)
-	case "terminate_app":
-		return h.handleTerminateAppContext(ctx, args)
-	case "screenshot":
-		return h.handleScreenshotContext(ctx, args)
-	case "input_tap":
-		return h.handleInputTapContext(ctx, args)
-	case "input_swipe":
-		return h.handleInputSwipeContext(ctx, args)
-	case "input_key":
-		return h.handleInputKeyContext(ctx, args)
-	case "input_text":
-		return h.handleInputTextContext(ctx, args)
-	case "ui_tree":
-		return h.handleUITreeContext(ctx, args)
-	case "ui_tap":
-		return h.handleUITapContext(ctx, args)
-	case "screen_secure":
-		return h.handleScreenSecureContext(ctx, args)
-	case "deploy_app":
-		return h.deployAppContext(ctx, args, false)
-	case "install_app":
-		return h.handleInstallAppContext(ctx, args)
+	}
+	if fn, ok := h.contextHandlers()[name]; ok {
+		return fn(ctx, args)
 	}
 	fn, ok := h.toolHandlers()[name]
 	if !ok {
 		return nil, fmt.Errorf("unknown tool: %s", name)
 	}
 	return fn(args)
+}
+
+// contextToolFunc is a verb handler that honours its caller's context.
+type contextToolFunc func(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error)
+
+// contextHandlers are the verbs whose handlers take the caller's context.
+// dispatch passes them the dispatch deadline and app_exec passes them the
+// script's context, so a long wait ends when its caller gives up. A handler
+// that outlives its dispatch deadline (plus restartGrace) is treated as a
+// daemon wedge and exits the process (🎯T99.3), so every verb that can wait
+// for a device or a timer belongs here.
+func (h *Handler) contextHandlers() map[string]contextToolFunc {
+	return map[string]contextToolFunc{
+		"ensure_session":   h.handleEnsureSessionContext,
+		"is_running":       h.handleIsRunningContext,
+		"list_apps":        h.handleListAppsContext,
+		"terminate_app":    h.handleTerminateAppContext,
+		"screenshot":       h.handleScreenshotContext,
+		"input_tap":        h.handleInputTapContext,
+		"input_swipe":      h.handleInputSwipeContext,
+		"input_key":        h.handleInputKeyContext,
+		"input_text":       h.handleInputTextContext,
+		"ui_tree":          h.handleUITreeContext,
+		"ui_tap":           h.handleUITapContext,
+		"screen_secure":    h.handleScreenSecureContext,
+		"install_app":      h.handleInstallAppContext,
+		"run_script":       h.handleRunScriptContext,
+		"system_alert":     h.handleSystemAlertContext,
+		"system_alert_tap": h.handleSystemAlertTapContext,
+		"wait_app_session": h.handleWaitAppSessionContext,
+		"deploy_app": func(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+			return h.deployAppContext(ctx, args, false)
+		},
+	}
 }
 
 // toolHandlers is the verb table — the single source of truth for both

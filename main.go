@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/daemon"
+	"github.com/marcelocantos/spyder/internal/exitlog"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/listenaddr"
 	"github.com/marcelocantos/spyder/internal/paths"
@@ -191,15 +192,23 @@ func main() {
 
 // runServe parses optional --addr and starts the HTTP MCP server.
 func runServe(args []string) {
+	// Exits and fatal panics also go to ~/.spyder/exits.log, which outlives
+	// the rotation of the supervised stdout log.
+	if err := exitlog.InstallCrashOutput(version); err != nil {
+		fmt.Fprintf(os.Stderr, "serve: exit log unavailable: %v\n", err)
+	}
 	addr, explicit, err := parseServeAddr(args, os.Getenv("SPYDER_ADDR"), listenaddr.Load(paths.ListenAddrPath()))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		exitlog.Record(2, err.Error())
 		os.Exit(2)
 	}
 	if err := daemon.Start(daemon.Config{Addr: addr, Version: version, ExplicitAddr: explicit, SuperviseAgents: true}); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
+		exitlog.Record(1, "serve: "+err.Error())
 		os.Exit(1)
 	}
+	exitlog.Record(0, "serve: clean shutdown")
 }
 
 // parseServeAddr resolves the HTTP bind: --addr, then env (SPYDER_ADDR),

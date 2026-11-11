@@ -6,6 +6,7 @@
 package mcp
 
 import (
+	"context"
 	"time"
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
@@ -14,6 +15,12 @@ import (
 // handleWaitAppSession blocks until app_channel_list reports a session for
 // (device, bundle_id) or timeout_ms elapses.
 func (h *Handler) handleWaitAppSession(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleWaitAppSessionContext(context.Background(), args)
+}
+
+// handleWaitAppSessionContext polls for a live session until timeout_ms or
+// until ctx ends, whichever is first.
+func (h *Handler) handleWaitAppSessionContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	if h.appChannel == nil {
 		return toolErr("app channel not configured")
 	}
@@ -51,7 +58,13 @@ func (h *Handler) handleWaitAppSession(args map[string]any) (*mcpgo.CallToolResu
 		if time.Now().After(deadline) {
 			return toolErr("wait_app_session: no live session for %s on %s within %dms — deploy/launch the app first", bundle, dev, timeout)
 		}
-		time.Sleep(time.Duration(poll) * time.Millisecond)
+		timer := time.NewTimer(time.Duration(poll) * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return toolErr("wait_app_session: no live session for %s on %s before the call's deadline: %v", bundle, dev, ctx.Err())
+		}
 	}
 }
 

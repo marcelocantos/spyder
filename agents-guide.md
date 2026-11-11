@@ -1640,6 +1640,18 @@ also beat while `InstallApp` runs (cold emulator installs use the 5
 minute install deadline). A non-install device verb that sits with no
 inner progress for more than 60s still notifies.
 
+Every tool call has a wall-clock deadline. A call still running 5s after
+its deadline is treated as a daemon wedge: Spyder writes
+`~/.spyder/goroutine-selfrestart-<UTC time>.txt`, a wedge snapshot whose
+trigger names the tool, and a line in `~/.spyder/exits.log`, then exits
+with status 1 for its supervisor to restart it. Waiting verbs end with
+their caller, so this path is for real hangs. Inside `app_exec` and
+`run_script`, `wait_app_session`, `system_alert_tap`, `deploy_app` and
+the other device verbs stop when the script's `max_duration_ms` budget
+or the caller's deadline ends, whichever is first. `exits.log` also keeps
+fatal panic traces and a `started` line per daemon start; read it first
+when the daemon restarted unexpectedly.
+
 ## Verification workflows (🎯T138)
 
 `spyder verify path/to/workflow.yaml` runs a product-neutral DAG on the

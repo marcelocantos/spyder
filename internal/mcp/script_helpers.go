@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/marcelocantos/spyder/internal/scriptlib"
@@ -225,6 +226,12 @@ func (h *Handler) handleListScripts(_ map[string]any) (*mcpgo.CallToolResult, er
 
 // handleRunScript loads a durable script and executes it via runExec.
 func (h *Handler) handleRunScript(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleRunScriptContext(context.Background(), args)
+}
+
+// handleRunScriptContext runs a durable script under ctx, so the script
+// ends no later than its caller's deadline.
+func (h *Handler) handleRunScriptContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	ref, err := requireString(args, "path")
 	if err != nil {
 		// accept "name" alias
@@ -243,5 +250,5 @@ func (h *Handler) handleRunScript(args map[string]any) (*mcpgo.CallToolResult, e
 	if ms, ok := args["max_duration_ms"]; ok {
 		execArgs["max_duration_ms"] = ms
 	}
-	return h.handleAppExec(execArgs)
+	return h.handleAppExecContext(ctx, execArgs)
 }

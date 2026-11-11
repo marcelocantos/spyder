@@ -8,7 +8,11 @@ import (
 	"context"
 	"log/slog"
 	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -233,6 +237,77 @@ func pollTrigger(ctx context.Context, triggers chan<- string) {
 	}
 }
 
+// logTailArgv is the log-tail command. reapOrphanedLogTails matches
+// leftovers by this exact argv, so keep the two in one place.
+var logTailArgv = []string{"log", "stream",
+	"--process", "usbmuxd",
+	"--info",
+	"--predicate", `eventMessage CONTAINS "MuxReceivedUSBData device disconnected" OR eventMessage CONTAINS "broken pipe" OR eventMessage CONTAINS "failed to start tunnel"`,
+	"--style", "compact",
+}
+
+// listProcessesFn returns `ps -x -o pid=,ppid=,command=` for this user.
+// Injectable for tests.
+var listProcessesFn = func() ([]byte, error) {
+	return exec.Command("ps", "-x", "-o", "pid=,ppid=,command=").Output()
+}
+
+// killProcessFn terminates pid. Injectable for tests.
+var killProcessFn = func(pid int) error { return syscall.Kill(pid, syscall.SIGTERM) }
+
+// reapOrphanedLogTails stops log-tail children left by a daemon that died
+// without shutting down (a crash or a 🎯T99.3 self-restart). macOS has no
+// parent-death signal, and `log stream` only notices its reader is gone when
+// it next writes a matching line, which can be days. A leftover is this
+// user's process with the exact logTailArgv whose parent is launchd (pid 1);
+// a tail that belongs to another live daemon (a tree build on another port)
+// still has that daemon as its parent and is left alone.
+func reapOrphanedLogTails() {
+	out, err := listProcessesFn()
+	if err != nil {
+		slog.Warn("wedge: cannot list processes to reap old log-tails", "error", err.Error())
+		return
+	}
+	for _, pid := range orphanedLogTails(string(out)) {
+		if err := killProcessFn(pid); err != nil {
+			slog.Warn("wedge: could not stop orphaned log-tail", "pid", pid, "error", err.Error())
+			continue
+		}
+		slog.Info("wedge: stopped orphaned log-tail from a previous daemon", "pid", pid)
+	}
+}
+
+// launchdPID is the parent of a process whose own parent has exited.
+const launchdPID = 1
+
+// orphanedLogTails parses `ps -o pid=,ppid=,command=` output and returns the
+// pids of orphaned log-tails. ps prints the command with its arguments
+// joined by spaces, so the match is on that joined form.
+func orphanedLogTails(ps string) []int {
+	want := strings.Join(logTailArgv[1:], " ")
+	var pids []int
+	for _, line := range strings.Split(ps, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(fields[0])
+		ppid, err2 := strconv.Atoi(fields[1])
+		if err1 != nil || err2 != nil || ppid != launchdPID {
+			continue
+		}
+		rest := strings.TrimSpace(line)
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[0]))
+		rest = strings.TrimSpace(strings.TrimPrefix(rest, fields[1]))
+		exe, args, ok := strings.Cut(rest, " ")
+		if !ok || filepath.Base(exe) != logTailArgv[0] || args != want {
+			continue
+		}
+		pids = append(pids, pid)
+	}
+	return pids
+}
+
 // logTailTrigger runs `log stream --process usbmuxd` filtered for
 // disconnect + broken-pipe / tunnel-start failure lines (🎯T99.4).
 // Each line is noted for ClassifyTunnelStartWedge and schedules a
@@ -241,12 +316,8 @@ func pollTrigger(ctx context.Context, triggers chan<- string) {
 // Best-effort: if the subprocess fails to start or exits unexpectedly,
 // the function returns silently. The polling timer is the safety net.
 func logTailTrigger(ctx context.Context, triggers chan<- string) {
-	cmd := exec.CommandContext(ctx, "log", "stream",
-		"--process", "usbmuxd",
-		"--info",
-		"--predicate", `eventMessage CONTAINS "MuxReceivedUSBData device disconnected" OR eventMessage CONTAINS "broken pipe" OR eventMessage CONTAINS "failed to start tunnel"`,
-		"--style", "compact",
-	)
+	reapOrphanedLogTails()
+	cmd := exec.CommandContext(ctx, logTailArgv[0], logTailArgv[1:]...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		slog.Error("wedge: log-tail stdout pipe failed; falling back to polling only",

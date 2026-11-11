@@ -55,7 +55,7 @@ func TestRunAlertRunner_ResidentFailClosed(t *testing.T) {
 	})
 	host := NewAutomationHost(ios)
 	host.holds["dut"] = &runnerHold{cancel: func() {}, done: make(chan struct{}), pid: 77}
-	err := ios.runAlertRunner("dut", "Allow")
+	err := ios.runAlertRunner(context.Background(), "dut", "Allow")
 	if err == nil || !strings.Contains(err.Error(), "resident alert agent") {
 		t.Fatalf("err = %v", err)
 	}

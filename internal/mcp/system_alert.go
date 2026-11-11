@@ -4,6 +4,7 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"time"
@@ -50,6 +51,10 @@ func (h *Handler) systemAlertReader(dev, owner string, mutate bool) (device.Syst
 }
 
 func (h *Handler) handleSystemAlert(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleSystemAlertContext(context.Background(), args)
+}
+
+func (h *Handler) handleSystemAlertContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -58,7 +63,7 @@ func (h *Handler) handleSystemAlert(args map[string]any) (*mcpgo.CallToolResult,
 	if res != nil {
 		return res, nil
 	}
-	alert, err := reader.SystemAlert(id)
+	alert, err := reader.SystemAlert(ctx, id)
 	if err != nil {
 		return toolErr("system_alert on %s: %v", dev, err)
 	}
@@ -66,6 +71,13 @@ func (h *Handler) handleSystemAlert(args map[string]any) (*mcpgo.CallToolResult,
 }
 
 func (h *Handler) handleSystemAlertTap(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleSystemAlertTapContext(context.Background(), args)
+}
+
+// handleSystemAlertTapContext waits up to wait_ms for the alert, then taps.
+// Every device step runs under ctx, so the call ends by its deadline even
+// when the device is slow (for example while an install holds it).
+func (h *Handler) handleSystemAlertTapContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	dev, err := requireString(args, "device")
 	if err != nil {
 		return nil, err
@@ -91,16 +103,22 @@ func (h *Handler) handleSystemAlertTap(args map[string]any) (*mcpgo.CallToolResu
 	// an alert offering this button before tapping.
 	deadline := time.Now().Add(wait)
 	for {
-		alert, err := reader.SystemAlert(id)
+		alert, err := reader.SystemAlert(ctx, id)
 		if err != nil {
 			return toolErr("system_alert_tap on %s: %v", dev, err)
 		}
 		if alert.Showing && device.AlertHasButton(alert, button) && titleMatches(alert.Title, titleContains) || !time.Now().Before(deadline) {
 			break
 		}
-		time.Sleep(systemAlertPoll)
+		timer := time.NewTimer(systemAlertPoll)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return toolErr("system_alert_tap on %s: %v while waiting for the alert", dev, ctx.Err())
+		}
 	}
-	before, after, err := reader.TapSystemAlertButton(id, button, titleContains)
+	before, after, err := reader.TapSystemAlertButton(ctx, id, button, titleContains)
 	if err != nil {
 		if errors.Is(err, device.ErrNoSystemAlert) && wait > 0 {
 			return toolErr("system_alert_tap on %s: no system alert appeared within %s", dev, wait)

@@ -4,6 +4,7 @@
 package device
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -24,11 +25,13 @@ type SystemAlert struct {
 
 // SystemAlertReader reads and answers system alerts. Platforms without it
 // report the verbs as unsupported.
+// Both calls return promptly once ctx ends: a caller's dispatch deadline is
+// the bound, and the daemon treats a handler that outlives it as wedged.
 type SystemAlertReader interface {
-	SystemAlert(id string) (SystemAlert, error)
+	SystemAlert(ctx context.Context, id string) (SystemAlert, error)
 	// TapSystemAlertButton presses the named button of the system alert
 	// showing now and returns what showed before and after the tap.
-	TapSystemAlertButton(id, button, titleContains string) (before, after SystemAlert, err error)
+	TapSystemAlertButton(ctx context.Context, id, button, titleContains string) (before, after SystemAlert, err error)
 }
 
 // ErrNoSystemAlert is returned when an alert is required but none shows.

@@ -175,7 +175,7 @@ func TestDeviceKit_BackendIsPerDevice(t *testing.T) {
 	if _, err := host.Install("dut"); err == nil {
 		t.Fatal("supervision installed DeviceKit")
 	}
-	if err := host.IOS.runAlertRunner("dut", "Allow"); err == nil || !strings.Contains(err.Error(), "DeviceKit") {
+	if err := host.IOS.runAlertRunner(context.Background(), "dut", "Allow"); err == nil || !strings.Contains(err.Error(), "DeviceKit") {
 		t.Fatalf("one-shot AlertRunner on a DeviceKit device: %v", err)
 	}
 	host.NoteLaunched("dut", DeviceKitRunnerBundle)
