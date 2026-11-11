@@ -2,10 +2,14 @@
 # Create the GitHub release from dist/, update the Homebrew tap, upgrade locally.
 # Run after `make pre-release` and `scripts/release-package.sh`.
 #
-# After brew upgrade, restart the daemon with `supervisorctl restart spyder`
-# on this Mac — not `brew services restart` (see CLAUDE.md).
+# After brew upgrade it restarts the supervised daemon (`supervisorctl
+# restart spyder`, never `brew services`; see CLAUDE.md) and verifies the
+# MCP endpoint serves the new version.
 set -euo pipefail
 source "$(dirname "$0")/release-common.sh"
+
+DAEMON_PORT=3030
+DAEMON_READY_ATTEMPTS=20
 
 NOTES_FILE=""
 SKIP_TAP=false
@@ -95,7 +99,38 @@ if [[ "$SKIP_BREW" == false ]]; then
 		echo "release-publish: expected ${installed_spyder} --version ${TAG}, got ${got:-<missing>}" >&2
 		exit 1
 	fi
-	echo "release-publish: brew is ${got}; restart the daemon with supervisorctl restart spyder (not brew services)" >&2
+	echo "release-publish: brew is ${got}" >&2
+
+	# The daemon is the product's interface: brew upgrade only replaces the
+	# binary on disk, so restart the supervised process and confirm the
+	# process answering MCP on :3030 reports the new version (CLAUDE.md:
+	# supervisord owns the port, never brew services).
+	if command -v supervisorctl >/dev/null 2>&1 && supervisorctl status spyder >/dev/null 2>&1; then
+		echo "release-publish: supervisorctl restart spyder …" >&2
+		supervisorctl restart spyder >&2
+		status="$(supervisorctl status spyder || true)"
+		if [[ "$status" != *RUNNING* ]]; then
+			echo "release-publish: spyder did not come back: ${status}" >&2
+			exit 1
+		fi
+		served=""
+		for _ in $(seq 1 "$DAEMON_READY_ATTEMPTS"); do
+			served="$(curl -s --max-time 2 -X POST "http://127.0.0.1:${DAEMON_PORT}/mcp" \
+				-H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+				-d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"release-publish","version":"0"}}}' |
+				jq -r '.result.serverInfo.version // empty' 2>/dev/null || true)"
+			[[ -n "$served" ]] && break
+			sleep 1
+		done
+		if [[ "$served" != "$TAG" ]]; then
+			echo "release-publish: daemon on :${DAEMON_PORT} reports ${served:-<no answer>}, expected ${TAG}" >&2
+			echo "  ${status}" >&2
+			exit 1
+		fi
+		echo "release-publish: daemon ${status}; MCP on :${DAEMON_PORT} serves ${served}" >&2
+	else
+		echo "release-publish: no supervised spyder program; restart your daemon (supervisorctl restart spyder, not brew services)" >&2
+	fi
 fi
 
 echo "release-publish: ${TAG} → https://github.com/marcelocantos/spyder/releases/tag/${TAG}"
