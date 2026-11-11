@@ -1,25 +1,25 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-11-11T19:48:31Z",
-  "head_sha": "c5372ef7966a5f5a463538f45a9d720437a2154b",
+  "generated_at": "2026-11-11T19:53:06Z",
+  "head_sha": "66e6b8ab6f3a9b0da0cfad93dfcd53f4dbb41d12",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test -timeout 2m  ./...",
-      "duration_s": 75,
+      "duration_s": 85,
       "status": "pass"
     },
     {
       "name": "govulncheck",
       "cmd": "GOWORK=off govulncheck ./...",
-      "duration_s": 4,
-      "status": "fail"
+      "duration_s": 2,
+      "status": "pass"
     },
     {
       "name": "player-wire",
       "cmd": "make check-wire && ./scripts/check-wire-ge-test.sh",
-      "duration_s": 2,
+      "duration_s": 1,
       "status": "pass"
     },
     {
@@ -33,5 +33,5 @@
       "reason": "set SPYDER_LIVE_APPRAISE_DEVICE=<android alias> to run; needs a device and a Claude login"
     }
   ],
-  "overall": "fail"
+  "overall": "partial"
 }
