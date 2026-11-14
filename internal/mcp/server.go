@@ -34,6 +34,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/runs"
 	"github.com/marcelocantos/spyder/internal/selector"
+	"github.com/marcelocantos/spyder/internal/simlease"
 	"github.com/marcelocantos/spyder/internal/usbspeed"
 	"github.com/marcelocantos/spyder/internal/verify"
 )
@@ -68,8 +69,18 @@ type Handler struct {
 	ios           device.Adapter
 	android       device.Adapter
 	desktop       device.Adapter
-	reservations  *reservations.Store
-	runs          *runs.Store
+	// sim drives iOS simulators through simctl; a leased or booted
+	// simulator UDID routes here instead of to go-ios (🎯T188).
+	sim device.Adapter
+	// simLeases is the simulator lease book; nil disables the sim_* lease
+	// verbs. bootedSims lists booted simulators; SetSimLeases installs
+	// the simctl census, so handlers built in tests never exec simctl.
+	// simKnown caches it.
+	simLeases    *simlease.Manager
+	bootedSims   func(context.Context) ([]device.Info, error)
+	simKnown     simCache
+	reservations *reservations.Store
+	runs         *runs.Store
 	// noProvenanceProbe disables reserve's device OS / app version
 	// probes (🎯T166). Unit tests set it so they never exec adb/go-ios.
 	noProvenanceProbe bool
@@ -408,6 +419,7 @@ func NewHandler(opts ...HandlerOption) *Handler {
 		inventory:       inventory.New(),
 		ios:             device.NewIOSAdapter(),
 		android:         device.NewAndroidAdapter(),
+		sim:             device.NewSimulatorAdapter(),
 		recordings:      recording.NewRegistry(),
 		networkByDevice: map[string]appliedNetwork{},
 		launchTimes:     map[launchKey]time.Time{},
@@ -437,6 +449,7 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 		inventory:   inventory.New(),
 		ios:         device.NewIOSAdapter(),
 		android:     device.NewAndroidAdapter(),
+		sim:         device.NewSimulatorAdapter(),
 		launchTimes: map[launchKey]time.Time{},
 		health:      health.NewSupervisor(health.New()),
 		ops:         newOpRegistry(),
@@ -803,6 +816,9 @@ func (h *Handler) contextHandlers() map[string]contextToolFunc {
 		"system_alert":     h.handleSystemAlertContext,
 		"system_alert_tap": h.handleSystemAlertTapContext,
 		"wait_app_session": h.handleWaitAppSessionContext,
+		"sim_acquire":      h.handleSimAcquireContext,
+		"sim_release":      h.handleSimReleaseContext,
+		"sim_leases":       h.handleSimLeasesContext,
 		"deploy_app": func(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 			return h.deployAppContext(ctx, args, false)
 		},
@@ -850,6 +866,11 @@ func (h *Handler) toolHandlers() map[string]toolFunc {
 		"sim_boot":     h.handleSimBoot,
 		"sim_shutdown": h.handleSimShutdown,
 		"sim_delete":   h.handleSimDelete,
+		// --- simulator leases (🎯T188) ---
+		"sim_acquire": h.handleSimAcquire,
+		"sim_release": h.handleSimRelease,
+		"sim_renew":   h.handleSimRenew,
+		"sim_leases":  h.handleSimLeases,
 		// --- emulator tools ---
 		"emu_list":     h.handleEmuList,
 		"emu_create":   h.handleEmuCreate,
@@ -984,6 +1005,7 @@ func legacyDefinitions() []mcpgo.Tool {
 	defs = append(defs, systemAlertDefinitions()...)
 	defs = append(defs, agentDefinitions()...)
 	defs = append(defs, notificationDefinitions()...)
+	defs = append(defs, simLeaseDefinitions()...)
 	return append(defs, verifyDefinitions()...)
 }
 
@@ -1404,7 +1426,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("sim_create",
-			mcpgo.WithDescription("Create a new iOS simulator. Returns the UDID of the new simulator. Use sim_list to find existing simulators; use `xcrun simctl list devicetypes --json` and `xcrun simctl list runtimes --json` to discover available device types and runtimes."),
+			mcpgo.WithDescription("Create a new iOS simulator. Prefer sim_acquire, which creates, boots and later cleans up under a lease (🎯T188). Returns the UDID of the new simulator. Use sim_list to find existing simulators; use `xcrun simctl list devicetypes --json` and `xcrun simctl list runtimes --json` to discover available device types and runtimes."),
 			mcpgo.WithString("name",
 				mcpgo.Required(),
 				mcpgo.Description("Human-readable name for the simulator (e.g. 'MyTestPhone')"),
@@ -1420,7 +1442,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("sim_boot",
-			mcpgo.WithDescription("Boot a shutdown iOS simulator by UDID. The simulator will appear in `spyder devices` iOS output once booted. Use sim_list to find available simulators."),
+			mcpgo.WithDescription("Boot a shutdown iOS simulator by UDID. Prefer sim_acquire: a simulator booted here has no lease, so nothing ever shuts it down. The simulator will appear in `spyder devices` iOS output once booted. Use sim_list to find available simulators."),
 			mcpgo.WithString("udid",
 				mcpgo.Required(),
 				mcpgo.Description("Simulator UDID as returned by sim_list"),

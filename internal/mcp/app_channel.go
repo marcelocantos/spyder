@@ -183,6 +183,7 @@ func (h *Handler) requireSession(args map[string]any) (*appchannel.Session, *mcp
 		}
 		if s.Listener() != nil {
 			s.Listener().Touch()
+			h.touchSim(s.Listener().Key.DeviceID)
 		}
 		return s, nil
 	}

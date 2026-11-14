@@ -43,6 +43,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/runs"
+	"github.com/marcelocantos/spyder/internal/simlease"
 	"github.com/marcelocantos/spyder/internal/streamrelay"
 	"github.com/marcelocantos/spyder/internal/verify"
 	"github.com/marcelocantos/spyder/internal/wedge"
@@ -148,6 +149,9 @@ func Run(ctx context.Context, cfg Config) error {
 		// iOS/Android device. First tick is immediate so /dashboard#battery
 		// is not empty for a full interval after serve.
 		go mcpHandler.StartBatterySampler(ctx)
+		// 🎯T188: release expired simulator leases, including any left
+		// from before this restart.
+		go mcpHandler.RunSimLeaseReaper(ctx)
 		go mcpHandler.StartDevelopmentPolicy(ctx)
 		// 🎯T99.3: ProgressWatchdog on entity "spyder" (timeout = device-op
 		// deadline) + rate-limited self-restart after grace; dumps before exit.
@@ -375,6 +379,16 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 		handler.SetNotifications(notifications)
 	}
 	handler.SetVerifyStateDir(paths.VerifyDir())
+	// Simulator leases (🎯T188); Run starts the reaper.
+	if leases, err := simlease.New(&simlease.Args{
+		Simctl:    simlease.XcrunSimctl{},
+		Path:      filepath.Join(paths.Base(), "sim-leases.json"),
+		OnRelease: func(simlease.Released) { handler.ForgetSimulatorCache() },
+	}); err != nil {
+		slog.Error("simulator leases unavailable", "error", err)
+	} else {
+		handler.SetSimLeases(leases)
+	}
 
 	// Kick off pool adoption in the background so startup latency stays
 	// low. Adoption rebuilds inventory from live simctl/avdmanager state

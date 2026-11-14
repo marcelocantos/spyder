@@ -652,6 +652,10 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `baseline_update(suite, case, variant?, screenshot_path?, screenshot_base64?, manifest?)` | Store a new visual baseline for `suite/case/variant`. | Supply PNG via `screenshot_path` or `screenshot_base64`. Optional `manifest` JSON enables structural diffing. |
 | `diff(suite, case, variant?, screenshot_path?, screenshot_base64?)` | Compare a candidate screenshot against the stored baseline. | Returns a structured JSON report with RMS pixel error, manifest structural diff (added/removed/moved elements with bounding boxes), and a `pass` verdict. Supply PNG via `screenshot_path` or `screenshot_base64`. |
 | `baselines_list(suite)` | List all baselines stored for a suite. | Read-only. Returns `[{case, variant, has_png, has_manifest}]`. |
+| `sim_acquire(device_type, owner, runtime?, name?, ttl_s?)` | Lease a booted iOS simulator (🎯T188). Returns `{id, udid, name, action, expires_at, …}`. | **The way to get a simulator** — never `xcrun simctl boot` one. `action` is `created`, `booted` or `already_running`; release undoes exactly that. Expires after `ttl_s` (default 1800) unless renewed; any verb on the UDID renews it. |
+| `sim_release(lease_id\|udid, owner)` | End a lease: delete a created simulator, shut down a booted one, leave an already-running one alone. | Returns `{lease, undo, reason}`. |
+| `sim_renew(lease_id\|udid, owner, ttl_s?)` | Extend a lease you are holding idle. | Activity renews it too. |
+| `sim_leases()` | Leases, plus booted simulators with no lease (`unleased_booted`, with `uptime_s`). | Unleased simulators are reported, never shut down. |
 | `sim_list(state?)` | List all iOS simulators (UDID, name, state, runtime). Booted sims appear in `devices`. | `state` filter: `Booted`, `Shutdown`, etc. |
 | `sim_create(name, device_type_id, runtime_id)` | Create a new iOS simulator; returns its UDID. | IDs from `xcrun simctl list devicetypes/runtimes --json`. |
 | `sim_boot(udid)` | Boot an iOS simulator by UDID. | Sim appears in `devices` once booted. |
@@ -1380,9 +1384,64 @@ UDID each time. There is no template AVD to pre-create for iOS.
 
 ## Simulator and emulator lifecycle
 
-iOS simulators and Android emulators are managed through dedicated builtin groups (`sim_*` and `emu_*`). Booted simulators and running emulators appear automatically in `devices()` output — the existing iOS adapter calls `xcrun simctl` which includes both physical and simulator devices, and the Android adapter calls `adb devices` which lists running emulators alongside physical devices.
+iOS simulators and Android emulators are managed through dedicated builtin groups (`sim_*` and `emu_*`). Booted simulators and running emulators appear in `devices()` output: spyder adds booted simulators from `xcrun simctl list devices booted`, and the Android adapter's `adb devices` lists running emulators alongside physical devices.
 
-### iOS simulators
+### Simulator leases (🎯T188)
+
+**Take a lease; never boot a simulator yourself.** A simulator booted with
+`xcrun simctl boot` (or `sim_boot`) has no owner, so nothing ever shuts it
+down: three headless simulators once stayed up for four days holding about
+25 GB of RAM. An exit trap or `finally` cannot help when the agent session
+itself dies. A lease lives in the daemon, so it outlives the caller.
+
+```starlark
+l = sim_acquire(device_type="iPhone 16 Pro", runtime="18.6", owner="yw2-layout",
+                name="yw2-layout-16pm", ttl_s=1800)
+# l = {"id": "…", "udid": "…", "action": "created" | "booted" | "already_running", "expires_at": …}
+ensure_session(device=l["udid"], path="/path/to/App.app", owner="yw2-layout")
+# … work …
+sim_release(lease_id=l["id"], owner="yw2-layout")
+```
+
+```bash
+spyder sim acquire "iPhone 16 Pro" --runtime 18.6 --name yw2-layout-16pm --ttl 1800 --as yw2-layout --json
+spyder sim renew <lease-id|udid> --as yw2-layout [--ttl 1800]
+spyder sim release <lease-id|udid> --as yw2-layout
+spyder sim leases --json
+```
+
+- **Acquire** resolves `device_type` (identifier or name) and `runtime`
+  (identifier, name, or version; omitted means the newest available iOS).
+  It reuses a matching simulator — a shut-down one first, then a booted one
+  nobody leases — or creates one, named `name` or `spyder-lease-<id>`. With
+  `name`, only a simulator of that name is reused. The same owner asking
+  again for the same simulator gets its existing lease back, renewed.
+- **Release** undoes exactly what acquire did: deletes a `created`
+  simulator, shuts down a `booted` one, leaves an `already_running` one up.
+  Only the owner can release or renew.
+- **Expiry**: a lease lapses `ttl_s` seconds (60–43200, default 1800) after
+  its last renewal. Any spyder verb on the leased UDID renews it
+  (`ensure_session`, `launch_app`, `screenshot`, `app_*` on its session, …);
+  call `sim_renew` while holding one idle. The daemon reaps lapsed leases
+  every 30 s and undoes them as release would. Leases are kept in
+  `~/.spyder/sim-leases.json`, so reaping resumes after a daemon restart,
+  and an acquire cut short by a crash is undone on the next start.
+- **Unleased simulators are never touched.** `sim_leases()` lists booted
+  simulators spyder does not lease, with how long each has been up, so
+  strays can be found. Shutting them down is the owner's call.
+- **Using a leased UDID**: a leased or booted simulator's UDID routes to
+  spyder's simctl adapter, so `devices`, `ensure_session`, `launch_app`,
+  `is_running`, `install_app` (simulator `.app` builds, not `.ipa`),
+  `terminate_app`, `list_apps`, `screenshot` and `rotate` work on it
+  directly. Crash reports, network shaping and log range/stream are not
+  supported on simulators.
+
+The template pool (`pool.yaml`, `spyder-pool-*` simulators) is separate;
+leases never take a pool simulator.
+
+### Raw simulator lifecycle
+
+These verbs act immediately and record nothing. Prefer leases.
 
 ```bash
 # List all simulators (state: Booted, Shutdown, etc.)

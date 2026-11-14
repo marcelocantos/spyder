@@ -78,7 +78,7 @@ func init() {
 		{"crashes", "spyder crashes <device> [--since RFC3339|-15m|-1h|launch] [--bundle-id ID | --process NAME] [--as OWNER] [--json]", runCrashes},
 		{"diff", "spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]", runDiff},
 		{"baseline", "spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]", runBaseline},
-		{"sim", "spyder sim <list|create|boot|shutdown|delete> [args...]", runSim},
+		{"sim", "spyder sim <acquire|release|renew|leases|list|create|boot|shutdown|delete> [args...]", runSim},
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
@@ -1329,9 +1329,19 @@ func runCrashes(args []string) {
 // runSim dispatches `spyder sim <subcommand>` for iOS simulator lifecycle.
 func runSim(args []string) {
 	if len(args) == 0 {
-		fatalUsage("sim", fmt.Errorf("missing subcommand — expected list|create|boot|shutdown|delete"))
+		fatalUsage("sim", fmt.Errorf("missing subcommand — expected acquire|release|renew|leases|list|create|boot|shutdown|delete"))
 	}
 	switch args[0] {
+	case "acquire":
+		runSimAcquire(args[1:])
+	case "release":
+		runSimLeaseRef("sim_release", args[1:])
+	case "renew":
+		runSimLeaseRef("sim_renew", args[1:])
+	case "leases":
+		pf, ctx, cancel := setupCommand("sim", args[1:], nil, []string{"--json"}, clitimeout.DefaultRead)
+		defer cancel()
+		dispatchAndExit(ctx, "sim_leases", map[string]any{}, pf.bools["--json"], false)
 	case "list":
 		runSimList(args[1:])
 	case "create":
@@ -1343,8 +1353,57 @@ func runSim(args []string) {
 	case "delete":
 		runSimDelete(args[1:])
 	default:
-		fatalUsage("sim", fmt.Errorf("unknown subcommand %q — expected list|create|boot|shutdown|delete", args[0]))
+		fatalUsage("sim", fmt.Errorf("unknown subcommand %q — expected acquire|release|renew|leases|list|create|boot|shutdown|delete", args[0]))
 	}
+}
+
+// runSimAcquire leases a simulator (🎯T188):
+// spyder sim acquire <device-type> [--runtime R] [--name N] [--ttl S] [--as OWNER] [--json]
+func runSimAcquire(args []string) {
+	pf, ctx, cancel := setupCommand("sim", args, []string{"--runtime", "--name", "--ttl", "--as"}, []string{"--json"}, clitimeout.DefaultInstall)
+	defer cancel()
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("acquire: expected <device-type> (identifier or name, e.g. \"iPhone 16 Pro\")"))
+	}
+	a := map[string]any{
+		"device_type": pf.positional[0],
+		"owner":       deriveOwner(pf.flags["--as"]),
+	}
+	if v := pf.flags["--runtime"]; v != "" {
+		a["runtime"] = v
+	}
+	if v := pf.flags["--name"]; v != "" {
+		a["name"] = v
+	}
+	if v := pf.flags["--ttl"]; v != "" {
+		n, err := parsePositiveInt(v)
+		if err != nil {
+			fatalUsage("sim", fmt.Errorf("acquire --ttl: %v", err))
+		}
+		a["ttl_s"] = n
+	}
+	dispatchAndExit(ctx, "sim_acquire", a, pf.bools["--json"], false)
+}
+
+// runSimLeaseRef handles `spyder sim release|renew <lease-id|udid>`.
+func runSimLeaseRef(verb string, args []string) {
+	pf, ctx, cancel := setupCommand("sim", args, []string{"--as", "--ttl"}, []string{"--json"}, clitimeout.DefaultLaunch)
+	defer cancel()
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("%s: expected <lease-id|udid>", strings.TrimPrefix(verb, "sim_")))
+	}
+	a := map[string]any{
+		"lease_id": pf.positional[0],
+		"owner":    deriveOwner(pf.flags["--as"]),
+	}
+	if v := pf.flags["--ttl"]; v != "" && verb == "sim_renew" {
+		n, err := parsePositiveInt(v)
+		if err != nil {
+			fatalUsage("sim", fmt.Errorf("renew --ttl: %v", err))
+		}
+		a["ttl_s"] = n
+	}
+	dispatchAndExit(ctx, verb, a, pf.bools["--json"], false)
 }
 
 func runSimList(args []string) {

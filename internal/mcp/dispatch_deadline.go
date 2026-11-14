@@ -49,6 +49,8 @@ var toolDeadlineByName = func() map[string]func() time.Duration {
 	// ensure_session / launch_player may install on the deploy path
 	// (🎯T103: a cold emulator adb install must fit under this class).
 	add(func() time.Duration { return DeadlineInstall }, "install_app", "deploy_app", "ensure_session", "launch_player")
+	// A first boot of a new simulator can take minutes (🎯T188).
+	add(func() time.Duration { return DeadlineInstall }, "sim_acquire")
 	// Explicit class: window_sec max 120 must fit under this bound.
 	add(func() time.Duration { return DeadlinePerfFPS }, "perf_fps")
 	add(func() time.Duration { return DeadlineWaitState }, "wait_state", "wait_app_session")
@@ -81,6 +83,7 @@ var toolDeadlineByName = func() map[string]func() time.Duration {
 		"crashes", "logs", "baseline_update", "diff",
 		"reserve", "release", "renew",
 		"sim_list", "sim_create", "sim_boot", "sim_shutdown",
+		"sim_release", "sim_renew", "sim_leases",
 		"app_channel_stop",
 		"app_screenshot", "app_input", "app_pause", "app_step",
 		"app_tweak_list", "app_tweak_get", "app_tweak_set", "app_tweak_reset",

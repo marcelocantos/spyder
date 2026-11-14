@@ -108,6 +108,13 @@ emit(screenshot(device="iPad"))
 # is my app up? (no forced launch)
 is_running(device="iPad", bundle_id="com.example.app")
 
+# an iOS simulator: lease it, never xcrun simctl boot (🎯T188). Release
+# undoes what acquire did; an abandoned lease is reaped after ttl_s.
+l = sim_acquire(device_type="iPhone 16 Pro", runtime="18.6", owner="me", ttl_s=1800)
+ensure_session(device=l["udid"], path="/path/to/App.app", owner="me")
+sim_release(lease_id=l["id"], owner="me")
+emit(sim_leases())   # leases + booted simulators nobody leases (uptime_s)
+
 # allowlisted OS setting (Android). iOS fails closed: not supported.
 device_setting(device="S24", key="refresh_rate", value="60")
 device_setting(device="S24", key="refresh_rate", restore=True)`,

@@ -87,6 +87,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   release       Release a reservation you hold (--as OWNER)
   renew         Extend a reservation you hold (--as OWNER, --ttl SECONDS)
   reservations  List all active reservations (--json)
+  sim           iOS simulators: lease (acquire|release|renew|leases) and raw lifecycle (list|create|boot|shutdown|delete)
   runs          Inspect run-artefact bundles (list|show|artefacts)
   crashes       Fetch crash reports (--since RFC3339|-15m, --bundle-id ID | --process NAME, --as OWNER, --json)
   diff          Compare a screenshot against its stored baseline (--variant, --tolerance, --json)

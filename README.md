@@ -106,6 +106,7 @@ has signatures.
 | Device | `devices`, `resolve`, `device_state`, `battery_history`, `screenshot`, `list_apps`, `launch_app`, `terminate_app`, `install_app`, `uninstall_app`, `deploy_app`, `launch_player`, `is_running` |
 | Reservations / runs | `reserve`, `release`, `renew`, `reservations`, `reservation_status`, `runs_list`, `runs_show` |
 | Observe | `rotate`, `crashes`, `logs`, `log_capture_start`, `log_capture_get`, `log_capture_stop`, `log_capture_list` |
+| Sim leases | `sim_acquire`, `sim_release`, `sim_renew`, `sim_leases` — spyder alone boots and shuts down simulators; expired leases are reaped |
 | Sim / emu | `sim_list`, `sim_create`, `sim_boot`, `sim_shutdown`, `sim_delete`, `emu_list`, `emu_create`, `emu_boot`, `emu_shutdown`, `emu_delete` |
 | Visual / record / net | `baseline_update`, `diff`, `baselines_list`, `record_start`, `record_stop`, `network` |
 | OS control | `perf_fps`, `port_forward_start`, `port_forward_stop`, `port_forward_list`, `input_tap`, `input_swipe`, `input_key`, `input_text`, `ui_tree`, `ui_tap`, `screen_secure`, `device_setting`, `system_alert`, `system_alert_tap` |

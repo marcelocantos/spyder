@@ -288,6 +288,7 @@ func (h *Handler) listDevicesUncached(platform string) devicesSnapshot {
 			perAdapterErrors = append(perAdapterErrors, fmt.Sprintf("ios: %v", err))
 		}
 		devices = append(devices, ds...)
+		devices = appendBootedSims(devices, h.bootedSimList())
 	}
 	if platform == "android" || platform == "all" {
 		ds, err := h.android.List()
@@ -1393,6 +1394,11 @@ func optNumber(args map[string]any, key string) int64 {
 // inventory.ClassifyRaw.
 func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, error) {
 	entry, ok := h.inventory.Lookup(ref)
+	if !ok && h.sim != nil && h.isSimulator(ref) {
+		// A leased or booted simulator: simctl, not go-ios (🎯T188).
+		h.touchSim(ref)
+		return h.sim, "ios", ref, nil
+	}
 	if !ok {
 		classified := inventory.ClassifyRaw(ref)
 		if classified.Platform == "android" {
@@ -2390,4 +2396,18 @@ func (h *Handler) handlePoolGC(_ map[string]any) (*mcpgo.CallToolResult, error) 
 		return toolErr("pool not configured — create ~/.spyder/pool.yaml and restart the daemon")
 	}
 	return toolJSON(h.poolMgr.PoolGC())
+}
+
+// appendBootedSims adds booted simulators not already listed (🎯T188).
+func appendBootedSims(devices, sims []device.Info) []device.Info {
+	seen := map[string]bool{}
+	for _, d := range devices {
+		seen[strings.ToUpper(d.UUID)] = true
+	}
+	for _, s := range sims {
+		if !seen[strings.ToUpper(s.UUID)] {
+			devices = append(devices, s)
+		}
+	}
+	return devices
 }
