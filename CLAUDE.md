@@ -190,6 +190,10 @@ restart with `supervisorctl restart spyder` — not `brew services
 restart`. Day-to-day MCP is the Homebrew Cellar binary under
 supervisord (see **One daemon only** above).
 
+Standing authorization (owner, 2026-11-15): agents may cut a spyder
+release through `/release` whenever verified work is ready, without
+asking first. MINOR bumps only, as always.
+
 ## Gates
 
 profile: base
