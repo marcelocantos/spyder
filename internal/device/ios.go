@@ -67,6 +67,12 @@ const devicectlListTimeout = 8 * time.Second
 // exposes; everything else runs in-process.
 type IOSAdapter struct {
 	goios *goios.Resolver
+	// ddi mounts a device's developer services when the app service is
+	// refused for want of them (🎯T191).
+	ddi *ddiHealer
+	// onAgentKick, when set, asks for an immediate agent supervision pass
+	// after a USB (re)attach, instead of waiting for the next tick.
+	onAgentKick func()
 	// ipPool holds one cached installation_proxy connection per UDID.
 	// installation_proxy is the highest-churn service spyder uses
 	// (every ListApps + ResolveExecutable + bundle-id resolution
@@ -205,8 +211,10 @@ func (a *IOSAdapter) InvalidateDevice(udid string) {
 // registry endpoint).
 func NewIOSAdapter() *IOSAdapter {
 	resolver := goios.New(goios.DefaultTunnelHost, goios.DefaultTunnelPort)
+	ddi := newDDIHealer()
 	a := &IOSAdapter{
 		goios: resolver,
+		ddi:   ddi,
 		ipPool: goios.NewServicePool(
 			resolver,
 			func(dev goios_ios.DeviceEntry) (*installationproxy.Connection, error) {
@@ -221,7 +229,13 @@ func NewIOSAdapter() *IOSAdapter {
 		asPool: goios.NewServicePool(
 			resolver,
 			func(dev goios_ios.DeviceEntry) (*appservice.Connection, error) {
-				return appservice.New(dev)
+				c, err := appservice.New(dev)
+				// A device without its developer disk image mounted resets
+				// app-service connects; mount it and retry once (🎯T191).
+				if isDDIUnavailable(err) && ddi.heal(dev.Properties.SerialNumber) {
+					c, err = appservice.New(dev)
+				}
+				return c, err
 			},
 			func(c *appservice.Connection) error {
 				return c.Close()
@@ -459,7 +473,27 @@ func (a *IOSAdapter) BindSupervisor(sup *agent.Supervisor) {
 		if err != nil {
 			slog.Warn("agent tether", "device", udid, "up", up, "error", err)
 		}
+		if up {
+			a.mu.Lock()
+			kick := a.onAgentKick
+			a.mu.Unlock()
+			if kick != nil {
+				kick()
+			}
+		}
 	})
+}
+
+// SetAgentKick registers a callback that runs an agent supervision pass
+// soon, used after a USB (re)attach so automation does not wait for the
+// next periodic tick.
+func (a *IOSAdapter) SetAgentKick(fn func()) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.onAgentKick = fn
+	a.mu.Unlock()
 }
 
 // SetUsbmuxSeen registers an observer for the raw usbmux serials.

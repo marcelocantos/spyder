@@ -70,6 +70,14 @@ type Config struct {
 // that exits in a few seconds does not start XCTest.
 const agentTickInterval = 30 * time.Second
 
+// agentFirstTick is the delay before the first supervision pass after
+// startup; agentKickDelay the pause after a USB attach before the
+// out-of-band pass, letting the tunnel settle.
+const (
+	agentFirstTick = 5 * time.Second
+	agentKickDelay = 2 * time.Second
+)
+
 // Start creates the MCP server, registers all spyder tools, wraps it in
 // a streamable-HTTP transport, and blocks serving on cfg.Addr until a
 // SIGINT/SIGTERM arrives.
@@ -244,7 +252,9 @@ func Run(ctx context.Context, cfg Config) error {
 // superviseIOSAgents health-checks tethered runners until ctx ends.
 // The first tick is delayed so a short-lived process does not launch XCTest.
 func superviseIOSAgents(ctx context.Context, h *spydermcp.Handler) {
-	timer := time.NewTimer(agentTickInterval)
+	// The first pass comes soon after startup so a restart does not leave
+	// automation down for a whole interval (🎯T191).
+	timer := time.NewTimer(agentFirstTick)
 	defer timer.Stop()
 	for {
 		select {
@@ -253,6 +263,22 @@ func superviseIOSAgents(ctx context.Context, h *spydermcp.Handler) {
 			return
 		case <-timer.C:
 			h.TickAgents()
+			timer.Reset(agentTickInterval)
+		case <-h.AgentKicks():
+			// A USB (re)attach: give the tunnel a moment, then pass now.
+			select {
+			case <-ctx.Done():
+				h.StopAgents()
+				return
+			case <-time.After(agentKickDelay):
+			}
+			h.TickAgents()
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
 			timer.Reset(agentTickInterval)
 		}
 	}

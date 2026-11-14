@@ -76,9 +76,11 @@ type Handler struct {
 	// verbs. bootedSims lists booted simulators; SetSimLeases installs
 	// the simctl census, so handlers built in tests never exec simctl.
 	// simKnown caches it.
-	simLeases    *simlease.Manager
-	bootedSims   func(context.Context) ([]device.Info, error)
-	simKnown     simCache
+	simLeases  *simlease.Manager
+	bootedSims func(context.Context) ([]device.Info, error)
+	simKnown   simCache
+	// agentKick wakes the daemon's agent supervision loop early (🎯T191).
+	agentKick    chan struct{}
 	reservations *reservations.Store
 	runs         *runs.Store
 	// noProvenanceProbe disables reserve's device OS / app version
@@ -425,6 +427,7 @@ func NewHandler(opts ...HandlerOption) *Handler {
 		launchTimes:     map[launchKey]time.Time{},
 		health:          health.NewSupervisor(health.New()),
 		ops:             newOpRegistry(),
+		agentKick:       make(chan struct{}, 1),
 	}
 	for _, opt := range opts {
 		opt(h)
@@ -453,6 +456,7 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 		launchTimes: map[launchKey]time.Time{},
 		health:      health.NewSupervisor(health.New()),
 		ops:         newOpRegistry(),
+		agentKick:   make(chan struct{}, 1),
 	}
 	if ios != nil {
 		h.ios = ios

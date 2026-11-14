@@ -47,6 +47,7 @@ func (h *Handler) AttachIOSAgent(resv *reservations.Store, iosBin string) {
 		},
 	})
 	ios.BindSupervisor(sup)
+	ios.SetAgentKick(h.KickAgents)
 	h.mu.Lock()
 	h.agents = sup
 	h.agentHost = host
@@ -106,6 +107,21 @@ func (h *Handler) TickAgents() {
 		}
 	}
 }
+
+// KickAgents asks the supervision loop for a pass now (after a USB
+// attach). It never blocks; kicks while one is pending coalesce.
+func (h *Handler) KickAgents() {
+	if h == nil {
+		return
+	}
+	select {
+	case h.agentKick <- struct{}{}:
+	default:
+	}
+}
+
+// AgentKicks is the channel the daemon's supervision loop selects on.
+func (h *Handler) AgentKicks() <-chan struct{} { return h.agentKick }
 
 // StopAgents ends resident XCTest sessions. Idle does not.
 func (h *Handler) StopAgents() {
