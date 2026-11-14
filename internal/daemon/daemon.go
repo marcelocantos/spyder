@@ -381,9 +381,12 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	handler.SetVerifyStateDir(paths.VerifyDir())
 	// Simulator leases (🎯T188); Run starts the reaper.
 	if leases, err := simlease.New(&simlease.Args{
-		Simctl:    simlease.XcrunSimctl{},
-		Path:      filepath.Join(paths.Base(), "sim-leases.json"),
-		OnRelease: func(simlease.Released) { handler.ForgetSimulatorCache() },
+		Simctl:         simlease.XcrunSimctl{},
+		Path:           filepath.Join(paths.Base(), "sim-leases.json"),
+		ProvenancePath: filepath.Join(paths.Base(), "sim-provenance.json"),
+		AuditPath:      filepath.Join(paths.Base(), "sim-prune.jsonl"),
+		Android:        simlease.NewFSAndroid(),
+		OnRelease:      func(simlease.Released) { handler.ForgetSimulatorCache() },
 	}); err != nil {
 		slog.Error("simulator leases unavailable", "error", err)
 	} else {

@@ -655,6 +655,10 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 | `sim_acquire(device_type, owner, runtime?, name?, ttl_s?)` | Lease a booted iOS simulator (🎯T188). Returns `{id, udid, name, action, expires_at, …}`. | **The way to get a simulator** — never `xcrun simctl boot` one. `action` is `created`, `booted` or `already_running`; release undoes exactly that. Expires after `ttl_s` (default 1800) unless renewed; any verb on the UDID renews it. |
 | `sim_release(lease_id\|udid, owner)` | End a lease: delete a created simulator, shut down a booted one, leave an already-running one alone. | Returns `{lease, undo, reason}`. |
 | `sim_renew(lease_id\|udid, owner, ttl_s?)` | Extend a lease you are holding idle. | Activity renews it too. |
+| `sim_inventory()` | Every simulator, AVD, runtime and system image: owner (`lease`/`pool`/`claim`/`none`), project, size, last use, and what uses each runtime (🎯T189). | Read-only, schema_version 1. See "Simulator inventory and prune". |
+| `sim_prune(unowned=True, idle_days=7, dry_run=True, owner?)` | List, or with `dry_run=False` and `owner` delete, unowned shut-down simulators and AVDs idle more than `idle_days`. | Never touches booted, leased, claimed or pool devices. Deletions logged to `~/.spyder/sim-prune.jsonl`. |
+| `sim_prune_runtimes(dry_run=True, owner?, include_newest=False)` | List or delete iOS runtimes and Android system images nothing uses. | Keeps the newest image per platform unless `include_newest`. |
+| `sim_claim(id, owner, project?, note?)` / `sim_unclaim(id, owner)` | Mark a hand-made simulator or AVD as someone's, so it is never reused or pruned. | |
 | `sim_leases()` | Leases, plus booted simulators with no lease (`unleased_booted`, with `uptime_s`). | Unleased simulators are reported, never shut down. |
 | `sim_list(state?)` | List all iOS simulators (UDID, name, state, runtime). Booted sims appear in `devices`. | `state` filter: `Booted`, `Shutdown`, etc. |
 | `sim_create(name, device_type_id, runtime_id)` | Create a new iOS simulator; returns its UDID. | IDs from `xcrun simctl list devicetypes/runtimes --json`. |
@@ -1438,6 +1442,51 @@ spyder sim leases --json
 
 The template pool (`pool.yaml`, `spyder-pool-*` simulators) is separate;
 leases never take a pool simulator.
+
+Pass `project` to `sim_acquire` (the CLI fills it from the git toplevel)
+so disk use can be blamed on a repository.
+
+### Simulator inventory and prune (🎯T189)
+
+`sim_inventory()` (REST `POST /api/v1/sim_inventory` with `{}`, CLI
+`spyder sim inventory --json`) lists every iOS simulator and Android AVD,
+and every iOS runtime and Android system image. It is read-only and cheap:
+iOS sizes and last-use times come from simctl, Android sizes from a cached
+directory walk. Loadmon polls it hourly.
+
+- `devices[]`: `kind` (`ios_simulator` | `android_avd`), `id` (UDID or AVD
+  name), `name`, `device_type`, `runtime`, `state` (lowercase: `booted`,
+  `shutdown`, … ; `running` / `stopped` for AVDs), `path`, `bytes`,
+  `owner` {`kind`: `lease` | `pool` | `claim` | `none`, `owner`, `project`,
+  `lease_id`, `expires_at`, `note`}, `created_by_spyder`, `created_for`
+  {owner, project}, `last_leased_by`, `last_used_at`, `last_used_source`
+  (`spyder` for a lease or verb, `simctl` for its lastUsedAt, `mtime`).
+- `runtimes[]`: `kind` (`ios_runtime` | `android_system_image`), `id`,
+  `image_id`, `version`, `path`, `bytes`, `deletable`, `used_by` {count,
+  ids}, and `keep: "newest"` on the newest image of a platform, which
+  `sim_prune_runtimes` spares.
+- `schema_version` is 1. It changes only for an incompatible change;
+  added fields are compatible.
+
+spyder remembers who created or last leased a device in
+`~/.spyder/sim-provenance.json`, after the lease ends; an entry goes when
+its device does.
+
+Cleanup is dry-run first and never automatic:
+
+```bash
+spyder sim prune --unowned --idle 7d            # list candidates
+spyder sim prune --unowned --idle 7d --yes --as marcelo   # delete them
+spyder sim prune-runtimes                       # unused runtimes / system images
+spyder sim prune-runtimes --yes --as marcelo
+spyder sim claim <udid|avd> --as marcelo --note "my iPad"  # never reuse or prune
+spyder sim unclaim <udid|avd> --as marcelo
+```
+
+A prune candidate is a device nobody owns (no lease, claim or pool), shut
+down, and idle longer than the threshold (never used counts as idle).
+Booted, leased, claimed and pool devices are never touched, and simctl
+refuses to delete a simulator that booted since the listing.
 
 ### Raw simulator lifecycle
 

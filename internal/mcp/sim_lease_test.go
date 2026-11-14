@@ -52,6 +52,12 @@ func (f *leaseSimctl) Shutdown(context.Context, string) error {
 	return nil
 }
 func (f *leaseSimctl) Delete(context.Context, string) error { return errors.New("unexpected delete") }
+func (f *leaseSimctl) RuntimeImages(context.Context) ([]simlease.RuntimeImage, error) {
+	return nil, nil
+}
+func (f *leaseSimctl) DeleteRuntime(context.Context, string) error {
+	return errors.New("unexpected runtime delete")
+}
 
 // A leased simulator UDID is routed to the simctl adapter (not go-ios),
 // using it renews the lease, and sim_release shuts it down again.

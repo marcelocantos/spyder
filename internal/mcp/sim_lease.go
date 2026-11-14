@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -75,6 +76,7 @@ func (h *Handler) handleSimAcquireContext(ctx context.Context, args map[string]a
 		DeviceType: deviceType,
 		Runtime:    optString(args, "runtime"),
 		Owner:      owner,
+		Project:    optString(args, "project"),
 		Name:       optString(args, "name"),
 		TTL:        time.Duration(optNumber(args, "ttl_s")) * time.Second,
 	})
@@ -140,6 +142,121 @@ func (h *Handler) handleSimLeasesContext(ctx context.Context, _ map[string]any) 
 		return res, nil
 	}
 	return toolJSON(m.Status(ctx))
+}
+
+// --- inventory, claims and prune (🎯T189) ----------------------------
+
+func (h *Handler) handleSimInventory(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleSimInventoryContext(context.Background(), args)
+}
+
+func (h *Handler) handleSimInventoryContext(ctx context.Context, _ map[string]any) (*mcpgo.CallToolResult, error) {
+	m, res := h.leases()
+	if res != nil {
+		return res, nil
+	}
+	return toolJSON(m.Inventory(ctx))
+}
+
+// defaultPruneIdleDays applies when sim_prune is given no idle_days.
+const defaultPruneIdleDays = 7
+
+func pruneArgs(args map[string]any) (simlease.PruneArgs, error) {
+	idle := float64(defaultPruneIdleDays)
+	if _, ok := args["idle_days"]; ok {
+		idle = optFloat(args, "idle_days")
+	}
+	pa := simlease.PruneArgs{
+		IdleDays:      idle,
+		DryRun:        optBoolArg(args, "dry_run", true),
+		Owner:         optString(args, "owner"),
+		IncludeNewest: optBoolArg(args, "include_newest", false),
+	}
+	if !optBoolArg(args, "unowned", true) {
+		return pa, fmt.Errorf("only unowned devices can be pruned (unowned=true)")
+	}
+	return pa, nil
+}
+
+func (h *Handler) handleSimPrune(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleSimPruneContext(context.Background(), args)
+}
+
+func (h *Handler) handleSimPruneContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+	m, res := h.leases()
+	if res != nil {
+		return res, nil
+	}
+	pa, err := pruneArgs(args)
+	if err != nil {
+		return toolErr("sim_prune: %v", err)
+	}
+	r, err := m.PruneDevices(ctx, pa)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	h.forgetSimCache()
+	return toolJSON(r)
+}
+
+func (h *Handler) handleSimPruneRuntimes(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleSimPruneRuntimesContext(context.Background(), args)
+}
+
+func (h *Handler) handleSimPruneRuntimesContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+	m, res := h.leases()
+	if res != nil {
+		return res, nil
+	}
+	pa, err := pruneArgs(args)
+	if err != nil {
+		return toolErr("sim_prune_runtimes: %v", err)
+	}
+	r, err := m.PruneRuntimes(ctx, pa)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(r)
+}
+
+func (h *Handler) handleSimClaim(args map[string]any) (*mcpgo.CallToolResult, error) {
+	m, res := h.leases()
+	if res != nil {
+		return res, nil
+	}
+	id, err := requireString(args, "id")
+	if err != nil {
+		return nil, err
+	}
+	owner, err := requireString(args, "owner")
+	if err != nil {
+		return nil, err
+	}
+	p, err := m.Claim(simlease.ClaimArgs{ID: id, Owner: owner, Project: optString(args, "project"), Note: optString(args, "note")})
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(p)
+}
+
+func (h *Handler) handleSimUnclaim(args map[string]any) (*mcpgo.CallToolResult, error) {
+	m, res := h.leases()
+	if res != nil {
+		return res, nil
+	}
+	id, err := requireString(args, "id")
+	if err != nil {
+		return nil, err
+	}
+	owner, err := requireString(args, "owner")
+	if err != nil {
+		return nil, err
+	}
+	p, err := m.Unclaim(id, owner)
+	if err != nil {
+		return toolErr("%v", err)
+	}
+	return toolJSON(p)
 }
 
 func leaseRef(args map[string]any) string {
@@ -235,6 +352,8 @@ func simLeaseDefinitions() []mcpgo.Tool {
 				mcpgo.Description("simctl runtime: identifier, name (\"iOS 18.6\") or version (\"18.6\"). Omit for the newest available iOS runtime.")),
 			mcpgo.WithString("owner", mcpgo.Required(),
 				mcpgo.Description("Who holds the lease; required again to renew or release")),
+			mcpgo.WithString("project",
+				mcpgo.Description("Repository or project the simulator is for (the CLI fills it from the git toplevel). Recorded so disk use can be blamed on it (🎯T189).")),
 			mcpgo.WithString("name",
 				mcpgo.Description("Optional simulator name: reuse only a simulator with this name, and give a created one this name. Omit to reuse any match; created ones are named spyder-lease-<id>.")),
 			mcpgo.WithNumber("ttl_s",
@@ -252,6 +371,34 @@ func simLeaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("udid", mcpgo.Description("Leased simulator UDID")),
 			mcpgo.WithString("owner", mcpgo.Required(), mcpgo.Description("The lease's owner")),
 			mcpgo.WithNumber("ttl_s", mcpgo.Description("New lease length in seconds; omit to keep the current one")),
+		),
+		mcpgo.NewTool("sim_inventory",
+			mcpgo.WithDescription("Every iOS simulator and Android AVD, and every runtime and system image, with owner, size and last use (🎯T189). Read-only. Returns {schema_version: 1, generated_at, devices: [{kind: ios_simulator|android_avd, id, name, device_type, runtime, state, path, bytes, owner: {kind: lease|pool|claim|none, owner, project, lease_id, expires_at, note}, created_by_spyder, created_for, last_leased_by, last_used_at, last_used_source: spyder|simctl|mtime}], runtimes: [{kind: ios_runtime|android_system_image, id, image_id, version, path, bytes, deletable, used_by: {count, ids}, keep}], errors}. `keep: \"newest\"` marks the newest image of a platform, which sim_prune_runtimes spares."),
+		),
+		mcpgo.NewTool("sim_prune",
+			mcpgo.WithDescription("List (dry_run, the default) or delete simulators and AVDs that nobody owns — no lease, claim or pool — that are shut down and idle longer than idle_days. Never touches a booted, leased, claimed or pool device. Deleting needs dry_run=false and owner; each deletion is logged to ~/.spyder/sim-prune.jsonl. Returns {dry_run, candidates: [{kind, id, name, bytes, last_used_at, reason}], bytes, deleted, errors}."),
+			mcpgo.WithBoolean("unowned", mcpgo.Description("Must be true (the default): only unowned devices are ever pruned")),
+			mcpgo.WithNumber("idle_days", mcpgo.Description("Idle threshold in days (default 7)")),
+			mcpgo.WithBoolean("dry_run", mcpgo.Description("List only (default true). Pass false, with owner, to delete.")),
+			mcpgo.WithString("owner", mcpgo.Description("Who is pruning; required to delete")),
+		),
+		mcpgo.NewTool("sim_prune_runtimes",
+			mcpgo.WithDescription("List (dry_run, the default) or delete iOS runtimes and Android system images that no simulator or AVD uses. The newest image of each platform is kept unless include_newest. Deleting needs dry_run=false and owner. Returns the same shape as sim_prune."),
+			mcpgo.WithBoolean("dry_run", mcpgo.Description("List only (default true)")),
+			mcpgo.WithString("owner", mcpgo.Description("Who is pruning; required to delete")),
+			mcpgo.WithBoolean("include_newest", mcpgo.Description("Also prune the newest unused image of a platform")),
+		),
+		mcpgo.NewTool("sim_claim",
+			mcpgo.WithDescription("Mark a simulator or AVD as yours (owner kind `claim`): sim_acquire will not reuse it for anyone else and sim_prune never offers it. For devices made by hand."),
+			mcpgo.WithString("id", mcpgo.Required(), mcpgo.Description("Simulator UDID or AVD name")),
+			mcpgo.WithString("owner", mcpgo.Required(), mcpgo.Description("Who it belongs to")),
+			mcpgo.WithString("project", mcpgo.Description("Optional project")),
+			mcpgo.WithString("note", mcpgo.Description("Optional note")),
+		),
+		mcpgo.NewTool("sim_unclaim",
+			mcpgo.WithDescription("Remove your claim on a simulator or AVD."),
+			mcpgo.WithString("id", mcpgo.Required(), mcpgo.Description("Simulator UDID or AVD name")),
+			mcpgo.WithString("owner", mcpgo.Required(), mcpgo.Description("The claim's owner")),
 		),
 		mcpgo.NewTool("sim_leases",
 			mcpgo.WithDescription("List simulator leases, and booted simulators spyder holds no lease for (`unleased_booted`, with uptime_s). Unleased simulators are reported only — spyder never shuts them down. Read-only."),

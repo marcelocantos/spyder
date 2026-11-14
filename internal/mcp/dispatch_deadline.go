@@ -51,6 +51,8 @@ var toolDeadlineByName = func() map[string]func() time.Duration {
 	add(func() time.Duration { return DeadlineInstall }, "install_app", "deploy_app", "ensure_session", "launch_player")
 	// A first boot of a new simulator can take minutes (🎯T188).
 	add(func() time.Duration { return DeadlineInstall }, "sim_acquire")
+	// Deleting runtimes (gigabytes each) and many simulators is slow (🎯T189).
+	add(func() time.Duration { return DeadlineInstall }, "sim_prune", "sim_prune_runtimes")
 	// Explicit class: window_sec max 120 must fit under this bound.
 	add(func() time.Duration { return DeadlinePerfFPS }, "perf_fps")
 	add(func() time.Duration { return DeadlineWaitState }, "wait_state", "wait_app_session")
@@ -84,6 +86,7 @@ var toolDeadlineByName = func() map[string]func() time.Duration {
 		"reserve", "release", "renew",
 		"sim_list", "sim_create", "sim_boot", "sim_shutdown",
 		"sim_release", "sim_renew", "sim_leases",
+		"sim_inventory", "sim_claim", "sim_unclaim",
 		"app_channel_stop",
 		"app_screenshot", "app_input", "app_pause", "app_step",
 		"app_tweak_list", "app_tweak_get", "app_tweak_set", "app_tweak_reset",

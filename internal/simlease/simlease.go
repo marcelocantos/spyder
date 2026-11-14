@@ -72,6 +72,7 @@ type Lease struct {
 	DeviceType string    `json:"device_type"`
 	Runtime    string    `json:"runtime"`
 	Owner      string    `json:"owner"`
+	Project    string    `json:"project,omitempty"`
 	Action     Action    `json:"action"`
 	TTLSeconds int64     `json:"ttl_s"`
 	AcquiredAt time.Time `json:"acquired_at"`
@@ -128,6 +129,16 @@ type Args struct {
 	// OnRelease, when set, is called after every successful release
 	// (explicit or expired). It must not call back into the Manager.
 	OnRelease func(Released)
+	// ProvenancePath is the provenance ledger (🎯T189): who made or last
+	// leased each device, claims, and spyder's last use. Empty keeps it
+	// in memory only.
+	ProvenancePath string
+	// AuditPath, when set, receives one JSON line per device or runtime
+	// that a prune deletes.
+	AuditPath string
+	// Android lists and deletes AVDs and system images. Nil leaves them
+	// out of the inventory.
+	Android AndroidHost
 }
 
 // Manager owns the lease book.
@@ -137,10 +148,17 @@ type Manager struct {
 	now       func() time.Time
 	onRelease func(Released)
 
-	mu          sync.Mutex
-	leases      map[string]*Lease // by lease ID
-	inFlight    map[string]bool   // lease IDs an Acquire in this process is still working on
-	lastPersist time.Time
+	provPath  string
+	auditPath string
+	android   AndroidHost
+
+	mu              sync.Mutex
+	leases          map[string]*Lease      // by lease ID
+	inFlight        map[string]bool        // lease IDs an Acquire in this process is still working on
+	prov            map[string]*Provenance // by provKey(device id)
+	pruning         map[string]bool        // provKey'd ids a prune is deleting
+	lastPersist     time.Time
+	lastProvPersist time.Time
 }
 
 // New loads the lease file (if any) and returns a Manager. It does not
@@ -151,8 +169,13 @@ func New(args *Args) (*Manager, error) {
 		path:      args.Path,
 		now:       args.Now,
 		onRelease: args.OnRelease,
+		provPath:  args.ProvenancePath,
+		auditPath: args.AuditPath,
+		android:   args.Android,
 		leases:    map[string]*Lease{},
 		inFlight:  map[string]bool{},
+		prov:      map[string]*Provenance{},
+		pruning:   map[string]bool{},
 	}
 	if m.now == nil {
 		m.now = time.Now
@@ -173,6 +196,9 @@ func New(args *Args) (*Manager, error) {
 				m.leases[l.ID] = &l
 			}
 		}
+	}
+	if err := m.loadProvenance(); err != nil {
+		return nil, err
 	}
 	return m, nil
 }
@@ -224,6 +250,9 @@ type AcquireArgs struct {
 	Runtime string
 	// Owner identifies the caller. Required.
 	Owner string
+	// Project optionally names the repository or project the simulator is
+	// for, so disk use can be blamed on it (🎯T189).
+	Project string
 	// Name optionally pins the simulator's name: only a simulator with
 	// this name is reused, and a created one gets it. Empty reuses any
 	// matching simulator and names a created one spyder-lease-<id>.
@@ -277,6 +306,9 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	for _, l := range m.leases {
 		if l.Owner == args.Owner && l.DeviceType == deviceType && l.Runtime == runtime &&
 			(args.Name == "" || l.Name == args.Name) && !l.Pending && l.LastError == "" {
+			if args.Project != "" {
+				l.Project = args.Project
+			}
 			l.TTLSeconds = int64(ttl / time.Second)
 			l.RenewedAt = now
 			l.ExpiresAt = now.Add(ttl)
@@ -302,7 +334,8 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	for i := range sims {
 		s := &sims[i]
 		if !s.IsAvailable || s.DeviceType != deviceType || s.Runtime != runtime || leased[s.UDID] ||
-			strings.HasPrefix(s.Name, poolNamePrefix) {
+			strings.HasPrefix(s.Name, poolNamePrefix) || m.pruning[provKey(s.UDID)] ||
+			m.claimedByOtherLocked(s.UDID, args.Owner) {
 			continue
 		}
 		if args.Name != "" && s.Name != args.Name {
@@ -320,6 +353,7 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 		DeviceType: deviceType,
 		Runtime:    runtime,
 		Owner:      args.Owner,
+		Project:    args.Project,
 		TTLSeconds: int64(ttl / time.Second),
 		AcquiredAt: now,
 		RenewedAt:  now,
@@ -348,8 +382,12 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	m.mu.Unlock()
 
 	if l.Action == ActionAlreadyRunning {
+		m.mu.Lock()
+		m.recordAcquireLocked(l)
+		out := *l
+		m.mu.Unlock()
 		slog.Info("simlease: acquired running simulator", "lease", l.ID, "udid", l.UDID, "owner", l.Owner)
-		return *l, nil
+		return out, nil
 	}
 
 	if l.Action == ActionCreated {
@@ -376,6 +414,7 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	l.RenewedAt = m.now()
 	l.ExpiresAt = l.RenewedAt.Add(ttl)
 	m.mustPersistLocked()
+	m.recordAcquireLocked(l)
 	out := *l
 	m.mu.Unlock()
 	slog.Info("simlease: acquired", "lease", out.ID, "udid", out.UDID, "action", out.Action, "owner", out.Owner, "ttl", ttl)
@@ -538,6 +577,7 @@ func (m *Manager) release(ctx context.Context, id, reason string) (Released, err
 	}
 	delete(m.leases, id)
 	m.mustPersistLocked()
+	m.recordReleaseLocked(snap, undo)
 	out := Released{Lease: snap, Undo: undo, Reason: reason}
 	slog.Info("simlease: released", "lease", snap.ID, "udid", snap.UDID, "owner", snap.Owner,
 		"action", snap.Action, "undo", undo, "reason", reason)
@@ -618,6 +658,11 @@ func (m *Manager) Touch(udid string) {
 		if m.now().Sub(m.lastPersist) >= touchPersistEvery {
 			m.mustPersistLocked()
 		}
+	}
+	// Spyder's last use is kept for any simulator it drives, leased or not.
+	m.provLocked(udid).LastUsedAt = m.now()
+	if m.now().Sub(m.lastProvPersist) >= touchPersistEvery {
+		m.persistProvLocked()
 	}
 }
 

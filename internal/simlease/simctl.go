@@ -22,6 +22,12 @@ type Sim struct {
 	DeviceType  string `json:"device_type"`
 	Runtime     string `json:"runtime"`
 	IsAvailable bool   `json:"is_available"`
+	// DataPath is the device's data directory; DataBytes its size as
+	// simctl reports it; LastUsedAt simctl's own last-use time (zero
+	// when simctl has none).
+	DataPath   string    `json:"data_path,omitempty"`
+	DataBytes  int64     `json:"data_bytes,omitempty"`
+	LastUsedAt time.Time `json:"last_used_at,omitzero"`
 	// Uptime is how long the simulator has been booted. Zero when it is
 	// not booted or the boot time could not be read.
 	Uptime time.Duration `json:"-"`
@@ -39,6 +45,18 @@ const (
 type DeviceType struct {
 	ID   string
 	Name string
+}
+
+// RuntimeImage is one installed simulator runtime disk image, from
+// `simctl runtime list -j`.
+type RuntimeImage struct {
+	ImageID   string // the image's UUID; what `simctl runtime delete` takes
+	RuntimeID string // com.apple.CoreSimulator.SimRuntime.iOS-18-6
+	Version   string
+	Path      string
+	Bytes     int64
+	Deletable bool
+	State     string // "Ready", ...
 }
 
 type Runtime struct {
@@ -60,6 +78,10 @@ type Simctl interface {
 	Boot(ctx context.Context, udid string) error
 	Shutdown(ctx context.Context, udid string) error
 	Delete(ctx context.Context, udid string) error
+	// RuntimeImages lists installed runtime images (🎯T189).
+	RuntimeImages(ctx context.Context) ([]RuntimeImage, error)
+	// DeleteRuntime deletes a runtime image by its ImageID.
+	DeleteRuntime(ctx context.Context, imageID string) error
 }
 
 // XcrunSimctl runs the real `xcrun simctl`.
@@ -103,6 +125,9 @@ func ParseDevicesJSON(data []byte) ([]Sim, error) {
 			State       string `json:"state"`
 			DeviceType  string `json:"deviceTypeIdentifier"`
 			IsAvailable bool   `json:"isAvailable"`
+			DataPath    string `json:"dataPath"`
+			DataBytes   int64  `json:"dataPathSize"`
+			LastUsedAt  string `json:"lastUsedAt"`
 		} `json:"devices"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -118,6 +143,9 @@ func ParseDevicesJSON(data []byte) ([]Sim, error) {
 				DeviceType:  e.DeviceType,
 				Runtime:     runtime,
 				IsAvailable: e.IsAvailable,
+				DataPath:    e.DataPath,
+				DataBytes:   e.DataBytes,
+				LastUsedAt:  parseSimctlTime(e.LastUsedAt),
 			})
 		}
 	}
@@ -252,5 +280,55 @@ func (XcrunSimctl) Shutdown(ctx context.Context, udid string) error {
 
 func (XcrunSimctl) Delete(ctx context.Context, udid string) error {
 	_, err := simctl(ctx, "delete", udid)
+	return err
+}
+
+// parseSimctlTime parses simctl's RFC 3339 timestamps; zero on failure.
+func parseSimctlTime(s string) time.Time {
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+func (XcrunSimctl) RuntimeImages(ctx context.Context) ([]RuntimeImage, error) {
+	out, err := simctl(ctx, "runtime", "list", "-j")
+	if err != nil {
+		return nil, err
+	}
+	return ParseRuntimeImagesJSON(out)
+}
+
+// ParseRuntimeImagesJSON parses `xcrun simctl runtime list -j`.
+func ParseRuntimeImagesJSON(data []byte) ([]RuntimeImage, error) {
+	var raw map[string]struct {
+		Identifier        string `json:"identifier"`
+		RuntimeIdentifier string `json:"runtimeIdentifier"`
+		Version           string `json:"version"`
+		Path              string `json:"path"`
+		SizeBytes         int64  `json:"sizeBytes"`
+		Deletable         bool   `json:"deletable"`
+		State             string `json:"state"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse simctl runtime list: %w", err)
+	}
+	imgs := make([]RuntimeImage, 0, len(raw))
+	for key, r := range raw {
+		id := r.Identifier
+		if id == "" {
+			id = key
+		}
+		imgs = append(imgs, RuntimeImage{
+			ImageID: id, RuntimeID: r.RuntimeIdentifier, Version: r.Version, Path: r.Path,
+			Bytes: r.SizeBytes, Deletable: r.Deletable, State: r.State,
+		})
+	}
+	return imgs, nil
+}
+
+func (XcrunSimctl) DeleteRuntime(ctx context.Context, imageID string) error {
+	_, err := simctl(ctx, "runtime", "delete", imageID)
 	return err
 }

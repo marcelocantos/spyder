@@ -25,9 +25,29 @@ const (
 type fakeSimctl struct {
 	mu      sync.Mutex
 	sims    []Sim
+	images  []RuntimeImage
 	calls   []string
 	next    int
 	bootErr error
+}
+
+func (f *fakeSimctl) RuntimeImages(context.Context) ([]RuntimeImage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return slices.Clone(f.images), nil
+}
+
+func (f *fakeSimctl) DeleteRuntime(_ context.Context, id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, "runtime-delete "+id)
+	for i := range f.images {
+		if f.images[i].ImageID == id {
+			f.images = slices.Delete(f.images, i, i+1)
+			return nil
+		}
+	}
+	return fmt.Errorf("no such runtime %s", id)
 }
 
 func (f *fakeSimctl) add(udid, name, typ, rt, state string) {
@@ -111,6 +131,9 @@ func (f *fakeSimctl) Delete(_ context.Context, udid string) error {
 	f.calls = append(f.calls, "delete "+udid)
 	for i := range f.sims {
 		if f.sims[i].UDID == udid {
+			if f.sims[i].State == "Booted" {
+				return fmt.Errorf("unable to delete a device in the current state: Booted")
+			}
 			f.sims = slices.Delete(f.sims, i, i+1)
 			return nil
 		}

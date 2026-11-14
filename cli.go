@@ -78,7 +78,7 @@ func init() {
 		{"crashes", "spyder crashes <device> [--since RFC3339|-15m|-1h|launch] [--bundle-id ID | --process NAME] [--as OWNER] [--json]", runCrashes},
 		{"diff", "spyder diff <suite>/<case> <screenshot> [<manifest>] [--variant V] [--tolerance F] [--json]", runDiff},
 		{"baseline", "spyder baseline update <suite>/<case> <screenshot> [<manifest>] [--variant V]", runBaseline},
-		{"sim", "spyder sim <acquire|release|renew|leases|list|create|boot|shutdown|delete> [args...]", runSim},
+		{"sim", "spyder sim <acquire|release|renew|leases|inventory|prune|prune-runtimes|claim|unclaim|list|create|boot|shutdown|delete> [args...]", runSim},
 		{"emu", "spyder emu <list|create|boot|shutdown|delete> [args...]", runEmu},
 		{"record", "spyder record <device> --start | --stop [--as OWNER]", runRecord},
 		{"net", "spyder net <device> [--profile NAME | --clear] [--as OWNER]", runNet},
@@ -1329,7 +1329,7 @@ func runCrashes(args []string) {
 // runSim dispatches `spyder sim <subcommand>` for iOS simulator lifecycle.
 func runSim(args []string) {
 	if len(args) == 0 {
-		fatalUsage("sim", fmt.Errorf("missing subcommand — expected acquire|release|renew|leases|list|create|boot|shutdown|delete"))
+		fatalUsage("sim", fmt.Errorf("missing subcommand — expected acquire|release|renew|leases|inventory|prune|prune-runtimes|claim|unclaim|list|create|boot|shutdown|delete"))
 	}
 	switch args[0] {
 	case "acquire":
@@ -1342,6 +1342,16 @@ func runSim(args []string) {
 		pf, ctx, cancel := setupCommand("sim", args[1:], nil, []string{"--json"}, clitimeout.DefaultRead)
 		defer cancel()
 		dispatchAndExit(ctx, "sim_leases", map[string]any{}, pf.bools["--json"], false)
+	case "inventory":
+		pf, ctx, cancel := setupCommand("sim", args[1:], nil, []string{"--json"}, clitimeout.DefaultLaunch)
+		defer cancel()
+		dispatchAndExit(ctx, "sim_inventory", map[string]any{}, pf.bools["--json"], false)
+	case "prune":
+		runSimPrune("sim_prune", args[1:])
+	case "prune-runtimes":
+		runSimPrune("sim_prune_runtimes", args[1:])
+	case "claim", "unclaim":
+		runSimClaim(args[0], args[1:])
 	case "list":
 		runSimList(args[1:])
 	case "create":
@@ -1353,14 +1363,14 @@ func runSim(args []string) {
 	case "delete":
 		runSimDelete(args[1:])
 	default:
-		fatalUsage("sim", fmt.Errorf("unknown subcommand %q — expected acquire|release|renew|leases|list|create|boot|shutdown|delete", args[0]))
+		fatalUsage("sim", fmt.Errorf("unknown subcommand %q — expected acquire|release|renew|leases|inventory|prune|prune-runtimes|claim|unclaim|list|create|boot|shutdown|delete", args[0]))
 	}
 }
 
 // runSimAcquire leases a simulator (🎯T188):
 // spyder sim acquire <device-type> [--runtime R] [--name N] [--ttl S] [--as OWNER] [--json]
 func runSimAcquire(args []string) {
-	pf, ctx, cancel := setupCommand("sim", args, []string{"--runtime", "--name", "--ttl", "--as"}, []string{"--json"}, clitimeout.DefaultInstall)
+	pf, ctx, cancel := setupCommand("sim", args, []string{"--runtime", "--name", "--ttl", "--as", "--project"}, []string{"--json"}, clitimeout.DefaultInstall)
 	defer cancel()
 	if len(pf.positional) != 1 {
 		fatalUsage("sim", fmt.Errorf("acquire: expected <device-type> (identifier or name, e.g. \"iPhone 16 Pro\")"))
@@ -1368,6 +1378,7 @@ func runSimAcquire(args []string) {
 	a := map[string]any{
 		"device_type": pf.positional[0],
 		"owner":       deriveOwner(pf.flags["--as"]),
+		"project":     deriveProject(pf.flags["--project"]),
 	}
 	if v := pf.flags["--runtime"]; v != "" {
 		a["runtime"] = v
@@ -1383,6 +1394,87 @@ func runSimAcquire(args []string) {
 		a["ttl_s"] = n
 	}
 	dispatchAndExit(ctx, "sim_acquire", a, pf.bools["--json"], false)
+}
+
+// deriveProject is --project, else the git toplevel of the cwd, else
+// the cwd: what sim_acquire records so disk use can be blamed (🎯T189).
+func deriveProject(supplied string) string {
+	if supplied != "" {
+		return supplied
+	}
+	if out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output(); err == nil {
+		if top := strings.TrimSpace(string(out)); top != "" {
+			return top
+		}
+	}
+	wd, _ := os.Getwd()
+	return wd
+}
+
+// parseIdle reads --idle: "7d", "36h", or a bare number of days.
+func parseIdle(v string) (float64, error) {
+	if d, ok := strings.CutSuffix(v, "d"); ok {
+		return strconv.ParseFloat(d, 64)
+	}
+	if strings.HasSuffix(v, "h") || strings.HasSuffix(v, "m") {
+		dur, err := time.ParseDuration(v)
+		if err != nil {
+			return 0, err
+		}
+		return dur.Hours() / 24, nil
+	}
+	return strconv.ParseFloat(v, 64)
+}
+
+// runSimPrune handles `spyder sim prune --unowned [--idle 7d]` and
+// `spyder sim prune-runtimes [--include-newest]`. Both list candidates
+// unless --yes is given; --dry-run forces a listing.
+func runSimPrune(verb string, args []string) {
+	pf, ctx, cancel := setupCommand("sim", args, []string{"--idle", "--as"},
+		[]string{"--unowned", "--dry-run", "--yes", "--include-newest", "--json"}, clitimeout.DefaultInstall)
+	defer cancel()
+	if len(pf.positional) != 0 {
+		fatalUsage("sim", fmt.Errorf("%s takes no positional arguments", strings.TrimPrefix(verb, "sim_")))
+	}
+	a := map[string]any{"dry_run": pf.bools["--dry-run"] || !pf.bools["--yes"]}
+	if pf.bools["--yes"] {
+		a["owner"] = deriveOwner(pf.flags["--as"])
+	}
+	if verb == "sim_prune" {
+		if !pf.bools["--unowned"] {
+			fatalUsage("sim", fmt.Errorf("prune: --unowned is required (only unowned devices are pruned)"))
+		}
+		a["unowned"] = true
+		if v := pf.flags["--idle"]; v != "" {
+			days, err := parseIdle(v)
+			if err != nil || days < 0 {
+				fatalUsage("sim", fmt.Errorf("prune --idle %q: want e.g. 7d, 36h or 7", v))
+			}
+			a["idle_days"] = days
+		}
+	} else {
+		a["include_newest"] = pf.bools["--include-newest"]
+	}
+	dispatchAndExit(ctx, verb, a, pf.bools["--json"], false)
+}
+
+// runSimClaim handles `spyder sim claim|unclaim <udid|avd> [--as OWNER]`.
+func runSimClaim(sub string, args []string) {
+	pf, ctx, cancel := setupCommand("sim", args, []string{"--as", "--project", "--note"}, []string{"--json"}, clitimeout.DefaultRead)
+	defer cancel()
+	if len(pf.positional) != 1 {
+		fatalUsage("sim", fmt.Errorf("%s: expected <udid|avd-name>", sub))
+	}
+	a := map[string]any{"id": pf.positional[0], "owner": deriveOwner(pf.flags["--as"])}
+	if sub == "claim" {
+		if v := pf.flags["--project"]; v != "" {
+			a["project"] = v
+		}
+		if v := pf.flags["--note"]; v != "" {
+			a["note"] = v
+		}
+	}
+	dispatchAndExit(ctx, "sim_"+sub, a, pf.bools["--json"], false)
 }
 
 // runSimLeaseRef handles `spyder sim release|renew <lease-id|udid>`.
