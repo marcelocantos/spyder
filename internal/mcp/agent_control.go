@@ -165,14 +165,20 @@ func (h *Handler) gateAgentAny(owner string, kind agent.Mutation, ids ...string)
 	return nil
 }
 
-func (h *Handler) agentDeviceKey(dev string) string {
+// agentDeviceKey resolves an alias or UDID to the supervisor's key. A
+// name that matches no device is an error: answering for it as if it
+// were a device still starting up misreports a typo as a stuck agent.
+func (h *Handler) agentDeviceKey(dev string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	_, _, id, err := h.resolveAdapter(dev)
-	if err != nil || id == "" {
-		return dev
+	if err != nil {
+		return "", err
 	}
-	return id
+	if id == "" {
+		return dev, nil
+	}
+	return id, nil
 }
 
 func (h *Handler) handleAgentEnsure(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -191,7 +197,11 @@ func (h *Handler) handleAgentEnsure(args map[string]any) (*mcpgo.CallToolResult,
 	if retry, _ := args["retry"].(bool); retry {
 		ensure = h.agents.Retry
 	}
-	snap, err := ensure(h.agentDeviceKey(dev), owner)
+	key, err := h.agentDeviceKey(dev)
+	if err != nil {
+		return toolErr("agent_ensure on %s: %v", dev, err)
+	}
+	snap, err := ensure(key, owner)
 	if err != nil {
 		return toolErr("agent_ensure on %s: %v", dev, err)
 	}
@@ -210,7 +220,11 @@ func (h *Handler) handleAgentIdle(args map[string]any) (*mcpgo.CallToolResult, e
 	if h.agents == nil {
 		return toolErr("agent supervision is not enabled")
 	}
-	snap, err := h.agents.Idle(h.agentDeviceKey(dev), owner)
+	key, err := h.agentDeviceKey(dev)
+	if err != nil {
+		return toolErr("agent_idle on %s: %v", dev, err)
+	}
+	snap, err := h.agents.Idle(key, owner)
 	if err != nil {
 		return toolErr("agent_idle on %s: %v", dev, err)
 	}
@@ -225,7 +239,13 @@ func (h *Handler) handleAgentStatus(args map[string]any) (*mcpgo.CallToolResult,
 	if h.agents == nil {
 		return toolErr("agent supervision is not enabled")
 	}
-	key := h.agentDeviceKey(dev)
+	key, err := h.agentDeviceKey(dev)
+	if err != nil {
+		if snap, ok := h.agents.Snapshot(dev); ok {
+			return toolJSON(snap)
+		}
+		return toolErr("agent_status on %s: %v", dev, err)
+	}
 	snap, ok := h.agents.Snapshot(key)
 	if !ok {
 		snap, ok = h.agents.Snapshot(dev)

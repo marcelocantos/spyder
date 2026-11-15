@@ -313,3 +313,20 @@ func TestAgentHandlers_RetryIsAttendedAndOwnerOnly(t *testing.T) {
 		t.Fatalf("retry %+v resets=%d launches=%d", snap, resets, launches)
 	}
 }
+
+// A name that matches no device is an error, not a device "starting up":
+// that answer made a mistyped alias look like a stuck agent.
+func TestAgentStatus_UnknownDeviceIsAnError(t *testing.T) {
+	h, _ := newHandlerWithReservations(t, &stubAdapter{}, nil)
+	h.agents = agent.NewSupervisor(&agent.SupervisorArgs{
+		Probe: func(string) (agent.Observation, error) { return agent.Observation{}, nil },
+	})
+	unknown := dispatchJSON(t, h, "agent_status", map[string]any{"device": "NoSuchPhone"})
+	if !unknown.IsError {
+		t.Fatalf("unknown device answered as a device: %s", resultText(t, &unknown))
+	}
+	udid := dispatchJSON(t, h, "agent_status", map[string]any{"device": "00008110-AAAABBBBCCCCDDDD"})
+	if udid.IsError || !strings.Contains(resultText(t, &udid), `"startup"`) {
+		t.Fatalf("UDID with no snapshot yet: %s", resultText(t, &udid))
+	}
+}
