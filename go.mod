@@ -105,6 +105,8 @@ require (
 //      (or via the API, no clone needed:
 //        gh api -X POST repos/marcelocantos/go-ios/git/refs \
 //          -f ref=refs/tags/spyder-pin-v<next> -f sha=<new-tip-sha>)
-//   3. `go get github.com/danielpaulus/go-ios@<new-spyder-patches-sha>`
-//      then bump this line.
-replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20261024001019-c8c015c6309d
+//   3. Bump this line (`go get` refuses: the fork declares upstream's path):
+//        GOWORK=off go mod edit -replace \
+//          github.com/danielpaulus/go-ios=github.com/marcelocantos/go-ios@<sha>
+//        GOWORK=off GOPROXY=direct go mod tidy
+replace github.com/danielpaulus/go-ios => github.com/marcelocantos/go-ios v1.0.214-0.20261114225106-9ba99e489efd

@@ -83,8 +83,8 @@ github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40 h1:EnfXoSqDfSNJv0
 github.com/lunixbochs/struc v0.0.0-20200707160740-784aaebc1d40/go.mod h1:vy1vK6wD6j7xX6O6hXe621WabdtNkou2h7uRtTfRMyg=
 github.com/marcelocantos/claudia v0.44.0 h1:A1O5czVhHQEDeWs7Ro8vyX+A4iHdIg85KL1KvobFbeI=
 github.com/marcelocantos/claudia v0.44.0/go.mod h1:vK6wVvkejGDxXqLFUFxBT88sBNPnCiX1KhIxGjRQUts=
-github.com/marcelocantos/go-ios v1.0.214-0.20261024001019-c8c015c6309d h1:2L/dG2zbBKVVyrGow+9MXp0b/wntO+/AKXe1sb3Qv2Q=
-github.com/marcelocantos/go-ios v1.0.214-0.20261024001019-c8c015c6309d/go.mod h1:V8Vw/w7I1zB70YSuJvu0NB/lusKpMbKwcTMxExvveQ4=
+github.com/marcelocantos/go-ios v1.0.214-0.20261114225106-9ba99e489efd h1:cwRXrBg6saRzXOlLIWA8AMSxQYjZ0CeDeq4s7rswvl4=
+github.com/marcelocantos/go-ios v1.0.214-0.20261114225106-9ba99e489efd/go.mod h1:V8Vw/w7I1zB70YSuJvu0NB/lusKpMbKwcTMxExvveQ4=
 github.com/mark3labs/mcp-go v0.47.0 h1:h44yeM3DduDyQgzImYWu4pt6VRkqP/0p/95AGhWngnA=
 github.com/mark3labs/mcp-go v0.47.0/go.mod h1:JKTC7R2LLVagkEWK7Kwu7DbmA6iIvnNAod6yrHiQMag=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=
