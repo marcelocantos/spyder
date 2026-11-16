@@ -15,6 +15,11 @@ often fails; Android is supported via `adb`.
 - Device state snapshots (battery, charging, thermal, foreground app)
 - Fleet battery history (connected iOS/Android sampled every minute into
   `~/.spyder/battery/`; dashboard tab `/dashboard#battery`)
+- Lab power policy (🎯T194): drain trend, step-in at 10%, recharge hold
+  to 30%, lease admission, and stopping idle apps it launched. It never
+  sleeps or locks a device
+- The host adb server's lifecycle (🎯T194.5): restarted when something
+  (Unity's exit) kills it, with app-channel reverse mappings restored
 - Session-aware test-run orchestration (`spyder run --` wraps the
   test command under an auto-acquired device reservation)
 - A bundled `ios` tunnel daemon (the go-ios CLI, spawned as a child

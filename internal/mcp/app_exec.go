@@ -106,6 +106,16 @@ func (h *Handler) handleAppExecContext(parent context.Context, args map[string]a
 			}
 		}
 	}
+	// Builtins call handlers directly; run the same pre-verb checks as
+	// dispatch (power hold, device activity — 🎯T194).
+	for name, fn := range verbs {
+		verbs[name] = func(callArgs map[string]any) (*mcpgo.CallToolResult, error) {
+			if res := h.beforeVerb(name, callArgs); res != nil {
+				return res, nil
+			}
+			return fn(callArgs)
+		}
+	}
 	// Builtins call handlers directly; share Dispatch's per-device lifecycle
 	// gate with this interpreter's cancellation context.
 	for name, fn := range verbs {

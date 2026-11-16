@@ -4,6 +4,7 @@
 package device
 
 import (
+	"fmt"
 	"strings"
 )
 
@@ -84,3 +85,23 @@ func parseAndroidPowerLock(out string, p *Power) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// ThirdPartyForeground returns the foreground package when it is a
+// user-installed app, or "" when the foreground is the launcher, a
+// system app or nothing (🎯T194.3 step-in).
+func (a *AndroidAdapter) ThirdPartyForeground(id string) (string, error) {
+	pkg, err := androidForegroundApp(id)
+	if err != nil || pkg == "" {
+		return "", err
+	}
+	out, stderr, err := androidAdbBG("-s", id, "shell", "pm", "list", "packages", "-3", pkg)
+	if err != nil {
+		return "", fmt.Errorf("pm list packages: %s", truncate(string(stderr), 120))
+	}
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if strings.TrimSpace(line) == "package:"+pkg {
+			return pkg, nil
+		}
+	}
+	return "", nil
+}

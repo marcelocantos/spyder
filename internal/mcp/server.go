@@ -111,6 +111,10 @@ type Handler struct {
 	// launch_app and want the lines that scrolled by since then".
 	launchTimes map[launchKey]time.Time
 
+	// launched is the idle policy's record of apps spyder launched
+	// (🎯T194.2). In memory unless the daemon sets a path.
+	launched *launchRegistry
+
 	// ops tracks in-flight tool calls for spyder status (🎯T99.5).
 	ops *opRegistry
 
@@ -163,6 +167,16 @@ type Handler struct {
 	batteryStore *battery.Store
 	powerMu      sync.Mutex
 	lastPower    map[string]powerReading // 🎯T194.1, by device id
+	// Drain policy state (🎯T194.3), by device id. levels is nil until
+	// seeded from battery history.
+	levels     map[string][]battery.Point
+	trends     map[string]*device.PowerTrend
+	lastHealth map[string]string
+
+	// reverses are the adb reverse mappings spyder made for app
+	// channels, restored after an adb server restart (🎯T194.5).
+	reverseMu sync.Mutex
+	reverses  map[adbReverse]bool
 
 	// verifyHub is the daemon-wide verification DAG scheduler (🎯T138).
 	// verifyStateDir persists retained runs across restarts (🎯T149.1);
@@ -427,6 +441,7 @@ func NewHandler(opts ...HandlerOption) *Handler {
 		recordings:      recording.NewRegistry(),
 		networkByDevice: map[string]appliedNetwork{},
 		launchTimes:     map[launchKey]time.Time{},
+		launched:        newLaunchRegistry(""),
 		health:          health.NewSupervisor(health.New()),
 		ops:             newOpRegistry(),
 		agentKick:       make(chan struct{}, 1),
@@ -456,6 +471,7 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 		android:     device.NewAndroidAdapter(),
 		sim:         device.NewSimulatorAdapter(),
 		launchTimes: map[launchKey]time.Time{},
+		launched:    newLaunchRegistry(""),
 		health:      health.NewSupervisor(health.New()),
 		ops:         newOpRegistry(),
 		agentKick:   make(chan struct{}, 1),
@@ -767,6 +783,9 @@ func (h *Handler) dispatch(ctx context.Context, name string, args map[string]any
 		if fn, ok := h.testHandlers[name]; ok {
 			return fn(args)
 		}
+	}
+	if res := h.beforeVerb(name, args); res != nil {
+		return res, nil
 	}
 	// These handlers own cancellable waits beyond the lifecycle gate.
 	switch name {
@@ -1211,7 +1230,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("reserve",
-			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked."),
+			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked.\n\nAdmission (🎯T194.4): reserve refuses, with an error starting `needs_setup:`, a device whose lock screen is up behind a PIN/pattern/password, a device held for recharge (it reached 10% while falling and is not yet back to 30%), or a device with no power source below 30%. A renewal by the current holder is never refused; a selector skips refused devices. Pass force=true to reserve anyway."),
 			mcpgo.WithString("device",
 				mcpgo.Description("Device alias or UUID (literal pin; mutually exclusive with selector)"),
 			),
@@ -1227,6 +1246,9 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("note",
 				mcpgo.Description("Human-readable note surfaced in conflict errors (e.g. 'UI regression run')"),
+			),
+			mcpgo.WithBoolean("force",
+				mcpgo.Description("Reserve even when admission would refuse the device (locked, held for recharge, unpowered and low)."),
 			),
 			mcpgo.WithString("script_path",
 				mcpgo.Description("Run provenance: the .star script this session will drive (library name, bundled:name, or path). Its git commit/branch/dirty state is recorded in the run manifest."),

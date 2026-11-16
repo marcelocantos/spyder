@@ -46,8 +46,9 @@ func (h *Handler) StartBatterySampler(ctx context.Context) {
 		"dir", store.Dir(), "interval", battery.DefaultInterval)
 	battery.NewSampler(battery.SamplerArgs{
 		Store: store,
-		List:  h.listMobileDevices,
-		State: h.stateForBattery,
+		List:      h.listMobileDevices,
+		State:     h.stateForBattery,
+		AfterTick: h.afterBatteryTick,
 	}).Run(ctx)
 }
 
@@ -156,8 +157,9 @@ func (h *Handler) sampleBatteriesOnce() {
 	}
 	_ = battery.NewSampler(battery.SamplerArgs{
 		Store: store,
-		List:  h.listMobileDevices,
-		State: h.stateForBattery,
+		List:      h.listMobileDevices,
+		State:     h.stateForBattery,
+		AfterTick: h.afterBatteryTick,
 	}).Tick()
 }
 

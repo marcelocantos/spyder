@@ -489,6 +489,9 @@ func (h *Handler) handleDeviceState(args map[string]any) (*mcpgo.CallToolResult,
 	if err != nil {
 		return toolErr("reading state: %v", err)
 	}
+	if state.Power != nil {
+		state.Power.Trend = h.trend(id)
+	}
 	return toolJSON(state)
 }
 
@@ -687,9 +690,7 @@ func (h *Handler) launchAppLocked(dev, bundleID, owner string, env map[string]st
 		return "", res
 	}
 	h.noteLaunchedAUT(id, bundleID)
-	h.mu.Lock()
-	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
-	h.mu.Unlock()
+	h.recordLaunch(id, bundleID)
 	return id, nil
 }
 
@@ -762,7 +763,11 @@ func (h *Handler) ensureAppChannelEnv(env map[string]string, platform, deviceID,
 			// Never fall back to an exposed LAN socket on a failed USB mapping.
 			return nil, fmt.Errorf("appchannel: USB reverse: %w", err)
 		}
-		l.SetCleanup(func() { _ = unreverseAppChannel(deviceID, l.Port) })
+		h.noteReverse(deviceID, l.Port, true)
+		l.SetCleanup(func() {
+			h.noteReverse(deviceID, l.Port, false)
+			_ = unreverseAppChannel(deviceID, l.Port)
+		})
 	}
 	if env == nil {
 		env = map[string]string{}
@@ -866,11 +871,13 @@ func (h *Handler) handleTerminateAppContext(ctx context.Context, args map[string
 		pid, pidErr := device.AppPIDContext(ctx, adapter, id, bundleID)
 		if pidErr != nil {
 			if strings.HasPrefix(pidErr.Error(), "app not running") {
+				h.launched.Forget(id, bundleID)
 				return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
 			}
 			return toolErr("verify termination of %s on %s: %v", bundleID, dev, pidErr)
 		}
 		if pid <= 0 {
+			h.launched.Forget(id, bundleID)
 			return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
 		}
 		if check == stopChecks/2 {
@@ -937,6 +944,18 @@ func (h *Handler) resolveReserveDevice(args map[string]any) (string, *mcpgo.Call
 
 	// Build candidate list from live devices + inventory entries.
 	candidates := h.buildCandidates(sel.Platform)
+	// Leave out devices admission would refuse (🎯T194.4).
+	if !optBoolArg(args, "force", false) {
+		kept := candidates[:0]
+		for _, c := range candidates {
+			if why := h.leaseRefusal(c.Info.UUID); why != "" {
+				slog.Info("reserve: selector skips device", "device", c.Info.UUID, "reason", why)
+				continue
+			}
+			kept = append(kept, c)
+		}
+		candidates = kept
+	}
 
 	info, err := selector.Resolve(sel, candidates, h.pool)
 	if err != nil {
@@ -1071,6 +1090,17 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 		return errRes, nil
 	}
 
+	// Admission (🎯T194.4): refuse a device that cannot run or is about
+	// to run flat. A renewal by the current holder is never refused.
+	if !optBoolArg(args, "force", false) {
+		held, isHeld := h.reservations.Get(dev)
+		if !isHeld || held.Owner != owner {
+			if why := h.leaseRefusal(h.deviceIDForRef(dev)); why != "" {
+				return toolErr("needs_setup: %s: %s. Pass force=true to reserve anyway.", dev, why)
+			}
+		}
+	}
+
 	r, err := h.reservations.Acquire(dev, owner, ttl, note)
 	if err != nil {
 		return toolErr("%v", err)
@@ -1157,17 +1187,29 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 		h.mu.Unlock()
 		if resolveErr == nil {
 			if clearErr := adapter.ClearNetwork(id); clearErr != nil {
-				return toolText(fmt.Sprintf(
+				return toolText(h.stopAfterRelease(dev, owner, fmt.Sprintf(
 					"released reservation on %s (network clear failed: %v — clear manually if needed)",
 					dev, clearErr,
-				))
+				)))
 			}
 		}
 	} else {
 		h.mu.Unlock()
 	}
 
-	return toolText(fmt.Sprintf("released reservation on %s", dev))
+	return toolText(h.stopAfterRelease(dev, owner, fmt.Sprintf("released reservation on %s", dev)))
+}
+
+// stopAfterRelease stops the apps spyder launched on a released device
+// (🎯T194.2) in the background and says so in the release text.
+func (h *Handler) stopAfterRelease(dev, owner, text string) string {
+	id := h.deviceIDForRef(dev)
+	bundles := h.launched.OnDevice(id)
+	if len(bundles) == 0 {
+		return text
+	}
+	go h.stopApps(id, bundles, "lease released by "+owner, false)
+	return fmt.Sprintf("%s; stopping %s", text, strings.Join(bundles, ", "))
 }
 
 // handleNetwork applies or clears a network condition profile on a device.

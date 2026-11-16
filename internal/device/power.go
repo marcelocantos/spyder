@@ -3,7 +3,10 @@
 
 package device
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Power and lock health (🎯T194.1).
 //
@@ -70,6 +73,10 @@ type Power struct {
 	// Health is the worst problem found; Issues lists every one.
 	Health string   `json:"power_health"`
 	Issues []string `json:"issues,omitempty"`
+
+	// Trend is the drain projection from battery history (🎯T194.3).
+	// It is set by the daemon, not by the adapters.
+	Trend *PowerTrend `json:"trend,omitempty"`
 }
 
 // Classify sets Health and Issues from the observed fields.
@@ -111,4 +118,33 @@ func (p *Power) lockedSecure() bool {
 		return p.CredentialSet == nil || *p.CredentialSet
 	}
 	return p.KeyguardShowing != nil && *p.KeyguardShowing && p.CredentialSet != nil && *p.CredentialSet
+}
+
+// Drain trend states (🎯T194.3). A device in DrainCritical or
+// DrainRecharging is held out of new leases and launches until it is
+// back to the resume level.
+const (
+	DrainOK         = "ok"
+	DrainAtRisk     = "at_risk"    // falling fast enough to reach the floor soon
+	DrainCritical   = "critical"   // at or below the floor and still falling
+	DrainRecharging = "recharging" // reached the floor; held until it recovers
+)
+
+// PowerTrend is the battery trend spyder projects from the minute
+// samples in battery history.
+type PowerTrend struct {
+	State string `json:"state"`
+	Level int    `json:"level"`
+	// RatePctPerHour is the fitted level change; negative when falling.
+	RatePctPerHour *float64 `json:"rate_pct_per_hour,omitempty"`
+	// MinutesToFloor projects when a falling level reaches the floor.
+	MinutesToFloor *int `json:"minutes_to_floor,omitempty"`
+	// FloorAt is when the level last reached the floor (held states).
+	FloorAt *time.Time `json:"floor_at,omitempty"`
+	Reason  string     `json:"reason,omitempty"`
+}
+
+// Held reports whether the trend keeps the device out of new work.
+func (t *PowerTrend) Held() bool {
+	return t != nil && (t.State == DrainCritical || t.State == DrainRecharging)
 }

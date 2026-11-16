@@ -212,9 +212,7 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 			return res
 		}
 		launched = true
-		h.mu.Lock()
-		h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
-		h.mu.Unlock()
+		h.recordLaunch(id, bundleID)
 		var perr error
 		pid, perr = waitForAppPIDContext(ctx, adapter, id, bundleID, 3*time.Second)
 		if perr != nil {

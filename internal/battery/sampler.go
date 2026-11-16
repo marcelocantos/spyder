@@ -20,6 +20,9 @@ type SamplerArgs struct {
 	Interval  time.Duration
 	Retention time.Duration
 	Now       func() time.Time
+	// AfterTick, when set, sees each tick's samples after they are
+	// stored (🎯T194.3 drain policy).
+	AfterTick func(now time.Time, samples []Sample)
 }
 
 // Sampler periodically Collects connected-device battery and appends
@@ -31,6 +34,7 @@ type Sampler struct {
 	interval  time.Duration
 	retention time.Duration
 	now       func() time.Time
+	afterTick func(now time.Time, samples []Sample)
 }
 
 // NewSampler returns a sampler. Store, List, and State must be set.
@@ -54,6 +58,7 @@ func NewSampler(args SamplerArgs) *Sampler {
 		interval:  interval,
 		retention: retention,
 		now:       now,
+		afterTick: args.AfterTick,
 	}
 }
 
@@ -67,10 +72,14 @@ func (s *Sampler) Tick() error {
 	if err != nil {
 		return err
 	}
-	for _, sm := range Collect(now, infos, s.state) {
+	samples := Collect(now, infos, s.state)
+	for _, sm := range samples {
 		if err := s.store.Append(sm); err != nil {
 			slog.Warn("battery: append failed", "device", sm.DeviceID, "error", err)
 		}
+	}
+	if s.afterTick != nil {
+		s.afterTick(now, samples)
 	}
 	if err := s.store.Prune(now, s.retention); err != nil {
 		slog.Warn("battery: prune failed", "error", err)

@@ -157,9 +157,7 @@ func (h *Handler) spawnOnDevice(dev, bundleID string, args map[string]any) (*mcp
 	if err := adapter.LaunchApp(id, bundleID, env); err != nil {
 		return toolErr("app_spawn %s on %s: %v", bundleID, dev, err)
 	}
-	h.mu.Lock()
-	h.launchTimes[launchKey{deviceID: id, bundleID: bundleID}] = time.Now()
-	h.mu.Unlock()
+	h.recordLaunch(id, bundleID)
 
 	s, err := h.waitForKeyedSession(id, bundleID, spawnDeviceWait)
 	if err != nil {

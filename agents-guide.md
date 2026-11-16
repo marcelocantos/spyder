@@ -602,7 +602,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 |---|---|---|
 | `devices(platform?)` | List connected iOS + Android devices, annotated with inventory alias. iOS-17+ devices visible to USBMux but whose RSD tunnel hasn't settled yet appear with `tunnel_pending: true` (🎯T84) — they show up rather than disappearing during the settling window, but DTX-backed tools (screenshot, launch_app, …) may fail with a clear "tunnel not ready" error until the flag clears. USB-attached physical phones/tablets also carry `usb_speed` (IOKit negotiated Device Speed: `"480 Mb/s"`, `"5 Gb/s"`, `"10 Gb/s"`), `usb_ceiling` (highest speed observed for that serial), and `usb_anomaly` (true only when live < ceiling) (🎯T131 / 🎯T131.1). Wireless ADB, iOS Wi-Fi, simulators, emulators, and desktop omit those fields. | `platform` filter: `ios`, `android`, or `all` (default). |
 | `resolve(name?, selector?)` | Symbolic name → structured `Entry` with all known IDs. Exactly one of `name` (alias / raw UUID) or `selector` (JSON predicate, same grammar as `reserve`). | Unknown raw inputs are echoed back classified. With `selector`, returns the entry of the first matching live device. |
-| `device_state(device)` | Battery level, charging, extra native battery keys (`battery` map), thermal state, foreground app, and `power`: source (`ac`/`usb`/`wireless`/`dock`/`external`/`none`), status (`charging`/`discharging`/`not_charging`/`full`), `temperature_c`, `current_ma` (iOS), Android `wakefulness`/`stay_on`, lock fields (`keyguard_showing`, `device_locked`, `credential_set`) and `power_health`: `locked_secure`, `not_powered`, `hot` (≥ 40 °C), `draining` (powered but discharging) or `ok`, with `issues` naming each problem (🎯T194.1). | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). iOS extras come from lockdown + diagnostics IORegistry (`InstantAmperage`, capacities, cycle count). Android extras are the full `dumpsys battery` key set. iOS `device_locked` is the automation supervisor's last lock read (shown only when under 2 min old). `devices` rows carry the battery sampler's latest `power` (under 3 min old). |
+| `device_state(device)` | Battery level, charging, extra native battery keys (`battery` map), thermal state, foreground app, and `power`: source (`ac`/`usb`/`wireless`/`dock`/`external`/`none`), status (`charging`/`discharging`/`not_charging`/`full`), `temperature_c`, `current_ma` (iOS), Android `wakefulness`/`stay_on`, lock fields (`keyguard_showing`, `device_locked`, `credential_set`) and `power_health`: `locked_secure`, `not_powered`, `hot` (≥ 40 °C), `draining` (powered but discharging) or `ok`, with `issues` naming each problem (🎯T194.1), and `trend`, the drain projection (see "Lab power policy"). | 2-second TTL cache. Thermal is currently a note on iOS 17.4+ (MobileGestalt deprecated). iOS extras come from lockdown + diagnostics IORegistry (`InstantAmperage`, capacities, cycle count). Android extras are the full `dumpsys battery` key set. iOS `device_locked` is the automation supervisor's last lock read (shown only when under 2 min old). `devices` rows carry the battery sampler's latest `power` (under 3 min old). |
 | `battery_history(since?, until?, device?, bucket_s?, sample?)` | Fleet charge history the daemon records every minute for connected iOS/Android devices (🎯T137). Returns `{since, until, bucket_s?, samples, latest}`. Each sample may include `details` (greedy native dump). | Default window `-24h`..now. `sample=True` takes a live tick first. Dashboard: `/dashboard#battery`. Desktop hosts are not sampled. |
 | `verify(workflow?, workflow_path?, cwd?, params?, answers?, wait?, validate_only?, allow_waive?, defer_human_gates?, review_deferred?, owner?)` | Run a product-neutral verification workflow YAML on the daemon-wide DAG scheduler (🎯T138). Step kinds: `shell`, `spyder_script` (in-process `app_exec`), `model` (Claudia-selected task), `human_gate`. | `wait=True` (default) blocks until the run ends. `defer_human_gates` completes automation without asking the owner and returns `prepared` (exit 4). `review_deferred` replays pending owner checks with fresh staging and model checks, showing model verdicts on static gates for confirmation. `owner` (default basename(cwd)) is the only caller that may `verify_dismiss` the finished run. Pass records: `<cwd>/verify-runs/resume/<workflow>.json`. Dashboard: `/dashboard#verify`. CLI: `spyder verify`. |
 | `verify_status()` | Snapshot of active and retained verification runs plus the single in-flight owner gate. | Read-only REST. Finished runs stay until their creator dismisses them; their screenshots are omitted (use `verify_detail`). The dashboard uses `/ws/verify` instead of polling this. |
@@ -642,7 +642,7 @@ Arguments below are shown in keyword-call form. A `?` suffix means optional.
 `spyder install --all-physical <path>` and `spyder deploy --all-physical <path> [--bundle-id ID]` (🎯T98) fan `install_app`/`deploy_app` out over every attached **physical** iOS/Android device (simulators, emulators, and desktop are excluded), printing one `<device>: OK` or `<device>: FAIL <reason>` line per device and exiting non-zero if any device failed or none were attached — the multi-device "deploy to all physical" operation.
 | `launch_player(device, server?, path?, owner?)` | Deploy/launch the spyder stream glass with `STREAM_ADDR` and server name injected (🎯T100.3). Returns `{device, platform, server, stream_addr, bundle_id, pid?, path?, variant?}`. | Picks the sole registered stream server when `server` is omitted; errors if zero or multiple. Optional `path` overrides the platform player artifact. Reservation-gated. CLI: `spyder launch-player`. |
 | `ensure_session(device, bundle_id?, path?, owner?, env?, timeout_ms?)` | One verb from device+bundle to a **ready app-channel session** (🎯T118): installs `path` if the bundle isn't on the device, launches with `SPYDER_APP_CHANNEL` wired, waits for the app's `hello`, and returns `{session_id, channel_port, pid, deployed, launched}`. Idempotent — a healthy existing session is returned untouched (`deployed=false, launched=false`) with no reservation needed. | Replaces the manual `deploy_app` → `launch_app` → `sleep` → `app_channel_list` dance. `bundle_id` optional when `path` is given (derived). Default handshake wait 15 s (`timeout_ms`, max 90 000). |
-| `reserve(device?, selector?, owner, ttl_seconds?, note?)` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. See "Fuzzy reservation" section for selector schema and worked examples. |
+| `reserve(device?, selector?, owner, ttl_seconds?, note?, force?)` | Acquire an exclusive device hold. | Supply `device` (literal pin) **or** `selector` (fuzzy JSON predicate) — not both. `owner` is always required. Default TTL 3600 s, max 86400 s. Same-owner re-acquires renew in place. Refuses locked, drained or unpowered-and-low devices with `needs_setup:` unless `force=true` (see "Lab power policy"). See "Fuzzy reservation" section for selector schema and worked examples. |
 | `release(device, owner)` | Free a reservation. | Non-owner releases conflict. Also stops any active recording owned by the releaser. Any applied network profile is cleared automatically. |
 | `renew(device, owner, ttl_seconds?)` | Extend a reservation's TTL. | |
 | `reservations()` | List active reservations. | Read-only. |
@@ -1928,6 +1928,47 @@ holding the device. Read and observational tools (`devices`, `resolve`,
 can screenshot or record any device, even one held by someone else.
 `record_stop` authenticates against the owner that started the recording,
 not the device reservation.
+
+### Lab power policy (🎯T194)
+
+Heavy loads may drain a device faster than its hub port charges it.
+spyder allows that and steps in only when a device is heading for empty.
+It never sends sleep, power or lock input.
+
+- **Drain trend.** The battery sampler fits each device's level over the
+  last 20 minutes. `device_state` and `devices` show it as `power.trend`:
+  `state` (`ok`, `at_risk`, `critical`, `recharging`), `level`,
+  `rate_pct_per_hour`, `minutes_to_floor` and `reason`. `at_risk` means
+  the floor (10%) is under 45 minutes away; it is a warning only.
+- **Step-in.** At 10% and still falling the device is `critical`:
+  spyder stops the apps it launched there and, on Android, a third-party
+  app in the foreground. The device is then held (`critical`, then
+  `recharging`) until it is back to 30%. While held, `reserve`,
+  `launch_app`, `ensure_session`, `app_spawn`, `deploy_app` and
+  `launch_player` fail with `needs_setup: …`; `force=true` overrides.
+- **Admission.** `reserve` also refuses a device whose lock screen is up
+  behind a PIN, pattern or password, and a device with no power source
+  below 30%. A renewal by the current holder is never refused, and a
+  selector skips refused devices. `spyder run` takes its lease from the
+  reservation file directly and does not check admission.
+- **Idle policy.** `release` stops the apps spyder launched on the
+  device (in the background; the reply names them). Apps spyder launched
+  on a device with no lease and no verb naming it for 10 minutes are
+  stopped too, which covers expired leases and unreserved launches. The
+  record of launched apps is kept in `~/.spyder/launched.json`, so a
+  restart does not forget them. Apps spyder did not launch are only
+  stopped by the step-in above.
+- **Events.** `power.changed` (trend state), `power.health`
+  (`power_health` changes), `power.stepped_in` (what was stopped and why)
+  and `adb.server_restarted`.
+
+**adb server.** spyder watches the host adb server and restarts it when
+it goes away. Unity kills it when an editor or batch build exits. The
+restart drops every `adb reverse` mapping, so spyder puts back the
+app-channel mappings it made and publishes `adb.server_restarted` with
+the downtime, how many mappings came back, and the adb and Unity
+processes it saw. A run never fails to start because the server is down:
+any adb call starts it again.
 
 ### Reservations inside `app_exec` (🎯T116)
 

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strconv"
@@ -23,6 +24,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/marcelocantos/spyder/internal/adbserver"
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/dashboard"
@@ -168,7 +170,17 @@ func Run(ctx context.Context, cfg Config) error {
 		// 🎯T137: persist battery_level/charging for every connected
 		// iOS/Android device. First tick is immediate so /dashboard#battery
 		// is not empty for a full interval after serve.
+		// 🎯T194.2: remember launched apps across restarts so the idle
+		// policy can stop a game left running.
+		mcpHandler.SetLaunchRegistryPath(filepath.Join(paths.Base(), "launched.json"))
 		go mcpHandler.StartBatterySampler(ctx)
+		// 🎯T194.5: keep the adb server up and restore app-channel
+		// reverse mappings when something (Unity's exit) kills it.
+		if adb, err := exec.LookPath("adb"); err == nil {
+			go adbserver.New(adbserver.Args{Adb: adb, OnRestart: mcpHandler.OnADBServerRestart}).Run(ctx)
+		} else {
+			slog.Info("adb server supervisor: adb not on PATH; not watching")
+		}
 		// 🎯T188: release expired simulator leases, including any left
 		// from before this restart.
 		go mcpHandler.RunSimLeaseReaper(ctx)
