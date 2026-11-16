@@ -106,6 +106,14 @@ if [[ "$SKIP_BREW" == false ]]; then
 	# process answering MCP on :3030 reports the new version (CLAUDE.md:
 	# supervisord owns the port, never brew services).
 	if command -v supervisorctl >/dev/null 2>&1 && supervisorctl status spyder >/dev/null 2>&1; then
+		# A restart kills every device run talking to :3030 (CLAUDE.md,
+		# "Restarts and lab runs"). Wait for the Pueue lab group to go idle.
+		if command -v pueue >/dev/null 2>&1; then
+			while pueue status --group lab 2>/dev/null | grep -q ' Running '; do
+				echo "release-publish: a Pueue lab job is running; waiting 30 s before restarting spyder …" >&2
+				sleep 30
+			done
+		fi
 		echo "release-publish: supervisorctl restart spyder …" >&2
 		supervisorctl restart spyder >&2
 		status="$(supervisorctl status spyder || true)"

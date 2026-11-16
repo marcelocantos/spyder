@@ -84,6 +84,23 @@ versions (`v0.x` vs `dev`).
 After any local serve experiment, stop the tree binary. Do not `brew
 services start spyder` — that reloads launchd and fights supervisord.
 
+### Restarts and lab runs
+
+Device runs hold leases and sessions on a daemon, and a restart kills
+them: every runner is SIGTERMed and reservation cleanup fails. Before
+restarting or redeploying the supervised daemon (`:3030`) or a dev
+daemon (`:3131`), run `pueue status --group lab`. If a job is running,
+wait for it to finish or queue the restart behind it:
+
+```bash
+pueue add --group lab --label 'spyder restart' -- supervisorctl restart spyder
+```
+
+Afterwards, check `reservations` for leases the killed run left behind,
+and tell the thread that owns the run so it can rerun.
+`scripts/release-publish.sh` waits for the lab group to go idle before
+it restarts.
+
 ## Architecture
 
 - **main.go** — single entrypoint. Subcommands: `serve` (HTTP MCP + REST
