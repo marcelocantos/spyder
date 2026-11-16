@@ -39,9 +39,9 @@ to the daemon that owns reservations.
 ## Configuration
 
 Set these in the daemon's environment. For :3030 that is the
-`environment=` line in the installed
-`/opt/homebrew/etc/supervisor.d/spyder.ini`. The repo template carries
-placeholders, and `SPYDER_IOS_AGENT_DEVICES=<udid,…> supervisor/install.sh`
+`EnvironmentVariables` dict in the installed
+`~/Library/LaunchAgents/com.marcelocantos.spyder.plist`. The repo template
+carries placeholders, and `SPYDER_IOS_AGENT_DEVICES=<udid,…> launchd/install.sh`
 renders `devicekit` with those UDIDs. Without it, the installer renders
 `alertrunner`.
 
@@ -101,7 +101,7 @@ device; the supervisor never installs or reinstalls it.
 - **Idle keeps the runner.** `agent_idle` stops the app under test and
   drops leases and host sessions, but leaves a healthy runner running.
 - **Clean shutdown.** When the daemon stops, all runners are stopped in
-  parallel within supervisord's `stopwaitsecs=10`. If the daemon is killed
+  parallel within the LaunchAgent's `ExitTimeOut` of 10 s. If the daemon is killed
   with SIGKILL, an orphaned `runwda` can keep the old runner alive. The new
   daemon terminates it and relaunches (see above).
 - **Go-ios startup serialization.** DeviceKit launch holds the per-device

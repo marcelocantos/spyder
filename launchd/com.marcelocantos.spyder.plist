@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- launchd/install.sh renders this into ~/Library/LaunchAgents, replacing the REPO, HOME and USER placeholders and the iOS agent backend and devices (see install.sh). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.marcelocantos.spyder</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>@REPO@/launchd/run-spyder.sh</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>@REPO@</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HOME</key>
+		<string>@HOME@</string>
+		<key>USER</key>
+		<string>@USER@</string>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:@HOME@/.cargo/bin:@HOME@/.local/bin:@HOME@/.py/bin:@HOME@/go/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>SPYDER_ADDR</key>
+		<string>127.0.0.1:3030</string>
+		<key>SPYDER_RUNS_MAX_AGE_DAYS</key>
+		<string></string>
+		<key>SPYDER_RUNS_MAX_SIZE_GB</key>
+		<string></string>
+		<key>SPYDER_IOS_AGENT_BACKEND</key>
+		<string>@IOS_AGENT_BACKEND@</string>
+		<key>SPYDER_IOS_AGENT_DEVICES</key>
+		<string>@IOS_AGENT_DEVICES@</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ExitTimeOut</key>
+	<integer>10</integer>
+	<key>SoftResourceLimits</key>
+	<dict>
+		<key>NumberOfFiles</key>
+		<integer>8192</integer>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>@HOME@/.local/var/log/spyder.log</string>
+	<key>StandardErrorPath</key>
+	<string>@HOME@/.local/var/log/spyder.log</string>
+</dict>
+</plist>

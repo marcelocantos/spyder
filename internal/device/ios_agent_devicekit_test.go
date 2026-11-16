@@ -311,7 +311,7 @@ func TestDeviceKit_ConsentFailureIsAskedOncePerBudget(t *testing.T) {
 	}
 }
 
-// Shutdown stops sessions in parallel so supervisord's stop window is
+// Shutdown stops sessions in parallel so launchd's stop window is
 // not spent one device at a time.
 func TestShutdown_StopsHoldsInParallel(t *testing.T) {
 	h := NewAutomationHost(nil)

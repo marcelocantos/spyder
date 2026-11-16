@@ -1145,8 +1145,8 @@ func (h *AutomationHost) Shutdown() {
 		ids = append(ids, id)
 	}
 	h.mu.Unlock()
-	// In parallel: each stop may wait up to 8s and supervisord gives
-	// the whole daemon 10s before SIGKILL orphans runwda children.
+	// In parallel: each stop may wait up to 8s and launchd (ExitTimeOut)
+	// gives the whole daemon 10s before SIGKILL orphans runwda children.
 	var wg sync.WaitGroup
 	for _, id := range ids {
 		wg.Add(1)

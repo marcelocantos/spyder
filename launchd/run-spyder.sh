@@ -1,5 +1,5 @@
 #!/bin/sh
-# Start spyder serve for supervisord. Homebrew Cellar only on :3030 —
+# Start spyder serve under launchd. Homebrew Cellar only on :3030 —
 # a tree-built binary on that port is the double-serve failure in CLAUDE.md.
 set -e
 

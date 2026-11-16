@@ -2,13 +2,14 @@
 # Create the GitHub release from dist/, update the Homebrew tap, upgrade locally.
 # Run after `make pre-release` and `scripts/release-package.sh`.
 #
-# After brew upgrade it restarts the supervised daemon (`supervisorctl
-# restart spyder`, never `brew services`; see CLAUDE.md) and verifies the
-# MCP endpoint serves the new version.
+# After brew upgrade it restarts the LaunchAgent daemon (`launchctl
+# kickstart -k gui/$UID/com.marcelocantos.spyder`, never `brew services`;
+# see CLAUDE.md) and verifies the MCP endpoint serves the new version.
 set -euo pipefail
 source "$(dirname "$0")/release-common.sh"
 
 DAEMON_PORT=3030
+DAEMON_LABEL=com.marcelocantos.spyder
 DAEMON_READY_ATTEMPTS=20
 
 NOTES_FILE=""
@@ -102,10 +103,11 @@ if [[ "$SKIP_BREW" == false ]]; then
 	echo "release-publish: brew is ${got}" >&2
 
 	# The daemon is the product's interface: brew upgrade only replaces the
-	# binary on disk, so restart the supervised process and confirm the
-	# process answering MCP on :3030 reports the new version (CLAUDE.md:
-	# supervisord owns the port, never brew services).
-	if command -v supervisorctl >/dev/null 2>&1 && supervisorctl status spyder >/dev/null 2>&1; then
+	# binary on disk, so restart the LaunchAgent and confirm the process
+	# answering MCP on :3030 reports the new version (CLAUDE.md: the
+	# LaunchAgent owns the port, never brew services).
+	daemon_service="gui/$(id -u)/${DAEMON_LABEL}"
+	if command -v launchctl >/dev/null 2>&1 && launchctl print "$daemon_service" >/dev/null 2>&1; then
 		# A restart kills every device run talking to :3030 (CLAUDE.md,
 		# "Restarts and lab runs"). Wait for the Pueue lab group to go idle.
 		if command -v pueue >/dev/null 2>&1; then
@@ -114,13 +116,19 @@ if [[ "$SKIP_BREW" == false ]]; then
 				sleep 30
 			done
 		fi
-		echo "release-publish: supervisorctl restart spyder …" >&2
-		supervisorctl restart spyder >&2
-		status="$(supervisorctl status spyder || true)"
-		if [[ "$status" != *RUNNING* ]]; then
-			echo "release-publish: spyder did not come back: ${status}" >&2
+		echo "release-publish: launchctl kickstart -k ${daemon_service} …" >&2
+		launchctl kickstart -k "$daemon_service" >&2
+		pid=""
+		for _ in $(seq 1 "$DAEMON_READY_ATTEMPTS"); do
+			pid="$(launchctl list | awk -v l="$DAEMON_LABEL" '$3 == l && $1 != "-" { print $1 }')"
+			[[ -n "$pid" ]] && break
+			sleep 1
+		done
+		if [[ -z "$pid" ]]; then
+			echo "release-publish: spyder did not come back: ${DAEMON_LABEL} has no pid" >&2
 			exit 1
 		fi
+		status="${DAEMON_LABEL} running, pid ${pid}"
 		served=""
 		for _ in $(seq 1 "$DAEMON_READY_ATTEMPTS"); do
 			served="$(curl -s --max-time 2 -X POST "http://127.0.0.1:${DAEMON_PORT}/mcp" \
@@ -137,7 +145,7 @@ if [[ "$SKIP_BREW" == false ]]; then
 		fi
 		echo "release-publish: daemon ${status}; MCP on :${DAEMON_PORT} serves ${served}" >&2
 	else
-		echo "release-publish: no supervised spyder program; restart your daemon (supervisorctl restart spyder, not brew services)" >&2
+		echo "release-publish: no ${DAEMON_LABEL} LaunchAgent loaded; restart your daemon (launchd/install.sh or launchctl kickstart -k, not brew services)" >&2
 	fi
 fi
 

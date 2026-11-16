@@ -64,41 +64,43 @@ claude mcp add --scope user --transport http spyder http://localhost:3030/mcp
 
 ### One daemon only — do not double-serve
 
-On this Mac, day-to-day MCP is **supervisord** running the Homebrew
-Cellar binary (not `brew services`). Launchd and supervisord must not
-both own `:3030`.
+On this Mac, day-to-day MCP is the hand-written LaunchAgent
+**`com.marcelocantos.spyder`** running the Homebrew Cellar binary (not
+`brew services`). The Homebrew service and the LaunchAgent must not both
+own `:3030`. It logs to `~/.local/var/log/spyder.log`.
 
 ```bash
-./supervisor/install.sh       # once: stop brew services, start under supervisord
-supervisorctl status spyder
+./launchd/install.sh          # once: stop brew services, load the LaunchAgent
+launchctl print gui/$(id -u)/com.marcelocantos.spyder   # status (or: svc status spyder)
 spyder version                # e.g. v0.84.0 — MCP initialize must match
 ```
 
 **Never** run `bin/spyder serve` (or any tree-built binary) on `:3030`
-while the supervised daemon is running. Two processes can both bind
+while the LaunchAgent daemon is running. Two processes can both bind
 (IPv4 vs IPv6/`*`), clients flip between them, and you get mismatched
 versions (`v0.x` vs `dev`).
 
 | Goal | Do this |
 |------|---------|
-| Normal agent / MCP work | `supervisorctl start spyder` — leave it alone. `brew services stop spyder` must stay stopped |
-| After `brew upgrade spyder` | `brew services stop spyder` (stay unloaded), then `supervisorctl restart spyder` — **not** `brew services restart` |
-| Test unreleased tree code | keep supervisor on `:3030`; `bin/spyder serve --addr :3131` |
-| Sanity check | `lsof -nP -iTCP:3030 -sTCP:LISTEN` — exactly **one** spyder, Cellar path; `supervisorctl status spyder` is RUNNING |
+| Normal agent / MCP work | The LaunchAgent keeps it running — leave it alone. `brew services stop spyder` must stay stopped |
+| After `brew upgrade spyder` | `brew services stop spyder` (stay unloaded), then `launchctl kickstart -k gui/$(id -u)/com.marcelocantos.spyder` (or `svc restart spyder`) — **not** `brew services restart` |
+| Test unreleased tree code | keep the LaunchAgent on `:3030`; `bin/spyder serve --addr :3131` |
+| Sanity check | `lsof -nP -iTCP:3030 -sTCP:LISTEN` — exactly **one** spyder, Cellar path; `launchctl print gui/$(id -u)/com.marcelocantos.spyder` shows `state = running` |
 
 After any local serve experiment, stop the tree binary. Do not `brew
-services start spyder` — that reloads launchd and fights supervisord.
+services start spyder` — that loads Homebrew's own launchd job, which
+fights the LaunchAgent for `:3030`.
 
 ### Restarts and lab runs
 
 Device runs hold leases and sessions on a daemon, and a restart kills
 them: every runner is SIGTERMed and reservation cleanup fails. Before
-restarting or redeploying the supervised daemon (`:3030`) or a dev
+restarting or redeploying the LaunchAgent daemon (`:3030`) or a dev
 daemon (`:3131`), run `pueue status --group lab`. If a job is running,
 wait for it to finish or queue the restart behind it:
 
 ```bash
-pueue add --group lab --label 'spyder restart' -- supervisorctl restart spyder
+pueue add --group lab --label 'spyder restart' -- launchctl kickstart -k "gui/$(id -u)/com.marcelocantos.spyder"
 ```
 
 Afterwards, check `reservations` for leases the killed run left behind,
@@ -208,9 +210,9 @@ Releases are local (vellum/tapper shape): `VERSION=0.N.0 make release`
 runs `pre-release`, packages the darwin-arm64 tarball (codesigned
 spyder + bundled ios + spyder-killusbmuxd), `gh release create`s it,
 and `tapper push`es the Homebrew formula. After `brew upgrade spyder`,
-restart with `supervisorctl restart spyder` — not `brew services
-restart`. Day-to-day MCP is the Homebrew Cellar binary under
-supervisord (see **One daemon only** above).
+restart with `launchctl kickstart -k gui/$(id -u)/com.marcelocantos.spyder`
+— not `brew services restart`. Day-to-day MCP is the Homebrew Cellar
+binary under the LaunchAgent (see **One daemon only** above).
 
 Standing authorization (owner, 2026-11-15): agents may cut a spyder
 release through `/release` whenever verified work is ready, without
