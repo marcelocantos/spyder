@@ -161,6 +161,8 @@ type Handler struct {
 	// batteryStore holds fleet charge history (🎯T137). Nil until
 	// SetBatteryStore or StartBatterySampler opens ~/.spyder/battery/.
 	batteryStore *battery.Store
+	powerMu      sync.Mutex
+	lastPower    map[string]powerReading // 🎯T194.1, by device id
 
 	// verifyHub is the daemon-wide verification DAG scheduler (🎯T138).
 	// verifyStateDir persists retained runs across restarts (🎯T149.1);

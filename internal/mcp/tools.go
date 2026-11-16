@@ -318,6 +318,7 @@ func (h *Handler) listDevicesUncached(platform string) devicesSnapshot {
 	}
 
 	h.annotateUSB(devices)
+	h.annotatePower(devices)
 	return devicesSnapshot{devices: devices, errors: perAdapterErrors, at: time.Now()}
 }
 

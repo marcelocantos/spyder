@@ -128,6 +128,7 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 	}
 
 	var state State
+	var power Power
 
 	battOut, battStderr, battErr := androidAdbBG("-s", id, "shell", "dumpsys", "battery")
 	combined := string(battStderr) + " " + string(battOut)
@@ -144,7 +145,16 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 		if len(parsed.Extra) > 0 {
 			state.Battery = parsed.Extra
 		}
+		power = androidPowerFromBattery(parsed.Extra)
 	}
+
+	if out, stderr, err := androidAdbBG("-s", id, "shell", androidPowerScript); err != nil && len(out) == 0 {
+		state.Notes = append(state.Notes, fmt.Sprintf("lock and screen state unavailable: %s", truncate(string(stderr), 160)))
+	} else {
+		parseAndroidPowerLock(string(out), &power)
+	}
+	power.Classify()
+	state.Power = &power
 
 	if fg, err := androidForegroundApp(id); err != nil {
 		state.Notes = append(state.Notes, fmt.Sprintf("foreground app unavailable: %v", err))

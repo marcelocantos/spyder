@@ -31,6 +31,8 @@ type Sample struct {
 	BatteryLevel *int           `json:"battery_level,omitempty"` // 0..100
 	Charging     *bool          `json:"charging,omitempty"`
 	Details      map[string]any `json:"details,omitempty"`
+	// Power is the device's power and lock reading (🎯T194.1).
+	Power *device.Power `json:"power,omitempty"`
 }
 
 // Collect reads State for each connected mobile device and returns
@@ -72,6 +74,10 @@ func Collect(now time.Time, infos []device.Info, state func(id string) (device.S
 		}
 		if len(st.Battery) > 0 {
 			sm.Details = maps.Clone(st.Battery)
+		}
+		if st.Power != nil {
+			p := *st.Power
+			sm.Power = &p
 		}
 		out = append(out, sm)
 	}

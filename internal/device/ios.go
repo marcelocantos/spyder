@@ -937,6 +937,7 @@ func (a *IOSAdapter) State(id string) (State, error) {
 		s := c.state
 		a.mu.Unlock()
 		a.fillAutomation(id, &s)
+		a.fillLock(id, &s)
 		return s, nil
 	}
 	a.mu.Unlock()
@@ -992,6 +993,7 @@ func (a *IOSAdapter) State(id string) (State, error) {
 			}
 		}
 		state.Battery = extra
+		state.Power = iosPower(batt.ExternalConnected, batt.BatteryIsCharging, batt.FullyCharged, extra)
 	}
 
 	state.Notes = append(state.Notes,
@@ -1002,6 +1004,7 @@ func (a *IOSAdapter) State(id string) (State, error) {
 	// Battery is cached. The automation phase is not: a restart can
 	// change it inside stateTTL, so overlay it on the way out.
 	a.fillAutomation(id, &state)
+	a.fillLock(id, &state)
 	cached := state
 	cached.AutomationSession = ""
 	cached.AutomationError = ""

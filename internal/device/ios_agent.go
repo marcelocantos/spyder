@@ -71,6 +71,7 @@ type AutomationHost struct {
 	hostDrops      int
 	leaseDrops     int
 	lockDetail     map[string]string
+	lockSeen       map[string]lockObservation // last known lock read (🎯T194.1)
 	probeNote      map[string]string
 	installGen     map[string]string
 
@@ -203,6 +204,31 @@ func (h *AutomationHost) LeaseDrops() int {
 	return h.leaseDrops
 }
 
+// lockObservation is one known lock read.
+type lockObservation struct {
+	locked bool
+	at     time.Time
+}
+
+// lockFresh is how long a lock read stands in for the device's state.
+// The supervisor probes every agent tick (30 s).
+const lockFresh = 2 * time.Minute
+
+// LastLock returns the supervisor's last known lock read for id, if it
+// is recent enough to report (🎯T194.1).
+func (h *AutomationHost) LastLock(id string) (locked, ok bool) {
+	if h == nil {
+		return false, false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	o, found := h.lockSeen[id]
+	if !found || time.Since(o.at) > lockFresh {
+		return false, false
+	}
+	return o.locked, true
+}
+
 // LockDetail is the last lock probe for a device (raw state or error).
 func (h *AutomationHost) LockDetail(id string) string {
 	h.mu.Lock()
@@ -302,6 +328,12 @@ func (h *AutomationHost) Probe(id string) (agent.Observation, error) {
 	locked, lockKnown, detail := h.locked(id)
 	h.mu.Lock()
 	h.lockDetail[id] = detail
+	if lockKnown {
+		if h.lockSeen == nil {
+			h.lockSeen = map[string]lockObservation{}
+		}
+		h.lockSeen[id] = lockObservation{locked: locked, at: time.Now()}
+	}
 	consent := h.consent[id]
 	hostSession := h.clientSessions[id] > 0
 	lease := h.leases[id]

@@ -33,6 +33,10 @@ type Info struct {
 	// restart. Always false for iOS ≤16 and Android.
 	TunnelPending bool `json:"tunnel_pending,omitempty"`
 
+	// Power is the battery sampler's latest power and lock reading, when
+	// it is fresh (🎯T194.1). device_state reads it live.
+	Power *Power `json:"power,omitempty"`
+
 	// USBSpeed is the IOKit negotiated Device Speed of a USB-attached
 	// physical phone or tablet (🎯T131), mapped through kUSBDeviceSpeed:
 	// 2 → "480 Mb/s", 3 → "5 Gb/s", 4 → "10 Gb/s". Omitted for wireless
@@ -91,6 +95,9 @@ type State struct {
 	// (Android dumpsys names, iOS lockdown / IORegistry names).
 	// Stored as-is for later trend analysis (🎯T137).
 	Battery map[string]any `json:"battery,omitempty"`
+	// Power is power source, charge status, temperature and lock state,
+	// with a computed power_health (🎯T194.1).
+	Power *Power `json:"power,omitempty"`
 
 	// AutomationSession is the DeviceKit/WDA `ios runwda` session on
 	// iOS: absent, starting, ready, or failed (🎯T167). Empty on

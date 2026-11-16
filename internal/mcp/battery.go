@@ -200,5 +200,39 @@ func (h *Handler) stateForBattery(id string) (device.State, error) {
 	if err != nil {
 		return device.State{}, err
 	}
-	return adapter.State(resolved)
+	st, err := adapter.State(resolved)
+	if err == nil && st.Power != nil {
+		p := *st.Power
+		h.powerMu.Lock()
+		if h.lastPower == nil {
+			h.lastPower = map[string]powerReading{}
+		}
+		h.lastPower[resolved] = powerReading{power: p, at: time.Now()}
+		h.powerMu.Unlock()
+	}
+	return st, err
+}
+
+// powerReading is the sampler's latest power reading for one device.
+type powerReading struct {
+	power device.Power
+	at    time.Time
+}
+
+// powerFresh is how long a sampled reading is shown in devices: a few
+// sampler intervals, so one slow probe does not blank it.
+const powerFresh = 3 * battery.DefaultInterval
+
+// annotatePower copies each device's fresh power reading onto its row.
+func (h *Handler) annotatePower(devices []device.Info) {
+	h.powerMu.Lock()
+	defer h.powerMu.Unlock()
+	for i := range devices {
+		r, ok := h.lastPower[devices[i].UUID]
+		if !ok || time.Since(r.at) > powerFresh {
+			continue
+		}
+		p := r.power
+		devices[i].Power = &p
+	}
 }
