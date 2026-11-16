@@ -28,7 +28,6 @@ import (
 	"github.com/marcelocantos/spyder/internal/dashboard"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/goios"
-	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/hostwifi"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
@@ -115,7 +114,20 @@ func Run(ctx context.Context, cfg Config) error {
 		tunnelSup = iostunnel.New(iosBin, goios.DefaultTunnelHost, goios.DefaultTunnelPort)
 		switch {
 		case tunnelSup.RegistryListening():
-			slog.Info("iostunnel: registry already listening; not spawning a second tunnel")
+			// Often the outgoing daemon's tunnel during a restart; it dies
+			// with its parent moments later (🎯T193). Take over then.
+			slog.Info("iostunnel: registry already listening; not spawning a second tunnel until it goes away")
+			sup := tunnelSup
+			go takeOverTunnel(ctx, sup.RegistryListening, func() error {
+				if err := sup.Start(ctx); err != nil {
+					return err
+				}
+				slog.Info("iostunnel: previous registry went away; started our own")
+				if mcpHandler != nil {
+					go mcpHandler.Health().Supervise(ctx, sup, tunnelHealthPolicy, tunnelHealthInterval)
+				}
+				return nil
+			}, tunnelTakeoverPoll)
 		default:
 			if err := tunnelSup.Start(ctx); err != nil {
 				slog.Error("iostunnel: start failed; iOS tools degraded", "error", err)
@@ -167,10 +179,7 @@ func Run(ctx context.Context, cfg Config) error {
 		// 🎯T90.5.1: ios-tunnel restart/liveness owned solely by health.Supervise
 		// (iostunnel has no restartLoop/healthProbe of its own).
 		if ownTunnel {
-			go mcpHandler.Health().Supervise(ctx, tunnelSup, health.Policy{
-				MaxAttempts: 5,
-				BaseBackoff: 2 * time.Second,
-			}, 10*time.Second)
+			go mcpHandler.Health().Supervise(ctx, tunnelSup, tunnelHealthPolicy, tunnelHealthInterval)
 		}
 	}
 	// 🎯T99.5: SIGQUIT dumps goroutines under ~/.spyder/ without dying.
