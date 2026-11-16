@@ -19,6 +19,7 @@ import (
 const (
 	PowerLockedSecure = "locked_secure" // keyguard up behind a credential
 	PowerNotPowered   = "not_powered"   // no power source at all
+	PowerOffline      = "offline"       // no validated default network
 	PowerHot          = "hot"           // battery at or above powerHotC
 	PowerDraining     = "draining"      // powered, yet discharging
 	PowerOK           = "ok"
@@ -28,6 +29,9 @@ const (
 // powerHotC is the battery temperature at which a device is reported hot.
 // Phones throttle and stop charging a little above this.
 const powerHotC = 40.0
+
+// NetworkNone is DefaultNetwork when the device has no network.
+const NetworkNone = "none"
 
 // Power sources.
 const (
@@ -70,6 +74,15 @@ type Power struct {
 	DeviceLocked    *bool `json:"device_locked,omitempty"`
 	CredentialSet   *bool `json:"credential_set,omitempty"`
 
+	// Network reachability (Android). DefaultNetwork is the transport of
+	// the default network (wifi, cellular, ...) or "none";
+	// NetworkValidated is whether Android has confirmed it reaches the
+	// internet.
+	AirplaneMode     *bool  `json:"airplane_mode,omitempty"`
+	WifiOn           *bool  `json:"wifi_on,omitempty"`
+	DefaultNetwork   string `json:"default_network,omitempty"`
+	NetworkValidated *bool  `json:"network_validated,omitempty"`
+
 	// Health is the worst problem found; Issues lists every one.
 	Health string   `json:"power_health"`
 	Issues []string `json:"issues,omitempty"`
@@ -94,6 +107,21 @@ func (p *Power) Classify() {
 	}
 	if p.Source == PowerSourceNone {
 		note(PowerNotPowered, "no power source; check the cable, port and hub")
+	}
+	if p.NetworkValidated != nil && !*p.NetworkValidated {
+		msg := "no network reaches the internet"
+		switch {
+		case p.AirplaneMode != nil && *p.AirplaneMode:
+			msg += "; airplane mode is on"
+		case p.WifiOn != nil && !*p.WifiOn:
+			msg += "; Wi-Fi is off"
+		case p.DefaultNetwork != NetworkNone:
+			msg = "the default network (" + p.DefaultNetwork + ") is not validated; it may not reach the internet"
+		}
+		if p.AirplaneMode != nil && *p.AirplaneMode && p.WifiOn != nil && *p.WifiOn && p.DefaultNetwork != NetworkNone {
+			msg = "the default network is not validated (airplane mode is on with Wi-Fi enabled)"
+		}
+		note(PowerOffline, msg)
 	}
 	if p.TemperatureC != nil && *p.TemperatureC >= powerHotC {
 		note(PowerHot, fmt.Sprintf("battery at %.1f °C", *p.TemperatureC))

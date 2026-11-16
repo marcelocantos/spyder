@@ -8,16 +8,20 @@ import (
 	"strings"
 )
 
-// Android power and lock state (🎯T194.1).
+// Android power, lock and network state (🎯T194.1).
 
 // androidPowerScript reads screen wakefulness, stay-awake, keyguard, the
-// current user's lock and whether a credential exists, in one adb round
-// trip. Plain grep (not -m/head): closing the pipe early makes dumpsys
-// print "Broken pipe" errors.
+// current user's lock, whether a credential exists, airplane mode, Wi-Fi
+// and the default network, in one adb round trip. Plain grep (not
+// -m/head): closing the pipe early makes dumpsys print "Broken pipe"
+// errors.
 const androidPowerScript = `dumpsys power | grep -E "mWakefulness=|mStayOn="; ` +
 	`dumpsys window | grep -E "isKeyguardShowing="; ` +
 	`dumpsys trust | grep "(current)"; ` +
-	`dumpsys lock_settings | grep "CredentialType:"`
+	`dumpsys lock_settings | grep "CredentialType:"; ` +
+	`echo "airplane_mode_on=$(settings get global airplane_mode_on)"; ` +
+	`echo "wifi_on=$(settings get global wifi_on)"; ` +
+	`dumpsys connectivity | grep -E "Active default network:|NetworkAgentInfo\\{"`
 
 // androidChargeStatus maps BatteryManager.BATTERY_STATUS_* to our names.
 var androidChargeStatus = map[int]string{
@@ -60,6 +64,8 @@ func androidPowerFromBattery(extra map[string]any) Power {
 // androidPowerScript's output.
 func parseAndroidPowerLock(out string, p *Power) {
 	credentialSeen := false
+	activeNetwork := ""
+	var agents []string
 	for line := range strings.SplitSeq(out, "\n") {
 		line = strings.TrimSpace(line)
 		switch {
@@ -80,6 +86,39 @@ func parseAndroidPowerLock(out string, p *Power) {
 			credentialSeen = true
 			v := strings.TrimSpace(strings.TrimPrefix(line, "CredentialType:"))
 			p.CredentialSet = boolPtr(v != "" && v != "NONE")
+		case strings.HasPrefix(line, "airplane_mode_on="):
+			if v := strings.TrimPrefix(line, "airplane_mode_on="); v == "0" || v == "1" {
+				p.AirplaneMode = boolPtr(v == "1")
+			}
+		case strings.HasPrefix(line, "wifi_on="):
+			// 0 off; 1 on; 2 on while airplane mode is on; 3 off in
+			// airplane mode but restores when it ends.
+			if v := strings.TrimPrefix(line, "wifi_on="); len(v) == 1 && v >= "0" && v <= "3" {
+				p.WifiOn = boolPtr(v == "1" || v == "2")
+			}
+		case strings.HasPrefix(line, "Active default network:"):
+			activeNetwork = strings.TrimSpace(strings.TrimPrefix(line, "Active default network:"))
+		case strings.HasPrefix(line, "NetworkAgentInfo{"):
+			agents = append(agents, line)
+		}
+	}
+	switch activeNetwork {
+	case "":
+	case "none":
+		p.DefaultNetwork = NetworkNone
+		p.NetworkValidated = boolPtr(false)
+	default:
+		p.DefaultNetwork = "unknown"
+		for _, a := range agents {
+			if !strings.HasPrefix(a, "NetworkAgentInfo{network{"+activeNetwork+"}") {
+				continue
+			}
+			if _, rest, ok := strings.Cut(a, "ni{"); ok {
+				if f := strings.Fields(rest); len(f) > 0 {
+					p.DefaultNetwork = strings.ToLower(f[0])
+				}
+			}
+			p.NetworkValidated = boolPtr(strings.Contains(a, "IS_VALIDATED"))
 		}
 	}
 }

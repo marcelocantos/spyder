@@ -119,13 +119,17 @@ func (h *Handler) leaseRefusal(id string) string {
 	if !ok || time.Since(r.at) > powerFresh {
 		return ""
 	}
-	switch {
-	case r.power.Health == device.PowerLockedSecure:
-		return "the lock screen is up behind a PIN, pattern or password; unlock it or remove the lock"
-	case r.power.Health == device.PowerNotPowered && tr != nil && tr.Level < battery.DrainResume:
-		return fmt.Sprintf("no power source and battery at %d%%; check the cable, port and hub", tr.Level)
+	var why []string
+	for _, issue := range r.power.Issues {
+		switch {
+		case strings.HasPrefix(issue, device.PowerLockedSecure+":"),
+			strings.HasPrefix(issue, device.PowerOffline+":"):
+			why = append(why, issue)
+		case strings.HasPrefix(issue, device.PowerNotPowered+":") && tr != nil && tr.Level < battery.DrainResume:
+			why = append(why, fmt.Sprintf("%s (battery at %d%%)", issue, tr.Level))
+		}
 	}
-	return ""
+	return strings.Join(why, "; ")
 }
 
 // afterBatteryTick updates each sampled device's drain trend, publishes

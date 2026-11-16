@@ -1230,7 +1230,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("reserve",
-			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked.\n\nAdmission (🎯T194.4): reserve refuses, with an error starting `needs_setup:`, a device whose lock screen is up behind a PIN/pattern/password, a device held for recharge (it reached 10% while falling and is not yet back to 30%), or a device with no power source below 30%. A renewal by the current holder is never refused; a selector skips refused devices. Pass force=true to reserve anyway."),
+			mcpgo.WithDescription("Acquire an exclusive reservation on a device so parallel sessions won't interrupt mutating operations (screenshot, launch/terminate). Default TTL is 3600s, max 86400s. Same-owner re-acquires renew in place.\n\nSupply exactly one of device (literal pin) or selector (fuzzy match). The selector is a JSON object with optional fields: platform (required within selector), model_family, os_min, os_max, orientation_capable, tags, attrs. Example: {\"platform\":\"ios\",\"model_family\":\"ipad\"}. The server resolves the selector against live devices and inventory, preferring idle physical devices over sims/emus, and returns a reservation bound to a concrete UUID — the caller never needs to know which device was picked.\n\nAdmission (🎯T194.4): reserve refuses, with an error starting `needs_setup:`, a device whose lock screen is up behind a PIN/pattern/password, a device held for recharge (it reached 10% while falling and is not yet back to 30%), an Android device with no validated network (airplane mode, Wi-Fi off), or a device with no power source below 30%. A renewal by the current holder is never refused; a selector skips refused devices. Pass force=true to reserve anyway."),
 			mcpgo.WithString("device",
 				mcpgo.Description("Device alias or UUID (literal pin; mutually exclusive with selector)"),
 			),
@@ -1248,7 +1248,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 				mcpgo.Description("Human-readable note surfaced in conflict errors (e.g. 'UI regression run')"),
 			),
 			mcpgo.WithBoolean("force",
-				mcpgo.Description("Reserve even when admission would refuse the device (locked, held for recharge, unpowered and low)."),
+				mcpgo.Description("Reserve even when admission would refuse the device (locked, offline, held for recharge, unpowered and low)."),
 			),
 			mcpgo.WithString("script_path",
 				mcpgo.Description("Run provenance: the .star script this session will drive (library name, bundled:name, or path). Its git commit/branch/dirty state is recorded in the run manifest."),

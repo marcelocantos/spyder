@@ -155,3 +155,39 @@ func TestIOSPower(t *testing.T) {
 		t.Fatalf("%+v", p)
 	}
 }
+
+// The S24 on 16 Nov at 17:51: airplane mode on since its 8 Nov boot, Wi-Fi
+// off, no default network.
+const s24Offline = `airplane_mode_on=1
+wifi_on=0
+Active default network: none
+`
+
+// After `svc wifi enable` at 17:56: Wi-Fi on inside airplane mode,
+// validated.
+const s24WifiInAirplane = `airplane_mode_on=1
+wifi_on=2
+Active default network: 100
+  NetworkAgentInfo{network{100}  handle{432902426637}  ni{WIFI CONNECTED extra: } created=2026-11-16T06:56:30.807Z Score(Policies : TRANSPORT_PRIMARY&EVER_EVALUATED&IS_UNMETERED&EVER_VALIDATED&IS_VALIDATED ; KeepConnected : 0)
+  NetworkAgentInfo{network{99}  handle{1}  ni{MOBILE CONNECTED extra: } Score(Policies : EVER_EVALUATED ; KeepConnected : 0)
+`
+
+func TestAndroidPower_Network(t *testing.T) {
+	p := androidPower(t, pixelBattery, pixelPowerLock+s24Offline)
+	if p.Health != PowerOffline || p.AirplaneMode == nil || !*p.AirplaneMode || p.DefaultNetwork != NetworkNone {
+		t.Fatalf("offline: %s %v %+v", p.Health, p.Issues, p)
+	}
+	if !strings.Contains(p.Issues[0], "airplane mode is on") {
+		t.Fatalf("issues %v", p.Issues)
+	}
+	p = androidPower(t, pixelBattery, pixelPowerLock+s24WifiInAirplane)
+	if p.Health != PowerOK || p.DefaultNetwork != "wifi" || p.NetworkValidated == nil || !*p.NetworkValidated || !*p.WifiOn {
+		t.Fatalf("wifi in airplane: %s %v %+v", p.Health, p.Issues, p)
+	}
+	// Connected but not validated: captive portal or no upstream.
+	unvalidated := strings.Replace(s24WifiInAirplane, "&IS_VALIDATED", "", 1)
+	unvalidated = strings.Replace(unvalidated, "airplane_mode_on=1", "airplane_mode_on=0", 1)
+	if p := androidPower(t, pixelBattery, pixelPowerLock+unvalidated); p.Health != PowerOffline || !strings.Contains(p.Issues[0], "not validated") {
+		t.Fatalf("unvalidated: %s %v", p.Health, p.Issues)
+	}
+}

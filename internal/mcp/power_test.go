@@ -98,18 +98,27 @@ func TestPowerPolicy_HeavyLoadIsAllowed(t *testing.T) {
 	}
 }
 
-func TestLeaseRefusal_LockedAndUnpowered(t *testing.T) {
+func TestLeaseRefusal_LockedUnpoweredOffline(t *testing.T) {
 	h, _ := newHandlerWithReservations(t, nil, nil)
+	reading := func(p device.Power) powerReading {
+		p.Classify()
+		return powerReading{power: p, at: time.Now()}
+	}
+	yes, no := true, false
 	h.lastPower = map[string]powerReading{
-		"locked": {power: device.Power{Health: device.PowerLockedSecure}, at: time.Now()},
-		"flat":   {power: device.Power{Health: device.PowerNotPowered}, at: time.Now()},
-		"full":   {power: device.Power{Health: device.PowerNotPowered}, at: time.Now()},
+		"locked":  reading(device.Power{DeviceLocked: &yes, CredentialSet: &yes}),
+		"flat":    reading(device.Power{Source: device.PowerSourceNone}),
+		"full":    reading(device.Power{Source: device.PowerSourceNone}),
+		"offline": reading(device.Power{Source: device.PowerSourceUSB, AirplaneMode: &yes, WifiOn: &no, DefaultNetwork: device.NetworkNone, NetworkValidated: &no}),
 	}
 	now := time.Now()
 	drainSamples(h, "flat", now, false, 25)
 	drainSamples(h, "full", now, false, 80)
 	if h.leaseRefusal("locked") == "" || h.leaseRefusal("flat") == "" {
 		t.Fatal("locked or unpowered-and-low device admitted")
+	}
+	if why := h.leaseRefusal("offline"); !strings.Contains(why, "airplane mode is on") {
+		t.Fatalf("offline device: %q", why)
 	}
 	if why := h.leaseRefusal("full"); why != "" {
 		t.Fatalf("unpowered at 80%% refused: %s", why)
