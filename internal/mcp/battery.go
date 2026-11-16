@@ -45,7 +45,7 @@ func (h *Handler) StartBatterySampler(ctx context.Context) {
 	slog.Info("battery: sampler started",
 		"dir", store.Dir(), "interval", battery.DefaultInterval)
 	battery.NewSampler(battery.SamplerArgs{
-		Store: store,
+		Store:     store,
 		List:      h.listMobileDevices,
 		State:     h.stateForBattery,
 		AfterTick: h.afterBatteryTick,
@@ -156,7 +156,7 @@ func (h *Handler) sampleBatteriesOnce() {
 		return
 	}
 	_ = battery.NewSampler(battery.SamplerArgs{
-		Store: store,
+		Store:     store,
 		List:      h.listMobileDevices,
 		State:     h.stateForBattery,
 		AfterTick: h.afterBatteryTick,
