@@ -36,6 +36,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/listenaddr"
 	"github.com/marcelocantos/spyder/internal/logcapture"
 	spydermcp "github.com/marcelocantos/spyder/internal/mcp"
+	"github.com/marcelocantos/spyder/internal/memguard"
 	"github.com/marcelocantos/spyder/internal/notify"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/playerweb"
@@ -92,6 +93,9 @@ func Start(cfg Config) error {
 // (or the underlying HTTP server errors). Exposed for tests and for
 // embedders that want to own signal handling.
 func Run(ctx context.Context, cfg Config) error {
+	// 🎯T195: exit for a clean restart before a memory runaway takes
+	// the host down.
+	go memguard.Run(ctx, memguard.Args{OnExceed: memguardExit})
 	slog.Info("daemon: starting",
 		"addr", cfg.Addr, "version", cfg.Version)
 	httpHandler, resvStore, mcpHandler, logCapMgr, appChanMgr := Build(cfg)

@@ -93,8 +93,12 @@ bin/spyder-killusbmuxd: cmd/spyder-killusbmuxd/main.go
 bin/ios: go.mod go.sum
 	go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios
 
+# Patched go-ios packages whose own tests guard spyder against a
+# regression in the pinned fork (🎯T195: browseApps on a dead connection).
+GOIOS_GUARD_PKGS := github.com/danielpaulus/go-ios/ios/installationproxy
+
 test:
-	CGO_ENABLED=1 go test ./...
+	CGO_ENABLED=1 go test ./... $(GOIOS_GUARD_PKGS)
 	@if [ "$(uname -s)" = Darwin ]; then $(MAKE) check-wire; fi
 
 vet:
@@ -122,7 +126,7 @@ bullseye:
 	@CGO_ENABLED=1 go vet ./... && echo "✓ vet"
 	@CGO_ENABLED=1 go build -ldflags "-X main.version=dev $(STAMP_LDFLAGS)" -o bin/spyder . && echo "✓ build"
 	@go build -mod=mod -o bin/ios github.com/danielpaulus/go-ios && echo "✓ build ios"
-	@CGO_ENABLED=1 go test ./... && echo "✓ tests"
+	@CGO_ENABLED=1 go test ./... $(GOIOS_GUARD_PKGS) && echo "✓ tests"
 	@if [ "$(uname -s)" = Darwin ]; then $(MAKE) check-wire && echo "✓ check-wire"; fi
 	@dirty=$$(git status --porcelain | grep -vE 'bullseye\.yaml$$' || true); \
 	if [ -z "$$dirty" ]; then echo "✓ working tree clean"; \

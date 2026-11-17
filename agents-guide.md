@@ -2554,6 +2554,11 @@ reinstate work), use the device's OS-level **never-lock** setting:
 
 ## Environment and dependencies
 
+`SPYDER_HEAP_LIMIT_MB` sets the daemon's heap ceiling (default 4096). Past
+it, the memory guard writes `~/.spyder/memguard-<time>-goroutine.txt` and
+`-heap.pprof`, records the exit in `exits.log`, and exits 1 so launchd
+restarts a clean daemon (🎯T195). It is not rate-limited.
+
 `SPYDER_DATA_DIR` selects the Spyder state directory (inventory, reservations,
 policies, run artifacts and other state normally under `~/.spyder`). The
 default is unchanged when it is unset or empty. Use an absolute scratch path
