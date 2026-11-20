@@ -104,3 +104,31 @@ func TestSuperviseAdoptsAStartedTunnel(t *testing.T) {
 		t.Fatalf("supervising a running tunnel restarted it: spawned %v, first pid %d alive=%v", pids, first, processAlive(first))
 	}
 }
+
+// Two Stops run at shutdown. The second used to return at once while
+// the first was still in its SIGTERM grace, so the daemon could exit
+// before a tunnel ignoring SIGTERM was killed (DH-38).
+func TestEveryStopWaitsForTheTunnelToExit(t *testing.T) {
+	dir, port := lifecycleEnv(t)
+	bin, pidsPath := fakeTunnel(t, dir, true)
+	sup := New(bin, "127.0.0.1", port)
+	if err := sup.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pid := waitFirstPID(t, pidsPath)
+
+	firstDone := make(chan struct{})
+	go func() { _ = sup.Stop(context.Background()); close(firstDone) }() // health.Supervise's Stop
+	time.Sleep(200 * time.Millisecond)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	err := sup.Stop(shutdownCtx) // the daemon's Stop
+	stillAlive := processAlive(pid)
+	<-firstDone
+	if err == nil && stillAlive {
+		t.Fatalf("second Stop returned success while tunnel pid %d was still running", pid)
+	}
+	if sup.Running() {
+		t.Fatal("supervisor still reports a running tunnel after Stop")
+	}
+}

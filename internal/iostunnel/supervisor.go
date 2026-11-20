@@ -26,9 +26,7 @@ package iostunnel
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -58,6 +56,9 @@ type Supervisor struct {
 
 	mu  sync.Mutex
 	cmd *exec.Cmd
+	// exited is closed by cmd's reaper once cmd has exited and s.cmd no
+	// longer names it. Every Stop waits on it.
+	exited chan struct{}
 }
 
 // New returns a Supervisor for the ios binary at binPath. The
@@ -169,7 +170,8 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("iostunnel: start %s: %w", s.binPath, err)
 	}
-	s.cmd = cmd
+	exited := make(chan struct{})
+	s.cmd, s.exited = cmd, exited
 	slog.Info("iostunnel: started", "binary", s.binPath, "pid", cmd.Process.Pid)
 
 	// Reap the process when it exits so we don't leak zombies.
@@ -180,9 +182,10 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 		s.mu.Lock()
 		// Only clear if this Wait matches the current cmd (not a newer Start).
 		if s.cmd == cmd {
-			s.cmd = nil
+			s.cmd, s.exited = nil, nil
 		}
 		s.mu.Unlock()
+		close(exited)
 		if err != nil {
 			slog.Error("iostunnel: subprocess exited", "error", err)
 		} else {
@@ -194,12 +197,14 @@ func (s *Supervisor) startLocked(ctx context.Context) error {
 }
 
 // Stop signals the tunnel subprocess to exit (SIGTERM, then SIGKILL
-// after a grace period) and waits for it to reap. Safe to call even
-// if Start was never called or has already returned.
+// after a grace period) and returns once it has exited. Safe to call
+// even if Start was never called or has already returned. Concurrent
+// Stops all wait for the exit: at shutdown health.Supervise and the
+// daemon both stop the tunnel, and a Stop that returned early let the
+// daemon exit before a tunnel slow to honour SIGTERM was killed (DH-38).
 func (s *Supervisor) Stop(ctx context.Context) error {
 	s.mu.Lock()
-	cmd := s.cmd
-	s.cmd = nil
+	cmd, exited := s.cmd, s.exited
 	s.mu.Unlock()
 	if cmd == nil || cmd.Process == nil {
 		return nil
@@ -210,45 +215,21 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 		slog.Error("iostunnel: SIGTERM failed; falling through", "error", err)
 	}
 
-	// Wait up to 3 s for clean shutdown, then SIGKILL. The Wait()
-	// call in the Start goroutine may already have run; we need our
-	// own bounded wait independent of it.
-	done := make(chan error, 1)
-	go func() {
-		_, err := cmd.Process.Wait()
-		done <- err
-	}()
-
+	// Wait up to 3 s for clean shutdown, then SIGKILL.
 	deadline := time.NewTimer(3 * time.Second)
 	defer deadline.Stop()
 	select {
-	case err := <-done:
-		if err != nil && !isAlreadyReaped(err) {
-			slog.Info("iostunnel: process Wait returned error (likely already reaped)", "error", err)
-		}
+	case <-exited:
 		slog.Info("iostunnel: stopped cleanly")
 		return nil
 	case <-deadline.C:
 		_ = cmd.Process.Kill()
-		<-done
+		<-exited
 		slog.Warn("iostunnel: SIGTERM timed out; SIGKILLed")
 		return nil
 	case <-ctx.Done():
 		_ = cmd.Process.Kill()
-		<-done
+		<-exited
 		return ctx.Err()
 	}
-}
-
-// isAlreadyReaped is true when Process.Wait fails because the
-// goroutine in Start already reaped the process. ECHILD is what the
-// kernel returns in that case on macOS / Linux.
-func isAlreadyReaped(err error) bool {
-	var pathErr *os.SyscallError
-	if errors.As(err, &pathErr) && errors.Is(pathErr.Err, syscall.ECHILD) {
-		return true
-	}
-	// Some platforms return a wrapped error string; do a substring
-	// match as a defensive fallback.
-	return err == io.EOF
 }
