@@ -224,7 +224,10 @@ func (s *Session) Call(ctx context.Context, method string, params any, timeout t
 	// that answers just inside idle still works without a prior beat.
 	s.noteProgress()
 
-	if err := s.writeEnvelopeContext(ctx, &Envelope{ID: id, Method: method, Params: raw}); err != nil {
+	writeCtx, cancelWrite := context.WithTimeout(ctx, idle)
+	err = s.writeEnvelopeContext(writeCtx, &Envelope{ID: id, Method: method, Params: raw})
+	cancelWrite()
+	if err != nil {
 		return nil, err
 	}
 
@@ -349,7 +352,9 @@ func (s *Session) supportsLocked(method string) bool {
 }
 
 func (s *Session) writeEnvelope(env *Envelope) error {
-	return s.writeEnvelopeContext(context.Background(), env)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultRequestTimeout)
+	defer cancel()
+	return s.writeEnvelopeContext(ctx, env)
 }
 
 // Context bounds both waiting behind another writer and the actual TCP write.

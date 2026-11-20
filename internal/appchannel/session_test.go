@@ -5,6 +5,7 @@ package appchannel
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -496,5 +497,25 @@ func TestOversizedRequestLeavesSessionUsable(t *testing.T) {
 	var result map[string]bool
 	if err = UnpackParams(reply, &result); err != nil || !result["ok"] {
 		t.Fatalf("valid reply=%v err=%v", result, err)
+	}
+}
+
+func TestCallIdleBudgetBoundsInitialWrite(t *testing.T) {
+	host, peer := net.Pipe()
+	t.Cleanup(func() { _ = host.Close(); _ = peer.Close() })
+	s := &Session{conn: host, pending: make(map[uint64]*pending)}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.Call(context.Background(), MethodPing, nil, 30*time.Millisecond)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("want a socket timeout, got %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("unread request outlived its write budget")
 	}
 }
