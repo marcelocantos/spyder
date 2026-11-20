@@ -653,6 +653,85 @@ func TestEmptyRuntimeSelectsNewestIOS(t *testing.T) {
 	}
 }
 
+// Two managers over one file (the installed daemon and a second
+// `spyder serve` that was not given its own data directory) must not
+// hand out one simulator twice, and the last write must not drop the
+// other lease (DH-16). The second manager is opened before the first
+// acquire, so its memory starts empty.
+func TestTwoManagersOverOneFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sim-leases.json")
+	f := &fakeSimctl{}
+	f.add("AAAAAAAA-0000-4000-8000-000000000001", "shut", iphone16, runtime18, "Shutdown")
+	c := &clock{t: time.Unix(1_800_000_000, 0)}
+	m1 := newManager(t, f, c, path)
+	m2 := newManager(t, f, c, path)
+
+	a, err := m1.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m2.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m3 := newManager(t, f, c, path)
+	n := len(m3.Status(ctx).Leases)
+	if a.UDID == b.UDID || n != 2 {
+		t.Fatalf("a=%s (%s) b=%s (%s): same simulator=%v; lease file holds %d of 2 leases",
+			a.ID, a.UDID, b.ID, b.UDID, a.UDID == b.UDID, n)
+	}
+
+	if _, err := m1.Release(ctx, a.ID, "a"); err != nil {
+		t.Fatal(err)
+	}
+	m4 := newManager(t, f, c, path)
+	left := m4.Status(ctx).Leases
+	if len(left) != 1 || left[0].ID != b.ID {
+		t.Fatalf("after one release the file holds %+v; want only %s", left, b.ID)
+	}
+}
+
+// A lease file in the shape the installed daemon writes (a JSON array
+// of lease objects, no lock sidecar) still gates that simulator.
+func TestOldLeaseFileStillGatesTheSimulator(t *testing.T) {
+	const udid = "AAAAAAAA-0000-4000-8000-000000000001"
+	path := filepath.Join(t.TempDir(), "sim-leases.json")
+	body := `[
+  {
+    "id": "aaaaaaaaaaaaaaaa",
+    "udid": "AAAAAAAA-0000-4000-8000-000000000001",
+    "name": "shut",
+    "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+    "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-18-6",
+    "owner": "a",
+    "action": "booted",
+    "ttl_s": 1800,
+    "acquired_at": "2027-01-15T08:00:00Z",
+    "renewed_at": "2027-01-15T08:00:00Z",
+    "expires_at": "2027-01-15T08:30:00Z"
+  }
+]`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeSimctl{}
+	f.add(udid, "shut", iphone16, runtime18, "Shutdown")
+	c := &clock{t: time.Date(2027, 1, 15, 8, 1, 0, 0, time.UTC)}
+	m := newManager(t, f, c, path)
+	b, err := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.UDID == udid {
+		t.Fatal("new manager leased the simulator named in the old lease file")
+	}
+	again := newManager(t, f, c, path)
+	n := len(again.Status(ctx).Leases)
+	if n != 2 {
+		t.Fatalf("lease file holds %d leases; want the old one and the new one", n)
+	}
+}
+
 func TestParseLaunchdSimUptimes(t *testing.T) {
 	ps := "   1-02:03:04 /Library/Developer/PrivateFrameworks/CoreSimulator.framework/Resources/bin/launchd_sim /Users/m/Library/Developer/CoreSimulator/Devices/ECE9E981-66E5-40C7-A2E2-B4340FFC73A1/data/var/run/launchd_bootstrap.plist\n" +
 		"      05:06 /usr/bin/other /Users/m/Library/Developer/CoreSimulator/Devices/NOPE/data\n"

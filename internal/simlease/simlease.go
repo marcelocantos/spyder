@@ -15,6 +15,7 @@
 package simlease
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -27,6 +28,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -155,6 +157,10 @@ type Manager struct {
 	mu              sync.Mutex
 	leases          map[string]*Lease      // by lease ID
 	inFlight        map[string]bool        // lease IDs an Acquire in this process is still working on
+	removed         map[string]bool        // lease IDs this process deleted; a later reload must not bring them back
+	loadedAtStart   map[string]bool        // ids read by New; a pending one is a dead daemon's leftover
+	bornHere        map[string]bool        // ids Acquire in this process created
+	bookLock        *os.File               // exclusive flock on path+".lock" while a critical section holds it
 	prov            map[string]*Provenance // by provKey(device id)
 	pruning         map[string]bool        // provKey'd ids a prune is deleting
 	lastPersist     time.Time
@@ -165,36 +171,36 @@ type Manager struct {
 // reap; call Reap or Run for that.
 func New(args *Args) (*Manager, error) {
 	m := &Manager{
-		sim:       args.Simctl,
-		path:      args.Path,
-		now:       args.Now,
-		onRelease: args.OnRelease,
-		provPath:  args.ProvenancePath,
-		auditPath: args.AuditPath,
-		android:   args.Android,
-		leases:    map[string]*Lease{},
-		inFlight:  map[string]bool{},
-		prov:      map[string]*Provenance{},
-		pruning:   map[string]bool{},
+		sim:           args.Simctl,
+		path:          args.Path,
+		now:           args.Now,
+		onRelease:     args.OnRelease,
+		provPath:      args.ProvenancePath,
+		auditPath:     args.AuditPath,
+		android:       args.Android,
+		leases:        map[string]*Lease{},
+		inFlight:      map[string]bool{},
+		removed:       map[string]bool{},
+		loadedAtStart: map[string]bool{},
+		bornHere:      map[string]bool{},
+		prov:          map[string]*Provenance{},
+		pruning:       map[string]bool{},
 	}
 	if m.now == nil {
 		m.now = time.Now
 	}
 	if m.path != "" {
-		data, err := os.ReadFile(m.path)
-		switch {
-		case errors.Is(err, os.ErrNotExist):
-		case err != nil:
-			return nil, fmt.Errorf("simlease: read %s: %w", m.path, err)
-		default:
-			var list []Lease
-			if err := json.Unmarshal(data, &list); err != nil {
-				return nil, fmt.Errorf("simlease: parse %s: %w", m.path, err)
+		list, err := readLeaseFile(m.path)
+		if err != nil {
+			return nil, err
+		}
+		for i := range list {
+			l := list[i]
+			if l.ID == "" {
+				continue
 			}
-			for i := range list {
-				l := list[i]
-				m.leases[l.ID] = &l
-			}
+			m.leases[l.ID] = &l
+			m.loadedAtStart[l.ID] = true
 		}
 	}
 	if err := m.loadProvenance(); err != nil {
@@ -203,25 +209,223 @@ func New(args *Args) (*Manager, error) {
 	return m, nil
 }
 
-// persistLocked writes the lease book atomically. Callers hold m.mu.
+// persistLocked merges this manager's leases into the on-disk book and
+// writes that. Callers hold m.mu. Two managers share one file (DH-16):
+// the last writer must not drop a lease it does not have in memory, and
+// a lease this process removed must not come back from an older copy.
 func (m *Manager) persistLocked() error {
 	m.lastPersist = m.now()
 	if m.path == "" {
 		return nil
 	}
-	list := m.sortedLocked()
-	data, err := json.MarshalIndent(list, "", "  ")
-	if err != nil {
+	owned := m.bookLock == nil
+	if owned {
+		if err := m.lockBook(); err != nil {
+			return err
+		}
+		defer m.unlockBook()
+	}
+	return m.writeMergedLocked()
+}
+
+// beginBook takes the file lock and loads the book. Callers hold m.mu.
+// A peer's lease written after New is visible before this manager
+// chooses a simulator. unlockBook releases the lock; it does not write.
+func (m *Manager) beginBook() error {
+	if err := m.lockBook(); err != nil {
 		return err
+	}
+	if err := m.adoptDiskLocked(); err != nil {
+		m.unlockBook()
+		return err
+	}
+	return nil
+}
+
+func (m *Manager) lockBook() error {
+	if m.path == "" || m.bookLock != nil {
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(m.path), 0o755); err != nil {
 		return err
 	}
-	tmp := m.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	f, err := os.OpenFile(m.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, m.path)
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		if err != syscall.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	m.bookLock = f
+	return nil
+}
+
+func (m *Manager) unlockBook() {
+	if m.bookLock == nil {
+		return
+	}
+	if err := m.bookLock.Close(); err != nil {
+		slog.Error("simlease: unlock", "path", m.path, "error", err)
+	}
+	m.bookLock = nil
+}
+
+func (m *Manager) noteRemoved(id string) {
+	m.removed[id] = true
+}
+
+// adoptDiskLocked copies the file into m.leases. An in-flight lease keeps
+// the pointer Acquire is filling in. A removed id stays gone. Callers
+// hold m.mu and the file lock.
+func (m *Manager) adoptDiskLocked() error {
+	if m.path == "" {
+		return nil
+	}
+	list, err := readLeaseFile(m.path)
+	if err != nil {
+		return err
+	}
+	seen := map[string]bool{}
+	for i := range list {
+		src := list[i]
+		if src.ID == "" || m.removed[src.ID] {
+			continue
+		}
+		seen[src.ID] = true
+		if cur, ok := m.leases[src.ID]; ok {
+			if m.inFlight[src.ID] {
+				continue
+			}
+			*cur = src
+			continue
+		}
+		l := src
+		m.leases[src.ID] = &l
+	}
+	for id := range m.leases {
+		if seen[id] || m.inFlight[id] {
+			continue
+		}
+		delete(m.leases, id)
+	}
+	return nil
+}
+
+func readLeaseFile(path string) ([]Lease, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("simlease: read %s: %w", path, err)
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
+	}
+	var list []Lease
+	if err := json.Unmarshal(data, &list); err != nil {
+		return nil, fmt.Errorf("simlease: parse %s: %w", path, err)
+	}
+	return list, nil
+}
+
+// writeMergedLocked re-reads the file, drops tombstoned ids, overlays
+// this manager's leases, and renames a private temp file over the book.
+// Callers hold m.mu and the file lock.
+func (m *Manager) writeMergedLocked() error {
+	disk, err := readLeaseFile(m.path)
+	if err != nil {
+		return err
+	}
+	merged := make(map[string]Lease, len(disk)+len(m.leases))
+	for i := range disk {
+		l := disk[i]
+		if l.ID == "" || m.removed[l.ID] {
+			continue
+		}
+		merged[l.ID] = l
+	}
+	for id, l := range m.leases {
+		if m.removed[id] {
+			delete(merged, id)
+			continue
+		}
+		merged[id] = *l
+	}
+	list := make([]Lease, 0, len(merged))
+	for _, l := range merged {
+		list = append(list, l)
+	}
+	sort.Slice(list, func(i, j int) bool { return list[i].AcquiredAt.Before(list[j].AcquiredAt) })
+	data, err := json.MarshalIndent(list, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	dir := filepath.Dir(m.path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".sim-leases-*.json")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	keep := false
+	defer func() {
+		if !keep {
+			_ = os.Remove(tmpName)
+		}
+	}()
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, m.path); err != nil {
+		return err
+	}
+	keep = true
+	if dirf, err := os.Open(dir); err == nil {
+		if err := dirf.Sync(); err != nil {
+			slog.Error("simlease: directory sync", "path", dir, "error", err)
+		}
+		_ = dirf.Close()
+	}
+	for id, src := range merged {
+		if cur, ok := m.leases[id]; ok {
+			if !m.inFlight[id] {
+				*cur = src
+			}
+			continue
+		}
+		l := src
+		m.leases[id] = &l
+	}
+	for id := range m.leases {
+		if _, ok := merged[id]; ok || m.inFlight[id] {
+			continue
+		}
+		delete(m.leases, id)
+	}
+	return nil
 }
 
 func (m *Manager) sortedLocked() []Lease {
@@ -302,6 +506,10 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	ttl := clampTTL(args.TTL)
 
 	m.mu.Lock()
+	if err := m.beginBook(); err != nil {
+		m.mu.Unlock()
+		return Lease{}, err
+	}
 	now := m.now()
 	for _, l := range m.leases {
 		if l.Owner == args.Owner && l.DeviceType == deviceType && l.Runtime == runtime &&
@@ -314,10 +522,12 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 			l.ExpiresAt = now.Add(ttl)
 			m.mustPersistLocked()
 			out := *l
+			m.unlockBook()
 			m.mu.Unlock()
 			return out, nil
 		}
 	}
+	m.unlockBook()
 	m.mu.Unlock()
 
 	sims, err := m.sim.List(ctx)
@@ -326,6 +536,10 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	}
 
 	m.mu.Lock()
+	if err := m.beginBook(); err != nil {
+		m.mu.Unlock()
+		return Lease{}, err
+	}
 	leased := map[string]bool{}
 	// A created lease is recorded before Create returns, so it has no
 	// UDID yet. The simulator can already be listed under its name.
@@ -386,10 +600,12 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	// leaves a pending record the next daemon's reaper undoes, and a
 	// concurrent Acquire skips the claimed simulator.
 	m.leases[l.ID] = l
+	m.bornHere[l.ID] = true
 	if l.Pending {
 		m.inFlight[l.ID] = true
 	}
 	m.mustPersistLocked()
+	m.unlockBook()
 	m.mu.Unlock()
 
 	if l.Action == ActionAlreadyRunning {
@@ -417,8 +633,12 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 			return Lease{}, fmt.Errorf("sim_acquire: create %s (%s, %s): %w", l.Name, deviceType, runtime, err)
 		}
 		m.mu.Lock()
+		if err := m.beginBook(); err != nil {
+			slog.Error("simlease: reload before recording udid", "lease", l.ID, "error", err)
+		}
 		l.UDID = udid
 		m.mustPersistLocked()
+		m.unlockBook()
 		m.mu.Unlock()
 	}
 
@@ -428,12 +648,19 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	}
 
 	m.mu.Lock()
+	// Reload while the lease is still in flight so a peer's newer copy
+	// of some other lease replaces ours, and this pointer keeps the UDID
+	// Create just recorded.
+	if err := m.beginBook(); err != nil {
+		slog.Error("simlease: reload before finishing acquire", "lease", l.ID, "error", err)
+	}
 	delete(m.inFlight, l.ID)
 	l.Pending = false
 	// The TTL starts once the simulator is usable.
 	l.RenewedAt = m.now()
 	l.ExpiresAt = l.RenewedAt.Add(ttl)
 	m.mustPersistLocked()
+	m.unlockBook()
 	m.recordAcquireLocked(l)
 	out := *l
 	m.mu.Unlock()
@@ -446,8 +673,14 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 func (m *Manager) dropLease(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.beginBook(); err != nil {
+		slog.Error("simlease: reload before drop", "lease", id, "error", err)
+	} else {
+		defer m.unlockBook()
+	}
 	delete(m.inFlight, id)
 	delete(m.leases, id)
+	m.noteRemoved(id)
 	m.mustPersistLocked()
 }
 
@@ -598,6 +831,11 @@ func (m *Manager) release(ctx context.Context, id, reason string) (Released, err
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if bookErr := m.beginBook(); bookErr != nil {
+		slog.Error("simlease: reload before release", "lease", id, "error", bookErr)
+	} else {
+		defer m.unlockBook()
+	}
 	if err != nil {
 		if l, ok := m.leases[id]; ok {
 			l.LastError = err.Error()
@@ -606,6 +844,7 @@ func (m *Manager) release(ctx context.Context, id, reason string) (Released, err
 		return Released{}, fmt.Errorf("release simulator lease %s (%s): %w", snap.ID, snap.UDID, err)
 	}
 	delete(m.leases, id)
+	m.noteRemoved(id)
 	m.mustPersistLocked()
 	m.recordReleaseLocked(snap, undo)
 	out := Released{Lease: snap, Undo: undo, Reason: reason}
@@ -710,6 +949,10 @@ func (m *Manager) protectedUDIDs(exceptLease string) (held, claimed map[string]b
 func (m *Manager) Renew(ref, owner string, ttl time.Duration) (Lease, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err := m.beginBook(); err != nil {
+		return Lease{}, err
+	}
+	defer m.unlockBook()
 	l := m.findLocked(ref)
 	if l == nil {
 		return Lease{}, fmt.Errorf("%w: %s", ErrNotFound, ref)
@@ -731,13 +974,22 @@ func (m *Manager) Renew(ref, owner string, ttl time.Duration) (Lease, error) {
 func (m *Manager) Touch(udid string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	now := m.now()
+	persist := m.path != "" && now.Sub(m.lastPersist) >= touchPersistEvery
+	if persist {
+		if err := m.beginBook(); err != nil {
+			slog.Error("simlease: reload before touch", "path", m.path, "error", err)
+		} else {
+			defer m.unlockBook()
+		}
+	}
 	for _, l := range m.leases {
 		if !strings.EqualFold(l.UDID, udid) || l.Pending {
 			continue
 		}
-		l.RenewedAt = m.now()
+		l.RenewedAt = now
 		l.ExpiresAt = l.RenewedAt.Add(l.ttl())
-		if m.now().Sub(m.lastPersist) >= touchPersistEvery {
+		if persist {
 			m.mustPersistLocked()
 		}
 	}
@@ -771,8 +1023,12 @@ func (m *Manager) Reap(ctx context.Context) []Released {
 		if m.inFlight[id] {
 			continue // an Acquire in this process is still creating or booting it
 		}
-		// A pending record no Acquire here owns is from a daemon that died
-		// mid-acquire.
+		// A pending lease adopted from a peer may still be in Create.
+		// Only a record this process started, or one loaded at startup
+		// from a daemon that is gone, is safe to undo (DH-16).
+		if l.Pending && !m.bornHere[id] && !m.loadedAtStart[id] {
+			continue
+		}
 		if l.Pending || !now.Before(l.ExpiresAt) {
 			due = append(due, id)
 		}
