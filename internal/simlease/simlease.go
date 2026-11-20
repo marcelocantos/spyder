@@ -589,7 +589,7 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	default:
 		l.Name = args.Name
 		if l.Name == "" {
-			l.Name = NamePrefix + l.ID[:8]
+			l.Name = createdLeaseName(l.ID)
 		}
 		l.Action, l.Pending = ActionCreated, true
 	}
@@ -916,14 +916,15 @@ func (m *Manager) undo(ctx context.Context, l Lease) (string, error) {
 }
 
 // matchUndoTarget finds the simulator undo may touch. A recorded UDID
-// matches that device only. A created lease whose daemon died before
-// Create returned has no UDID: the name alone is not enough, because a
-// pinned name such as "iPhone 16 Pro" is shared. Require the device
-// type and runtime as well, skip a UDID another lease holds or anyone
-// has claimed, and act only when exactly one simulator remains. Zero
-// or several is a leak, which is safer than deleting the wrong one (DH-08).
+// matches that device only. Without a recorded UDID, require the lease's
+// generated name plus the device type and runtime. A caller-supplied
+// name cannot prove which simulator a cancelled create touched.
 func (m *Manager) matchUndoTarget(l Lease, sims []Sim) (Sim, bool) {
+	held, claimed := m.protectedUDIDs(l.ID)
 	if l.UDID != "" {
+		if held[provKey(l.UDID)] {
+			return Sim{}, false
+		}
 		for i := range sims {
 			if strings.EqualFold(sims[i].UDID, l.UDID) {
 				return sims[i], true
@@ -931,10 +932,9 @@ func (m *Manager) matchUndoTarget(l Lease, sims []Sim) (Sim, bool) {
 		}
 		return Sim{}, false
 	}
-	if l.Action != ActionCreated {
+	if l.Action != ActionCreated || l.Name == "" || l.Name != createdLeaseName(l.ID) {
 		return Sim{}, false
 	}
-	held, claimed := m.protectedUDIDs(l.ID)
 	var found *Sim
 	n := 0
 	for i := range sims {
@@ -953,6 +953,14 @@ func (m *Manager) matchUndoTarget(l Lease, sims []Sim) (Sim, bool) {
 		return Sim{}, false
 	}
 	return *found, true
+}
+
+func createdLeaseName(id string) string {
+	const prefixLength = 8
+	if len(id) < prefixLength {
+		return ""
+	}
+	return NamePrefix + id[:prefixLength]
 }
 
 // protectedUDIDs is the set of device ids undo must not guess at.

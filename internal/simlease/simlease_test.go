@@ -794,3 +794,23 @@ func TestReaperKeepsLeaseRenewedByPeer(t *testing.T) {
 		t.Fatalf("stale reaper released a lease renewed by a peer: %+v", got)
 	}
 }
+
+func TestCancelledCreateDoesNotUndoPreexistingPinnedSimulator(t *testing.T) {
+	const udid = "AAAAAAAA-0000-4000-8000-000000000001"
+	f := &fakeSimctl{createErr: context.Canceled}
+	f.add(udid, "pinned", iphone16, runtime18, "Shutdown")
+	f.sims[0].IsAvailable = false
+	path := filepath.Join(t.TempDir(), "sim-leases.json")
+	c := &clock{t: time.Now()}
+	m := newManager(t, f, c, path)
+	create, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := m.Acquire(create, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "one", Name: "pinned"}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("acquire = %v, want cancellation", err)
+	}
+	peer := newManager(t, f, c, path)
+	peer.Reap(t.Context())
+	if got := f.state(udid); got != "Shutdown" {
+		t.Fatalf("reaping a cancelled create touched a preexisting simulator: state=%q calls=%v", got, f.mutations())
+	}
+}
