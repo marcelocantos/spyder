@@ -593,7 +593,7 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 
 	if h.dispatchWatch != nil {
 		h.dispatchWatch.Begin()
-		// Done only on the success path below. On timeout, ownership of
+		// On a daemon deadline, ownership of
 		// outstanding transfers to maybeSelfRestartAfterStuck: Done() before
 		// ForceStall would clear outstanding and make ForceStall a no-op
 		// (🎯T99.3). Done after ForceStall would RecoverySucceeded and clear
@@ -638,23 +638,31 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 	case o := <-ch:
 		result, err = o.result, o.err
 	case <-ctx.Done():
+		daemonDeadline := context.Cause(ctx) == errDispatchDeadline
 		// Best-effort: let the handler goroutine finish in the background;
 		// we still return a structured timeout so the agent can proceed.
 		elapsed := time.Since(started)
 		// Invalidation may need the same mutex/provider connection as the
 		// stalled handler. It must never delay this response or self-recovery.
-		if executing.Load() {
+		if daemonDeadline && executing.Load() {
 			go h.invalidateOnTimeout(name, dev)
 		}
 		close(done)
 		installing := h.ops != nil && h.ops.isInstalling(opID)
 		msg := formatTimeoutError(name, dev, elapsed, installing)
-		slog.Error("mcp dispatch timeout",
-			"tool", name, "device", dev, "duration_ms", elapsed.Milliseconds())
 		// 🎯T99.3: if the handler is still stuck after a grace period,
 		// force-stall daemon-self and request supervised self-restart.
-		// Do not Done the watchdog here — see completeStuckDispatch.
-		go h.maybeSelfRestartAfterStuck(name, dev, finished)
+		if daemonDeadline {
+			slog.Error("mcp dispatch timeout",
+				"tool", name, "device", dev, "duration_ms", elapsed.Milliseconds())
+			go h.maybeSelfRestartAfterStuck(name, dev, finished)
+		} else {
+			slog.Info("mcp dispatch caller ended",
+				"tool", name, "device", dev, "duration_ms", elapsed.Milliseconds(), "error", ctx.Err())
+			if h.dispatchWatch != nil {
+				h.dispatchWatch.Done()
+			}
+		}
 		return toolErr("%s", msg)
 	}
 	close(done)

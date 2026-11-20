@@ -25,7 +25,7 @@ func TestDispatch_TimeoutReturnsStructuredError(t *testing.T) {
 	DeadlineDeviceOp = 40 * time.Millisecond
 	t.Cleanup(func() { DeadlineDeviceOp = save })
 
-	h := NewHandler()
+	h := newHandlerWithStubs(t, &stubAdapter{}, &stubAdapter{})
 	h.testHandlers = map[string]toolFunc{
 		"screenshot": func(args map[string]any) (*mcpgo.CallToolResult, error) {
 			time.Sleep(5 * time.Second)
@@ -35,13 +35,13 @@ func TestDispatch_TimeoutReturnsStructuredError(t *testing.T) {
 
 	var invalidated atomic.Int32
 	h.onDeviceTimeout = func(device string) {
-		if device == "Jevons" {
+		if device == "iPad" {
 			invalidated.Add(1)
 		}
 	}
 
 	started := time.Now()
-	res, err := h.Dispatch(context.Background(), "screenshot", map[string]any{"device": "Jevons"})
+	res, err := h.Dispatch(context.Background(), "screenshot", map[string]any{"device": "iPad"})
 	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("Dispatch returned transport err: %v", err)
@@ -53,7 +53,7 @@ func TestDispatch_TimeoutReturnsStructuredError(t *testing.T) {
 	if !strings.Contains(text, "tool timeout") || !strings.Contains(text, "screenshot") {
 		t.Fatalf("timeout text: %q", text)
 	}
-	if !strings.Contains(text, "Jevons") {
+	if !strings.Contains(text, "iPad") {
 		t.Fatalf("timeout should name device: %q", text)
 	}
 	if elapsed > 500*time.Millisecond {
@@ -90,7 +90,7 @@ func TestDispatch_StuckTriggersSelfRestart(t *testing.T) {
 	DeadlineDeviceOp = 30 * time.Millisecond
 	t.Cleanup(func() { DeadlineDeviceOp = saveD })
 
-	h := NewHandler()
+	h := newHandlerWithStubs(t, &stubAdapter{}, &stubAdapter{})
 	h.EnableSelfHeal(time.Hour, 20*time.Millisecond) // long watchdog: only ForceStall path
 	var dumps, exits atomic.Int32
 	h.selfRestart = health.NewSelfRestartLimiterForTest(3, time.Hour, func(int) { exits.Add(1) })
@@ -103,11 +103,11 @@ func TestDispatch_StuckTriggersSelfRestart(t *testing.T) {
 		},
 	}
 
-	res, err := h.Dispatch(context.Background(), "screenshot", map[string]any{"device": "Jevons"})
+	res, err := h.Dispatch(context.Background(), "screenshot", map[string]any{"device": "iPad"})
 	if err != nil {
 		t.Fatalf("Dispatch transport err: %v", err)
 	}
-	if res == nil || !res.IsError {
+	if res == nil || !res.IsError || !strings.Contains(resultErrorText(t, res), "tool timeout") {
 		t.Fatalf("want timeout IsError, got %+v", res)
 	}
 
@@ -243,7 +243,7 @@ func TestDispatch_InFlightOpsListsActiveCall(t *testing.T) {
 	DeadlineDeviceOp = 2 * time.Second
 	t.Cleanup(func() { DeadlineDeviceOp = save })
 
-	h := NewHandler()
+	h := newHandlerWithStubs(t, &stubAdapter{}, &stubAdapter{})
 	entered := make(chan struct{})
 	release := make(chan struct{})
 	h.testHandlers = map[string]toolFunc{
@@ -257,14 +257,18 @@ func TestDispatch_InFlightOpsListsActiveCall(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = h.Dispatch(context.Background(), "screenshot", map[string]any{"device": "Pixel"})
+		_, _ = h.Dispatch(context.Background(), "screenshot", map[string]any{"device": "iPad"})
 	}()
-	<-entered
+	select {
+	case <-entered:
+	case <-done:
+		t.Fatal("dispatch returned before entering the fake handler")
+	}
 	ops := h.InFlightOps()
 	if len(ops) != 1 {
 		t.Fatalf("in-flight ops: got %d want 1: %+v", len(ops), ops)
 	}
-	if ops[0].Tool != "screenshot" || ops[0].Device != "Pixel" {
+	if ops[0].Tool != "screenshot" || ops[0].Device != "iPad" {
 		t.Fatalf("op snapshot: %+v", ops[0])
 	}
 	close(release)

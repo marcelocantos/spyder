@@ -5,6 +5,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/installdeadline"
 )
+
+var errDispatchDeadline = errors.New("daemon dispatch deadline exceeded")
 
 // Tool-class deadlines (🎯T99.1). Tunable vars so tests can shorten them.
 // Zero means no extra timeout beyond the caller's context.
@@ -231,7 +234,7 @@ func withDispatchDeadline(ctx context.Context, name string, args map[string]any,
 	if d <= 0 {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, d)
+	return context.WithTimeoutCause(ctx, d, errDispatchDeadline)
 }
 
 // withToolDeadline derives a child context with the tool-class timeout, or

@@ -51,6 +51,57 @@ func requireNoSelfRestart(t *testing.T, exits *atomic.Int32) {
 	}
 }
 
+func TestDispatch_ClientCancellationDoesNotRequestRestart(t *testing.T) {
+	for _, timeout := range []bool{false, true} {
+		name := "disconnect"
+		if timeout {
+			name = "shorter client deadline"
+		}
+		t.Run(name, func(t *testing.T) {
+			h, exits := selfHealHandler(t, &stubAdapter{})
+			started, finish := make(chan struct{}), make(chan struct{})
+			defer close(finish)
+			adapter := h.ios.(*stubAdapter)
+			adapter.rotate = func(_, _ string) error {
+				close(started)
+				<-finish
+				return nil
+			}
+			parent := context.Background()
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if timeout {
+				ctx, cancel = context.WithDeadline(parent, time.Now().Add(time.Second))
+			} else {
+				ctx, cancel = context.WithCancel(parent)
+			}
+			defer cancel()
+			returned := make(chan bool, 1)
+			go func() {
+				res, err := h.Dispatch(ctx, "rotate", map[string]any{"device": "iPad", "orientation": "landscape"})
+				returned <- err == nil && res != nil && res.IsError
+			}()
+			select {
+			case <-started:
+			case <-time.After(10 * time.Second):
+				t.Fatal("fake rotation never started")
+			}
+			if !timeout {
+				cancel()
+			}
+			select {
+			case isError := <-returned:
+				if !isError {
+					t.Fatal("dispatch did not return its existing structured timeout")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("dispatch did not return when the client left")
+			}
+			requireNoSelfRestart(t, exits)
+		})
+	}
+}
+
 // slowAlertStub shows an alert and taps only when its context ends, like a
 // device whose alert runner is held up by a concurrent install.
 type slowAlertStub struct {
