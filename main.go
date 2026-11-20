@@ -558,6 +558,22 @@ func runWithReservation(args []string, beforeAcquire func()) {
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
+	// The wrapped command's children (make, xcodebuild, a shell's
+	// background jobs) must die before the lease is released, or the
+	// next holder shares the device with them (DH-12).
+	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	child.WaitDelay = 2 * time.Second
+	child.Cancel = func() error {
+		if child.Process == nil {
+			return os.ErrProcessDone
+		}
+		pid := child.Process.Pid
+		err := syscall.Kill(-pid, syscall.SIGTERM)
+		time.AfterFunc(child.WaitDelay, func() {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+		})
+		return err
+	}
 	runErr := child.Run()
 	exitCode := 0
 	if runErr != nil {
