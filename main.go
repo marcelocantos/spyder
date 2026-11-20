@@ -346,6 +346,27 @@ func parseRunArgs(args []string) (runArgs, error) {
 	return out, nil
 }
 
+// waitReservationGate blocks while SPYDER_TEST_RESV_GATE names a directory.
+// It writes "ready" in that directory, then waits until "go" appears.
+// The variable is unset outside the reservation two-process tests.
+func waitReservationGate() error {
+	dir := os.Getenv("SPYDER_TEST_RESV_GATE")
+	if dir == "" {
+		return nil
+	}
+	if err := os.WriteFile(filepath.Join(dir, "ready"), []byte("1"), 0o600); err != nil {
+		return fmt.Errorf("reservation gate: %w", err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(filepath.Join(dir, "go")); err == nil {
+			return nil
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return errors.New("reservation gate timed out")
+}
+
 // deriveOwner returns the supplied owner or falls back to
 // filepath.Base(cwd). Used by `spyder run` to pick a sensible
 // project-oriented identity without requiring a flag.
@@ -389,12 +410,22 @@ func runCmd(args []string) {
 		parsed.Device = alias
 	}
 
-	resvStore, resvErr := reservations.New(
+	resvStore, resvQuarantine, resvErr := reservations.OpenBook(
 		filepath.Join(paths.Base(), "reservations.json"),
 		reservations.WithNormalizer(normalize),
 	)
 	if resvErr != nil {
 		fmt.Fprintf(os.Stderr, "spyder run: reservations unavailable: %v\n", resvErr)
+		os.Exit(1)
+	}
+	if resvQuarantine != "" {
+		fmt.Fprintf(os.Stderr, "spyder run: reservations book was corrupt; moved aside to %s and started empty\n", resvQuarantine)
+	}
+	// Tests hold the process here, after the book is open and before the
+	// grant, so another process can write the book in between. Unset in
+	// production: this returns immediately.
+	if err := waitReservationGate(); err != nil {
+		fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
 		os.Exit(1)
 	}
 	// runsStore is best-effort — if it fails we still run the command.

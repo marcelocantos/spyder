@@ -30,6 +30,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/dashboard"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/goios"
+	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/hostwifi"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
@@ -331,7 +332,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	// times a second; check the file at most once a second (🎯T168).
 	invStore.SetRecheckInterval(time.Second)
 	resvPath := filepath.Join(paths.Base(), "reservations.json")
-	resvStore, err := reservations.New(
+	resvStore, resvQuarantine, err := reservations.OpenBook(
 		resvPath,
 		reservations.WithNormalizer(func(ref string) string {
 			if entry, ok := invStore.Lookup(ref); ok && entry.Alias != "" {
@@ -344,6 +345,9 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 		slog.Warn("reservations unavailable; strict mode disabled",
 			"path", resvPath, "error", err)
 		resvStore = nil
+	} else if resvQuarantine != "" {
+		slog.Error("reservations book was corrupt; moved aside and started empty",
+			"path", resvPath, "quarantine", resvQuarantine)
 	}
 
 	runsPolicy := runsPolicyFromEnv()
@@ -424,6 +428,12 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	}
 
 	handler := spydermcp.NewHandler(handlerOpts...)
+	if resvQuarantine != "" && handler != nil {
+		handler.Health().Model().MarkNeedsAttention(
+			health.ID{Kind: health.KindDaemon, Name: "reservations"},
+			"reservations.json was corrupt and was moved to "+resvQuarantine,
+		)
+	}
 	if notifications, err := notify.Open(filepath.Join(paths.Base(), "notifications.json"), notify.WaitDevice); err != nil {
 		slog.Error("notifications unavailable", "error", err)
 	} else {
