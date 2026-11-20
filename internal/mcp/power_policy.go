@@ -63,7 +63,9 @@ func (h *Handler) recordLaunch(id, bundleID string) {
 }
 
 // deviceIDForRef maps an alias or id to the platform id the adapters
-// and the battery sampler use.
+// and the battery sampler use. For an inventory entry it is the id
+// resolveAdapter hands the adapter, which is also the id launches are
+// recorded under; any other id marks a different device active (DH-29).
 func (h *Handler) deviceIDForRef(ref string) string {
 	if h.inventory == nil {
 		return ref
@@ -72,11 +74,8 @@ func (h *Handler) deviceIDForRef(ref string) string {
 	if !ok {
 		return ref
 	}
-	switch {
-	case entry.AndroidSerial != "":
-		return entry.AndroidSerial
-	case entry.IOSUUID != "":
-		return entry.IOSUUID
+	if id := entryDeviceID(entry); id != "" {
+		return id
 	}
 	return ref
 }

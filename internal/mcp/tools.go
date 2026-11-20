@@ -1527,21 +1527,36 @@ func (h *Handler) resolveAdapter(ref string) (device.Adapter, string, string, er
 		}
 		return h.ios, "ios", ref, nil
 	}
+	id := entryDeviceID(entry)
 	switch entry.Platform {
 	case "ios":
-		id := entry.IOSUUID
-		if id == "" {
-			id = entry.IOSCoreDevice
-		}
 		return h.ios, "ios", id, nil
 	case "android":
-		return h.android, "android", entry.AndroidSerial, nil
+		return h.android, "android", id, nil
 	case "desktop":
-		// The executable path is the desktop "device id" (🎯T85).
-		return h.desktop, "desktop", entry.ExecutablePath, nil
+		return h.desktop, "desktop", id, nil
 	default:
 		return nil, "", "", fmt.Errorf("inventory entry %q has unknown platform %q", ref, entry.Platform)
 	}
+}
+
+// entryDeviceID is the id an adapter expects for an inventory entry.
+// resolveAdapter and deviceIDForRef must agree on it, because launches
+// are recorded under one and activity is marked under the other.
+func entryDeviceID(entry inventory.Entry) string {
+	switch entry.Platform {
+	case "ios":
+		if entry.IOSUUID != "" {
+			return entry.IOSUUID
+		}
+		return entry.IOSCoreDevice
+	case "android":
+		return entry.AndroidSerial
+	case "desktop":
+		// The executable path is the desktop "device id" (🎯T85).
+		return entry.ExecutablePath
+	}
+	return ""
 }
 
 // connectedListTimeout bounds the connected-device census on an inventory
