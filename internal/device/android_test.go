@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseAndroidBattery(t *testing.T) {
@@ -178,4 +179,44 @@ func TestAndroidAppPIDDistinguishesLookupFailure(t *testing.T) {
 			t.Fatalf("no pidof result = %v, want app not running", err)
 		}
 	})
+}
+
+func TestAndroidInventoryProbesHaveDeadlines(t *testing.T) {
+	for _, name := range []string{"List", "State"} {
+		t.Run(name, func(t *testing.T) {
+			var calls int
+			var deadline time.Time
+			t.Cleanup(SetAndroidAdbForTest(func(ctx context.Context, args ...string) ([]byte, []byte, error) {
+				calls++
+				got, ok := ctx.Deadline()
+				if !ok {
+					t.Errorf("%s command %v has no deadline", name, args)
+				}
+				if calls > 1 && deadline != got {
+					t.Errorf("%s restarted its budget for %v", name, args)
+				}
+				deadline = got
+				switch {
+				case args[0] == "devices":
+					return []byte("List of devices attached\nfixture device model:Test\n"), nil, nil
+				case args[3] == "getprop":
+					return []byte("16\n"), nil, nil
+				case args[3] == "dumpsys" && args[4] == "battery":
+					return []byte("level: 90\n"), nil, nil
+				default:
+					return nil, nil, nil
+				}
+			}))
+			a := NewAndroidAdapter()
+			var err error
+			if name == "List" {
+				_, err = a.List()
+			} else {
+				_, err = a.State("fixture")
+			}
+			if err != nil || calls != 3 {
+				t.Fatalf("%s used %d probe commands, error %v; want three successful fake calls", name, calls, err)
+			}
+		})
+	}
 }

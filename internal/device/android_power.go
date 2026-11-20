@@ -4,6 +4,7 @@
 package device
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
@@ -129,11 +130,13 @@ func boolPtr(b bool) *bool { return &b }
 // user-installed app, or "" when the foreground is the launcher, a
 // system app or nothing (🎯T194.3 step-in).
 func (a *AndroidAdapter) ThirdPartyForeground(id string) (string, error) {
-	pkg, err := androidForegroundApp(id)
+	ctx, cancel := context.WithTimeout(context.Background(), androidProbeTimeout)
+	defer cancel()
+	pkg, err := androidForegroundApp(ctx, id)
 	if err != nil || pkg == "" {
 		return "", err
 	}
-	out, stderr, err := androidAdbBG("-s", id, "shell", "pm", "list", "packages", "-3", adbShellWord(pkg))
+	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "pm", "list", "packages", "-3", adbShellWord(pkg))
 	if err != nil {
 		return "", fmt.Errorf("pm list packages: %s", truncate(string(stderr), 120))
 	}

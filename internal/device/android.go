@@ -44,6 +44,10 @@ func NewAndroidAdapter() *AndroidAdapter {
 	return &AndroidAdapter{cache: map[string]cachedState{}}
 }
 
+// androidProbeTimeout bounds a whole inventory or state probe, including
+// optional per-device details, so a hung adb cannot pin the sampler.
+const androidProbeTimeout = 10 * time.Second
+
 // List returns connected Android devices via `adb devices -l`. Each device
 // is queried for its model and OS version via `getprop`. Unauthorized or
 // offline devices are included but their Model/OS may be empty.
@@ -51,9 +55,14 @@ func (a *AndroidAdapter) List() ([]Info, error) {
 	if _, err := exec.LookPath("adb"); err != nil {
 		return nil, nil // adb not installed → treat as "no Android devices"
 	}
-	out, err := exec.Command("adb", "devices", "-l").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), androidProbeTimeout)
+	defer cancel()
+	out, stderr, err := androidAdb(ctx, "devices", "-l")
 	if err != nil {
-		return nil, fmt.Errorf("adb devices: %w", err)
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+		return nil, fmt.Errorf("adb devices: %w: %s", err, truncate(string(stderr), 200))
 	}
 	var devices []Info
 	for line := range strings.SplitSeq(string(out), "\n") {
@@ -86,10 +95,10 @@ func (a *AndroidAdapter) List() ([]Info, error) {
 		}
 		if state == "device" {
 			// getprop queries require the device to be fully online.
-			if m := getprop(serial, "ro.product.model"); m != "" {
+			if m := getprop(ctx, serial, "ro.product.model"); m != "" {
 				info.Model = m
 			}
-			if v := getprop(serial, "ro.build.version.release"); v != "" {
+			if v := getprop(ctx, serial, "ro.build.version.release"); v != "" {
 				info.OS = "Android " + v
 			}
 		}
@@ -98,8 +107,8 @@ func (a *AndroidAdapter) List() ([]Info, error) {
 	return devices, nil
 }
 
-func getprop(serial, key string) string {
-	out, err := exec.Command("adb", "-s", serial, "shell", "getprop", key).Output()
+func getprop(ctx context.Context, serial, key string) string {
+	out, _, err := androidAdb(ctx, "-s", serial, "shell", "getprop", key)
 	if err != nil {
 		return ""
 	}
@@ -130,7 +139,9 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 	var state State
 	var power Power
 
-	battOut, battStderr, battErr := androidAdbBG("-s", id, "shell", "dumpsys", "battery")
+	ctx, cancel := context.WithTimeout(context.Background(), androidProbeTimeout)
+	defer cancel()
+	battOut, battStderr, battErr := androidAdb(ctx, "-s", id, "shell", "dumpsys", "battery")
 	combined := string(battStderr) + " " + string(battOut)
 	if isAndroidDeviceNotConnected(combined) {
 		return State{}, fmt.Errorf("device not connected: %s", id)
@@ -148,7 +159,7 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 		power = androidPowerFromBattery(parsed.Extra)
 	}
 
-	if out, stderr, err := androidAdbBG("-s", id, "shell", androidPowerScript); err != nil && len(out) == 0 {
+	if out, stderr, err := androidAdb(ctx, "-s", id, "shell", androidPowerScript); err != nil && len(out) == 0 {
 		state.Notes = append(state.Notes, fmt.Sprintf("lock and screen state unavailable: %s", truncate(string(stderr), 160)))
 	} else {
 		parseAndroidPowerLock(string(out), &power)
@@ -156,7 +167,7 @@ func (a *AndroidAdapter) State(id string) (State, error) {
 	power.Classify()
 	state.Power = &power
 
-	if fg, err := androidForegroundApp(id); err != nil {
+	if fg, err := androidForegroundApp(ctx, id); err != nil {
 		state.Notes = append(state.Notes, fmt.Sprintf("foreground app unavailable: %v", err))
 	} else {
 		state.ForegroundApp = fg
@@ -235,8 +246,8 @@ func parseBatteryScalar(v string) any {
 // parsed from `dumpsys activity activities`.
 var fgActivityRE = regexp.MustCompile(`ActivityRecord\{[^}]*\s([a-zA-Z0-9_.]+)/[^}]+\}`)
 
-func androidForegroundApp(id string) (string, error) {
-	out, stderr, err := androidAdbBG("-s", id, "shell", "dumpsys", "activity", "activities")
+func androidForegroundApp(ctx context.Context, id string) (string, error) {
+	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "dumpsys", "activity", "activities")
 	if err != nil {
 		return "", fmt.Errorf("%s", truncate(string(stderr), 120))
 	}
