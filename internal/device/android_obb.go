@@ -122,7 +122,7 @@ func (a *AndroidAdapter) InstallExpansion(ctx context.Context, id, apkPath strin
 		return nil, fmt.Errorf("no versionCode in %s", filepath.Base(apkPath))
 	}
 	dir := androidobb.DeviceDir(ident.Package)
-	if _, stderr, err := androidAdb(ctx, "-s", id, "shell", "mkdir", "-p", dir); err != nil {
+	if _, stderr, err := androidAdb(ctx, "-s", id, "shell", "mkdir", "-p", adbShellWord(dir)); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %v %s", dir, err, truncate(string(stderr), 200))
 	}
 	var written []string
@@ -147,7 +147,7 @@ func (a *AndroidAdapter) InstallExpansion(ctx context.Context, id, apkPath strin
 // hundreds of megabytes. Best-effort.
 func removeStaleExpansions(ctx context.Context, id string, ident APKIdentity, files []androidobb.File) {
 	dir := androidobb.DeviceDir(ident.Package)
-	out, _, err := androidAdb(ctx, "-s", id, "shell", "ls", dir)
+	out, _, err := androidAdb(ctx, "-s", id, "shell", "ls", adbShellWord(dir))
 	if err != nil {
 		return
 	}
@@ -165,6 +165,6 @@ func removeStaleExpansions(ctx context.Context, id string, ident APKIdentity, fi
 		if !kinds[androidobb.Kind(kind)] {
 			continue
 		}
-		_, _, _ = androidAdb(ctx, "-s", id, "shell", "rm", "-f", dir+"/"+name)
+		_, _, _ = androidAdb(ctx, "-s", id, "shell", "rm", "-f", adbShellWord(dir+"/"+name))
 	}
 }

@@ -76,7 +76,7 @@ func (a *AndroidAdapter) applySystemSetting(id, key, value string, restore bool)
 		if restore {
 			_, stderr, err = androidAdbBG("-s", id, "shell", "settings", "delete", n.Namespace, n.Name)
 		} else {
-			_, stderr, err = androidAdbBG("-s", id, "shell", "settings", "put", n.Namespace, n.Name, value)
+			_, stderr, err = androidAdbBG("-s", id, "shell", "settings", "put", n.Namespace, n.Name, adbShellWord(value))
 		}
 		if err != nil {
 			op := "put"

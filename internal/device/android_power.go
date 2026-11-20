@@ -133,7 +133,7 @@ func (a *AndroidAdapter) ThirdPartyForeground(id string) (string, error) {
 	if err != nil || pkg == "" {
 		return "", err
 	}
-	out, stderr, err := androidAdbBG("-s", id, "shell", "pm", "list", "packages", "-3", pkg)
+	out, stderr, err := androidAdbBG("-s", id, "shell", "pm", "list", "packages", "-3", adbShellWord(pkg))
 	if err != nil {
 		return "", fmt.Errorf("pm list packages: %s", truncate(string(stderr), 120))
 	}

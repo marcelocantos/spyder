@@ -181,6 +181,18 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// adbShellWord encodes a literal argument for the remote shell. Leave
+// ordinary words alone and use the same quoting as input text otherwise.
+func adbShellWord(s string) string {
+	if s == "" || strings.IndexFunc(s, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' || strings.ContainsRune("_@%+=:,./-", r))
+	}) >= 0 {
+		return shellQuote(s)
+	}
+	return s
+}
+
 // scrubSecret removes every occurrence of the secret (and its encoded
 // forms) from msg.
 func scrubSecret(msg, text string, plan TextInputPlan) string {

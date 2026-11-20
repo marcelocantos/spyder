@@ -330,7 +330,7 @@ func (a *AndroidAdapter) LaunchApp(id, bundleID string, env map[string]string) e
 	}
 	var args []string
 	if len(env) == 0 {
-		args = []string{"-s", id, "shell", "monkey", "-p", bundleID, "-c", "android.intent.category.LAUNCHER", "1"}
+		args = []string{"-s", id, "shell", "monkey", "-p", adbShellWord(bundleID), "-c", "android.intent.category.LAUNCHER", "1"}
 	} else {
 		comp, err := androidLauncherComponent(id, bundleID)
 		if err != nil {
@@ -340,10 +340,10 @@ func (a *AndroidAdapter) LaunchApp(id, bundleID string, env map[string]string) e
 			"-s", id, "shell", "am", "start",
 			"-a", "android.intent.action.MAIN",
 			"-c", "android.intent.category.LAUNCHER",
-			"-n", comp,
+			"-n", adbShellWord(comp),
 		}
 		for k, v := range env {
-			args = append(args, "--es", k, v)
+			args = append(args, "--es", adbShellWord(k), adbShellWord(v))
 		}
 	}
 	out, stderr, err := androidAdbBG(args...)
@@ -367,11 +367,11 @@ func (a *AndroidAdapter) LaunchApp(id, bundleID string, env map[string]string) e
 // androidLauncherComponent returns "package/activity" for the package's
 // MAIN/LAUNCHER activity via `cmd package resolve-activity --brief`.
 func androidLauncherComponent(id, bundleID string) (string, error) {
-	out, stderr, err := runCapture(
-		"adb", "-s", id, "shell", "cmd", "package", "resolve-activity", "--brief",
+	out, stderr, err := androidAdbBG(
+		"-s", id, "shell", "cmd", "package", "resolve-activity", "--brief",
 		"-a", "android.intent.action.MAIN",
 		"-c", "android.intent.category.LAUNCHER",
-		bundleID,
+		adbShellWord(bundleID),
 	)
 	combined := string(stderr) + " " + string(out)
 	if isAndroidDeviceNotConnected(combined) {
@@ -411,7 +411,7 @@ func (a *AndroidAdapter) TerminateAppContext(ctx context.Context, id, bundleID s
 	if id == "" || bundleID == "" {
 		return errors.New("device id and bundle_id are required")
 	}
-	_, stderr, err := androidAdb(ctx, "-s", id, "shell", "am", "force-stop", bundleID)
+	_, stderr, err := androidAdb(ctx, "-s", id, "shell", "am", "force-stop", adbShellWord(bundleID))
 	if isAndroidDeviceNotConnected(string(stderr)) {
 		return fmt.Errorf("device not connected: %s", id)
 	}
@@ -850,7 +850,7 @@ func (a *AndroidAdapter) AppPIDContext(ctx context.Context, id, bundleID string)
 	if _, err := exec.LookPath("adb"); err != nil {
 		return 0, fmt.Errorf("adb not found in PATH: %w", err)
 	}
-	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "pidof", bundleID)
+	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "pidof", adbShellWord(bundleID))
 	if isAndroidDeviceNotConnected(string(stderr)) {
 		return 0, fmt.Errorf("device not connected: %s", id)
 	}

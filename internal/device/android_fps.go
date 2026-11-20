@@ -132,7 +132,7 @@ func (a *AndroidAdapter) MeasureFrameStats(ctx context.Context, id, packageName 
 	}
 
 	// Reset counters so the window is clean.
-	if _, stderr, err := androidAdb(ctx, "-s", id, "shell", "dumpsys", "gfxinfo", packageName, "reset"); err != nil {
+	if _, stderr, err := androidAdb(ctx, "-s", id, "shell", "dumpsys", "gfxinfo", adbShellWord(packageName), "reset"); err != nil {
 		msg := string(stderr)
 		if isAndroidDeviceNotConnected(msg) {
 			return FrameStats{}, fmt.Errorf("device not connected: %s", id)
@@ -144,7 +144,7 @@ func (a *AndroidAdapter) MeasureFrameStats(ctx context.Context, id, packageName 
 		return FrameStats{}, fmt.Errorf("gfxinfo window wait: %w", err)
 	}
 
-	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "dumpsys", "gfxinfo", packageName)
+	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "dumpsys", "gfxinfo", adbShellWord(packageName))
 	if err != nil {
 		msg := string(stderr)
 		if isAndroidDeviceNotConnected(msg) {

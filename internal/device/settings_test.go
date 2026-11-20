@@ -5,6 +5,7 @@ package device
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
 	"testing"
@@ -130,4 +131,47 @@ func indexOf(ss []string, w string) int {
 		}
 	}
 	return -1
+}
+
+func TestAndroidShellPreservesLiteralArguments(t *testing.T) {
+	const value = "Rider's pin"
+	var setting, extra string
+	t.Cleanup(SetAndroidAdbForTest(func(ctx context.Context, args ...string) ([]byte, []byte, error) {
+		if len(args) < 4 || args[2] != "shell" {
+			return nil, nil, fmt.Errorf("unexpected command %v", args)
+		}
+		// Model adb joining its shell arguments, then decode by passing
+		// the words through small local stand-ins for the device commands.
+		const commands = `
+settings() {
+  case "$1" in
+    put) [ "$#" -eq 4 ] && printf '%s' "$4" ;;
+    get) printf 'null\n' ;;
+  esac
+}
+am() {
+  while [ "$#" -gt 0 ] && [ "$1" != "--es" ]; do shift; done
+  [ "$#" -eq 3 ] && printf '%s' "$3"
+}
+cmd() { printf 'com.example/.MainActivity\n'; }
+`
+		out, err := exec.CommandContext(ctx, "/bin/sh", "-c", commands+strings.Join(args[3:], " ")).Output()
+		switch {
+		case args[3] == "settings" && args[4] == "put":
+			setting = string(out)
+		case args[3] == "am":
+			extra = string(out)
+		}
+		return out, nil, err
+	}))
+	a := NewAndroidAdapter()
+	if _, err := a.SetSystemSetting("fixture", SettingRefreshRate, value); err != nil {
+		t.Errorf("set literal setting: %v", err)
+	}
+	if err := a.LaunchApp("fixture", "com.example", map[string]string{"LABEL": value}); err != nil {
+		t.Errorf("launch with literal extra: %v", err)
+	}
+	if setting != value || extra != value {
+		t.Fatalf("settings received %q, app extra received %q, want %q for both", setting, extra, value)
+	}
 }
