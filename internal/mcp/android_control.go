@@ -19,7 +19,6 @@ import (
 
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/marcelocantos/spyder/internal/agent"
 	"github.com/marcelocantos/spyder/internal/device"
 )
 
@@ -133,6 +132,14 @@ func (h *Handler) requireOSControlCap(dev, owner string) (device.Adapter, string
 	return adapter, platform, id, nil
 }
 
+// resolveOSControl authorizes and resolves under h.mu, then releases it
+// before the caller does device I/O (DH-06).
+func (h *Handler) resolveOSControl(dev, owner string) (device.Adapter, string, string, *mcpgo.CallToolResult) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.requireOSControlCap(dev, owner)
+}
+
 // requireAndroidCap is retained for any android-only call sites; prefer
 // requireOSControlCap for the shared surface.
 func (h *Handler) requireAndroidCap(dev, owner string) (device.Adapter, string, *mcpgo.CallToolResult) {
@@ -218,10 +225,7 @@ func (h *Handler) handlePortForwardStart(args map[string]any) (*mcpgo.CallToolRe
 		localPort = int(v)
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -254,10 +258,7 @@ func (h *Handler) handlePortForwardStop(args map[string]any) (*mcpgo.CallToolRes
 		return nil, err
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -284,10 +285,7 @@ func (h *Handler) handlePortForwardList(args map[string]any) (*mcpgo.CallToolRes
 	// list is observational — still authorize for consistency when owner set
 	owner := optString(args, "owner")
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -322,15 +320,9 @@ func (h *Handler) handleInputTapContext(ctx context.Context, args map[string]any
 		return nil, err
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	adapter, platform, id, errRes := h.authorizeOSMutate(dev, owner)
 	if errRes != nil {
 		return errRes, nil
-	}
-	if res := h.gateAgentAny(owner, agent.MutInput, dev, id); res != nil {
-		return res, nil
 	}
 	if cinj, ok := adapter.(contextTouchInjector); ok {
 		if err := cinj.InjectTapContext(ctx, id, x, y); err != nil {
@@ -380,15 +372,9 @@ func (h *Handler) handleInputSwipeContext(ctx context.Context, args map[string]a
 		durationMs = int(v)
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	adapter, platform, id, errRes := h.authorizeOSMutate(dev, owner)
 	if errRes != nil {
 		return errRes, nil
-	}
-	if res := h.gateAgentAny(owner, agent.MutInput, dev, id); res != nil {
-		return res, nil
 	}
 	if cinj, ok := adapter.(contextTouchInjector); ok {
 		if err := cinj.InjectSwipeContext(ctx, id, x1, y1, x2, y2, durationMs); err != nil {
@@ -443,10 +429,7 @@ func (h *Handler) handleInputKeyContext(ctx context.Context, args map[string]any
 		repeat = r
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	adapter, platform, id, errRes := h.authorizeOSMutate(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -495,10 +478,7 @@ func (h *Handler) handleNotificationShade(args map[string]any) (*mcpgo.CallToolR
 		action = "expand"
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -534,10 +514,7 @@ func (h *Handler) handleNotificationTapFirst(args map[string]any) (*mcpgo.CallTo
 		yFrac = v
 	}
 
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
+	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}

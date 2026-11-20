@@ -472,15 +472,16 @@ func (h *Handler) handleResolve(args map[string]any) (*mcpgo.CallToolResult, err
 			return toolErr("resolve: selector.platform is required")
 		}
 
-		h.mu.Lock()
-		defer h.mu.Unlock()
-
+		// Device list runs outside h.mu. A slow adapter must not stall
+		// an inventory lookup on another device (DH-06).
 		candidates := h.buildCandidates(sel.Platform)
 		info, err := selector.Resolve(sel, candidates, h.pool)
 		if err != nil {
 			return toolErr("resolve: %v", err)
 		}
+		h.mu.Lock()
 		entry, ok := h.inventory.Lookup(info.UUID)
+		h.mu.Unlock()
 		if !ok {
 			// Fall back to a synthetic entry from the live device.Info.
 			entry = inventory.Entry{
@@ -1010,23 +1011,28 @@ func (h *Handler) resolveReserveDevice(args map[string]any) (string, *mcpgo.Call
 // set (for the given platform) combined with inventory entries.
 // Errors from List() are silently dropped — we use whatever is available.
 func (h *Handler) buildCandidates(platform string) []selector.Candidate {
-	// Fetch live device list.
+	// Snapshot the adapters under the lock, then list outside it.
+	// listWithTimeout bounds a wedged device; holding h.mu across List
+	// stalled every other verb (DH-06).
+	h.mu.Lock()
+	ios, android := h.ios, h.android
+	entries := []inventory.Entry{}
+	if h.inventory != nil {
+		entries = h.inventory.Entries()
+	}
+	h.mu.Unlock()
+
 	var liveDevices []device.Info
 	fetchForPlatform := func(p string, adapter device.Adapter) {
-		if platform != "all" && !strings.EqualFold(p, platform) {
+		if adapter == nil || (platform != "all" && !strings.EqualFold(p, platform)) {
 			return
 		}
-		ds, err := adapter.List()
-		if err != nil {
-			return
-		}
-		liveDevices = append(liveDevices, ds...)
+		liveDevices = append(liveDevices, listWithTimeout(adapter, connectedListTimeout)...)
 	}
-	fetchForPlatform("ios", h.ios)
-	fetchForPlatform("android", h.android)
+	fetchForPlatform("ios", ios)
+	fetchForPlatform("android", android)
 
 	// Index inventory entries by UUID for quick join.
-	entries := h.inventory.Entries()
 	entryByUUID := make(map[string]inventory.Entry, len(entries))
 	for _, e := range entries {
 		if e.IOSUUID != "" {
@@ -1120,9 +1126,8 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 	ttl := time.Duration(optNumber(args, "ttl_seconds")) * time.Second
 	note := optString(args, "note")
 
-	h.mu.Lock()
+	// Selector resolution lists devices. Do that off h.mu (DH-06).
 	dev, errRes := h.resolveReserveDevice(args)
-	h.mu.Unlock()
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -1192,9 +1197,11 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 
 	h.mu.Lock()
 	canonical := h.canonicalDevice(dev)
-	// Stop any active recording owned by this owner before releasing.
-	h.stopRecordingForOwner(canonical, owner)
+	// Detach the recorder under the lock; wait for it after unlocking
+	// so a slow mp4 finaliser does not stall every other verb (DH-06).
+	rec := h.stopRecordingForOwner(canonical, owner)
 	h.mu.Unlock()
+	waitRecordingDone(rec, canonical, owner)
 
 	if err := h.reservations.Release(dev, owner); err != nil {
 		return toolErr("%v", err)
@@ -1731,14 +1738,19 @@ func (h *Handler) handleRotate(args map[string]any) (*mcpgo.CallToolResult, erro
 	owner := optString(args, "owner")
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	if res := h.authorize(dev, owner); res != nil {
-		return res, nil
+	auth := h.authorize(dev, owner)
+	var adapter device.Adapter
+	var id string
+	var rerr error
+	if auth == nil {
+		adapter, _, id, rerr = h.resolveAdapter(dev)
 	}
-	adapter, _, id, err := h.resolveAdapter(dev)
-	if err != nil {
-		return toolErr("%v", err)
+	h.mu.Unlock()
+	if auth != nil {
+		return auth, nil
+	}
+	if rerr != nil {
+		return toolErr("%v", rerr)
 	}
 	if err := adapter.Rotate(id, orientation); err != nil {
 		return toolErr("rotate %s on %s: %v", orientation, dev, err)
@@ -1776,9 +1788,13 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 	}
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	adapter, _, id, err := h.resolveAdapter(dev)
+	var launch time.Time
+	var haveLaunch bool
+	if err == nil && sinceArg == "launch" {
+		launch, haveLaunch = h.launchTimes[launchKey{deviceID: id, bundleID: bundleArg}]
+	}
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -1795,11 +1811,10 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 	}
 
 	if sinceArg == "launch" {
-		t, ok := h.launchTimes[launchKey{deviceID: id, bundleID: bundleArg}]
-		if !ok {
+		if !haveLaunch {
 			return toolErr("since=launch: no launch_app call recorded for %s on %s in this daemon's lifetime", bundleArg, dev)
 		}
-		since = t
+		since = launch
 	}
 
 	reports, err := adapter.Crashes(id, since, process)
@@ -1832,22 +1847,22 @@ func (h *Handler) handleRecordStart(args map[string]any) (*mcpgo.CallToolResult,
 	owner := optString(args, "owner")
 
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	adapter, _, id, err := h.resolveAdapter(dev)
+	dir := h.runsBaseDir
+	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
 
 	canonical := h.canonicalDevice(dev)
 
-	// Conflict check: only one active recorder per device.
+	// Conflict check: only one active recorder per device. The registry
+	// has its own lock; Start below is the authority if two callers race.
 	if existing := h.recordings.ForDevice(canonical); existing != nil {
 		return toolErr("record_start: device %q is already being recorded by owner %q — call record_stop first", dev, existing.Owner)
 	}
 
 	// Build output path in the temp/run dir.
-	dir := h.runsBaseDir
 	if dir == "" {
 		dir = os.TempDir()
 	}
@@ -1866,7 +1881,7 @@ func (h *Handler) handleRecordStart(args map[string]any) (*mcpgo.CallToolResult,
 	}
 
 	if _, err := h.recordings.Start(canonical, owner, dest, wrappedStop, doneCh); err != nil {
-		// Should not happen because we checked ForDevice above, but be safe.
+		_ = wrappedStop()
 		return toolErr("record_start: %v", err)
 	}
 
@@ -1911,20 +1926,28 @@ func (h *Handler) handleRecordStop(args map[string]any) (*mcpgo.CallToolResult, 
 	return toolText(fmt.Sprintf("recording saved to %s", session.OutputPath))
 }
 
-// stopRecordingForOwner stops any active recording on device owned by owner.
-// Called from handleRelease to clean up before releasing the reservation.
-// Best-effort: errors are logged but not returned.
-func (h *Handler) stopRecordingForOwner(canonical, owner string) {
+// stopRecordingForOwner detaches any active recording on device owned by
+// owner. The caller must hold h.mu only if it needs that exclusion with
+// other handler state; the registry locks itself. Waiting for the
+// recorder to exit is waitRecordingDone, and that wait must not run
+// while h.mu is held.
+func (h *Handler) stopRecordingForOwner(canonical, owner string) *recording.Session {
 	session := h.recordings.ForDevice(canonical)
 	if session == nil || session.Owner != owner {
-		return
+		return nil
 	}
 	s, err := h.recordings.Stop(canonical)
 	if err != nil {
 		slog.Error("recording cleanup on release failed", "device", canonical, "owner", owner, "error", err)
+		return nil
+	}
+	return s
+}
+
+func waitRecordingDone(s *recording.Session, canonical, owner string) {
+	if s == nil {
 		return
 	}
-	// Wait briefly for clean shutdown.
 	select {
 	case <-s.Done():
 	case <-time.After(10 * time.Second):

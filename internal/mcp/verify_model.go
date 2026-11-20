@@ -100,11 +100,11 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 		} else {
 			h.mu.Lock()
 			adapter, _, id, resolveErr := h.resolveAdapter(req.Step.Device)
+			h.mu.Unlock()
 			err = resolveErr
 			if err == nil {
 				pngData, err = adapter.Screenshot(id)
 			}
-			h.mu.Unlock()
 		}
 		if err != nil {
 			return verify.ExecResult{Code: 1, Output: "model screenshot: " + err.Error(), Model: evidence}
