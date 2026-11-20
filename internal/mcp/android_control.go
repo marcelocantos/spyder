@@ -132,14 +132,6 @@ func (h *Handler) requireOSControlCap(dev, owner string) (device.Adapter, string
 	return adapter, platform, id, nil
 }
 
-// resolveOSControl authorizes and resolves under h.mu, then releases it
-// before the caller does device I/O (DH-06).
-func (h *Handler) resolveOSControl(dev, owner string) (device.Adapter, string, string, *mcpgo.CallToolResult) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.requireOSControlCap(dev, owner)
-}
-
 // requireAndroidCap is retained for any android-only call sites; prefer
 // requireOSControlCap for the shared surface.
 func (h *Handler) requireAndroidCap(dev, owner string) (device.Adapter, string, *mcpgo.CallToolResult) {
@@ -182,10 +174,7 @@ func (h *Handler) handlePerfFPS(args map[string]any) (*mcpgo.CallToolResult, err
 	ctx, cancel := context.WithTimeout(context.Background(), window+DeadlinePerfFPSMargin)
 	defer cancel()
 
-	// Authorize + resolve under mu, but do not hold mu across the wait window.
-	h.mu.Lock()
 	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
-	h.mu.Unlock()
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -225,7 +214,7 @@ func (h *Handler) handlePortForwardStart(args map[string]any) (*mcpgo.CallToolRe
 		localPort = int(v)
 	}
 
-	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -258,7 +247,7 @@ func (h *Handler) handlePortForwardStop(args map[string]any) (*mcpgo.CallToolRes
 		return nil, err
 	}
 
-	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -285,7 +274,7 @@ func (h *Handler) handlePortForwardList(args map[string]any) (*mcpgo.CallToolRes
 	// list is observational — still authorize for consistency when owner set
 	owner := optString(args, "owner")
 
-	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -478,7 +467,7 @@ func (h *Handler) handleNotificationShade(args map[string]any) (*mcpgo.CallToolR
 		action = "expand"
 	}
 
-	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -514,7 +503,7 @@ func (h *Handler) handleNotificationTapFirst(args map[string]any) (*mcpgo.CallTo
 		yFrac = v
 	}
 
-	adapter, platform, id, errRes := h.resolveOSControl(dev, owner)
+	adapter, platform, id, errRes := h.requireOSControlCap(dev, owner)
 	if errRes != nil {
 		return errRes, nil
 	}

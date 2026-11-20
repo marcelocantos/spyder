@@ -98,9 +98,7 @@ func (h *Handler) execVerifyModel(ctx context.Context, req verify.StepRequest) v
 			// Judge a frame another check already captured.
 			pngData, err = os.ReadFile(req.Step.ScreenPNG)
 		} else {
-			h.mu.Lock()
 			adapter, _, id, resolveErr := h.resolveAdapter(req.Step.Device)
-			h.mu.Unlock()
 			err = resolveErr
 			if err == nil {
 				pngData, err = adapter.Screenshot(id)

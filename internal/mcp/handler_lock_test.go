@@ -82,3 +82,42 @@ func TestSlowListDoesNotBlockResolve(t *testing.T) {
 		t.Fatal("name resolve blocked behind a selector's device list")
 	}
 }
+
+func TestCrashDeviceLookupDoesNotHoldHandlerLock(t *testing.T) {
+	resume := make(chan struct{})
+	started := make(chan struct{})
+	h := newHandlerWithStubs(t, &stubAdapter{
+		list: func() ([]device.Info, error) {
+			close(started)
+			<-resume
+			return []device.Info{{UUID: "00008103-001122334455667A", Name: "Phone", Platform: "ios"}}, nil
+		},
+	}, &stubAdapter{})
+	crashesDone := make(chan struct{})
+	go func() {
+		defer close(crashesDone)
+		_, _ = h.handleCrashes(map[string]any{"device": "Phone"})
+	}()
+	defer func() {
+		close(resume)
+		<-crashesDone
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("crashes did not start resolving the device")
+	}
+	resolved := make(chan bool, 1)
+	go func() {
+		res, err := h.handleResolve(map[string]any{"name": "iPad"})
+		resolved <- err == nil && res != nil && !res.IsError
+	}()
+	select {
+	case ok := <-resolved:
+		if !ok {
+			t.Fatal("inventory resolve failed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("inventory resolve blocked behind crashes' device census")
+	}
+}

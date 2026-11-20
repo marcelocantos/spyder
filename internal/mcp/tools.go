@@ -1744,18 +1744,10 @@ func (h *Handler) handleRotate(args map[string]any) (*mcpgo.CallToolResult, erro
 	}
 	owner := optString(args, "owner")
 
-	h.mu.Lock()
-	auth := h.authorize(dev, owner)
-	var adapter device.Adapter
-	var id string
-	var rerr error
-	if auth == nil {
-		adapter, _, id, rerr = h.resolveAdapter(dev)
-	}
-	h.mu.Unlock()
-	if auth != nil {
+	if auth := h.authorize(dev, owner); auth != nil {
 		return auth, nil
 	}
+	adapter, _, id, rerr := h.resolveAdapter(dev)
 	if rerr != nil {
 		return toolErr("%v", rerr)
 	}
@@ -1794,14 +1786,7 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 		since = t
 	}
 
-	h.mu.Lock()
 	adapter, _, id, err := h.resolveAdapter(dev)
-	var launch time.Time
-	var haveLaunch bool
-	if err == nil && sinceArg == "launch" {
-		launch, haveLaunch = h.launchTimes[launchKey{deviceID: id, bundleID: bundleArg}]
-	}
-	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
@@ -1818,6 +1803,9 @@ func (h *Handler) handleCrashes(args map[string]any) (*mcpgo.CallToolResult, err
 	}
 
 	if sinceArg == "launch" {
+		h.mu.Lock()
+		launch, haveLaunch := h.launchTimes[launchKey{deviceID: id, bundleID: bundleArg}]
+		h.mu.Unlock()
 		if !haveLaunch {
 			return toolErr("since=launch: no launch_app call recorded for %s on %s in this daemon's lifetime", bundleArg, dev)
 		}
@@ -1853,10 +1841,8 @@ func (h *Handler) handleRecordStart(args map[string]any) (*mcpgo.CallToolResult,
 	}
 	owner := optString(args, "owner")
 
-	h.mu.Lock()
 	adapter, _, id, err := h.resolveAdapter(dev)
 	dir := h.runsBaseDir
-	h.mu.Unlock()
 	if err != nil {
 		return toolErr("%v", err)
 	}
