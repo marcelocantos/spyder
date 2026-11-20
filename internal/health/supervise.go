@@ -73,6 +73,12 @@ func (s *Supervisor) Model() *Model {
 	return s.model
 }
 
+// runningProcess is a ManagedProcess that can report whether its child
+// is running, so Supervise can adopt one its owner already started.
+type runningProcess interface {
+	Running() bool
+}
+
 // Supervise registers proc as a KindSubprocess entity governed by policy,
 // starts it, then probes liveness every interval, restarting on death with
 // the policy's backoff. Blocks until ctx is cancelled (then Stops proc).
@@ -90,8 +96,16 @@ func (s *Supervisor) Supervise(ctx context.Context, proc ManagedProcess, policy 
 	// Register the entity; starts Healthy and resets attempt counter.
 	s.model.Register(id, KindSubprocess, policy)
 
-	// Perform the initial launch, retrying with backoff if it fails.
-	s.startWithRecovery(ctx, proc, id)
+	// Perform the initial launch, retrying with backoff if it fails. A
+	// process its owner already started is left running: the daemon
+	// starts the tunnel before supervising it, and Start on a running
+	// tunnel kills and respawns it (DH-37). Liveness is probed at the
+	// first tick, as it is after Supervise's own start.
+	if r, ok := proc.(runningProcess); ok && r.Running() {
+		s.model.Observe(id, true, "already running")
+	} else {
+		s.startWithRecovery(ctx, proc, id)
+	}
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()

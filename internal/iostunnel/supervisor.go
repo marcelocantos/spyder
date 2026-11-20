@@ -92,6 +92,15 @@ func (s *Supervisor) RegistryListening() bool {
 	return err == nil
 }
 
+// Running reports whether the tunnel child is running, whether or not
+// its registry answers yet. health.Supervise uses it to adopt a tunnel
+// the daemon has already started instead of restarting it.
+func (s *Supervisor) Running() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cmd != nil && s.cmd.Process != nil
+}
+
 // Alive implements health.ManagedProcess: process running AND registry responsive.
 func (s *Supervisor) Alive() bool {
 	s.mu.Lock()
