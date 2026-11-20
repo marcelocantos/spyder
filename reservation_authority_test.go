@@ -390,16 +390,24 @@ func TestRunReleaseReachesDaemon(t *testing.T) {
 }
 
 func TestRunOnClosesDaemonLeaseAndManifest(t *testing.T) {
-	for _, sharedState := range []bool{true, false} {
-		name := "separate state"
-		if sharedState {
-			name = "shared state"
-		}
+	for _, name := range []string{"shared state", "separate state", "copied state"} {
 		t.Run(name, func(t *testing.T) {
+			sharedState := name == "shared state"
 			daemonData := t.TempDir()
 			runData := daemonData
 			if !sharedState {
 				runData = t.TempDir()
+			}
+			var original []byte
+			if name == "copied state" {
+				now := time.Now()
+				original = fmt.Appendf(nil, `[{"device":"fake-dev","owner":"job-A","expires_at":%q,"created_at":%q}]`,
+					now.Add(time.Minute).Format(time.RFC3339Nano), now.Add(-time.Minute).Format(time.RFC3339Nano))
+				for _, dir := range []string{daemonData, runData} {
+					if err := os.WriteFile(filepath.Join(dir, "reservations.json"), original, 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
 			}
 			d := startTestDaemon(t, daemonData)
 			t.Setenv(daemonURLEnv, d.base)
@@ -421,9 +429,15 @@ func TestRunOnClosesDaemonLeaseAndManifest(t *testing.T) {
 			if got := postReserve(t, d.base, "fake-dev", "job-B"); got.isError {
 				t.Errorf("daemon still holds the finished selector lease: %s", got.text)
 			}
-			if !sharedState {
+			switch name {
+			case "separate state":
 				if _, err := os.Stat(filepath.Join(runData, "reservations.json")); !os.IsNotExist(err) {
 					t.Errorf("independent CLI wrote its own reservation book: %v", err)
+				}
+			case "copied state":
+				got, err := os.ReadFile(filepath.Join(runData, "reservations.json"))
+				if err != nil || !bytes.Equal(got, original) {
+					t.Errorf("selector run modified the copied local book: %s, err=%v", got, err)
 				}
 			}
 		})

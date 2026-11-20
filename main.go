@@ -393,12 +393,12 @@ func runWithReservation(args []string, beforeAcquire func()) {
 			os.Exit(1)
 		}
 		parsed.Device = grant.Device
-		// Match the grant itself before using the local file. A configured
-		// daemon may run on another host or with a different state directory.
-		// A shared book lets the job finish cleanup even while the daemon is down.
+		// Look for the current grant before using the local file. Matching
+		// the new expiry distinguishes a shared book from a copy of the
+		// same owner's earlier lease in another state directory.
 		if store, err := reservations.New(resvPath, reservations.WithNormalizer(normalize)); err == nil {
 			if held, ok, err := store.Get(grant.Device); err == nil && ok && held.Owner == owner &&
-				held.CreatedAt.Equal(grant.CreatedAt) {
+				held.CreatedAt.Equal(grant.CreatedAt) && held.ExpiresAt.Equal(grant.ExpiresAt) {
 				resvStore = store
 			}
 		}
