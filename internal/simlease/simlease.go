@@ -80,10 +80,12 @@ type Lease struct {
 	AcquiredAt time.Time `json:"acquired_at"`
 	RenewedAt  time.Time `json:"renewed_at"`
 	ExpiresAt  time.Time `json:"expires_at"`
-	// Pending is true while Acquire is still creating or booting. A
-	// pending lease found on disk at startup is from a daemon that died
-	// mid-acquire; the reaper undoes its recorded action.
+	// Pending is true until a create or boot completes.
 	Pending bool `json:"pending,omitempty"`
+	// OperationPID is the local process running an acquire or undo. The
+	// book is shared on this host; a peer must wait for that process to
+	// finish or die. Legacy pending records have no PID and can be reaped.
+	OperationPID int `json:"operation_pid,omitempty"`
 	// LastError is the most recent failed release attempt; the reaper
 	// retries until the release succeeds.
 	LastError string `json:"last_error,omitempty"`
@@ -158,8 +160,6 @@ type Manager struct {
 	leases          map[string]*Lease      // by lease ID
 	inFlight        map[string]bool        // lease IDs an Acquire in this process is still working on
 	removed         map[string]bool        // lease IDs this process deleted; a later reload must not bring them back
-	loadedAtStart   map[string]bool        // ids read by New; a pending one is a dead daemon's leftover
-	bornHere        map[string]bool        // ids Acquire in this process created
 	bookLock        *os.File               // exclusive flock on path+".lock" while a critical section holds it
 	prov            map[string]*Provenance // by provKey(device id)
 	pruning         map[string]bool        // provKey'd ids a prune is deleting
@@ -171,20 +171,18 @@ type Manager struct {
 // reap; call Reap or Run for that.
 func New(args *Args) (*Manager, error) {
 	m := &Manager{
-		sim:           args.Simctl,
-		path:          args.Path,
-		now:           args.Now,
-		onRelease:     args.OnRelease,
-		provPath:      args.ProvenancePath,
-		auditPath:     args.AuditPath,
-		android:       args.Android,
-		leases:        map[string]*Lease{},
-		inFlight:      map[string]bool{},
-		removed:       map[string]bool{},
-		loadedAtStart: map[string]bool{},
-		bornHere:      map[string]bool{},
-		prov:          map[string]*Provenance{},
-		pruning:       map[string]bool{},
+		sim:       args.Simctl,
+		path:      args.Path,
+		now:       args.Now,
+		onRelease: args.OnRelease,
+		provPath:  args.ProvenancePath,
+		auditPath: args.AuditPath,
+		android:   args.Android,
+		leases:    map[string]*Lease{},
+		inFlight:  map[string]bool{},
+		removed:   map[string]bool{},
+		prov:      map[string]*Provenance{},
+		pruning:   map[string]bool{},
 	}
 	if m.now == nil {
 		m.now = time.Now
@@ -200,7 +198,6 @@ func New(args *Args) (*Manager, error) {
 				continue
 			}
 			m.leases[l.ID] = &l
-			m.loadedAtStart[l.ID] = true
 		}
 	}
 	if err := m.loadProvenance(); err != nil {
@@ -513,7 +510,7 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	now := m.now()
 	for _, l := range m.leases {
 		if l.Owner == args.Owner && l.DeviceType == deviceType && l.Runtime == runtime &&
-			(args.Name == "" || l.Name == args.Name) && !l.Pending && l.LastError == "" {
+			(args.Name == "" || l.Name == args.Name) && !l.Pending && l.OperationPID == 0 && l.LastError == "" {
 			if args.Project != "" {
 				l.Project = args.Project
 			}
@@ -600,22 +597,20 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	// leaves a pending record the next daemon's reaper undoes, and a
 	// concurrent Acquire skips the claimed simulator.
 	m.leases[l.ID] = l
-	m.bornHere[l.ID] = true
 	if l.Pending {
 		m.inFlight[l.ID] = true
+		l.OperationPID = os.Getpid()
 	}
 	m.mustPersistLocked()
 	m.unlockBook()
-	m.mu.Unlock()
-
 	if l.Action == ActionAlreadyRunning {
-		m.mu.Lock()
 		m.recordAcquireLocked(l)
 		out := *l
 		m.mu.Unlock()
-		slog.Info("simlease: acquired running simulator", "lease", l.ID, "udid", l.UDID, "owner", l.Owner)
+		slog.Info("simlease: acquired running simulator", "lease", out.ID, "udid", out.UDID, "owner", out.Owner)
 		return out, nil
 	}
+	m.mu.Unlock()
 
 	if l.Action == ActionCreated {
 		udid, err := m.sim.Create(ctx, l.Name, deviceType, runtime)
@@ -656,6 +651,7 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	}
 	delete(m.inFlight, l.ID)
 	l.Pending = false
+	l.OperationPID = 0
 	// The TTL starts once the simulator is usable.
 	l.RenewedAt = m.now()
 	l.ExpiresAt = l.RenewedAt.Add(ttl)
@@ -689,7 +685,15 @@ func (m *Manager) dropLease(id string) {
 // pending for the reaper.
 func (m *Manager) abandon(ctx context.Context, id string) {
 	m.mu.Lock()
+	if err := m.beginBook(); err != nil {
+		slog.Error("simlease: reload before abandoning acquire", "lease", id, "error", err)
+	}
 	delete(m.inFlight, id)
+	if l := m.leases[id]; l != nil {
+		l.OperationPID = 0
+		m.mustPersistLocked()
+	}
+	m.unlockBook()
 	m.mu.Unlock()
 	if ctx.Err() != nil {
 		// The caller's deadline has passed; the record is pending and no
@@ -797,7 +801,12 @@ func (m *Manager) checkOwner(l *Lease, owner string) error {
 // what its acquire did.
 func (m *Manager) Release(ctx context.Context, ref, owner string) (Released, error) {
 	m.mu.Lock()
+	if err := m.beginBook(); err != nil {
+		m.mu.Unlock()
+		return Released{}, err
+	}
 	l := m.findLocked(ref)
+	m.unlockBook()
 	if l == nil {
 		m.mu.Unlock()
 		return Released{}, fmt.Errorf("%w: %s", ErrNotFound, ref)
@@ -817,14 +826,36 @@ func (m *Manager) Release(ctx context.Context, ref, owner string) (Released, err
 
 // release undoes lease id's action and drops the record. On failure the
 // record stays (with LastError) for the reaper to retry.
+var errLeaseBusy = errors.New("simulator lease is busy or no longer expired")
+
 func (m *Manager) release(ctx context.Context, id, reason string) (Released, error) {
 	m.mu.Lock()
+	if err := m.beginBook(); err != nil {
+		m.mu.Unlock()
+		return Released{}, err
+	}
 	l, ok := m.leases[id]
 	if !ok {
+		m.unlockBook()
 		m.mu.Unlock()
 		return Released{}, fmt.Errorf("%w: %s", ErrNotFound, id)
 	}
+	if m.inFlight[id] || l.operationActive() || (reason == "expired" && !m.reapable(l)) {
+		m.unlockBook()
+		m.mu.Unlock()
+		return Released{}, errLeaseBusy
+	}
 	snap := *l
+	// Claim the undo before dropping the lock. The record remains in
+	// the book, so it still protects its simulator during the undo.
+	l.OperationPID = os.Getpid()
+	if err := m.persistLocked(); err != nil {
+		l.OperationPID = snap.OperationPID
+		m.unlockBook()
+		m.mu.Unlock()
+		return Released{}, err
+	}
+	m.unlockBook()
 	m.mu.Unlock()
 
 	undo, err := m.undo(ctx, snap)
@@ -839,6 +870,7 @@ func (m *Manager) release(ctx context.Context, id, reason string) (Released, err
 	if err != nil {
 		if l, ok := m.leases[id]; ok {
 			l.LastError = err.Error()
+			l.OperationPID = 0
 			m.mustPersistLocked()
 		}
 		return Released{}, fmt.Errorf("release simulator lease %s (%s): %w", snap.ID, snap.UDID, err)
@@ -960,6 +992,9 @@ func (m *Manager) Renew(ref, owner string, ttl time.Duration) (Lease, error) {
 	if err := m.checkOwner(l, owner); err != nil {
 		return Lease{}, err
 	}
+	if l.operationActive() {
+		return Lease{}, errLeaseBusy
+	}
 	if ttl > 0 {
 		l.TTLSeconds = int64(clampTTL(ttl) / time.Second)
 	}
@@ -984,7 +1019,7 @@ func (m *Manager) Touch(udid string) {
 		}
 	}
 	for _, l := range m.leases {
-		if !strings.EqualFold(l.UDID, udid) || l.Pending {
+		if !strings.EqualFold(l.UDID, udid) || l.Pending || l.OperationPID != 0 {
 			continue
 		}
 		l.RenewedAt = now
@@ -1017,27 +1052,26 @@ func (m *Manager) Leased(udid string) bool {
 // releases stay on the book and are retried on the next pass.
 func (m *Manager) Reap(ctx context.Context) []Released {
 	m.mu.Lock()
-	now := m.now()
+	if err := m.beginBook(); err != nil {
+		m.mu.Unlock()
+		slog.Warn("simlease: reload before reap", "error", err)
+		return nil
+	}
 	var due []string
 	for id, l := range m.leases {
-		if m.inFlight[id] {
-			continue // an Acquire in this process is still creating or booting it
-		}
-		// A pending lease adopted from a peer may still be in Create.
-		// Only a record this process started, or one loaded at startup
-		// from a daemon that is gone, is safe to undo (DH-16).
-		if l.Pending && !m.bornHere[id] && !m.loadedAtStart[id] {
-			continue
-		}
-		if l.Pending || !now.Before(l.ExpiresAt) {
+		if m.reapable(l) {
 			due = append(due, id)
 		}
 	}
+	m.unlockBook()
 	m.mu.Unlock()
 
 	var out []Released
 	for _, id := range due {
 		r, err := m.release(ctx, id, "expired")
+		if errors.Is(err, errLeaseBusy) || errors.Is(err, ErrNotFound) {
+			continue
+		}
 		if err != nil {
 			slog.Warn("simlease: reap failed; will retry", "lease", id, "error", err)
 			continue
@@ -1045,6 +1079,21 @@ func (m *Manager) Reap(ctx context.Context) []Released {
 		out = append(out, r)
 	}
 	return out
+}
+
+// reapable requires the current book and m.mu. An orphaned undo is due
+// even if the original lease had time remaining when its owner released it.
+func (m *Manager) reapable(l *Lease) bool {
+	return !m.inFlight[l.ID] && !l.operationActive() &&
+		(l.Pending || l.OperationPID != 0 || !m.now().Before(l.ExpiresAt))
+}
+
+func (l *Lease) operationActive() bool {
+	if l.OperationPID <= 0 {
+		return false
+	}
+	err := syscall.Kill(l.OperationPID, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
 }
 
 // reapPassTimeout bounds one reaper pass so a hung simctl cannot stall

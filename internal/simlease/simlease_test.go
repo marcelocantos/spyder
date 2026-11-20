@@ -741,3 +741,56 @@ func TestParseLaunchdSimUptimes(t *testing.T) {
 		t.Fatalf("uptimes = %v", got)
 	}
 }
+
+func TestPeerOpenedDuringCreateDoesNotReapLivePendingLease(t *testing.T) {
+	f := &slowCreate{fakeSimctl: &fakeSimctl{}, visible: make(chan struct{}), finish: make(chan struct{})}
+	path := filepath.Join(t.TempDir(), "sim-leases.json")
+	m, err := New(&Args{Simctl: f, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "one"})
+		done <- err
+	}()
+	defer func() {
+		close(f.finish)
+		if err := <-done; err != nil {
+			t.Errorf("acquire: %v", err)
+		}
+	}()
+	select {
+	case <-f.visible:
+	case <-time.After(3 * time.Second):
+		t.Fatal("create did not start")
+	}
+	peer, err := New(&Args{Simctl: f, Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := peer.Reap(ctx); len(got) != 0 {
+		t.Fatalf("startup reaper undid an acquire still running in its peer: %+v", got)
+	}
+}
+
+func TestReaperKeepsLeaseRenewedByPeer(t *testing.T) {
+	f := &fakeSimctl{}
+	f.add("A", "fixture", iphone16, runtime18, "Shutdown")
+	c := &clock{t: time.Now()}
+	path := filepath.Join(t.TempDir(), "sim-leases.json")
+	m := newManager(t, f, c, path)
+	l, err := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "one", TTL: time.Minute})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := newManager(t, f, c, path)
+	c.t = l.ExpiresAt.Add(-time.Second)
+	if _, err := m.Renew(l.ID, l.Owner, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	c.t = l.ExpiresAt.Add(time.Second)
+	if got := peer.Reap(ctx); len(got) != 0 || f.state(l.UDID) != "Booted" {
+		t.Fatalf("stale reaper released a lease renewed by a peer: %+v", got)
+	}
+}
