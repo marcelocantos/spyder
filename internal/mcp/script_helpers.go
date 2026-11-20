@@ -229,9 +229,27 @@ func (h *Handler) handleRunScript(args map[string]any) (*mcpgo.CallToolResult, e
 	return h.handleRunScriptContext(context.Background(), args)
 }
 
+// maxScriptDepth bounds run_script re-entering app_exec. Each level is a
+// new Starlark thread plus a Go frame chain; unbounded nesting overflows
+// the goroutine stack and kills the daemon (DH-02). Eight is enough for
+// a script to call a library script that calls another, and far below
+// a stack overflow.
+const maxScriptDepth = 8
+
+type scriptDepthKey struct{}
+
+func scriptDepth(ctx context.Context) int {
+	n, _ := ctx.Value(scriptDepthKey{}).(int)
+	return n
+}
+
 // handleRunScriptContext runs a durable script under ctx, so the script
 // ends no later than its caller's deadline.
 func (h *Handler) handleRunScriptContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+	if scriptDepth(ctx) >= maxScriptDepth {
+		return toolErr("run_script: nesting exceeds %d", maxScriptDepth)
+	}
+	ctx = context.WithValue(ctx, scriptDepthKey{}, scriptDepth(ctx)+1)
 	ref, err := requireString(args, "path")
 	if err != nil {
 		// accept "name" alias
