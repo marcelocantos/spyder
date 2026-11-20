@@ -327,13 +327,24 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 
 	m.mu.Lock()
 	leased := map[string]bool{}
+	// A created lease is recorded before Create returns, so it has no
+	// UDID yet. The simulator can already be listed under its name.
+	// Keying "already leased" only by UDID lets a second acquire take
+	// it (DH-15).
+	pendingNames := map[string]bool{}
 	for _, l := range m.leases {
-		leased[l.UDID] = true
+		if l.UDID != "" {
+			leased[l.UDID] = true
+		}
+		if l.Pending && l.Action == ActionCreated && l.Name != "" {
+			pendingNames[l.Name] = true
+		}
 	}
 	var shutdown, running *Sim
 	for i := range sims {
 		s := &sims[i]
 		if !s.IsAvailable || s.DeviceType != deviceType || s.Runtime != runtime || leased[s.UDID] ||
+			pendingNames[s.Name] ||
 			strings.HasPrefix(s.Name, poolNamePrefix) || m.pruning[provKey(s.UDID)] ||
 			m.claimedByOtherLocked(s.UDID, args.Owner) {
 			continue

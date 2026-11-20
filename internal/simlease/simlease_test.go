@@ -514,6 +514,98 @@ func TestPendingCreateMatchesOnlyOneUnownedSimulator(t *testing.T) {
 	}
 }
 
+// A pending created lease has no UDID, so its simulator looks free.
+// A later acquire must not take it, and the reaper must not delete it
+// once someone does hold it (DH-15).
+func TestReaperNeverDeletesSimulatorHeldByLiveLease(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sim-leases.json")
+	f := &fakeSimctl{}
+	c := &clock{t: time.Unix(1_800_000_000, 0)}
+	m1 := newManager(t, f, c, path)
+	m1.mu.Lock()
+	dead := &Lease{ID: "deadbeefdeadbeef", Name: NamePrefix + "deadbeef", DeviceType: iphone16, Runtime: runtime18,
+		Owner: "a", Action: ActionCreated, Pending: true, TTLSeconds: 3600, AcquiredAt: c.t, ExpiresAt: c.t.Add(time.Hour)}
+	m1.leases[dead.ID] = dead
+	m1.mustPersistLocked()
+	m1.mu.Unlock()
+	if _, err := f.Create(ctx, dead.Name, iphone16, runtime18); err != nil {
+		t.Fatal(err)
+	}
+
+	m2 := newManager(t, f, c, path)
+	b, err := m2.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m2.Reap(ctx)
+	if got := f.state(b.UDID); got != "Booted" {
+		t.Fatalf("owner b's simulator is %q after reap (mutations: %v); want Booted", got, f.mutations())
+	}
+}
+
+// slowCreate adds the simulator, then blocks before Create returns, so
+// another acquire can see it while the creating lease still has no UDID.
+type slowCreate struct {
+	*fakeSimctl
+	visible chan struct{}
+	finish  chan struct{}
+	mu      sync.Mutex
+	n       int
+}
+
+func (s *slowCreate) Create(ctx context.Context, name, typ, rt string) (string, error) {
+	s.mu.Lock()
+	n := s.n
+	s.n++
+	s.mu.Unlock()
+	udid, err := s.fakeSimctl.Create(ctx, name, typ, rt)
+	if err != nil {
+		return "", err
+	}
+	if n == 0 {
+		close(s.visible)
+		select {
+		case <-s.finish:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+	}
+	return udid, nil
+}
+
+func TestInFlightCreateIsNotLeasedTwice(t *testing.T) {
+	f := &fakeSimctl{}
+	s := &slowCreate{fakeSimctl: f, visible: make(chan struct{}), finish: make(chan struct{})}
+	c := &clock{t: time.Unix(1_800_000_000, 0)}
+	m, err := New(&Args{Simctl: s, Now: c.now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type res struct {
+		l   Lease
+		err error
+	}
+	aCh := make(chan res, 1)
+	go func() {
+		l, err := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "a"})
+		aCh <- res{l, err}
+	}()
+	select {
+	case <-s.visible:
+	case <-time.After(2 * time.Second):
+		t.Fatal("create did not become visible")
+	}
+	b, errB := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "b"})
+	close(s.finish)
+	a := <-aCh
+	if a.err != nil || errB != nil {
+		t.Fatalf("acquires: a=%v b=%v", a.err, errB)
+	}
+	if a.l.UDID == b.UDID {
+		t.Fatalf("simulator %s leased to a (%s) and b (%s) at once", a.l.UDID, a.l.Action, b.Action)
+	}
+}
+
 func TestFailedBootUndoesCreate(t *testing.T) {
 	f := &fakeSimctl{bootErr: errors.New("boot timed out")}
 	m := newManager(t, f, &clock{t: time.Unix(1_800_000_000, 0)}, "")
