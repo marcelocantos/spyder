@@ -301,3 +301,29 @@ func containsStr(s, sub string) bool {
 	}
 	return false
 }
+
+func TestResolveOSBoundsUseAdapterVersionStrings(t *testing.T) {
+	cases := []struct {
+		platform string
+		os       string
+		min      string
+		max      string
+		want     bool
+	}{
+		{"ios", "iOS 17.4", "18", "", false},
+		{"ios", "iOS 17.4", "", "17.4", true},
+		{"ios", "iOS 18.6 (simulator)", "18.6", "18.6.0", true},
+		{"android", "Android 9", "10", "", false},
+		{"android", "Android 9", "", "10", true},
+		{"android", "Android 12", "", "11", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.os+"/"+tc.min+"/"+tc.max, func(t *testing.T) {
+			c := Candidate{Info: device.Info{UUID: "fixture", Platform: tc.platform, OS: tc.os}}
+			sel := Selector{Platform: tc.platform, OSMin: tc.min, OSMax: tc.max}
+			if _, err := Resolve(sel, []Candidate{c}, nil); (err == nil) != tc.want {
+				t.Fatalf("Resolve(%+v, %q) = %v, want match=%t", sel, tc.os, err, tc.want)
+			}
+		})
+	}
+}

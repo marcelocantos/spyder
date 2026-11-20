@@ -226,14 +226,17 @@ func matchCandidate(sel Selector, c Candidate) (bool, string) {
 		}
 	}
 
-	// OSMin / OSMax.
-	if sel.OSMin != "" && c.Info.OS != "" {
-		if compareVersion(c.Info.OS, sel.OSMin) < 0 {
+	// Adapters expose a display label, while selector bounds are versions.
+	osVersion := strings.TrimPrefix(c.Info.OS, "iOS ")
+	osVersion = strings.TrimPrefix(osVersion, "Android ")
+	osVersion = strings.TrimSuffix(osVersion, " (simulator)")
+	if sel.OSMin != "" && osVersion != "" {
+		if compareVersion(osVersion, sel.OSMin) < 0 {
 			return false, "os_min=" + sel.OSMin
 		}
 	}
-	if sel.OSMax != "" && c.Info.OS != "" {
-		if compareVersion(c.Info.OS, sel.OSMax) > 0 {
+	if sel.OSMax != "" && osVersion != "" {
+		if compareVersion(osVersion, sel.OSMax) > 0 {
 			return false, "os_max=" + sel.OSMax
 		}
 	}
