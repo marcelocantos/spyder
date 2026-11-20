@@ -851,13 +851,21 @@ func (a *AndroidAdapter) AppPIDContext(ctx context.Context, id, bundleID string)
 		return 0, fmt.Errorf("adb not found in PATH: %w", err)
 	}
 	out, stderr, err := androidAdb(ctx, "-s", id, "shell", "pidof", adbShellWord(bundleID))
+	if ctx.Err() != nil {
+		return 0, fmt.Errorf("adb pidof %s: %w", bundleID, ctx.Err())
+	}
 	if isAndroidDeviceNotConnected(string(stderr)) {
 		return 0, fmt.Errorf("device not connected: %s", id)
 	}
-	if err != nil {
-		return 0, fmt.Errorf("app not running: %s", bundleID)
-	}
 	s := strings.TrimSpace(string(out))
+	if err != nil {
+		// pidof exits 1 without output when no process matches. A host
+		// or transport failure can also exit 1, but reports a diagnostic.
+		if exit, ok := errors.AsType[*exec.ExitError](err); !ok ||
+			exit.ExitCode() != 1 || s != "" || strings.TrimSpace(string(stderr)) != "" {
+			return 0, fmt.Errorf("adb pidof %s: %w: %s", bundleID, err, truncate(string(stderr), 200))
+		}
+	}
 	if s == "" {
 		return 0, fmt.Errorf("app not running: %s", bundleID)
 	}

@@ -4,6 +4,10 @@
 package device
 
 import (
+	"context"
+	"errors"
+	"os/exec"
+	"strings"
 	"testing"
 )
 
@@ -142,4 +146,36 @@ func TestIsAndroidDeviceNotConnected(t *testing.T) {
 			t.Errorf("isAndroidDeviceNotConnected(%q) = true; want false", s)
 		}
 	}
+}
+
+func TestAndroidAppPIDDistinguishesLookupFailure(t *testing.T) {
+	app := NewAndroidAdapter()
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"transport", errors.New("transport failed"), "transport failed"},
+		{"deadline", context.DeadlineExceeded, "deadline exceeded"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Cleanup(SetAndroidAdbForTest(func(context.Context, ...string) ([]byte, []byte, error) {
+				return nil, nil, tc.err
+			}))
+			_, err := app.AppPID("fixture", "com.example")
+			if !errors.Is(err, tc.err) || strings.HasPrefix(err.Error(), "app not running") ||
+				!strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("AppPID = %v, want %v", err, tc.err)
+			}
+		})
+	}
+	t.Run("absent", func(t *testing.T) {
+		exit := exec.Command("/bin/sh", "-c", "exit 1").Run()
+		t.Cleanup(SetAndroidAdbForTest(func(context.Context, ...string) ([]byte, []byte, error) {
+			return nil, nil, exit
+		}))
+		if _, err := app.AppPID("fixture", "com.example"); err == nil || !strings.HasPrefix(err.Error(), "app not running") {
+			t.Fatalf("no pidof result = %v, want app not running", err)
+		}
+	})
 }
