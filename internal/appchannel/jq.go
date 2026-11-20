@@ -45,7 +45,7 @@ func ApplyJQ(expr string, raw msgpack.RawMessage) (any, error) {
 	if expr == "" {
 		// No filter: decode raw and return verbatim.
 		var v any
-		if err := msgpack.Unmarshal(raw, &v); err != nil {
+		if err := unmarshalBounded(raw, &v); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -83,7 +83,7 @@ func compileJQ(expr string) (*gojq.Code, error) {
 
 func runJQ(ctx context.Context, expr string, code *gojq.Code, raw msgpack.RawMessage) (results []any, err error) {
 	var input any
-	if err := msgpack.Unmarshal(raw, &input); err != nil {
+	if err := unmarshalBounded(raw, &input); err != nil {
 		return nil, err
 	}
 	input = normaliseForJQ(input)

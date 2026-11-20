@@ -54,7 +54,7 @@ func (s StateCaptureSample) MarshalJSON() ([]byte, error) {
 	}
 	var v any
 	if len(s.Data) > 0 {
-		if err := msgpack.Unmarshal(s.Data, &v); err != nil {
+		if err := unmarshalBounded(s.Data, &v); err != nil {
 			v = nil
 		}
 	}

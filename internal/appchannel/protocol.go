@@ -136,7 +136,7 @@ func ReadFrame(r io.Reader) (*Envelope, error) {
 		return nil, fmt.Errorf("appchannel: short frame body (want %d): %w", length, err)
 	}
 	var env Envelope
-	if err := msgpack.Unmarshal(body, &env); err != nil {
+	if err := unmarshalBounded(body, &env); err != nil {
 		return nil, fmt.Errorf("appchannel: decode envelope: %w (code %d)", err, ErrCodeParse)
 	}
 	return &env, nil
@@ -162,7 +162,7 @@ func UnpackParams(raw msgpack.RawMessage, dst any) error {
 	if len(raw) == 0 {
 		return nil
 	}
-	if err := msgpack.Unmarshal(raw, dst); err != nil {
+	if err := unmarshalBounded(raw, dst); err != nil {
 		return fmt.Errorf("appchannel: unpack params: %w", err)
 	}
 	return nil

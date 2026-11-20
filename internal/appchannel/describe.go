@@ -34,7 +34,7 @@ const (
 // cost is bounded regardless of how large the slice is.
 func DescribeShape(raw msgpack.RawMessage) (any, error) {
 	var v any
-	if err := msgpack.Unmarshal(raw, &v); err != nil {
+	if err := unmarshalBounded(raw, &v); err != nil {
 		return nil, err
 	}
 	return describe(v, 0), nil
