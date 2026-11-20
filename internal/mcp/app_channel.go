@@ -266,20 +266,20 @@ func (h *Handler) findAppChannelListener(id string) *appchannel.Listener {
 
 // callSimple is a helper for methods with no params and no significant
 // result — just sends the call, waits for ack.
-func callSimple(s *appchannel.Session, method string, timeout time.Duration) (*mcpgo.CallToolResult, error) {
-	_, err := s.Call(context.Background(), method, nil, timeout)
+func callSimple(ctx context.Context, s *appchannel.Session, method string, timeout time.Duration) (*mcpgo.CallToolResult, error) {
+	_, err := s.Call(ctx, method, nil, timeout)
 	if err != nil {
 		return toolErr("%s: %v", method, err)
 	}
 	return toolText(fmt.Sprintf("%s acknowledged", method))
 }
 
-func (h *Handler) handleAppPing(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppPing(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodPing, nil, 5*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodPing, nil, 5*time.Second)
 	if err != nil {
 		return toolErr("ping: %v", err)
 	}
@@ -290,7 +290,7 @@ func (h *Handler) handleAppPing(args map[string]any) (*mcpgo.CallToolResult, err
 	return toolJSON(pong)
 }
 
-func (h *Handler) handleAppQuit(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppQuit(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -299,58 +299,58 @@ func (h *Handler) handleAppQuit(args map[string]any) (*mcpgo.CallToolResult, err
 	if timeoutMs <= 0 {
 		timeoutMs = 5000
 	}
-	return callSimple(s, appchannel.MethodQuit, time.Duration(timeoutMs)*time.Millisecond)
+	return callSimple(ctx, s, appchannel.MethodQuit, time.Duration(timeoutMs)*time.Millisecond)
 }
 
-func (h *Handler) handleAppFlush(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppFlush(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	return callSimple(s, appchannel.MethodFlush, 5*time.Second)
+	return callSimple(ctx, s, appchannel.MethodFlush, 5*time.Second)
 }
 
-func (h *Handler) handleAppBackground(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppBackground(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	return callSimple(s, appchannel.MethodBackgrounded, 5*time.Second)
+	return callSimple(ctx, s, appchannel.MethodBackgrounded, 5*time.Second)
 }
 
-func (h *Handler) handleAppForeground(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppForeground(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	return callSimple(s, appchannel.MethodForegrounded, 5*time.Second)
+	return callSimple(ctx, s, appchannel.MethodForegrounded, 5*time.Second)
 }
 
-func (h *Handler) handleAppLowMemory(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppLowMemory(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	return callSimple(s, appchannel.MethodLowMemoryWarning, 5*time.Second)
+	return callSimple(ctx, s, appchannel.MethodLowMemoryWarning, 5*time.Second)
 }
 
-func (h *Handler) handleAppPause(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppPause(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	return callSimple(s, appchannel.MethodPause, 5*time.Second)
+	return callSimple(ctx, s, appchannel.MethodPause, 5*time.Second)
 }
 
-func (h *Handler) handleAppResume(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppResume(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	return callSimple(s, appchannel.MethodResume, 5*time.Second)
+	return callSimple(ctx, s, appchannel.MethodResume, 5*time.Second)
 }
 
-func (h *Handler) handleAppStep(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppStep(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -359,14 +359,14 @@ func (h *Handler) handleAppStep(args map[string]any) (*mcpgo.CallToolResult, err
 	if frames <= 0 {
 		frames = 1
 	}
-	_, err := s.Call(context.Background(), appchannel.MethodStep, map[string]int{"frames": int(frames)}, 5*time.Second)
+	_, err := s.Call(ctx, appchannel.MethodStep, map[string]int{"frames": int(frames)}, 5*time.Second)
 	if err != nil {
 		return toolErr("step: %v", err)
 	}
 	return toolText(fmt.Sprintf("stepped %d frames", int(frames)))
 }
 
-func (h *Handler) handleAppSpeed(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppSpeed(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -375,14 +375,14 @@ func (h *Handler) handleAppSpeed(args map[string]any) (*mcpgo.CallToolResult, er
 	if !ok || mult <= 0 {
 		return toolErr("speed: multiplier (positive number) is required")
 	}
-	_, err := s.Call(context.Background(), appchannel.MethodSpeed, map[string]float64{"multiplier": mult}, 5*time.Second)
+	_, err := s.Call(ctx, appchannel.MethodSpeed, map[string]float64{"multiplier": mult}, 5*time.Second)
 	if err != nil {
 		return toolErr("speed: %v", err)
 	}
 	return toolText(fmt.Sprintf("speed set to %vx", mult))
 }
 
-func (h *Handler) handleAppInput(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppInput(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -410,7 +410,7 @@ func (h *Handler) handleAppInput(args map[string]any) (*mcpgo.CallToolResult, er
 		}
 		params[k] = v
 	}
-	_, err = s.Call(context.Background(), appchannel.MethodInputInject, params, 5*time.Second)
+	_, err = s.Call(ctx, appchannel.MethodInputInject, params, 5*time.Second)
 	if err != nil {
 		return toolErr("input: %v", err)
 	}
@@ -418,7 +418,7 @@ func (h *Handler) handleAppInput(args map[string]any) (*mcpgo.CallToolResult, er
 }
 
 // sensorRPC is shared by suppress/set/unsuppress/status.
-func (h *Handler) sensorRPC(method string, args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) sensorRPC(ctx context.Context, method string, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -433,7 +433,7 @@ func (h *Handler) sensorRPC(method string, args map[string]any) (*mcpgo.CallTool
 	if _, ok := params["sensor"]; !ok {
 		params["sensor"] = "accel"
 	}
-	res, err := s.Call(context.Background(), method, params, 5*time.Second)
+	res, err := s.Call(ctx, method, params, 5*time.Second)
 	if err != nil {
 		return toolErr("%s: %v", method, err)
 	}
@@ -446,17 +446,17 @@ func (h *Handler) sensorRPC(method string, args map[string]any) (*mcpgo.CallTool
 
 // One concern each: suppress real stream, set scripted sample, unsuppress.
 // suppress is sticky until unsuppress; set does not claim authority by itself.
-func (h *Handler) handleAppSensorSuppress(args map[string]any) (*mcpgo.CallToolResult, error) {
-	return h.sensorRPC(appchannel.MethodSensorSuppress, args)
+func (h *Handler) handleAppSensorSuppress(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(ctx, appchannel.MethodSensorSuppress, args)
 }
-func (h *Handler) handleAppSensorSet(args map[string]any) (*mcpgo.CallToolResult, error) {
-	return h.sensorRPC(appchannel.MethodSensorSet, args)
+func (h *Handler) handleAppSensorSet(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(ctx, appchannel.MethodSensorSet, args)
 }
-func (h *Handler) handleAppSensorUnsuppress(args map[string]any) (*mcpgo.CallToolResult, error) {
-	return h.sensorRPC(appchannel.MethodSensorUnsuppress, args)
+func (h *Handler) handleAppSensorUnsuppress(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(ctx, appchannel.MethodSensorUnsuppress, args)
 }
-func (h *Handler) handleAppSensorStatus(args map[string]any) (*mcpgo.CallToolResult, error) {
-	return h.sensorRPC(appchannel.MethodSensorStatus, args)
+func (h *Handler) handleAppSensorStatus(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.sensorRPC(ctx, appchannel.MethodSensorStatus, args)
 }
 
 // handleAppStateSlices returns the slice catalogue the app advertised
@@ -511,7 +511,7 @@ func (h *Handler) handleAppStateCaptureStart(args map[string]any) (*mcpgo.CallTo
 	})
 }
 
-func (h *Handler) handleAppStateCaptureGet(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppStateCaptureGet(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -528,7 +528,7 @@ func (h *Handler) handleAppStateCaptureGet(args map[string]any) (*mcpgo.CallTool
 	if selectExpr == "" {
 		return toolJSON(r)
 	}
-	filtered, jqErr := filterCaptureSamples(r.Samples, selectExpr)
+	filtered, jqErr := filterCaptureSamples(ctx, r.Samples, selectExpr)
 	if jqErr != nil {
 		return toolJSON(map[string]any{"select_error": jqErr})
 	}
@@ -547,13 +547,13 @@ func (h *Handler) handleAppStateCaptureGet(args map[string]any) (*mcpgo.CallTool
 // parse/compile error is returned upfront (the expression is invalid
 // regardless of which sample it'd be applied to); per-sample eval
 // errors collapse the sample's result to nil.
-func filterCaptureSamples(samples []appchannel.StateCaptureSample, expr string) ([]map[string]any, *appchannel.JQError) {
+func filterCaptureSamples(ctx context.Context, samples []appchannel.StateCaptureSample, expr string) ([]map[string]any, *appchannel.JQError) {
 	// Pre-parse once via ApplyJQ on a dummy empty input — gojq.Parse
 	// is cheap but we want the JQError shape consistent with the
 	// other call sites.
 	out := make([]map[string]any, 0, len(samples))
 	for _, sample := range samples {
-		v, err := appchannel.ApplyJQ(expr, sample.Data)
+		v, err := appchannel.ApplyJQContext(ctx, expr, sample.Data)
 		if err != nil {
 			if jqErr, ok := err.(*appchannel.JQError); ok {
 				return nil, jqErr
@@ -595,7 +595,7 @@ func (h *Handler) handleAppStateCaptureList(args map[string]any) (*mcpgo.CallToo
 	})
 }
 
-func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppState(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -605,11 +605,11 @@ func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, er
 		return nil, err
 	}
 	selectExpr := optString(args, "select")
-	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, appchannel.DefaultRequestTimeout)
+	res, err := s.Call(ctx, appchannel.MethodStateQuery, map[string]string{"slice": slice}, appchannel.DefaultRequestTimeout)
 	if err != nil {
 		return toolErr("state_query: %v", err)
 	}
-	out, err := appchannel.ApplyJQ(selectExpr, res)
+	out, err := appchannel.ApplyJQContext(ctx, selectExpr, res)
 	if err != nil {
 		if jqErr, ok := err.(*appchannel.JQError); ok {
 			return toolJSON(map[string]any{"select_error": jqErr})
@@ -627,7 +627,7 @@ func (h *Handler) handleAppState(args map[string]any) (*mcpgo.CallToolResult, er
 // (ge convention: mode, active_adm, current_index, placed_count, view
 // lon/lat, paused). Observational: like every app_* read it is not
 // reservation-gated.
-func (h *Handler) handleStateQuery(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleStateQuery(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -636,11 +636,11 @@ func (h *Handler) handleStateQuery(args map[string]any) (*mcpgo.CallToolResult, 
 	if slice := optString(args, "slice"); slice != "" {
 		params["slice"] = slice
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, params, appchannel.DefaultRequestTimeout)
+	res, err := s.Call(ctx, appchannel.MethodStateQuery, params, appchannel.DefaultRequestTimeout)
 	if err != nil {
 		return toolErr("state_query: %v", err)
 	}
-	out, err := appchannel.ApplyJQ(optString(args, "select"), res)
+	out, err := appchannel.ApplyJQContext(ctx, optString(args, "select"), res)
 	if err != nil {
 		if jqErr, ok := err.(*appchannel.JQError); ok {
 			return toolJSON(map[string]any{"select_error": jqErr})
@@ -654,23 +654,23 @@ func (h *Handler) handleStateQuery(args map[string]any) (*mcpgo.CallToolResult, 
 // the app-channel (🎯T91.2) — ported so a direct-mode
 // app is tunable from spyder via spyder only. The app answers with the shared
 // tweak:: library's serialisation, so the shapes match the engine's allToJson contract.
-func (h *Handler) handleAppTweakList(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppTweakList(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodTweakList, nil, 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodTweakList, nil, 10*time.Second)
 	if err != nil {
 		return toolErr("tweak_list: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("tweak_list: %v", err)
 	}
 	return toolJSON(out)
 }
 
-func (h *Handler) handleAppTweakGet(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppTweakGet(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -679,18 +679,18 @@ func (h *Handler) handleAppTweakGet(args map[string]any) (*mcpgo.CallToolResult,
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodTweakGet, map[string]string{"name": name}, 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodTweakGet, map[string]string{"name": name}, 10*time.Second)
 	if err != nil {
 		return toolErr("tweak_get: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("tweak_get: %v", err)
 	}
 	return toolJSON(out)
 }
 
-func (h *Handler) handleAppTweakSet(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppTweakSet(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -703,18 +703,18 @@ func (h *Handler) handleAppTweakSet(args map[string]any) (*mcpgo.CallToolResult,
 	if !ok {
 		return toolErr("tweak_set: 'value' is required")
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodTweakSet, map[string]any{"name": name, "value": value}, 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodTweakSet, map[string]any{"name": name, "value": value}, 10*time.Second)
 	if err != nil {
 		return toolErr("tweak_set: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("tweak_set: %v", err)
 	}
 	return toolJSON(out)
 }
 
-func (h *Handler) handleAppTweakReset(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppTweakReset(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -726,11 +726,11 @@ func (h *Handler) handleAppTweakReset(args map[string]any) (*mcpgo.CallToolResul
 	} else {
 		params["all"] = true
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodTweakReset, params, 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodTweakReset, params, 10*time.Second)
 	if err != nil {
 		return toolErr("tweak_reset: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("tweak_reset: %v", err)
 	}
@@ -740,7 +740,7 @@ func (h *Handler) handleAppTweakReset(args map[string]any) (*mcpgo.CallToolResul
 // handleAppStateDescribe runs `state_query{slice}` once and walks the
 // response into a types-only sketch — enough for the agent to write
 // jq filters without first paying the full-payload cost.
-func (h *Handler) handleAppStateDescribe(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppStateDescribe(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -749,7 +749,7 @@ func (h *Handler) handleAppStateDescribe(args map[string]any) (*mcpgo.CallToolRe
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodStateQuery, map[string]string{"slice": slice}, appchannel.DefaultRequestTimeout)
+	res, err := s.Call(ctx, appchannel.MethodStateQuery, map[string]string{"slice": slice}, appchannel.DefaultRequestTimeout)
 	if err != nil {
 		return toolErr("state_describe: %v", err)
 	}
@@ -763,12 +763,12 @@ func (h *Handler) handleAppStateDescribe(args map[string]any) (*mcpgo.CallToolRe
 	})
 }
 
-func (h *Handler) handleAppSaveState(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppSaveState(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodSaveState, nil, 30*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodSaveState, nil, 30*time.Second)
 	if err != nil {
 		return toolErr("save_state: %v", err)
 	}
@@ -786,7 +786,7 @@ func (h *Handler) handleAppSaveState(args map[string]any) (*mcpgo.CallToolResult
 	})
 }
 
-func (h *Handler) handleAppRestoreState(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppRestoreState(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -799,19 +799,19 @@ func (h *Handler) handleAppRestoreState(args map[string]any) (*mcpgo.CallToolRes
 	if decErr != nil {
 		return toolErr("restore_state: invalid base64: %v", decErr)
 	}
-	_, err = s.Call(context.Background(), appchannel.MethodRestoreState, map[string][]byte{"state": state}, 30*time.Second)
+	_, err = s.Call(ctx, appchannel.MethodRestoreState, map[string][]byte{"state": state}, 30*time.Second)
 	if err != nil {
 		return toolErr("restore_state: %v", err)
 	}
 	return toolText(fmt.Sprintf("restored %d bytes of state", len(state)))
 }
 
-func (h *Handler) handleAppScreenshot(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppScreenshot(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodScreenshotApp, nil, 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodScreenshotApp, nil, 10*time.Second)
 	if err != nil {
 		return toolErr("screenshot_app: %v", err)
 	}
@@ -858,14 +858,14 @@ func (h *Handler) handleAppScreenshot(args map[string]any) (*mcpgo.CallToolResul
 	})
 }
 
-func (h *Handler) handleAppLogGet(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppLogGet(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
 	lines, dropped := s.DrainLogs()
 	selectExpr := optString(args, "select")
-	out, jqErr := applyJQToValue(lines, selectExpr)
+	out, jqErr := applyJQToValue(ctx, lines, selectExpr)
 	if jqErr != nil {
 		return toolJSON(map[string]any{"select_error": jqErr})
 	}
@@ -876,14 +876,14 @@ func (h *Handler) handleAppLogGet(args map[string]any) (*mcpgo.CallToolResult, e
 	})
 }
 
-func (h *Handler) handleAppPerfGet(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppPerfGet(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
 	}
 	samples, dropped := s.DrainPerf()
 	selectExpr := optString(args, "select")
-	out, jqErr := applyJQToValue(samples, selectExpr)
+	out, jqErr := applyJQToValue(ctx, samples, selectExpr)
 	if jqErr != nil {
 		return toolJSON(map[string]any{"select_error": jqErr})
 	}
@@ -965,7 +965,7 @@ var appCallArgKeys = map[string]bool{
 
 // handleAppCall forwards an arbitrary RPC the app advertised in hello.
 // Prefer fixed app_* tools for engine methods; use this for game-private commands.
-func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppCall(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -1001,14 +1001,14 @@ func (h *Handler) handleAppCall(args map[string]any) (*mcpgo.CallToolResult, err
 	if ms, ok := args["timeout_ms"].(float64); ok && ms > 0 {
 		timeout = time.Duration(ms) * time.Millisecond
 	}
-	res, err := s.Call(context.Background(), method, params, timeout)
+	res, err := s.Call(ctx, method, params, timeout)
 	if err != nil {
 		// 🎯T123: a failed call names the method, shows the advertised
 		// example_params, and summarises what was actually sent.
 		return toolErr("app_call %s: %v%s; got params: %s",
 			method, err, expectedParamsHint(s, method), summarizeParams(params))
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("app_call %s: decode: %v", method, err)
 	}
@@ -1078,7 +1078,7 @@ func metricsInstanceParams(args map[string]any) map[string]any {
 	return params
 }
 
-func (h *Handler) handleAppMetricsList(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppMetricsList(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -1086,18 +1086,18 @@ func (h *Handler) handleAppMetricsList(args map[string]any) (*mcpgo.CallToolResu
 	if !s.Supports(appchannel.MethodMetricsList) {
 		return toolErr("metrics_list: app does not advertise metrics_list (ge 🎯T166)")
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodMetricsList, metricsInstanceParams(args), 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodMetricsList, metricsInstanceParams(args), 10*time.Second)
 	if err != nil {
 		return toolErr("metrics_list: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("metrics_list: %v", err)
 	}
 	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
 }
 
-func (h *Handler) handleAppMetricsArm(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppMetricsArm(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -1114,18 +1114,18 @@ func (h *Handler) handleAppMetricsArm(args map[string]any) (*mcpgo.CallToolResul
 	if cap, ok := args["capacity"].(float64); ok && cap > 0 {
 		params["capacity"] = int(cap)
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodMetricsArm, params, 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodMetricsArm, params, 10*time.Second)
 	if err != nil {
 		return toolErr("metrics_arm: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("metrics_arm: %v", err)
 	}
 	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
 }
 
-func (h *Handler) handleAppMetricsDisarm(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppMetricsDisarm(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -1133,18 +1133,18 @@ func (h *Handler) handleAppMetricsDisarm(args map[string]any) (*mcpgo.CallToolRe
 	if !s.Supports(appchannel.MethodMetricsDisarm) {
 		return toolErr("metrics_disarm: app does not advertise metrics_disarm (ge 🎯T166)")
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodMetricsDisarm, metricsInstanceParams(args), 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodMetricsDisarm, metricsInstanceParams(args), 10*time.Second)
 	if err != nil {
 		return toolErr("metrics_disarm: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("metrics_disarm: %v", err)
 	}
 	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
 }
 
-func (h *Handler) handleAppMetricsStatus(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppMetricsStatus(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -1152,18 +1152,18 @@ func (h *Handler) handleAppMetricsStatus(args map[string]any) (*mcpgo.CallToolRe
 	if !s.Supports(appchannel.MethodMetricsStatus) {
 		return toolErr("metrics_status: app does not advertise metrics_status (ge 🎯T166)")
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodMetricsStatus, metricsInstanceParams(args), 10*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodMetricsStatus, metricsInstanceParams(args), 10*time.Second)
 	if err != nil {
 		return toolErr("metrics_status: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("metrics_status: %v", err)
 	}
 	return toolJSON(map[string]any{"session_id": s.ID, "result": out})
 }
 
-func (h *Handler) handleAppMetricsDump(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppMetricsDump(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -1171,11 +1171,11 @@ func (h *Handler) handleAppMetricsDump(args map[string]any) (*mcpgo.CallToolResu
 	if !s.Supports(appchannel.MethodMetricsDump) {
 		return toolErr("metrics_dump: app does not advertise metrics_dump (ge 🎯T166)")
 	}
-	res, err := s.Call(context.Background(), appchannel.MethodMetricsDump, metricsInstanceParams(args), 30*time.Second)
+	res, err := s.Call(ctx, appchannel.MethodMetricsDump, metricsInstanceParams(args), 30*time.Second)
 	if err != nil {
 		return toolErr("metrics_dump: %v", err)
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return toolErr("metrics_dump: %v", err)
 	}
@@ -1186,7 +1186,7 @@ func (h *Handler) handleAppMetricsDump(args map[string]any) (*mcpgo.CallToolResu
 // round-tripping through MessagePack. Lets the log/perf handlers
 // (which start from in-memory structs) share the same filter
 // machinery the state handlers use on raw msgpack bytes.
-func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
+func applyJQToValue(ctx context.Context, v any, expr string) (any, *appchannel.JQError) {
 	if expr == "" {
 		return v, nil
 	}
@@ -1194,7 +1194,7 @@ func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
 	if err != nil {
 		return nil, &appchannel.JQError{Expression: expr, Stage: "marshal", Detail: err.Error()}
 	}
-	out, err := appchannel.ApplyJQ(expr, raw)
+	out, err := appchannel.ApplyJQContext(ctx, expr, raw)
 	if err != nil {
 		if jqErr, ok := err.(*appchannel.JQError); ok {
 			return nil, jqErr
@@ -1211,7 +1211,7 @@ func applyJQToValue(v any, expr string) (any, *appchannel.JQError) {
 // none is idle and capacity allows (🎯T92.1 clause 2). A player/agent "coming
 // in" is exactly this call; the returned instance has the full monitor
 // surface. Release it with app_release.
-func (h *Handler) handleAppAcquire(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppAcquire(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	if h.appChannel == nil || h.instances == nil {
 		return toolErr("app channel not configured")
 	}
@@ -1227,7 +1227,7 @@ func (h *Handler) handleAppAcquire(args map[string]any) (*mcpgo.CallToolResult, 
 	if holder == "" {
 		holder = "agent"
 	}
-	inst, err := h.instances.Acquire(context.Background(), factory, game, holder, 30*time.Second)
+	inst, err := h.instances.Acquire(ctx, factory, game, holder, 30*time.Second)
 	if err != nil {
 		return toolErr("acquire: %v", err)
 	}

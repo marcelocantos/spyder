@@ -42,6 +42,11 @@ func (e *JQError) Error() string {
 // one element per match. Single-result expressions return that value
 // directly to avoid wrapping cost on the common case.
 func ApplyJQ(expr string, raw msgpack.RawMessage) (any, error) {
+	return ApplyJQContext(context.Background(), expr, raw)
+}
+
+// ApplyJQContext evaluates the filter within the caller's budget.
+func ApplyJQContext(ctx context.Context, expr string, raw msgpack.RawMessage) (any, error) {
 	if expr == "" {
 		// No filter: decode raw and return verbatim.
 		var v any
@@ -55,7 +60,7 @@ func ApplyJQ(expr string, raw msgpack.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	results, err := runJQ(context.Background(), expr, code, raw)
+	results, err := runJQ(ctx, expr, code, raw)
 	if err != nil {
 		return nil, err
 	}

@@ -27,7 +27,7 @@ var appCallsBatchArgKeys = map[string]bool{
 }
 
 // handleAppCallsBatch runs multiple app_call RPCs against one session.
-func (h *Handler) handleAppCallsBatch(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppCallsBatch(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -58,13 +58,13 @@ func (h *Handler) handleAppCallsBatch(args map[string]any) (*mcpgo.CallToolResul
 
 	results := make([]map[string]any, 0, len(calls))
 	for _, c := range calls {
-		entry, callErr := h.invokeAppCall(s, c.method, c.params, c.timeout)
+		entry, callErr := h.invokeAppCall(ctx, s, c.method, c.params, c.timeout)
 		if callErr != "" {
 			results = append(results, map[string]any{
 				"method": c.method,
 				"error":  callErr,
 			})
-			if stopOnError {
+			if stopOnError || ctx.Err() != nil {
 				break
 			}
 			continue
@@ -120,15 +120,15 @@ func parseAppCallsBatch(raw any) ([]batchCall, error) {
 }
 
 // invokeAppCall runs one RPC and returns the decoded result or an error string.
-func (h *Handler) invokeAppCall(s *appchannel.Session, method string, params any, timeout time.Duration) (any, string) {
+func (h *Handler) invokeAppCall(ctx context.Context, s *appchannel.Session, method string, params any, timeout time.Duration) (any, string) {
 	if !s.Supports(method) {
 		return nil, fmt.Sprintf("app does not advertise method %q (call app_methods)", method)
 	}
-	res, err := s.Call(context.Background(), method, params, timeout)
+	res, err := s.Call(ctx, method, params, timeout)
 	if err != nil {
 		return nil, fmt.Sprintf("%v%s", err, expectedParamsHint(s, method))
 	}
-	out, err := appchannel.ApplyJQ("", res)
+	out, err := appchannel.ApplyJQContext(ctx, "", res)
 	if err != nil {
 		return nil, fmt.Sprintf("decode: %v", err)
 	}

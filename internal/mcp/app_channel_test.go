@@ -946,3 +946,57 @@ func TestAppScreenshot_InlineOptIn(t *testing.T) {
 		t.Fatalf("inline=true should return an image content block; got %+v", r.Content)
 	}
 }
+
+func TestAppCallReturnsWhenDispatchContextEnds(t *testing.T) {
+	h := startAppChannelHandler(t)
+	_, port := openListener(t, h)
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	hello, err := appchannel.PackParams(appchannel.Hello{
+		AppName: "deadline-fixture", Methods: appchannel.MethodDescriptors(appchannel.MethodPing),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appchannel.WriteFrame(conn, &appchannel.Envelope{ID: 1, Method: appchannel.MethodHello, Params: hello}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := appchannel.ReadFrame(conn); err != nil {
+		t.Fatal(err)
+	}
+	sid := waitForAppSession(t, h)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan string, 1)
+	go func() {
+		res, err := h.dispatch(ctx, "app_call", map[string]any{
+			"session_id": sid, "method": appchannel.MethodPing, "timeout_ms": float64(60_000),
+		})
+		switch {
+		case err != nil:
+			done <- err.Error()
+		case res.IsError:
+			done <- strings.Join(texts(res), "\n")
+		default:
+			done <- "call unexpectedly succeeded"
+		}
+	}()
+	if env, err := appchannel.ReadFrame(conn); err != nil || env.Method != appchannel.MethodPing {
+		t.Fatalf("want ping request, got %v, %v", env, err)
+	}
+	cancel()
+	select {
+	case got := <-done:
+		if !strings.Contains(got, "context canceled") {
+			t.Fatalf("want context cancellation, got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("app_call kept waiting for the app after dispatch cancellation")
+	}
+}

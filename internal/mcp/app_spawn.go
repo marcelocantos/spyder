@@ -54,7 +54,7 @@ type spawnDeviceResult struct {
 
 // handleAppSpawn starts a game session on any medium. See the package
 // comment for the resolution order (factory session vs device launch).
-func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleAppSpawn(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	if h.appChannel == nil {
 		return toolErr("app channel not configured")
 	}
@@ -68,7 +68,7 @@ func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, er
 		if s.Listener() != nil {
 			s.Listener().Touch()
 		}
-		return h.spawnFromFactory(s, args)
+		return h.spawnFromFactory(ctx, s, args)
 	}
 
 	dev := optString(args, "device")
@@ -78,7 +78,7 @@ func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, er
 		// it; anything else is the game itself, already up — return it.
 		if s := h.liveSessionFor(dev, bundleID); s != nil {
 			if s.Supports(appchannel.MethodSpawnInstance) {
-				return h.spawnFromFactory(s, args)
+				return h.spawnFromFactory(ctx, s, args)
 			}
 			return toolJSON(spawnDeviceResult{
 				Device: dev, BundleID: bundleID,
@@ -87,7 +87,7 @@ func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, er
 		}
 		// 3. Device spawn (🎯T117): launch the installed bundle and wait
 		// for its session.
-		return h.spawnOnDevice(dev, bundleID, args)
+		return h.spawnOnDevice(ctx, dev, bundleID, args)
 	}
 
 	// 4. No target named: unique-live-session fallback (factory).
@@ -95,7 +95,7 @@ func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, er
 	if errRes != nil {
 		return errRes, nil
 	}
-	return h.spawnFromFactory(factory, args)
+	return h.spawnFromFactory(ctx, factory, args)
 }
 
 // spawnFromFactory asks a game-server factory session (one advertising
@@ -104,13 +104,13 @@ func (h *Handler) handleAppSpawn(args map[string]any) (*mcpgo.CallToolResult, er
 // app-channel listener the factory is on (127.0.0.1 for the local/
 // server-mode case this path targets — LAN/dev only, per T91.4), so it
 // connects as its own session with the full monitor surface.
-func (h *Handler) spawnFromFactory(factory *appchannel.Session, args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) spawnFromFactory(ctx context.Context, factory *appchannel.Session, args map[string]any) (*mcpgo.CallToolResult, error) {
 	game, err := requireString(args, "game")
 	if err != nil {
 		return toolErr("%v", err)
 	}
 	addr := fmt.Sprintf("127.0.0.1:%d", factory.Port)
-	inst, err := h.appChannel.SpawnInstance(context.Background(), factory,
+	inst, err := h.appChannel.SpawnInstance(ctx, factory,
 		appchannel.SpawnRequest{Game: game, AppChannel: addr, InstanceID: optString(args, "instance_id")},
 		30*time.Second)
 	if err != nil {
@@ -123,7 +123,7 @@ func (h *Handler) spawnFromFactory(factory *appchannel.Session, args map[string]
 // installed bundle through the existing adapter plumbing (the exact steps
 // launch_app performs), then a wait for the app-channel session so the
 // caller gets a ready session, not a fire-and-forget launch.
-func (h *Handler) spawnOnDevice(dev, bundleID string, args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) spawnOnDevice(ctx context.Context, dev, bundleID string, args map[string]any) (*mcpgo.CallToolResult, error) {
 	if g := optString(args, "game"); g != "" {
 		return toolErr("app_spawn: game=%q names a factory instance, but there is no live factory session for device=%s bundle_id=%s — on a device the bundle_id names the game; omit game", g, dev, bundleID)
 	}
@@ -159,7 +159,7 @@ func (h *Handler) spawnOnDevice(dev, bundleID string, args map[string]any) (*mcp
 	}
 	h.recordLaunch(id, bundleID)
 
-	s, err := h.waitForKeyedSession(id, bundleID, spawnDeviceWait)
+	s, err := h.waitForKeyedSession(ctx, id, bundleID, spawnDeviceWait)
 	if err != nil {
 		return toolErr("app_spawn %s on %s: %v", bundleID, dev, err)
 	}
@@ -190,7 +190,7 @@ func (h *Handler) liveSessionFor(dev, bundleID string) *appchannel.Session {
 
 // waitForKeyedSession polls the (device, bundle) keyed listener until a
 // session completes its hello, or timeout.
-func (h *Handler) waitForKeyedSession(deviceID, bundleID string, timeout time.Duration) (*appchannel.Session, error) {
+func (h *Handler) waitForKeyedSession(ctx context.Context, deviceID, bundleID string, timeout time.Duration) (*appchannel.Session, error) {
 	key := appchannel.AppKey{DeviceID: deviceID, BundleID: bundleID}
 	deadline := time.Now().Add(timeout)
 	for {
@@ -204,7 +204,11 @@ func (h *Handler) waitForKeyedSession(deviceID, bundleID string, timeout time.Du
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("app launched but no app-channel session appeared within %s (does the app honour SPYDER_APP_CHANNEL?)", timeout)
 		}
-		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 }
 

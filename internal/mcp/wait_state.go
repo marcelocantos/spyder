@@ -16,7 +16,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/appchannel"
 )
 
-func (h *Handler) handleWaitState(args map[string]any) (*mcpgo.CallToolResult, error) {
+func (h *Handler) handleWaitState(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	s, errRes := h.requireSession(args)
 	if errRes != nil {
 		return errRes, nil
@@ -40,7 +40,7 @@ func (h *Handler) handleWaitState(args map[string]any) (*mcpgo.CallToolResult, e
 	if timeout > appchannel.MaxWaitTimeout {
 		timeout = appchannel.MaxWaitTimeout
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout+DeadlineWaitStateMargin)
+	ctx, cancel := context.WithTimeout(ctx, timeout+DeadlineWaitStateMargin)
 	defer cancel()
 
 	got, werr := appchannel.WaitState(ctx, appchannel.WaitStateArgs{
