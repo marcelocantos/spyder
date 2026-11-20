@@ -176,7 +176,7 @@ func main() {
 	case "ship-audit":
 		runShipAudit(os.Args[2:])
 	case "help", "--help", "-help":
-		fmt.Print(usage)
+		runHelp(os.Args[2:])
 	case "help-agent", "--help-agent", "-help-agent":
 		fmt.Print(usage)
 		fmt.Println()
@@ -184,6 +184,10 @@ func main() {
 	default:
 		if c := lookupCLI(cmd); c != nil {
 			c.run(os.Args[2:])
+			return
+		}
+		if v := lookupVerb(cmd); v != nil {
+			runVerb(v, os.Args[2:])
 			return
 		}
 		fmt.Fprintf(os.Stderr, "unknown command %q\n\n%s", cmd, usage)

@@ -2262,7 +2262,33 @@ curl -s -X POST http://127.0.0.1:3030/api/v1/reservations
 ```
 
 The same surface is available as `spyder` subcommands, which POST to
-the local daemon and render the result:
+the local daemon and render the result.
+
+Every verb also runs under its own name, generated from the schema MCP
+uses, so the CLI reaches exactly what MCP reaches (🎯T198):
+
+```bash
+spyder help                                  # commands, then every verb
+spyder help app_state                        # a verb's parameters, from its schema
+spyder app_state --device S24 --bundle-id com.example.app --slice hud
+spyder app-tweak-set --session-id s1 --name speed --value 2   # dashes work too
+spyder deploy_app --device S24 --path game.apk --env DEBUG=1  # object: repeat K=V
+spyder reserve --device S24 --args '{"ttl_seconds": 600}'      # whole map as JSON
+spyder exec script.star          # an app_exec script (MCP's tool); - reads stdin
+echo 'emit(len(devices()))' | spyder exec -
+```
+
+Flags are `--<param> VALUE` (or `=VALUE`), typed by the schema: numbers
+parse, booleans are bare (`--force`, `--force=false`), arrays repeat the
+flag or take JSON, objects take repeated `K=V` or JSON. `--args JSON|-`
+supplies the whole argument map; flags override it. `--as` sets `owner`
+(defaulting to the working directory's name, as elsewhere), and
+`--json`, `--timeout` and `-v` behave as on every command. The
+hand-written commands below are positional shortcuts; each also takes
+every parameter of its verb as a flag (`spyder deploy S24 game.apk
+--env DEBUG=1`).
+
+Hand-written shortcuts:
 
 ```bash
 spyder devices --platform ios --json

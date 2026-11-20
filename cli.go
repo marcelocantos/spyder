@@ -98,6 +98,7 @@ func init() {
 		{"log", "spyder log <device> [--bundle-id ID | --process P] [--subsystem S] [--tag T] [--regex R] [--since TS|-2m|now|launch] [--until TS|now] [--follow | --capture [--ttl-sec N] [--max-bytes N] [--max-lines N] [--marker TEXT] [--marker-tag TAG] [--as OWNER] | --capture-get SID | --capture-stop SID | --capture-list] | spyder log parse --platform android|ios [--channels]", runLog},
 		{"pool", "spyder pool <list|warm|drain> [args...]", runPool},
 		{"list-scripts", "spyder list-scripts [--json]", runListScripts},
+		{"exec", "spyder exec (FILE.star | - | --script TEXT) [--params K=V]... [--max-duration-ms N] [--json]  (runs an app_exec script: the MCP tool, from the shell)", runExec},
 		{"run-script", "spyder run-script <name|path> [--param k=v]... [--max-duration-ms N] [--json]", runRunScript},
 		{"verify", "spyder verify <workflow.yaml> [--set k=v] [--device NAME] [--answer GATE=CHOICE] [--defer-human-gates|--review-deferred] [--cwd DIR] [--as OWNER] [--validate] [--json]", runVerify},
 		{"verify-answer", "spyder verify-answer --run ID --gate ID --choice ID [--comment TEXT]", runVerifyAnswer},
@@ -165,6 +166,7 @@ func asDaemonError(err error) (*daemonError, bool) {
 // to spawn a detached `spyder serve` and retry once. Users who set
 // SPYDER_DAEMON_URL to a remote daemon get a plain transport error.
 func postTool(ctx context.Context, tool string, args map[string]any) (*toolResultContent, error) {
+	args = mergePassthrough(tool, args)
 	body, err := json.Marshal(args)
 	if err != nil {
 		return nil, fmt.Errorf("encode args: %w", err)
@@ -350,6 +352,14 @@ func setupCommand(
 ) (parsedFlags, context.Context, context.CancelFunc) {
 	stringFlags = append(stringFlags, "--timeout")
 	boolFlags = append(boolFlags, "-v", "--verbose")
+	own := map[string]bool{}
+	for _, f := range append(append([]string{}, stringFlags...), boolFlags...) {
+		own[f] = true
+	}
+	args, err := extractPassthrough(name, args, own)
+	if err != nil {
+		fatalUsage(name, err)
+	}
 	pf, err := parseFlags(args, stringFlags, boolFlags)
 	if err != nil {
 		fatalUsage(name, err)
@@ -488,7 +498,7 @@ func parseFlags(args []string, stringFlags, boolFlags []string) (parsedFlags, er
 	out := parsedFlags{flags: map[string]string{}, bools: map[string]bool{}, repeats: map[string][]string{}}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
-		if !strings.HasPrefix(a, "-") {
+		if !strings.HasPrefix(a, "-") || a == "-" { // a lone - is stdin
 			out.positional = append(out.positional, a)
 			continue
 		}

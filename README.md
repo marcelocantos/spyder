@@ -169,6 +169,11 @@ The same surface is available as subcommands of the `spyder` binary.
 These POST to the local daemon; set `SPYDER_DAEMON_URL` to override
 the default `http://127.0.0.1:3030`.
 
+Every daemon verb runs as `spyder <verb> --param value ...`, with the
+same names and parameters MCP reaches through app_exec; `spyder help
+<verb>` lists them, and `spyder exec script.star` runs an app_exec
+script.
+
 ```bash
 spyder doctor                 # iOS device-stack diagnosis (no daemon required for --fix)
 spyder status --json          # live health model (daemon must be up)

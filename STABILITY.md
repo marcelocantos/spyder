@@ -264,7 +264,10 @@ exact-package crash evidence; it does not keep its own logcat grammar.
 | `spyder serve [--addr :PORT]` | HTTP MCP server + bundled `ios tunnel start --userspace` subprocess. Bind: `--addr` > `SPYDER_ADDR` > last `~/.spyder/listen-addr` > loopback default. Warns if loopback-only while mobile inventory exists (🎯T103). Blocks until SIGINT/SIGTERM. Optional `launchd/install.sh` takes over `:3030` from `brew services` with the LaunchAgent `com.marcelocantos.spyder`. | Stable |
 | `spyder run [--device ALIAS\|-d ALIAS\|--on PREDICATE] [--as OWNER] [--timeout DURATION] -- <cmd> [args...]` | Runs command under an auto-acquired reservation (owner defaults to `filepath.Base(cwd)`); releases reservation on exit; opportunistically renews during long runs. Forwards exit code. `--on PREDICATE` resolves+reserves atomically via the daemon (closing the resolve→release→re-acquire race window). `--timeout DURATION` (e.g. `5m`) bounds the wrapped child invocation; on deadline, exits 30 (`ExitTimeout`) instead of forwarding the child's signal-induced exit. `--device` and `--on` are mutually exclusive. | Stable (🎯T38.4 + 🎯T38.5) |
 | `spyder version` / `--version` / `-version` | Prints `spyder <tag>`. | Stable |
-| `spyder help` / `--help` / `-help` | Prints usage. | Stable |
+| `spyder help` / `--help` / `-help` | Prints usage and the verb list. | Stable |
+| `spyder help <command\|verb>` | A command's usage, plus its verb's parameters; or a verb's schema. | Beta (🎯T198) |
+| `spyder <verb> [--param VALUE]... [--args JSON\|-]` | Runs any daemon verb with schema-typed flags. | Beta (🎯T198) |
+| `spyder exec (FILE\|-\|--script TEXT) [--params K=V]... [--max-duration-ms N]` | Runs an app_exec script. | Beta (🎯T198) |
 | `spyder help-agent` / `--help-agent` / `-help-agent` | Usage + embedded agents-guide.md. | Stable |
 | `spyder doctor [--fix] [--install-sudoers]` | Cross-check iOS device-stack diagnosis. `--fix` restarts usbmuxd via `spyder-killusbmuxd`. Can run without the daemon. | Stable (🎯T90 / 🎯T99) |
 | `spyder status [--json]` | HTTP client of a running daemon; prints the live health model. Does not start the daemon. | Stable (🎯T90) |
@@ -339,7 +342,22 @@ All device-tool subcommands POST to `$SPYDER_DAEMON_URL` (default
 `http://127.0.0.1:3030`) and print the first text content block
 (text tools) or write a PNG to `--output` (`screenshot`; default
 `<device>-<ts>.png`). `--as OWNER` defaults to `filepath.Base(cwd)`.
-The CLI is a convenience subset of the verb table, not 1:1 with it.
+The CLI covers the whole verb table (🎯T198): `spyder <verb>`
+(underscore or dash spelling) runs any verb with one `--<param>` flag
+per schema parameter, `spyder help <verb>` prints that schema, and
+`spyder exec FILE|-|--script TEXT` runs an app_exec script. The
+hand-written commands are positional shortcuts that also accept every
+parameter of their verb as a flag. Tests fail if a verb is unreachable
+from the CLI, if CLI code calls a verb the daemon lacks, or if a verb
+parameter collides with a CLI flag. Stability: generated verb commands
+and flags follow the verb schemas; Beta.
+
+CLI-only, by design: `serve`, `version`, `help`, `help-agent` (the
+binary itself); `run` (wraps a local child process); `doctor` (probes
+the host's iOS stack, `--fix` runs a sudo helper; its findings reach
+MCP through `health()`); `status` (prints `health()`, which app_exec
+has); `secret`, `fastlane`, `ship-audit` (store credentials stay off
+MCP/REST, 🎯T133); `log parse` (parses a local log file).
 
 #### Universal flags (every device-tool subcommand)
 
