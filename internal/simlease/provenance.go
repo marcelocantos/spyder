@@ -57,7 +57,17 @@ func (m *Manager) loadProvenance() error {
 	}
 	var list []Provenance
 	if err := json.Unmarshal(data, &list); err != nil {
-		return fmt.Errorf("simlease: parse %s: %w", m.provPath, err)
+		// Provenance is a ledger of who made and used each device; a torn
+		// write must not take the lease book and its reaper down with it
+		// (DH-36). Keep the damaged file for inspection and start empty.
+		// Claims recorded in it are lost until someone re-claims.
+		aside := fmt.Sprintf("%s.corrupt-%s", m.provPath, m.now().UTC().Format("20060102T150405Z"))
+		if rerr := os.Rename(m.provPath, aside); rerr != nil {
+			return fmt.Errorf("simlease: parse %s: %w (moving it aside failed: %v)", m.provPath, err, rerr)
+		}
+		slog.Error("simlease: provenance file damaged; moved aside and started empty",
+			"path", m.provPath, "moved_to", aside, "error", err)
+		return nil
 	}
 	for i := range list {
 		p := list[i]
@@ -82,10 +92,7 @@ func (m *Manager) persistProvLocked() {
 		err = os.MkdirAll(filepath.Dir(m.provPath), 0o755)
 	}
 	if err == nil {
-		tmp := m.provPath + ".tmp"
-		if err = os.WriteFile(tmp, data, 0o644); err == nil {
-			err = os.Rename(tmp, m.provPath)
-		}
+		err = writeFileSynced(m.provPath, data)
 	}
 	if err != nil {
 		slog.Error("simlease: persist provenance failed", "path", m.provPath, "error", err)
@@ -190,4 +197,46 @@ func (m *Manager) forgetMissingLocked(present map[string]bool) {
 	if changed {
 		m.persistProvLocked()
 	}
+}
+
+// writeFileSynced replaces path with data through a synced temp file and
+// syncs the directory, so a power loss leaves the old file or the new
+// one, never an empty one.
+func writeFileSynced(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		_ = os.Remove(tmpName)
+		return err
+	}
+	if d, err := os.Open(dir); err == nil {
+		if err := d.Sync(); err != nil {
+			slog.Error("simlease: directory sync", "path", dir, "error", err)
+		}
+		_ = d.Close()
+	}
+	return nil
 }
