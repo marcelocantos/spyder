@@ -6,7 +6,6 @@ package oslog
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -43,6 +42,7 @@ type Stream struct {
 	closeOnce sync.Once
 	closeCh   chan struct{}
 	Records   chan Record
+	decodeMu  sync.Mutex
 	decodeErr error
 }
 
@@ -160,6 +160,14 @@ func defaultConfig() map[string]any {
 // Records. It terminates when ctx fires or the connection drops.
 func (s *Stream) pump(ctx context.Context) {
 	defer close(s.Records)
+	defer func() {
+		if p := recover(); p != nil {
+			err := fmt.Errorf("oslog: frame decoder panicked: %v", p)
+			s.setDecodeError(err)
+			slog.Error("oslog: decoder stopped", "error", err)
+			s.Close()
+		}
+	}()
 	dec := NewDecoder()
 	var buf []Record
 	for {
@@ -179,7 +187,7 @@ func (s *Stream) pump(ctx context.Context) {
 			buf = buf[:0]
 			out, err := dec.Decode(frame, buf)
 			if err != nil {
-				s.decodeErr = err
+				s.setDecodeError(err)
 				slog.Error("oslog: decode error — continuing", "error", err.Error(), "frame_len", len(frame))
 				continue
 			}
@@ -214,8 +222,13 @@ func (s *Stream) Close() error {
 // continues — but they are surfaced here so callers can decide
 // whether to log or fall back.
 func (s *Stream) LastDecodeError() error {
-	if s.decodeErr == nil {
-		return nil
-	}
-	return errors.New(s.decodeErr.Error())
+	s.decodeMu.Lock()
+	defer s.decodeMu.Unlock()
+	return s.decodeErr
+}
+
+func (s *Stream) setDecodeError(err error) {
+	s.decodeMu.Lock()
+	defer s.decodeMu.Unlock()
+	s.decodeErr = err
 }

@@ -4,9 +4,30 @@
 package oslog
 
 import (
+	"context"
 	"encoding/binary"
+	"strings"
 	"testing"
 )
+
+func TestStream_MalformedLongCopyKeepsDecoding(t *testing.T) {
+	frames := make(chan []byte, 3)
+	frames <- buildFrame(word16(cmdSentinel, 0), word16(cmdCopy, 0xff))
+	frames <- defineTableFrame("log", []string{"message"})
+	frames <- buildFrame(
+		pushString("narrative-text"), encodeImmediate([]byte("got it")),
+		word16(cmdStruct, 2), word16(cmdStruct, 1), word16(cmdEndRow, 0),
+	)
+	close(frames)
+	s := &Stream{frames: frames, closeCh: make(chan struct{}), Records: make(chan Record, len(frames))}
+	s.pump(context.Background())
+	if err := s.LastDecodeError(); err == nil || !strings.Contains(err.Error(), "copy long-form ref") {
+		t.Fatalf("invalid copy did not report a decode error: %v", err)
+	}
+	if r, ok := <-s.Records; !ok || r.Message != "got it" {
+		t.Fatalf("valid frame after malformed copy produced %+v (present=%v)", r, ok)
+	}
+}
 
 // word16 encodes a 16-bit little-endian word with the given high-byte
 // opcode and low-byte operand.

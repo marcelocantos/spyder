@@ -5,11 +5,67 @@ package appchannel
 
 import (
 	"fmt"
+	"math"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestStateCapture_IntegerFilterKeepsPolling(t *testing.T) {
+	for _, tc := range []struct {
+		name, filter string
+	}{
+		{"type error", ".tick.missing"},
+		{"arithmetic", ".tick + 1"},
+		{"unsigned boundary", ".largest_unsigned"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _, s := startStateAppAndSession(t, []string{"scene"})
+			c, err := s.StartStateCaptureWithSelect("scene", MinStateCaptureInterval, tc.filter)
+			if err != nil {
+				t.Fatal(err)
+			}
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				c.mu.Lock()
+				n := len(c.samples) + c.errors
+				c.mu.Unlock()
+				if n >= 2 {
+					break
+				}
+				time.Sleep(MinStateCaptureInterval)
+			}
+			r, err := s.GetStateCapture(c.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := s.StopStateCapture(c.ID); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "type error" {
+				if r.Errors < 2 || len(r.Samples) != 0 || !strings.Contains(r.LastError, "expected an object but got: number") {
+					t.Fatalf("filter should report type errors on successive samples: %+v", r)
+				}
+				return
+			}
+			if r.Errors != 0 || len(r.Samples) < 2 {
+				t.Fatalf("integer arithmetic did not produce successive samples: %+v", r)
+			}
+			for i, sample := range r.Samples {
+				want := uint64(i) + 2
+				if tc.name == "unsigned boundary" {
+					want = math.MaxUint64
+				}
+				var got uint64
+				if err := UnpackParams(sample.Data, &got); err != nil || got != want {
+					t.Fatalf("sample %d = %d, want %d, err=%v", i, got, want, err)
+				}
+			}
+		})
+	}
+}
 
 // fakeStateApp is a minimal app that handles `hello` (advertising
 // state_query support + an optional slices list) and responds to
@@ -64,9 +120,10 @@ func (a *fakeStateApp) serve() {
 			}
 			_ = UnpackParams(env.Params, &p)
 			raw, _ := PackParams(map[string]any{
-				"slice":  p.Slice,
-				"tick":   n,
-				"sample": fmt.Sprintf("tick %d", n),
+				"slice":            p.Slice,
+				"tick":             n,
+				"sample":           fmt.Sprintf("tick %d", n),
+				"largest_unsigned": uint64(math.MaxUint64),
 			})
 			_ = WriteFrame(a.conn, &Envelope{ID: env.ID, Result: raw})
 			continue

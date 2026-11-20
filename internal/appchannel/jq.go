@@ -6,6 +6,7 @@ package appchannel
 import (
 	"context"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/itchyny/gojq"
@@ -50,53 +51,14 @@ func ApplyJQ(expr string, raw msgpack.RawMessage) (any, error) {
 		return v, nil
 	}
 
-	query, err := gojq.Parse(expr)
+	code, err := compileJQ(expr)
 	if err != nil {
-		return nil, &JQError{Expression: expr, Stage: "parse", Detail: err.Error()}
-	}
-	code, err := gojq.Compile(query)
-	if err != nil {
-		return nil, &JQError{Expression: expr, Stage: "compile", Detail: err.Error()}
-	}
-
-	var input any
-	if err := msgpack.Unmarshal(raw, &input); err != nil {
 		return nil, err
 	}
-	input = normaliseForJQ(input)
-
-	ctx, cancel := context.WithTimeout(context.Background(), jqEvalTimeout)
-	defer cancel()
-
-	// gojq occasionally panics during error formatting on certain
-	// type-mismatch cases (e.g. `.a.b` on `{a: 1}` triggers a panic in
-	// expectedObjectError.Error). Recover so the caller sees a clean
-	// JQError instead of a daemon crash.
-	var results []any
-	var recovered *JQError
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				recovered = &JQError{Expression: expr, Stage: "eval", Detail: fmt.Sprintf("%v", r)}
-			}
-		}()
-		iter := code.RunWithContext(ctx, input)
-		for {
-			v, ok := iter.Next()
-			if !ok {
-				break
-			}
-			if err, isErr := v.(error); isErr {
-				recovered = &JQError{Expression: expr, Stage: "eval", Detail: err.Error()}
-				return
-			}
-			results = append(results, v)
-		}
-	}()
-	if recovered != nil {
-		return nil, recovered
+	results, err := runJQ(context.Background(), expr, code, raw)
+	if err != nil {
+		return nil, err
 	}
-
 	switch len(results) {
 	case 0:
 		return []any{}, nil
@@ -107,6 +69,48 @@ func ApplyJQ(expr string, raw msgpack.RawMessage) (any, error) {
 	}
 }
 
+func compileJQ(expr string) (*gojq.Code, error) {
+	query, err := gojq.Parse(expr)
+	if err != nil {
+		return nil, &JQError{Expression: expr, Stage: "parse", Detail: err.Error()}
+	}
+	code, err := gojq.Compile(query)
+	if err != nil {
+		return nil, &JQError{Expression: expr, Stage: "compile", Detail: err.Error()}
+	}
+	return code, nil
+}
+
+func runJQ(ctx context.Context, expr string, code *gojq.Code, raw msgpack.RawMessage) (results []any, err error) {
+	var input any
+	if err := msgpack.Unmarshal(raw, &input); err != nil {
+		return nil, err
+	}
+	input = normaliseForJQ(input)
+
+	ctx, cancel := context.WithTimeout(ctx, jqEvalTimeout)
+	defer cancel()
+
+	// gojq can panic while evaluating or formatting errors for values it
+	// cannot represent. Both one-off queries and capture pollers use this boundary.
+	defer func() {
+		if p := recover(); p != nil {
+			results, err = nil, &JQError{Expression: expr, Stage: "eval", Detail: fmt.Sprintf("%v", p)}
+		}
+	}()
+	iter := code.RunWithContext(ctx, input)
+	for {
+		v, ok := iter.Next()
+		if !ok {
+			return results, nil
+		}
+		if err, ok := v.(error); ok {
+			return nil, &JQError{Expression: expr, Stage: "eval", Detail: err.Error()}
+		}
+		results = append(results, v)
+	}
+}
+
 // normaliseForJQ converts msgpack-decoded values into shapes gojq can
 // consume. msgpack/v5's generic decoder produces map[string]any for
 // most maps already (good), but arrays come through as []any (also
@@ -114,8 +118,7 @@ func ApplyJQ(expr string, raw msgpack.RawMessage) (any, error) {
 //
 //   - map[any]any → map[string]any (gojq requires string-keyed maps;
 //     msgpack maps with non-string keys are unusual but not impossible)
-//   - Numeric types (int8/16/32/64, uint*, float32) → float64 or int64
-//     (gojq operates on float64/int64; mixing types confuses comparisons)
+//   - Numeric types → int, *big.Int or float64, as accepted by gojq.
 //   - Recursive descent through slices and maps so nested values are
 //     also normalised
 func normaliseForJQ(v any) any {
@@ -141,23 +144,29 @@ func normaliseForJQ(v any) any {
 		}
 		return x
 	case int8:
-		return int64(x)
+		return int(x)
 	case int16:
-		return int64(x)
+		return int(x)
 	case int32:
-		return int64(x)
-	case int:
-		return int64(x)
+		return int(x)
+	case int64:
+		if int64(int(x)) == x {
+			return int(x)
+		}
+		return big.NewInt(x)
 	case uint8:
-		return int64(x)
+		return int(x)
 	case uint16:
-		return int64(x)
+		return int(x)
 	case uint32:
-		return int64(x)
+		return normaliseForJQ(uint64(x))
 	case uint64:
-		return int64(x)
+		if n := int(x); n >= 0 && uint64(n) == x {
+			return n
+		}
+		return new(big.Int).SetUint64(x)
 	case uint:
-		return int64(x)
+		return normaliseForJQ(uint64(x))
 	case float32:
 		return float64(x)
 	default:

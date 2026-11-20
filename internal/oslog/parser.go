@@ -163,12 +163,12 @@ func (d *Decoder) Decode(frame []byte, out []Record) ([]Record, error) {
 				if len(d.stack) == 0 {
 					return out, fmt.Errorf("oslog: copy long-form underflow")
 				}
-				ref := leUint64(asBytes(d.stack[len(d.stack)-1])) - 1
+				ref := leUint64(asBytes(d.stack[len(d.stack)-1]))
 				d.stack = d.stack[:len(d.stack)-1]
-				if int(ref) >= len(d.stack) {
-					return out, fmt.Errorf("oslog: copy long-form ref %d >= stack %d", ref, len(d.stack))
+				if ref == 0 || ref > uint64(len(d.stack)) {
+					return out, fmt.Errorf("oslog: copy long-form ref %d outside stack of %d", ref, len(d.stack))
 				}
-				d.stack = append(d.stack, d.stack[ref])
+				d.stack = append(d.stack, d.stack[ref-1])
 			} else {
 				idx := len(d.stack) - distance - 1
 				if idx < 0 || idx >= len(d.stack) {

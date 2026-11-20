@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/big"
 	"sync"
 	"time"
 
@@ -146,14 +147,11 @@ func (s *Session) StartStateCaptureWithSelect(slice string, interval time.Durati
 	// start time rather than per-sample at insert time.
 	var jqCode *gojq.Code
 	if selectExpr != "" {
-		query, err := gojq.Parse(selectExpr)
+		code, err := compileJQ(selectExpr)
 		if err != nil {
-			return nil, &JQError{Expression: selectExpr, Stage: "parse", Detail: err.Error()}
+			return nil, err
 		}
-		jqCode, err = gojq.Compile(query)
-		if err != nil {
-			return nil, &JQError{Expression: selectExpr, Stage: "compile", Detail: err.Error()}
-		}
+		jqCode = code
 	}
 
 	id, err := newID()
@@ -242,35 +240,54 @@ func (c *StateCapture) poll(ctx context.Context, s *Session) {
 // sample should be skipped). Eval errors bump the errors counter.
 // Caller must hold c.mu (so the errors counter mutation is safe).
 func (c *StateCapture) applyJQ(ctx context.Context, raw msgpack.RawMessage) (any, bool) {
-	var input any
-	if err := msgpack.Unmarshal(raw, &input); err != nil {
+	results, err := runJQ(ctx, c.SelectExpr, c.jqCode, raw)
+	if err == nil && len(results) == 0 {
+		return nil, false
+	}
+	var result any = results
+	if len(results) == 1 {
+		result = results[0]
+	}
+	if err == nil {
+		result, err = jqResultForMsgpack(result)
+	}
+	if err != nil {
 		c.errors++
 		c.lastErr = err.Error()
 		return nil, false
 	}
-	input = normaliseForJQ(input)
-	iter := c.jqCode.RunWithContext(ctx, input)
-	var results []any
-	for {
-		v, ok := iter.Next()
-		if !ok {
-			break
+	return result, true
+}
+
+// MessagePack only has signed and unsigned integers up to 64 bits.
+func jqResultForMsgpack(v any) (any, error) {
+	switch x := v.(type) {
+	case *big.Int:
+		if x.IsInt64() {
+			return x.Int64(), nil
 		}
-		if err, isErr := v.(error); isErr {
-			c.errors++
-			c.lastErr = err.Error()
-			return nil, false
+		if x.IsUint64() {
+			return x.Uint64(), nil
 		}
-		results = append(results, v)
+		return nil, errors.New("state capture jq integer exceeds MessagePack range")
+	case []any:
+		for i, value := range x {
+			result, err := jqResultForMsgpack(value)
+			if err != nil {
+				return nil, err
+			}
+			x[i] = result
+		}
+	case map[string]any:
+		for key, value := range x {
+			result, err := jqResultForMsgpack(value)
+			if err != nil {
+				return nil, err
+			}
+			x[key] = result
+		}
 	}
-	switch len(results) {
-	case 0:
-		return nil, false
-	case 1:
-		return results[0], true
-	default:
-		return results, true
-	}
+	return v, nil
 }
 
 // GetStateCapture drains the buffered samples without stopping the
