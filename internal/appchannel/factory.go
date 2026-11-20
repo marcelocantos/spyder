@@ -25,6 +25,7 @@ type InstancePool struct {
 
 	mu        sync.Mutex
 	instances map[string]*pooledInstance // keyed by instance session id
+	starting  map[string]int             // outstanding spawns per factory
 }
 
 type pooledInstance struct {
@@ -58,6 +59,7 @@ func NewInstancePool(mgr *Manager, opts ...InstancePoolOption) *InstancePool {
 		maxPerFactory: 4,
 		linger:        30 * time.Second,
 		instances:     map[string]*pooledInstance{},
+		starting:      map[string]int{},
 	}
 	for _, o := range opts {
 		o(p)
@@ -89,7 +91,7 @@ func (p *InstancePool) Acquire(ctx context.Context, factory *Session, game, hold
 		}
 	}
 	// Capacity check (count live instances for this factory).
-	count := 0
+	count := p.starting[factory.ID]
 	for id, pi := range p.instances {
 		if _, ok := p.mgr.GetSession(id); !ok {
 			delete(p.instances, id)
@@ -104,23 +106,27 @@ func (p *InstancePool) Acquire(ctx context.Context, factory *Session, game, hold
 		return nil, fmt.Errorf("appchannel: factory %s at capacity (%d/%d instances)",
 			factory.ID, count, p.maxPerFactory)
 	}
+	p.starting[factory.ID]++
 	p.mu.Unlock()
 
 	// Spawn a fresh instance (outside the lock — SpawnInstance blocks on the
 	// round-trip + the instance's connect).
-	addr := fmt.Sprintf("127.0.0.1:%d", factory.Port)
-	inst, err := p.mgr.SpawnInstance(ctx, factory, SpawnRequest{Game: game, AppChannel: addr}, timeout)
+	inst, err := p.mgr.SpawnInstance(ctx, factory, SpawnRequest{Game: game}, timeout)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.starting[factory.ID]--
+	if p.starting[factory.ID] == 0 {
+		delete(p.starting, factory.ID)
+	}
 	if err != nil {
 		return nil, err
 	}
-	p.mu.Lock()
 	p.instances[inst.ID] = &pooledInstance{
 		sessionID: inst.ID,
 		factoryID: factory.ID,
 		game:      game,
 		holder:    holder,
 	}
-	p.mu.Unlock()
 	return inst, nil
 }
 

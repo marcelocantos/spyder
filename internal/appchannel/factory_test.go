@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,4 +99,37 @@ func waitFor(d time.Duration, cond func() bool) bool {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return false
+}
+
+func TestInstancePoolCapacityIncludesPendingSpawn(t *testing.T) {
+	m, l := startManagerAndListener(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", l.Port)
+	factory := newFakeApp(t, addr, []string{MethodSpawnInstance})
+	t.Cleanup(factory.close)
+	started := make(chan struct{}, 1)
+	resume := make(chan struct{})
+	defer close(resume)
+	factory.on(MethodSpawnInstance, func([]byte) (any, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-resume
+		return nil, fmt.Errorf("fixture spawn failed")
+	})
+	s := waitForSession(t, l)
+	pool := NewInstancePool(m, WithMaxPerFactory(1))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go func() { _, _ = pool.Acquire(ctx, s, "game", "first", 3*time.Second) }()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first spawn did not start")
+	}
+	second, cancelSecond := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancelSecond()
+	if _, err := pool.Acquire(second, s, "game", "second", time.Second); err == nil || !strings.Contains(err.Error(), "at capacity") {
+		t.Fatalf("second acquire while first spawn pending = %v, want capacity refusal", err)
+	}
 }
