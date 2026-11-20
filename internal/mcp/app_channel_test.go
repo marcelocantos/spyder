@@ -947,8 +947,8 @@ func TestAppScreenshot_InlineOptIn(t *testing.T) {
 	}
 }
 
-func TestAppCallReturnsWhenDispatchContextEnds(t *testing.T) {
-	h := startAppChannelHandler(t)
+func dialSingleRPCFixture(t *testing.T, h *Handler, method string) (net.Conn, string) {
+	t.Helper()
 	_, port := openListener(t, h)
 	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
@@ -959,7 +959,7 @@ func TestAppCallReturnsWhenDispatchContextEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	hello, err := appchannel.PackParams(appchannel.Hello{
-		AppName: "deadline-fixture", Methods: appchannel.MethodDescriptors(appchannel.MethodPing),
+		AppName: "rpc-fixture", Methods: appchannel.MethodDescriptors(method),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -970,7 +970,12 @@ func TestAppCallReturnsWhenDispatchContextEnds(t *testing.T) {
 	if _, err := appchannel.ReadFrame(conn); err != nil {
 		t.Fatal(err)
 	}
-	sid := waitForAppSession(t, h)
+	return conn, waitForAppSession(t, h)
+}
+
+func TestAppCallReturnsWhenDispatchContextEnds(t *testing.T) {
+	h := startAppChannelHandler(t)
+	conn, sid := dialSingleRPCFixture(t, h, appchannel.MethodPing)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan string, 1)
@@ -998,5 +1003,31 @@ func TestAppCallReturnsWhenDispatchContextEnds(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("app_call kept waiting for the app after dispatch cancellation")
+	}
+}
+
+func TestAppScreenshotRejectsNonExtensionFormat(t *testing.T) {
+	h := startAppChannelHandler(t)
+	conn, sid := dialSingleRPCFixture(t, h, appchannel.MethodScreenshotApp)
+	done := make(chan error, 1)
+	go func() {
+		req, err := appchannel.ReadFrame(conn)
+		if err == nil {
+			var data []byte
+			data, err = appchannel.PackParams(map[string]any{
+				"data": []byte("image"), "format": "jpeg; charset=binary",
+			})
+			if err == nil {
+				err = appchannel.WriteFrame(conn, &appchannel.Envelope{ID: req.ID, Result: data})
+			}
+		}
+		done <- err
+	}()
+	result := dispatchJSON(t, h, "app_screenshot", map[string]any{"session_id": sid})
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError || !strings.Contains(resultText(t, &result), "invalid screenshot format") {
+		t.Fatalf("invalid extension accepted: %s", resultText(t, &result))
 	}
 }

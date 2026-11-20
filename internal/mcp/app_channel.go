@@ -824,19 +824,25 @@ func (h *Handler) handleAppScreenshot(ctx context.Context, args map[string]any) 
 	if err := appchannel.UnpackParams(res, &resp); err != nil {
 		return toolErr("screenshot_app: decode: %v", err)
 	}
-	if inline, _ := args["inline"].(bool); inline {
-		return mcpgo.NewToolResultImage(
-			fmt.Sprintf("app screenshot %dx%d (%d bytes)", resp.Width, resp.Height, len(resp.Data)),
-			base64.StdEncoding.EncodeToString(resp.Data),
-			"image/"+resp.Format,
-		), nil
-	}
-	// 🎯T114: default is a filesystem-path result, not multi-MB inline
-	// base64 in the transcript. Pass inline=true for the old behaviour.
 	format := resp.Format
 	if format == "" {
 		format = "png"
 	}
+	// The app supplies a file extension, not a path or a MIME type.
+	if strings.IndexFunc(format, func(r rune) bool {
+		return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9')
+	}) >= 0 {
+		return toolErr("screenshot_app: invalid screenshot format %q", format)
+	}
+	if inline, _ := args["inline"].(bool); inline {
+		return mcpgo.NewToolResultImage(
+			fmt.Sprintf("app screenshot %dx%d (%d bytes)", resp.Width, resp.Height, len(resp.Data)),
+			base64.StdEncoding.EncodeToString(resp.Data),
+			"image/"+format,
+		), nil
+	}
+	// 🎯T114: default is a filesystem-path result, not multi-MB inline
+	// base64 in the transcript. Pass inline=true for the old behaviour.
 	outPath := optString(args, "path")
 	if outPath == "" {
 		outPath = defaultScreenshotPath("app-screenshot-"+sanitizeFilename(s.ID), format)
