@@ -327,9 +327,15 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	// times a second; check the file at most once a second (🎯T168).
 	invStore.SetRecheckInterval(time.Second)
 	resvPath := filepath.Join(paths.Base(), "reservations.json")
+	// keyOf is set once the handler exists. Until then Lookup is enough:
+	// opening the book does not resolve a display name.
+	var keyOf func(string) string
 	resvStore, resvQuarantine, err := reservations.OpenBook(
 		resvPath,
 		func(ref string) string {
+			if keyOf != nil {
+				return keyOf(ref)
+			}
 			if entry, ok := invStore.Lookup(ref); ok && entry.Alias != "" {
 				return entry.Alias
 			}
@@ -423,6 +429,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	}
 
 	handler := spydermcp.NewHandler(handlerOpts...)
+	keyOf = handler.ReservationKey
 	if reservationAttention != "" {
 		handler.Health().Model().MarkNeedsAttention(
 			health.ID{Kind: health.KindDaemon, Name: "reservations"},

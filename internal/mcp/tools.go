@@ -636,13 +636,27 @@ func (h *Handler) archiveArtefact(dev, owner, source, mime, ext string, data []b
 // off the same string regardless of whether the caller passed an
 // alias or a raw UDID/serial.
 func (h *Handler) canonicalDevice(ref string) string {
-	if h.inventory == nil {
-		return ref
+	return h.ReservationKey(ref)
+}
+
+// ReservationKey is the reservation-book key for ref. A connected
+// display name ("Lab iPad") maps to the inventory alias, as does a
+// UDID written without dashes. Callers may hold h.mu; this does not
+// take it. The connected census runs only for a display name, so an
+// ordinary alias or serial does not list devices (DH-09).
+func (h *Handler) ReservationKey(ref string) string {
+	var connected []inventory.Connected
+	if inventory.RefNeedsConnectedCensus(ref) {
+		for _, adapter := range []device.Adapter{h.ios, h.android} {
+			if adapter == nil {
+				continue
+			}
+			for _, info := range listWithTimeout(adapter, connectedListTimeout) {
+				connected = append(connected, inventory.Connected{ID: info.UUID, Name: info.Name})
+			}
+		}
 	}
-	if entry, ok := h.inventory.Lookup(ref); ok && entry.Alias != "" {
-		return entry.Alias
-	}
-	return ref
+	return h.inventory.ReservationKey(ref, connected)
 }
 
 func (h *Handler) handleListApps(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -939,7 +953,7 @@ func (h *Handler) authorize(dev, owner string) *mcpgo.CallToolResult {
 	if h.reservations == nil {
 		return nil
 	}
-	if err := h.reservations.Authorize(dev, owner); err != nil {
+	if err := h.reservations.Authorize(h.ReservationKey(dev), owner); err != nil {
 		res, _ := toolErr("%v", err)
 		return res
 	}
@@ -1131,6 +1145,7 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 	if errRes != nil {
 		return errRes, nil
 	}
+	dev = h.ReservationKey(dev)
 
 	// Admission (🎯T194.4): refuse a device that cannot run or is about
 	// to run flat. A renewal by the current holder is never refused.
@@ -1194,6 +1209,7 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 	if err != nil {
 		return toolErr("%v", err)
 	}
+	dev = h.ReservationKey(dev)
 
 	h.mu.Lock()
 	canonical := h.canonicalDevice(dev)
@@ -1344,6 +1360,7 @@ func (h *Handler) handleRenew(args map[string]any) (*mcpgo.CallToolResult, error
 		return nil, err
 	}
 	ttl := time.Duration(optNumber(args, "ttl_seconds")) * time.Second
+	dev = h.ReservationKey(dev)
 	r, err := h.reservations.Renew(dev, owner, ttl)
 	if err != nil {
 		return toolErr("%v", err)

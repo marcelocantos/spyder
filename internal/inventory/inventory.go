@@ -121,13 +121,75 @@ func (s *Store) Lookup(ref string) (Entry, bool) {
 
 	for _, e := range s.entries {
 		if strings.EqualFold(e.Alias, ref) ||
-			e.IOSUUID == ref ||
-			e.IOSCoreDevice == ref ||
-			e.AndroidSerial == ref {
+			sameDeviceID(e.IOSUUID, ref) ||
+			sameDeviceID(e.IOSCoreDevice, ref) ||
+			sameDeviceID(e.AndroidSerial, ref) {
 			return e, true
 		}
 	}
 	return Entry{}, false
+}
+
+// Connected is a device a platform census returned. ReservationKey uses
+// it to map a display name onto the inventory alias.
+type Connected struct {
+	ID   string
+	Name string
+}
+
+// RefNeedsConnectedCensus reports whether ref can only be tied to an
+// inventory entry by asking which devices are connected. A dashless
+// UDID is resolved by Lookup and must not trigger a census: a census
+// talks to usbmux and adb.
+func RefNeedsConnectedCensus(ref string) bool {
+	return strings.ContainsAny(ref, " '’")
+}
+
+// ReservationKey is the reservation-book key for ref: the inventory
+// alias when ref names that device (alias, UDID with or without dashes,
+// or a connected device's display name), otherwise ref unchanged.
+// Keeping the alias keeps a lease written by an older spyder readable,
+// and makes every name of the device hit that lease (DH-09).
+func (s *Store) ReservationKey(ref string, connected []Connected) string {
+	if s != nil {
+		if e, ok := s.Lookup(ref); ok && e.Alias != "" {
+			return e.Alias
+		}
+	}
+	trimmed := strings.TrimSpace(ref)
+	folded := foldDeviceID(ref)
+	for _, d := range connected {
+		nameHit := trimmed != "" && strings.EqualFold(strings.TrimSpace(d.Name), trimmed)
+		idHit := folded != "" && foldDeviceID(d.ID) == folded
+		if !nameHit && !idHit {
+			continue
+		}
+		if s != nil && d.ID != "" {
+			if e, ok := s.Lookup(d.ID); ok && e.Alias != "" {
+				return e.Alias
+			}
+		}
+		if d.ID != "" {
+			return d.ID
+		}
+	}
+	return ref
+}
+
+// sameDeviceID matches a stored id to a ref exactly or with dashes and
+// case ignored. Empty ids never match.
+func sameDeviceID(id, ref string) bool {
+	if id == "" || ref == "" {
+		return false
+	}
+	if id == ref {
+		return true
+	}
+	return foldDeviceID(id) == foldDeviceID(ref)
+}
+
+func foldDeviceID(s string) string {
+	return strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(s), "-", ""))
 }
 
 // ClassifyRaw echoes a raw identifier back as an Entry with the input
@@ -174,7 +236,7 @@ func (s *Store) entryByUUID(uuid string) (Entry, bool) {
 	defer s.mu.Unlock()
 	s.syncLocked()
 	for _, e := range s.entries {
-		if e.IOSUUID == uuid || e.IOSCoreDevice == uuid || e.AndroidSerial == uuid {
+		if sameDeviceID(e.IOSUUID, uuid) || sameDeviceID(e.IOSCoreDevice, uuid) || sameDeviceID(e.AndroidSerial, uuid) {
 			return e, true
 		}
 	}

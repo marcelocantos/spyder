@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/daemon"
+	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/exitlog"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/listenaddr"
@@ -378,10 +379,22 @@ func runWithReservation(args []string, beforeAcquire func()) {
 	owner := deriveOwner(parsed.Owner)
 	invStore := inventory.New()
 	normalize := func(ref string) string {
-		if entry, ok := invStore.Lookup(ref); ok && entry.Alias != "" {
-			return entry.Alias
+		var connected []inventory.Connected
+		// A display name is the only ref that needs a device census.
+		// Alias and dashless UDID resolve from the inventory, so
+		// `spyder run --device fake-dev` does not list devices (DH-09).
+		if inventory.RefNeedsConnectedCensus(ref) {
+			for _, adapter := range []device.Adapter{device.NewIOSAdapter(), device.NewAndroidAdapter()} {
+				infos, err := adapter.List()
+				if err != nil {
+					continue
+				}
+				for _, info := range infos {
+					connected = append(connected, inventory.Connected{ID: info.UUID, Name: info.Name})
+				}
+			}
 		}
-		return ref
+		return invStore.ReservationKey(ref, connected)
 	}
 
 	resvPath := filepath.Join(paths.Base(), "reservations.json")
