@@ -110,3 +110,34 @@ func TestReleaseByNonHolderStopsNothing(t *testing.T) {
 		t.Fatalf("job-B's refused release stopped %d of job-A's apps", terminated)
 	}
 }
+
+// release clears a network profile the holder applied. The profile was
+// recorded under the raw device string, so applying with the alias and
+// releasing with the serial (or the reverse) skipped the clear and the
+// next holder inherited an offline device (DH-31).
+func TestReleaseClearsNetworkProfileUnderAnyName(t *testing.T) {
+	for _, tc := range []struct{ apply, release string }{
+		{"Raspberry", "R5CR112X76K"},
+		{"R5CR112X76K", "Raspberry"},
+	} {
+		t.Run(tc.apply+" then "+tc.release, func(t *testing.T) {
+			cleared := 0
+			android := &stubAdapter{clearNetwork: func(string) error { cleared++; return nil }}
+			h := newHandlerWithStubs(t, &stubAdapter{}, android)
+			resv, err := reservations.New("", reservations.WithNormalizer(h.ReservationKey))
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.reservations = resv
+			releaseTestCall(t, h, "reserve", map[string]any{"device": tc.apply, "owner": "job-A"})
+			releaseTestCall(t, h, "network", map[string]any{"device": tc.apply, "owner": "job-A", "profile": "offline"})
+			out := releaseTestCall(t, h, "release", map[string]any{"device": tc.release, "owner": "job-A"})
+			if _, held, _ := resv.Get("Raspberry"); held {
+				t.Fatalf("release by %s did not release", tc.release)
+			}
+			if cleared == 0 {
+				t.Errorf("reservation released (%s) but the offline profile was never cleared", out)
+			}
+		})
+	}
+}

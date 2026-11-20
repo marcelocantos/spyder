@@ -98,7 +98,7 @@ type Handler struct {
 	poolMgr           PoolManager              // optional hook for 🎯T24 pool management
 	health            *health.Supervisor       // live health model + subprocess supervisor (🎯T90)
 
-	// networkByDevice maps a normalised device reference to the most
+	// networkByDevice maps a reservation key (ReservationKey) to the most
 	// recently applied network profile for that device. Cleared when
 	// the owning reservation is released.
 	networkByDevice map[string]appliedNetwork

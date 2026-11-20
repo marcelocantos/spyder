@@ -1255,10 +1255,11 @@ const releaseCleanupTimeout = 15 * time.Second
 // emulator restart (documented in the tool description).
 func (h *Handler) cleanUpBeforeRelease(dev, owner string) []string {
 	var notes []string
+	key := h.ReservationKey(dev)
 	h.mu.Lock()
-	applied, hasProfile := h.networkByDevice[dev]
+	applied, hasProfile := h.networkByDevice[key]
 	if hasProfile && applied.owner == owner {
-		delete(h.networkByDevice, dev)
+		delete(h.networkByDevice, key)
 	}
 	h.mu.Unlock()
 	if hasProfile && applied.owner == owner {
@@ -1333,8 +1334,9 @@ func (h *Handler) handleNetwork(args map[string]any) (*mcpgo.CallToolResult, err
 		if err := adapter.ClearNetwork(id); err != nil {
 			return toolErr("clear network on %s: %v", dev, err)
 		}
+		key := h.ReservationKey(dev)
 		h.mu.Lock()
-		delete(h.networkByDevice, dev)
+		delete(h.networkByDevice, key)
 		h.mu.Unlock()
 		return toolText(fmt.Sprintf("network conditions cleared on %s", dev))
 	}
@@ -1349,8 +1351,11 @@ func (h *Handler) handleNetwork(args map[string]any) (*mcpgo.CallToolResult, err
 		return toolErr("apply network %q on %s: %v", profileName, dev, applyErr)
 	}
 
+	// Keyed like the reservation, so release finds the profile under
+	// whichever name of the device it is given (DH-31).
+	key := h.ReservationKey(dev)
 	h.mu.Lock()
-	h.networkByDevice[dev] = appliedNetwork{profile: p, owner: owner}
+	h.networkByDevice[key] = appliedNetwork{profile: p, owner: owner}
 	h.mu.Unlock()
 	return toolText(fmt.Sprintf("network profile %q applied on %s", profileName, dev))
 }
