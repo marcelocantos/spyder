@@ -347,18 +347,24 @@ func parseRunArgs(args []string) (runArgs, error) {
 	return out, nil
 }
 
-// deriveOwner returns the supplied owner or falls back to
-// filepath.Base(cwd). Used by `spyder run` to pick a sensible
-// project-oriented identity without requiring a flag.
+// deriveOwner returns the supplied owner, or a name unique to this
+// process. The directory base alone is not an owner: two jobs started
+// in the same checkout (two terminals, two pueue tasks) would renew
+// one lease and the first to finish would release it (DH-10). A
+// deliberate shared owner is --as.
 func deriveOwner(supplied string) string {
 	if supplied != "" {
 		return supplied
 	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return "spyder-run"
+	base := "spyder-run"
+	if wd, err := os.Getwd(); err == nil {
+		base = filepath.Base(wd)
 	}
-	return filepath.Base(wd)
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "localhost"
+	}
+	return fmt.Sprintf("%s:%d@%s", base, os.Getpid(), host)
 }
 
 // runCmd implements the `spyder run [--device X|--on PREDICATE] [--timeout D] -- <cmd> [args]`
@@ -377,6 +383,9 @@ func runWithReservation(args []string, beforeAcquire func()) {
 	}
 
 	owner := deriveOwner(parsed.Owner)
+	if parsed.Owner == "" {
+		fmt.Fprintf(os.Stderr, "spyder run: owner %s\n", owner)
+	}
 	invStore := inventory.New()
 	normalize := func(ref string) string {
 		var connected []inventory.Connected

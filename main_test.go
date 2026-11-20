@@ -6,6 +6,8 @@ package main
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -323,11 +325,14 @@ func TestDeriveOwner_FallbackToCwd(t *testing.T) {
 	if got := deriveOwner("explicit"); got != "explicit" {
 		t.Errorf("deriveOwner('explicit') = %q; want explicit", got)
 	}
-	// Empty → derived from cwd basename.
-	// Just check it's non-empty; the actual basename depends on the
-	// test invocation directory.
-	if got := deriveOwner(""); got == "" {
-		t.Error("deriveOwner('') returned empty; want cwd basename")
+	// Empty → unique to this process, and still carries the directory name.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := deriveOwner("")
+	if !strings.HasPrefix(got, filepath.Base(wd)+":") || !strings.Contains(got, "@") {
+		t.Errorf("deriveOwner('') = %q; want <dir>:<pid>@<host>", got)
 	}
 }
 
