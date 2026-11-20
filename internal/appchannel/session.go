@@ -924,7 +924,7 @@ func (l *Listener) acceptLoop(ctx context.Context) {
 	for {
 		conn, err := l.listener.Accept()
 		if err != nil {
-			if ctx.Err() == nil {
+			if ctx.Err() == nil && !errors.Is(err, net.ErrClosed) {
 				slog.Info("appchannel: accept error", "listener_id", l.ID, "error", err)
 			}
 			return

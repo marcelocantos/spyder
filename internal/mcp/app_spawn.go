@@ -100,18 +100,15 @@ func (h *Handler) handleAppSpawn(ctx context.Context, args map[string]any) (*mcp
 
 // spawnFromFactory asks a game-server factory session (one advertising
 // spawn_instance) to fork a game instance and returns the new instance's
-// session once it dials back (🎯T92.1). The instance dials the same
-// app-channel listener the factory is on (127.0.0.1 for the local/
-// server-mode case this path targets — LAN/dev only, per T91.4), so it
-// connects as its own session with the full monitor surface.
+// session once it dials back (🎯T92.1). The factory passes the instance
+// the unique loopback callback address supplied by SpawnInstance.
 func (h *Handler) spawnFromFactory(ctx context.Context, factory *appchannel.Session, args map[string]any) (*mcpgo.CallToolResult, error) {
 	game, err := requireString(args, "game")
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	addr := fmt.Sprintf("127.0.0.1:%d", factory.Port)
 	inst, err := h.appChannel.SpawnInstance(ctx, factory,
-		appchannel.SpawnRequest{Game: game, AppChannel: addr, InstanceID: optString(args, "instance_id")},
+		appchannel.SpawnRequest{Game: game, InstanceID: optString(args, "instance_id")},
 		30*time.Second)
 	if err != nil {
 		return toolErr("spawn: %v", err)

@@ -107,3 +107,40 @@ func dialInstance(t *testing.T, addr, name string) net.Conn {
 	}()
 	return conn
 }
+
+func TestSpawnInstanceMatchesItsCallback(t *testing.T) {
+	m, l := startManagerAndListener(t)
+	addr := fmt.Sprintf("127.0.0.1:%d", l.Port)
+	factory := newFakeApp(t, addr, []string{MethodSpawnInstance})
+	t.Cleanup(factory.close)
+	factory.on(MethodSpawnInstance, func(params []byte) (any, error) {
+		var req SpawnRequest
+		if err := UnpackParams(params, &req); err != nil {
+			return nil, err
+		}
+		other := dialInstance(t, addr, "unrelated")
+		if other != nil {
+			t.Cleanup(func() { _ = other.Close() })
+		}
+		if !waitFor(time.Second, func() bool { return len(l.Sessions()) >= 2 }) {
+			return nil, fmt.Errorf("unrelated session did not connect")
+		}
+		// The intended instance is the one that dials the callback
+		// given to this spawn, even when another listener is busy.
+		if req.AppChannel != addr {
+			instance := dialInstance(t, req.AppChannel, req.Game)
+			if instance != nil {
+				t.Cleanup(func() { _ = instance.Close() })
+			}
+		}
+		return map[string]any{"ok": true}, nil
+	})
+	s := waitForSession(t, l)
+	inst, err := m.SpawnInstance(t.Context(), s, SpawnRequest{Game: "game", AppChannel: addr}, 3*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := inst.HelloInfo().AppName; got != "game" {
+		t.Fatalf("spawn returned %q, want the requested game", got)
+	}
+}
