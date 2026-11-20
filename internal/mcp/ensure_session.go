@@ -127,7 +127,13 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 			return res, nil
 		}
 		// Wedged session (open TCP conn, unresponsive app) — drop it so
-		// the relaunch below forms a fresh one.
+		// the relaunch below forms a fresh one. Closing it mutates the
+		// holder's app channel, so only a caller allowed to relaunch may
+		// do it (DH-30); a busy app that missed one ping keeps its
+		// session when someone else asks.
+		if res := h.authorize(dev, owner); res != nil {
+			return res, nil
+		}
 		_ = s.Close()
 	}
 
