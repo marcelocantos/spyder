@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"sync"
@@ -23,12 +24,13 @@ const (
 
 // fakeSimctl is an in-memory simctl. It records every mutating call.
 type fakeSimctl struct {
-	mu      sync.Mutex
-	sims    []Sim
-	images  []RuntimeImage
-	calls   []string
-	next    int
-	bootErr error
+	mu        sync.Mutex
+	sims      []Sim
+	images    []RuntimeImage
+	calls     []string
+	next      int
+	bootErr   error
+	createErr error
 }
 
 func (f *fakeSimctl) RuntimeImages(context.Context) ([]RuntimeImage, error) {
@@ -91,6 +93,10 @@ func (f *fakeSimctl) Runtimes(context.Context) ([]Runtime, error) {
 func (f *fakeSimctl) Create(_ context.Context, name, typ, rt string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.createErr != nil {
+		f.calls = append(f.calls, "create-failed "+name)
+		return "", f.createErr
+	}
 	f.next++
 	udid := fmt.Sprintf("00000000-0000-4000-8000-%012d", f.next)
 	f.sims = append(f.sims, Sim{UDID: udid, Name: name, DeviceType: typ, Runtime: rt, State: "Shutdown", IsAvailable: true})
@@ -359,6 +365,152 @@ func TestPendingLeaseFromDeadDaemonIsUndone(t *testing.T) {
 	}
 	if f.state(udid) != "gone" {
 		t.Fatal("simulator from abandoned acquire survived")
+	}
+}
+
+// A sim_acquire whose simctl create fails must not touch a simulator it
+// did not create. The requested name is another owner's leased simulator
+// on a different runtime; simctl's default names collide this way (DH-08).
+func TestFailedCreateNeverDeletesAnotherSimulator(t *testing.T) {
+	const victim = "AAAAAAAA-0000-4000-8000-0000000000AA"
+	f := &fakeSimctl{}
+	f.add(victim, "iPhone 16 Pro", iphone16, runtime18, "Booted")
+	m := newManager(t, f, &clock{t: time.Unix(1_800_000_000, 0)}, "")
+
+	b, err := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime18, Owner: "b", Name: "iPhone 16 Pro"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.UDID != victim {
+		t.Fatalf("setup: b leased %s, want %s", b.UDID, victim)
+	}
+
+	f.createErr = errors.New("simctl create: runtime unavailable")
+	if _, err := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime17, Owner: "a", Name: "iPhone 16 Pro"}); err == nil {
+		t.Fatal("acquire succeeded despite create failure")
+	}
+	if got := f.state(victim); got != "Booted" {
+		t.Fatalf("owner b's leased simulator is %q after owner a's failed create (mutations: %v); want Booted",
+			got, f.mutations())
+	}
+	if len(m.Status(ctx).Leases) != 1 || m.Status(ctx).Leases[0].ID != b.ID {
+		t.Fatalf("leases after failed create = %+v", m.Status(ctx).Leases)
+	}
+}
+
+// Create is only attempted when no eligible simulator matches. An
+// unavailable simulator of the same name, type and runtime is not
+// eligible, and a failed Create must not delete it: undo would see
+// exactly one match (DH-08).
+func TestFailedCreateLeavesSameNameSimulator(t *testing.T) {
+	const hand = "AAAAAAAA-0000-4000-8000-0000000000AB"
+	f := &fakeSimctl{createErr: errors.New("simctl create: runtime unavailable")}
+	f.add(hand, "iPhone 16 Pro", iphone16, runtime17, "Shutdown")
+	f.sims[0].IsAvailable = false
+	m := newManager(t, f, &clock{t: time.Unix(1_800_000_000, 0)}, "")
+	if _, err := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime17, Owner: "a", Name: "iPhone 16 Pro"}); err == nil {
+		t.Fatal("acquire succeeded despite create failure")
+	}
+	if got := f.state(hand); got != "Shutdown" {
+		t.Fatalf("unavailable simulator is %q (mutations: %v); want Shutdown", got, f.mutations())
+	}
+	if len(m.Status(ctx).Leases) != 0 {
+		t.Fatalf("failed create left leases: %+v", m.Status(ctx).Leases)
+	}
+}
+
+// A pending created record written the way the installed daemon writes
+// it (no UDID, spyder-lease name, device type and runtime) is still
+// undone, and a same-named simulator on another runtime is not.
+func TestOldPendingLeaseStillUndoesOnlyItsSimulator(t *testing.T) {
+	const (
+		created = "00000000-0000-4000-8000-000000000099"
+		other   = "AAAAAAAA-0000-4000-8000-0000000000AA"
+	)
+	path := filepath.Join(t.TempDir(), "l.json")
+	body := `[
+  {
+    "id": "deadbeefdeadbeef",
+    "udid": "",
+    "name": "spyder-lease-deadbeef",
+    "device_type": "com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro",
+    "runtime": "com.apple.CoreSimulator.SimRuntime.iOS-18-6",
+    "owner": "a",
+    "action": "created",
+    "ttl_s": 3600,
+    "acquired_at": "2027-01-15T08:00:00Z",
+    "renewed_at": "0001-01-01T00:00:00Z",
+    "expires_at": "2027-01-15T09:00:00Z",
+    "pending": true
+  }
+]`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeSimctl{}
+	f.add(created, "spyder-lease-deadbeef", iphone16, runtime18, "Shutdown")
+	f.add(other, "spyder-lease-deadbeef", iphone16, runtime17, "Booted")
+	m := newManager(t, f, &clock{t: time.Unix(1_800_000_000, 0)}, path)
+	got := m.Reap(ctx)
+	if len(got) != 1 || got[0].Undo != "deleted" {
+		t.Fatalf("reap of old pending lease = %+v", got)
+	}
+	if f.state(created) != "gone" {
+		t.Fatal("simulator named in the old pending record survived")
+	}
+	if f.state(other) != "Booted" {
+		t.Fatalf("other runtime is %q; want Booted", f.state(other))
+	}
+}
+
+// A pending created record with no UDID is crash recovery. Matching the
+// name alone must not delete a simulator of another runtime, one another
+// lease holds, one somebody claimed, or one of several name matches (DH-08).
+func TestPendingCreateMatchesOnlyOneUnownedSimulator(t *testing.T) {
+	const (
+		otherRuntime = "AAAAAAAA-0000-4000-8000-0000000000AA"
+		leased       = "BBBBBBBB-0000-4000-8000-0000000000BB"
+		claimed      = "CCCCCCCC-0000-4000-8000-0000000000CC"
+		ambiguousA   = "DDDDDDDD-0000-4000-8000-0000000000D1"
+		ambiguousB   = "DDDDDDDD-0000-4000-8000-0000000000D2"
+	)
+	path := filepath.Join(t.TempDir(), "l.json")
+	f := &fakeSimctl{}
+	f.add(otherRuntime, "iPhone 16 Pro", iphone16, runtime18, "Booted")
+	f.add(leased, "pinned", iphone16, runtime17, "Booted")
+	f.add(claimed, "hand-made", iphone16, runtime17, "Booted")
+	f.add(ambiguousA, "twin", iphone16, runtime17, "Shutdown")
+	f.add(ambiguousB, "twin", iphone16, runtime17, "Shutdown")
+	c := &clock{t: time.Unix(1_800_000_000, 0)}
+	m := newManager(t, f, c, path)
+	if _, err := m.Acquire(ctx, AcquireArgs{DeviceType: iphone16, Runtime: runtime17, Owner: "b", Name: "pinned"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Claim(ClaimArgs{ID: claimed, Owner: "marcelo", Note: "hand-made"}); err != nil {
+		t.Fatal(err)
+	}
+
+	pend := func(id, name, runtime string) {
+		t.Helper()
+		m.mu.Lock()
+		m.leases[id] = &Lease{
+			ID: id, Name: name, DeviceType: iphone16, Runtime: runtime,
+			Owner: "a", Action: ActionCreated, Pending: true, TTLSeconds: 3600,
+			AcquiredAt: c.t, ExpiresAt: c.t.Add(time.Hour),
+		}
+		m.mustPersistLocked()
+		m.mu.Unlock()
+	}
+	pend("pending-other-runtime", "iPhone 16 Pro", runtime17)
+	pend("pending-leased", "pinned", runtime17)
+	pend("pending-claimed", "hand-made", runtime17)
+	pend("pending-ambiguous", "twin", runtime17)
+
+	m.Reap(ctx)
+	for _, udid := range []string{otherRuntime, leased, claimed, ambiguousA, ambiguousB} {
+		if f.state(udid) == "gone" {
+			t.Fatalf("reaper deleted %s (mutations: %v)", udid, f.mutations())
+		}
 	}
 }
 

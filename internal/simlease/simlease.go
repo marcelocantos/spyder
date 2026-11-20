@@ -393,7 +393,16 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	if l.Action == ActionCreated {
 		udid, err := m.sim.Create(ctx, l.Name, deviceType, runtime)
 		if err != nil {
-			m.abandon(ctx, l.ID)
+			// Create returned before a simulator existed. Undoing by the
+			// pinned name would shut down and delete someone else's
+			// simulator (DH-08). A cancelled call may have created one
+			// whose UDID was never recorded; that record stays pending
+			// for the reaper, which matches name, type and runtime.
+			if ctx.Err() != nil {
+				m.abandon(ctx, l.ID)
+			} else {
+				m.dropLease(l.ID)
+			}
 			return Lease{}, fmt.Errorf("sim_acquire: create %s (%s, %s): %w", l.Name, deviceType, runtime, err)
 		}
 		m.mu.Lock()
@@ -419,6 +428,16 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	m.mu.Unlock()
 	slog.Info("simlease: acquired", "lease", out.ID, "udid", out.UDID, "action", out.Action, "owner", out.Owner, "ttl", ttl)
 	return out, nil
+}
+
+// dropLease forgets a lease that created nothing, so a failed Create
+// cannot undo a simulator it does not own (DH-08).
+func (m *Manager) dropLease(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.inFlight, id)
+	delete(m.leases, id)
+	m.mustPersistLocked()
 }
 
 // abandon undoes a failed acquire so it leaves nothing behind. If the
@@ -596,18 +615,8 @@ func (m *Manager) undo(ctx context.Context, l Lease) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("list simulators: %w", err)
 	}
-	var cur *Sim
-	for i := range sims {
-		s := &sims[i]
-		// A created lease whose daemon died before Create returned has no
-		// UDID; its spyder-lease-<id> name is unique, so match on that.
-		if (l.UDID != "" && strings.EqualFold(s.UDID, l.UDID)) ||
-			(l.UDID == "" && l.Action == ActionCreated && s.Name == l.Name) {
-			cur = s
-			break
-		}
-	}
-	if cur == nil {
+	cur, ok := m.matchUndoTarget(l, sims)
+	if !ok {
 		return "already_gone", nil
 	}
 	if cur.State != "Shutdown" {
@@ -622,6 +631,68 @@ func (m *Manager) undo(ctx context.Context, l Lease) (string, error) {
 		return "deleted", nil
 	}
 	return "shut_down", nil
+}
+
+// matchUndoTarget finds the simulator undo may touch. A recorded UDID
+// matches that device only. A created lease whose daemon died before
+// Create returned has no UDID: the name alone is not enough, because a
+// pinned name such as "iPhone 16 Pro" is shared. Require the device
+// type and runtime as well, skip a UDID another lease holds or anyone
+// has claimed, and act only when exactly one simulator remains. Zero
+// or several is a leak, which is safer than deleting the wrong one (DH-08).
+func (m *Manager) matchUndoTarget(l Lease, sims []Sim) (Sim, bool) {
+	if l.UDID != "" {
+		for i := range sims {
+			if strings.EqualFold(sims[i].UDID, l.UDID) {
+				return sims[i], true
+			}
+		}
+		return Sim{}, false
+	}
+	if l.Action != ActionCreated {
+		return Sim{}, false
+	}
+	held, claimed := m.protectedUDIDs(l.ID)
+	var found *Sim
+	n := 0
+	for i := range sims {
+		s := &sims[i]
+		if s.Name != l.Name || s.DeviceType != l.DeviceType || s.Runtime != l.Runtime {
+			continue
+		}
+		key := provKey(s.UDID)
+		if held[key] || claimed[key] {
+			continue
+		}
+		n++
+		found = s
+	}
+	if n != 1 {
+		return Sim{}, false
+	}
+	return *found, true
+}
+
+// protectedUDIDs is the set of device ids undo must not guess at.
+// exceptLease is the record being undone; its own UDID is not protected
+// from itself. Callers do not hold m.mu.
+func (m *Manager) protectedUDIDs(exceptLease string) (held, claimed map[string]bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	held = map[string]bool{}
+	claimed = map[string]bool{}
+	for _, other := range m.leases {
+		if other.ID == exceptLease || other.UDID == "" {
+			continue
+		}
+		held[provKey(other.UDID)] = true
+	}
+	for id, p := range m.prov {
+		if p != nil && p.Claim != nil {
+			claimed[id] = true
+		}
+	}
+	return held, claimed
 }
 
 // Renew extends a lease held by owner. ttl zero reuses the lease's TTL.
