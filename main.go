@@ -80,7 +80,7 @@ Device tools (proxy to a running daemon; see SPYDER_DAEMON_URL):
   terminate-app Terminate an app by bundle id (--as OWNER)
   is-running    Report whether an app is currently running (exit 0/20/22)
   rotate        Rotate a simulator/emulator (--to <orientation>, --as OWNER)
-  install       Install a .app/.ipa/.apk on a device (--as OWNER)
+  install       Install a .app/.ipa/.apk (with its OBB files) on a device (--as OWNER)
   uninstall     Remove an app by bundle id (--as OWNER)
   deploy        Atomic deploy: terminate → install → launch → verify pid (--bundle-id, --as OWNER)
   reserve       Acquire an exclusive lock (--as OWNER, --ttl SECONDS, --note)

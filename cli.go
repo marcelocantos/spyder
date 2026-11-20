@@ -65,9 +65,9 @@ func init() {
 		{"launch-app", "spyder launch-app <device> <bundle-id> [--as OWNER]", runLaunchApp},
 		{"terminate-app", "spyder terminate-app <device> <bundle-id> [--as OWNER]", runTerminateApp},
 		{"is-running", "spyder is-running <device> <bundle-id> [--json]", runIsRunning},
-		{"install", "spyder install (<device>|--all-physical) <path> [--as OWNER]", runInstall},
+		{"install", "spyder install (<device>|--all-physical) <path> [part...] [--as OWNER]  (an APK takes its OBB files along)", runInstall},
 		{"uninstall", "spyder uninstall <device> <bundle-id> [--as OWNER]", runUninstall},
-		{"deploy", "spyder deploy (<device>|--all-physical) <path> [--bundle-id ID] [--as OWNER]  (refuses stream player — use launch-player)", runDeploy},
+		{"deploy", "spyder deploy (<device>|--all-physical) <path> [part...] [--bundle-id ID] [--as OWNER]  (an APK takes its OBB files along; refuses stream player — use launch-player)", runDeploy},
 		{"launch-player", "spyder launch-player <device> [--server NAME] [--path PATH] [--as OWNER]", runLaunchPlayer},
 		{"reserve", "spyder reserve (<device>|--on PREDICATE|--selector JSON|--platform PLATFORM [--model FAMILY] [--tag TAG]...) [--as OWNER] [--ttl SECONDS] [--note TEXT]", runReserve},
 		{"release", "spyder release <device> [--as OWNER]", runRelease},
@@ -372,14 +372,14 @@ func setupCommand(
 
 // artifactInstallTimeout raises the CLI request budget when a path is present
 // and the user did not pass an explicit --timeout (🎯T172).
-func artifactInstallTimeout(pf parsedFlags, defaultTimeout time.Duration, artifactPath string, deploy bool) time.Duration {
+func artifactInstallTimeout(pf parsedFlags, defaultTimeout time.Duration, artifactPaths []string, deploy bool) time.Duration {
 	if pf.flags["--timeout"] != "" {
 		return defaultTimeout
 	}
-	if artifactPath == "" {
+	if len(artifactPaths) == 0 {
 		return defaultTimeout
 	}
-	scaled := installdeadline.Budget(artifactPath, "", deploy)
+	scaled := installdeadline.BudgetAll(artifactPaths, "", deploy)
 	if scaled > defaultTimeout {
 		return scaled
 	}
@@ -958,29 +958,59 @@ func runTerminateApp(args []string) {
 func runInstall(args []string) {
 	pf, ctx, cancel := setupCommand("install", args, []string{"--as"}, []string{"--all-physical"}, clitimeout.DefaultInstall)
 	defer cancel()
-	if len(pf.positional) >= 2 {
-		if d := artifactInstallTimeout(pf, clitimeout.DefaultInstall, pf.positional[1], false); d != clitimeout.DefaultInstall {
-			cancel()
-			ctx, cancel = clitimeout.Context(d)
-			defer cancel()
-		}
+	device, files := splitDeviceAndFiles("install", pf)
+	if d := artifactInstallTimeout(pf, clitimeout.DefaultInstall, files, false); d != clitimeout.DefaultInstall {
+		cancel()
+		ctx, cancel = clitimeout.Context(d)
+		defer cancel()
 	}
 	owner := pf.flags["--as"]
 	if owner == "" {
 		owner = deriveOwner("")
 	}
+	extra := map[string]any{}
+	if len(files) > 1 {
+		extra["parts"] = files[1:]
+	}
 	if pf.bools["--all-physical"] {
-		requirePositional("install", pf, 1)
-		fanOutPhysical(ctx, "install", "install_app", pf.positional[0], owner, nil)
+		fanOutPhysical(ctx, "install", "install_app", files[0], owner, extra)
 		return
 	}
-	requirePositional("install", pf, 2)
 	a := map[string]any{
-		"device": pf.positional[0],
-		"path":   pf.positional[1],
+		"device": device,
+		"path":   files[0],
 		"owner":  owner,
 	}
+	for k, v := range extra {
+		a[k] = v
+	}
 	dispatchAndExit(ctx, "install_app", a, false, !verbose(pf))
+}
+
+// splitDeviceAndFiles reads `<device> <app> [part...]`, or
+// `<app> [part...]` under --all-physical, and makes the file paths
+// absolute: the daemon resolves relative paths against its own working
+// directory, not the caller's. Extra parts are an app's OBB files
+// (🎯T197); without them the daemon finds the ones beside the APK.
+func splitDeviceAndFiles(name string, pf parsedFlags) (string, []string) {
+	pos := pf.positional
+	device := ""
+	if !pf.bools["--all-physical"] {
+		if len(pos) < 2 {
+			requirePositional(name, pf, 2)
+		}
+		device, pos = pos[0], pos[1:]
+	} else if len(pos) < 1 {
+		requirePositional(name, pf, 1)
+	}
+	files := make([]string, 0, len(pos))
+	for _, p := range pos {
+		if abs, err := filepath.Abs(p); err == nil {
+			p = abs
+		}
+		files = append(files, p)
+	}
+	return device, files
 }
 
 func runUninstall(args []string) {
@@ -1002,20 +1032,11 @@ func runUninstall(args []string) {
 func runDeploy(args []string) {
 	pf, ctx, cancel := setupCommand("deploy", args, []string{"--as", "--bundle-id"}, []string{"--all-physical"}, clitimeout.DefaultDeploy)
 	defer cancel()
-	path := ""
-	if pf.bools["--all-physical"] {
-		if len(pf.positional) >= 1 {
-			path = pf.positional[0]
-		}
-	} else if len(pf.positional) >= 2 {
-		path = pf.positional[1]
-	}
-	if path != "" {
-		if d := artifactInstallTimeout(pf, clitimeout.DefaultDeploy, path, true); d != clitimeout.DefaultDeploy {
-			cancel()
-			ctx, cancel = clitimeout.Context(d)
-			defer cancel()
-		}
+	device, files := splitDeviceAndFiles("deploy", pf)
+	if d := artifactInstallTimeout(pf, clitimeout.DefaultDeploy, files, true); d != clitimeout.DefaultDeploy {
+		cancel()
+		ctx, cancel = clitimeout.Context(d)
+		defer cancel()
 	}
 	owner := pf.flags["--as"]
 	if owner == "" {
@@ -1025,15 +1046,16 @@ func runDeploy(args []string) {
 	if bid := pf.flags["--bundle-id"]; bid != "" {
 		extra["bundle_id"] = bid
 	}
+	if len(files) > 1 {
+		extra["parts"] = files[1:]
+	}
 	if pf.bools["--all-physical"] {
-		requirePositional("deploy", pf, 1)
-		fanOutPhysical(ctx, "deploy", "deploy_app", pf.positional[0], owner, extra)
+		fanOutPhysical(ctx, "deploy", "deploy_app", files[0], owner, extra)
 		return
 	}
-	requirePositional("deploy", pf, 2)
 	a := map[string]any{
-		"device": pf.positional[0],
-		"path":   pf.positional[1],
+		"device": device,
+		"path":   files[0],
 		"owner":  owner,
 	}
 	for k, v := range extra {

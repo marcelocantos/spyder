@@ -64,3 +64,18 @@ func TestArtifactBytes_IPA(t *testing.T) {
 		t.Fatalf("ArtifactBytes(%q) = %d, %v", p, n, err)
 	}
 }
+
+func TestArtifactBytes_APKCountsSiblingOBBs(t *testing.T) {
+	tmp := t.TempDir()
+	apk := filepath.Join(tmp, "Game-vc1.apk")
+	if err := os.WriteFile(apk, make([]byte, 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tmp, "Game-vc1.main.obb"), make([]byte, 1000), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	n, err := ArtifactBytes(apk)
+	if err != nil || n != 1100 {
+		t.Fatalf("ArtifactBytes = %d, %v; want 1100", n, err)
+	}
+}

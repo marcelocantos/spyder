@@ -129,6 +129,42 @@ func optString(args map[string]any, key string) string {
 	return v
 }
 
+// optStringList reads an optional list of strings: a JSON array, or a
+// single string for one element.
+func optStringList(args map[string]any, key string) []string {
+	switch v := args[key].(type) {
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	case []string:
+		return v
+	case []any:
+		var out []string
+		for _, e := range v {
+			if s, ok := e.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// validateParts validates each extra part path the caller listed
+// beside the main artifact (🎯T197).
+func validateParts(parts []string) ([]string, error) {
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		abs, err := validateAppPath(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, abs)
+	}
+	return out, nil
+}
+
 // optStringMap reads an optional JSON object of string→string from args.
 // Non-string values are coerced via fmt.Sprintf("%v", ...) so callers
 // can pass numbers/bools without manual conversion. Returns nil when the
@@ -1971,6 +2007,10 @@ func (h *Handler) handleInstallAppContext(ctx context.Context, args map[string]a
 	if err != nil {
 		return toolErr("%v", err)
 	}
+	parts, err := validateParts(optStringList(args, "parts"))
+	if err != nil {
+		return toolErr("%v", err)
+	}
 
 	h.mu.Lock()
 
@@ -1983,10 +2023,11 @@ func (h *Handler) handleInstallAppContext(ctx context.Context, args map[string]a
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	if err := h.installOn(ctx, adapter, id, path); err != nil {
+	installed, err := h.installOn(ctx, adapter, id, path, parts)
+	if err != nil {
 		return toolErr("install_app on %s: %v", dev, err)
 	}
-	return toolText(fmt.Sprintf("installed %s on %s", filepath.Base(path), dev))
+	return toolText(fmt.Sprintf("installed %s on %s", strings.Join(installed, ", "), dev))
 }
 
 func (h *Handler) handleUninstallApp(args map[string]any) (*mcpgo.CallToolResult, error) {
@@ -2024,11 +2065,14 @@ func (h *Handler) handleUninstallApp(args map[string]any) (*mcpgo.CallToolResult
 // post-launch wait, so scripts can branch without a second
 // app_channel_list call.
 type deployResult struct {
-	BundleID    string `json:"bundle_id"`
-	PID         int    `json:"pid"`
-	Replaced    bool   `json:"replaced"`
-	SessionID   string `json:"session_id,omitempty"`
-	ChannelPort int    `json:"channel_port,omitempty"`
+	BundleID string `json:"bundle_id"`
+	PID      int    `json:"pid"`
+	Replaced bool   `json:"replaced"`
+	// Parts lists everything installed: the app artifact, then each
+	// OBB as its device path (🎯T197).
+	Parts       []string `json:"parts,omitempty"`
+	SessionID   string   `json:"session_id,omitempty"`
+	ChannelPort int      `json:"channel_port,omitempty"`
 	launchedAt  time.Time
 	pidErr      error
 }
@@ -2066,8 +2110,12 @@ func (h *Handler) deployAppContext(ctx context.Context, args map[string]any, all
 	if err != nil {
 		return toolErr("%v", err)
 	}
+	parts, err := validateParts(optStringList(args, "parts"))
+	if err != nil {
+		return toolErr("%v", err)
+	}
 
-	out, deviceID, errRes := h.deployAppLockedContext(ctx, dev, path, bundleID, owner, env, allowPlayer)
+	out, deviceID, errRes := h.deployAppLockedContext(ctx, dev, path, parts, bundleID, owner, env, allowPlayer)
 	if errRes != nil {
 		return errRes, nil
 	}
@@ -2093,10 +2141,10 @@ func (h *Handler) deployAppContext(ctx context.Context, args map[string]any, all
 // deployAppLocked resolves/authorizes under h.mu, then runs the provider
 // pipeline without blocking unrelated devices on the shared state lock.
 func (h *Handler) deployAppLocked(dev, path, bundleID, owner string, env map[string]string, allowPlayer bool) (deployResult, string, *mcpgo.CallToolResult) {
-	return h.deployAppLockedContext(context.Background(), dev, path, bundleID, owner, env, allowPlayer)
+	return h.deployAppLockedContext(context.Background(), dev, path, nil, bundleID, owner, env, allowPlayer)
 }
 
-func (h *Handler) deployAppLockedContext(ctx context.Context, dev, path, bundleID, owner string, env map[string]string, allowPlayer bool) (deployResult, string, *mcpgo.CallToolResult) {
+func (h *Handler) deployAppLockedContext(ctx context.Context, dev, path string, parts []string, bundleID, owner string, env map[string]string, allowPlayer bool) (deployResult, string, *mcpgo.CallToolResult) {
 	h.mu.Lock()
 
 	fail := func(format string, a ...any) (deployResult, string, *mcpgo.CallToolResult) {
@@ -2161,7 +2209,8 @@ func (h *Handler) deployAppLockedContext(ctx context.Context, dev, path, bundleI
 		return fail("deploy_app cancelled: %v", err)
 	}
 	// Step 2: install (fail fast on error).
-	if err := h.installOn(ctx, adapter, id, path); err != nil {
+	installed, err := h.installOn(ctx, adapter, id, path, parts)
+	if err != nil {
 		return fail("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
 	}
 
@@ -2189,10 +2238,10 @@ func (h *Handler) deployAppLockedContext(ctx context.Context, dev, path, bundleI
 		if allowPlayer {
 			return fail("deploy_app: verify pid for %s on %s: %v", bundleID, dev, err)
 		}
-		return deployResult{BundleID: bundleID, Replaced: replaced, launchedAt: launchedAt, pidErr: err}, id, nil
+		return deployResult{BundleID: bundleID, Replaced: replaced, Parts: installed, launchedAt: launchedAt, pidErr: err}, id, nil
 	}
 
-	return deployResult{BundleID: bundleID, PID: pid, Replaced: replaced, launchedAt: launchedAt}, id, nil
+	return deployResult{BundleID: bundleID, PID: pid, Replaced: replaced, Parts: installed, launchedAt: launchedAt}, id, nil
 }
 
 // isSpyderPlayerTarget reports whether a deploy targets the stream glass
@@ -2367,24 +2416,11 @@ func iosBundleIDFromApp(appPath string) (string, error) {
 // androidBundleIDFromAPK extracts the package name from an APK via
 // `aapt dump badging`. Falls back to a clear error when aapt is absent.
 func androidBundleIDFromAPK(apkPath string) (string, error) {
-	var outBuf bytes.Buffer
-	cmd := exec.Command("aapt", "dump", "badging", apkPath)
-	cmd.Stdout = &outBuf
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("aapt dump badging: %w (is aapt in PATH? install Android SDK build-tools)", err)
+	ident, err := device.ReadAPKIdentity(apkPath)
+	if err != nil {
+		return "", err
 	}
-	for _, line := range strings.Split(outBuf.String(), "\n") {
-		if !strings.HasPrefix(line, "package:") {
-			continue
-		}
-		// package: name='com.example.app' versionCode=... versionName=...
-		for _, field := range strings.Fields(line) {
-			if after, ok := strings.CutPrefix(field, "name='"); ok {
-				return strings.TrimSuffix(after, "'"), nil
-			}
-		}
-	}
-	return "", fmt.Errorf("package name not found in aapt output")
+	return ident.Package, nil
 }
 
 // Compile-time assertion that errors package is imported (for build).

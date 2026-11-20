@@ -122,7 +122,8 @@ device_setting(device="S24", key="refresh_rate", restore=True)`,
 	"deploy": `deploy — install, launch, and reach the app channel
 
 deploy_app is the atomic path: terminate → install → launch → verify
-pid, returning {bundle_id, pid}. Pass env={} to inject launch-time
+pid, returning {bundle_id, pid, parts}. An app installs as a unit:
+an APK takes its OBB files along. Pass env={} to inject launch-time
 environment; spyder always injects SPYDER_APP_CHANNEL so the app can
 dial back.
 
@@ -130,6 +131,14 @@ recipes:
 # atomic deploy (bundle_id derived from the bundle)
 d = deploy_app(device="Jevons", path="/path/to/MyApp.app")
 emit(d)
+
+# Android app with OBB expansion files (Unity split binary): pass the
+# APK only. spyder installs <name>.main.obb / .patch.obb from beside it
+# and reports every part in d["parts"]. List them in parts= only when
+# they live elsewhere.
+d = deploy_app(device="S24", path="/path/to/Game-1.0-vc12.apk")
+deploy_app(device="S24", path="/path/to/Game.apk",
+           parts=["/elsewhere/main.12.com.example.game.obb"])
 
 # deploy with extra env
 deploy_app(device="Jevons", path="/path/to/MyApp.app",

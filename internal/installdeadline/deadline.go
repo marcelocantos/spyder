@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/androidobb"
 )
 
 // BaseInstall is the minimum install-class dispatch budget (matches mcp.DeadlineInstall).
@@ -24,7 +26,22 @@ const MaxInstall = 45 * time.Minute
 // empty means assume a pessimistic USB 2-class link. When deploy is true,
 // extra margin covers terminate, launch, and pid verify after install.
 func Budget(artifactPath string, usbSpeedLabel string, deploy bool) time.Duration {
-	bytes, err := ArtifactBytes(artifactPath)
+	return BudgetAll([]string{artifactPath}, usbSpeedLabel, deploy)
+}
+
+// BudgetAll is Budget for an app installed as several parts: an APK
+// and its OBB files (🎯T197). The parts' bytes add up.
+func BudgetAll(paths []string, usbSpeedLabel string, deploy bool) time.Duration {
+	var bytes int64
+	var err error
+	for _, p := range paths {
+		n, perr := ArtifactBytes(p)
+		if perr != nil {
+			err = perr
+			break
+		}
+		bytes += n
+	}
 	if err != nil || bytes <= 0 {
 		if deploy {
 			return maxDuration(BaseInstall, 10*time.Minute)
@@ -47,13 +64,20 @@ func Budget(artifactPath string, usbSpeedLabel string, deploy bool) time.Duratio
 }
 
 // ArtifactBytes returns the byte size of a .ipa/.apk file or the sum of a .app tree.
+// An APK counts the OBB files Unity wrote beside it, since install pushes them too.
 func ArtifactBytes(path string) (int64, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return 0, err
 	}
 	if !info.IsDir() {
-		return info.Size(), nil
+		total := info.Size()
+		for _, obb := range androidobb.Siblings(path) {
+			if oi, err := os.Stat(obb.Local); err == nil {
+				total += oi.Size()
+			}
+		}
+		return total, nil
 	}
 	var total int64
 	err = filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {

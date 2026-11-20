@@ -210,7 +210,8 @@ func dispatchDeadline(ctx context.Context, name string, args map[string]any, usb
 	if installScaledTools[name] {
 		if path, ok := args["path"].(string); ok && path != "" {
 			deploy := name == "deploy_app" || name == "launch_player"
-			if scaled := installdeadline.Budget(path, usbSpeedLabel, deploy); scaled > d {
+			all := append([]string{path}, optStringList(args, "parts")...)
+			if scaled := installdeadline.BudgetAll(all, usbSpeedLabel, deploy); scaled > d {
 				d = scaled
 			}
 		}

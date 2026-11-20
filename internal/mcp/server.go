@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/marcelocantos/spyder/internal/agent"
+	"github.com/marcelocantos/spyder/internal/androidobb"
 	"github.com/marcelocantos/spyder/internal/appchannel"
 	"github.com/marcelocantos/spyder/internal/baselines"
 	"github.com/marcelocantos/spyder/internal/battery"
@@ -388,8 +390,27 @@ func (h *Handler) beatUntilReturned() func() {
 	return func() { once.Do(func() { close(done) }) }
 }
 
-// installOn runs adapter.InstallApp while beating the dispatch watchdog.
-func (h *Handler) installOn(ctx context.Context, adapter device.Adapter, id, path string) error {
+// expansionInstaller is the Android adapter's OBB push (🎯T197).
+type expansionInstaller interface {
+	InstallExpansion(ctx context.Context, id, apkPath string, files []androidobb.File) ([]string, error)
+}
+
+// installOn installs an app as a unit while beating the dispatch
+// watchdog: the artifact, then (Android) its OBB expansion files —
+// the ones listed in parts, or else the ones Unity wrote beside the
+// APK. It returns what it installed: the artifact's name, then each
+// OBB's device path. A failure never uninstalls anything.
+func (h *Handler) installOn(ctx context.Context, adapter device.Adapter, id, path string, parts []string) ([]string, error) {
+	var obbs []androidobb.File
+	exp, isAndroid := adapter.(expansionInstaller)
+	if isAndroid {
+		var err error
+		if obbs, err = device.ExpansionParts(path, parts); err != nil {
+			return nil, err
+		}
+	} else if len(parts) > 0 {
+		return nil, fmt.Errorf("extra parts (OBB files) apply only to Android APKs")
+	}
 	if op := dispatchOpID(ctx); op != 0 && h.ops != nil {
 		h.ops.setInstalling(op, true)
 		defer h.ops.setInstalling(op, false)
@@ -399,7 +420,21 @@ func (h *Handler) installOn(ctx context.Context, adapter device.Adapter, id, pat
 	ended := goios.LifecyclePhase(ctx, "install.transfer")
 	err := adapter.InstallApp(id, path)
 	ended(err)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	installed := []string{filepath.Base(path)}
+	if len(obbs) == 0 {
+		return installed, nil
+	}
+	ended = goios.LifecyclePhase(ctx, "install.expansion")
+	written, err := exp.InstallExpansion(ctx, id, path, obbs)
+	ended(err)
+	installed = append(installed, written...)
+	if err != nil {
+		return installed, fmt.Errorf("APK installed but OBB push failed: %w", err)
+	}
+	return installed, nil
 }
 
 // HasMobileInventory is true when inventory lists an iOS or Android
@@ -1163,7 +1198,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 		),
 
 		mcpgo.NewTool("install_app",
-			mcpgo.WithDescription("Install an app on the device. Accepts a .app or .ipa path (iOS) or .apk path (Android). The path must not contain '..' and must exist. Strictly enforced: rejects if the device is reserved by a different owner."),
+			mcpgo.WithDescription("Install an app on the device. Accepts a .app or .ipa path (iOS) or .apk path (Android). An APK installs as a unit with its OBB expansion files (pushed to /sdcard/Android/obb/<package>/ under the APK's versionCode); the result names every part installed. A failure never uninstalls the app. The path must not contain '..' and must exist. Strictly enforced: rejects if the device is reserved by a different owner."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -1171,6 +1206,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 			mcpgo.WithString("path",
 				mcpgo.Required(),
 				mcpgo.Description("Absolute or relative path to the .app/.ipa (iOS) or .apk (Android) to install"),
+			),
+			mcpgo.WithArray("parts",
+				mcpgo.Description("Android only, optional: every other file the app needs, listed explicitly (its .obb expansion files). Omit it and spyder installs the OBBs Unity wrote beside the APK (`<name>.main.obb`, `<name>.patch.obb`) automatically — callers don't need to know an app has more than one part."),
+				mcpgo.Items(map[string]any{"type": "string"}),
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
@@ -1209,7 +1248,7 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 		),
 		mcpgo.NewTool("deploy_app",
-			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Returns {bundle_id, pid, replaced, session_id?, channel_port?} on success — replaced reports whether the install overwrote a build already on the device, and session_id/channel_port appear when the app completes the app-channel handshake within the post-launch wait (🎯T121), so scripts can branch without a second app_channel_list call. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nRefuses the spyder stream player (com.spyder.player / Player*.app / player Android APK) — use launch_player so STREAM_ADDR and server name are injected.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
+			mcpgo.WithDescription("Atomic deploy helper: terminate → install → launch → verify-new-pid. Installs an Android app as a unit: the APK plus its OBB expansion files, found beside it or listed in `parts`. Returns {bundle_id, pid, replaced, parts, session_id?, channel_port?} on success — parts names everything installed — replaced reports whether the install overwrote a build already on the device, and session_id/channel_port appear when the app completes the app-channel handshake within the post-launch wait (🎯T121), so scripts can branch without a second app_channel_list call. Fails fast if install fails. 'Not running' errors from the terminate step are ignored (app may not be running yet). The bundle_id is derived automatically from the .app Info.plist (iOS) or via aapt dump badging (Android); pass bundle_id explicitly to skip derivation. Requires tunneld on iOS (for launch + pid-verify via DVT). Strictly enforced: rejects if the device is reserved by a different owner.\n\nRefuses the spyder stream player (com.spyder.player / Player*.app / player Android APK) — use launch_player so STREAM_ADDR and server name are injected.\n\nOptional `env` map is forwarded to the launch step — see `launch_app` for semantics."),
 			mcpgo.WithString("device",
 				mcpgo.Required(),
 				mcpgo.Description("Device alias or UUID"),
@@ -1220,6 +1259,10 @@ func allBaseDefinitions() []mcpgo.Tool {
 			),
 			mcpgo.WithString("bundle_id",
 				mcpgo.Description("App bundle identifier — derived automatically from Info.plist or aapt if omitted"),
+			),
+			mcpgo.WithArray("parts",
+				mcpgo.Description("Android only, optional: every other file the app needs, listed explicitly (its .obb expansion files). Omit it and spyder installs the OBBs Unity wrote beside the APK (`<name>.main.obb`, `<name>.patch.obb`) automatically — callers don't need to know an app has more than one part."),
+				mcpgo.Items(map[string]any{"type": "string"}),
 			),
 			mcpgo.WithString("owner",
 				mcpgo.Description("Reservation owner to authenticate as (optional; required if the device is reserved)"),
