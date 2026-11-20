@@ -214,6 +214,7 @@ func (s *Store) Acquire(device, owner string, ttl time.Duration, note string) (R
 	key := s.canonical(device)
 	var out Reservation
 	err := s.withBook(func() error {
+		key := s.existingKeyLocked(device, key)
 		now := s.now()
 		if existing, ok := s.state[key]; ok && reservationLive(now, existing) {
 			if existing.Owner != owner {
@@ -258,6 +259,7 @@ func (s *Store) Release(device, owner string) error {
 	// which may touch the filesystem (🎯T168).
 	key := s.canonical(device)
 	return s.withBook(func() error {
+		key := s.existingKeyLocked(device, key)
 		existing, ok := s.state[key]
 		if !ok {
 			return nil
@@ -294,6 +296,7 @@ func (s *Store) Renew(device, owner string, ttl time.Duration) (Reservation, err
 	key := s.canonical(device)
 	var out Reservation
 	err := s.withBook(func() error {
+		key := s.existingKeyLocked(device, key)
 		existing, ok := s.state[key]
 		if !ok || !reservationLive(s.now(), existing) {
 			return fmt.Errorf("no active reservation on %s", key)
@@ -317,24 +320,42 @@ func (s *Store) Renew(device, owner string, ttl time.Duration) (Reservation, err
 // Otherwise returns a *Conflict. Callers pass "" for owner to
 // represent an anonymous caller (rejected if anyone holds it).
 func (s *Store) Authorize(device, owner string) error {
-	// Normalise before locking: the normaliser consults the inventory,
-	// which may touch the filesystem (🎯T168).
-	key := s.canonical(device)
+	return s.AuthorizeResolved(device, s.canonical(device), owner)
+}
+
+// AuthorizeResolved checks the resolved key and the literal device reference
+// in one book transaction. Older clients could write the latter verbatim.
+func (s *Store) AuthorizeResolved(device, key, owner string) error {
 	return s.withBook(func() error {
-		existing, ok := s.state[key]
-		if !ok {
-			return nil
+		now := s.now()
+		for _, ref := range [...]string{key, device} {
+			existing, ok := s.state[ref]
+			if !ok {
+				continue
+			}
+			if !reservationLive(now, existing) {
+				delete(s.state, ref)
+				s.note("expired", existing)
+				continue
+			}
+			if existing.Owner != owner {
+				return &Conflict{Reservation: existing}
+			}
 		}
-		if !reservationLive(s.now(), existing) {
-			delete(s.state, key)
-			s.note("expired", existing)
-			return nil
-		}
-		if existing.Owner == owner {
-			return nil
-		}
-		return &Conflict{Reservation: existing}
+		return nil
 	})
+}
+
+// existingKeyLocked keeps an old spelling when updating a live record, so
+// an older client can still find and release the reservation it wrote.
+func (s *Store) existingKeyLocked(device, key string) string {
+	if r, ok := s.state[key]; ok && reservationLive(s.now(), r) {
+		return key
+	}
+	if r, ok := s.state[device]; ok && reservationLive(s.now(), r) {
+		return device
+	}
+	return key
 }
 
 // List returns active (unexpired) reservations. Filters out expired
@@ -354,6 +375,7 @@ func (s *Store) Get(device string) (Reservation, bool, error) {
 	var r Reservation
 	var ok bool
 	err := s.withBook(func() error {
+		key := s.existingKeyLocked(device, key)
 		existing, found := s.state[key]
 		if !found {
 			return nil
