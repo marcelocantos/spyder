@@ -107,3 +107,28 @@ func TestInstallApp_PartsRefusedOffAndroid(t *testing.T) {
 		t.Fatal("iOS install ran despite the refused parts")
 	}
 }
+
+// The MCP surface is app_exec (🎯T88): a Starlark deploy_app with only
+// the APK reports the OBB in parts, and an explicit parts list reaches
+// the handler as a list.
+func TestAppExec_DeployAppInstallsOBBs(t *testing.T) {
+	dir := t.TempDir()
+	apk := filepath.Join(dir, "Game-1.0-vc1.apk")
+	writeFile(t, apk)
+	obb := filepath.Join(dir, "Game-1.0-vc1.main.obb")
+	writeFile(t, obb)
+
+	stub := &obbStub{}
+	h := newHandlerWithStubs(t, nil, stub)
+	script := `d = deploy_app(device="Raspberry", path="` + apk + `", bundle_id="com.ex.game")
+emit(d["parts"])
+install_app(device="Raspberry", path="` + apk + `", parts=["` + obb + `"])`
+	r := dispatchJSON(t, h, "app_exec", map[string]any{"script": script})
+	text := resultText(t, &r)
+	if !strings.Contains(text, "main.1.pkg.obb") {
+		t.Fatalf("app_exec deploy_app did not report the OBB part: %s", text)
+	}
+	if len(stub.installed) != 2 || len(stub.pushed) != 1 || stub.pushed[0].Local != obb {
+		t.Fatalf("installed=%v pushed=%+v", stub.installed, stub.pushed)
+	}
+}
