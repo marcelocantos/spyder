@@ -519,3 +519,32 @@ func TestCallIdleBudgetBoundsInitialWrite(t *testing.T) {
 		t.Fatal("unread request outlived its write budget")
 	}
 }
+
+func TestDuplicateResponseDoesNotBlockFrameHandling(t *testing.T) {
+	first := &Envelope{ID: 1}
+	second := &Envelope{ID: 2}
+	one, two := make(chan *Envelope, 1), make(chan *Envelope, 1)
+	s := &Session{pending: map[uint64]*pending{
+		1: {id: 1, done: one},
+		2: {id: 2, done: two},
+	}}
+	s.handleFrame(first)
+	done := make(chan struct{})
+	go func() {
+		s.handleFrame(&Envelope{ID: first.ID})
+		s.handleFrame(second)
+		close(done)
+	}()
+	select {
+	case <-done:
+		if got := <-one; got != first {
+			t.Fatalf("first response replaced by duplicate: %v", got)
+		}
+		if got := <-two; got != second {
+			t.Fatalf("next call received %v, want its own response", got)
+		}
+	case <-time.After(time.Second):
+		<-one
+		t.Fatal("duplicate response blocked the next call's response")
+	}
+}

@@ -441,6 +441,7 @@ func (s *Session) handleFrame(env *Envelope) {
 		s.noteProgress()
 		s.mu.Lock()
 		p := s.pending[env.ID]
+		delete(s.pending, env.ID)
 		s.mu.Unlock()
 		if p == nil {
 			slog.Warn("appchannel: response for unknown id",
