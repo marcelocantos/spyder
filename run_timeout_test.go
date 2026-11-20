@@ -20,9 +20,19 @@ import (
 // spyder run --timeout must not release the lease while a grandchild of
 // the wrapped command is still running (DH-12).
 func TestRunTimeoutDoesNotOrphanWrappedJob(t *testing.T) {
+	t.Run("ordinary worker", func(t *testing.T) {
+		testRunTimeoutDoesNotOrphanWrappedJob(t, "exec sleep 30")
+	})
+	t.Run("worker ignores TERM", func(t *testing.T) {
+		testRunTimeoutDoesNotOrphanWrappedJob(t, "trap '' TERM; exec sleep 30")
+	})
+}
+
+func testRunTimeoutDoesNotOrphanWrappedJob(t *testing.T, worker string) {
+	t.Helper()
 	data := t.TempDir()
 	pidFile := filepath.Join(t.TempDir(), "worker.pid")
-	job := "sleep 30 & echo $! > " + pidFile + "; wait"
+	job := "( " + worker + " ) & echo $! > " + pidFile + "; wait"
 	args := []string{"--device", "fake-dev", "--as", "job-A", "--timeout", "1s", "--", "/bin/sh", "-c", job}
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(),
@@ -39,7 +49,10 @@ func TestRunTimeoutDoesNotOrphanWrappedJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pid, _ := strconv.Atoi(strings.TrimSpace(string(raw)))
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("invalid worker pid %q", raw)
+	}
 	t.Cleanup(func() { _ = syscall.Kill(pid, syscall.SIGKILL) })
 	time.Sleep(200 * time.Millisecond)
 
@@ -52,7 +65,10 @@ func TestRunTimeoutDoesNotOrphanWrappedJob(t *testing.T) {
 		t.Fatal(err)
 	}
 	alive := syscall.Kill(pid, 0) == nil
-	if alive && !held {
-		t.Errorf("reservation released and spyder exited, but the job's worker (pid %d) is still running", pid)
+	if held {
+		t.Error("timeout left the reservation held")
+	}
+	if alive {
+		t.Errorf("spyder exited, but the job's worker (pid %d) is still running", pid)
 	}
 }

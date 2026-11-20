@@ -26,6 +26,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/marcelocantos/spyder/internal/daemon"
 	"github.com/marcelocantos/spyder/internal/device"
 	"github.com/marcelocantos/spyder/internal/exitlog"
@@ -496,8 +498,6 @@ func runWithReservation(args []string, beforeAcquire func()) {
 	}
 
 	// Guarantee release on any exit path (success, error, SIGINT).
-	// The child inherits our stdio, so a SIGINT on our process group
-	// also terminates it before we reach this block.
 	// The run's outcome is the child's exit status; failure screenshots
 	// are unknown to the CLI (🎯T166).
 	release := func(passed bool, outcome string) {
@@ -558,21 +558,21 @@ func runWithReservation(args []string, beforeAcquire func()) {
 	child.Stdin = os.Stdin
 	child.Stdout = os.Stdout
 	child.Stderr = os.Stderr
-	// The wrapped command's children (make, xcodebuild, a shell's
-	// background jobs) must die before the lease is released, or the
-	// next holder shares the device with them (DH-12).
-	child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	child.WaitDelay = 2 * time.Second
-	child.Cancel = func() error {
-		if child.Process == nil {
-			return os.ErrProcessDone
+	// A non-interactive job owns a process group. Cancel that whole group
+	// synchronously: Wait can return as soon as its leader exits, even if
+	// a worker ignored TERM. A timer scheduled from Cancel would die with
+	// this wrapper, after it had already released the reservation.
+	// Preserve the caller's terminal job control for interactive runs.
+	// In a separate background group even an ordinary read stops on SIGTTIN.
+	if _, err := unix.IoctlGetInt(int(os.Stdin.Fd()), unix.TIOCGPGRP); err != nil {
+		child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		child.Cancel = func() error {
+			err := syscall.Kill(-child.Process.Pid, syscall.SIGKILL)
+			if errors.Is(err, syscall.ESRCH) {
+				return os.ErrProcessDone
+			}
+			return err
 		}
-		pid := child.Process.Pid
-		err := syscall.Kill(-pid, syscall.SIGTERM)
-		time.AfterFunc(child.WaitDelay, func() {
-			_ = syscall.Kill(-pid, syscall.SIGKILL)
-		})
-		return err
 	}
 	runErr := child.Run()
 	exitCode := 0
