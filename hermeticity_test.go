@@ -78,13 +78,13 @@ func TestCLIHermeticity(t *testing.T) {
 // Allow-list:
 //   - autoStartDaemon (cli.go) — writes daemon.log when spawning a
 //     detached daemon. Documented exception.
-//   - runCmd (main.go) — `spyder run` is the daemonless wrapper that
+//   - runWithReservation (main.go) — `spyder run` is the daemonless wrapper that
 //     directly manages a reservations.json + runs/ store. Documented
 //     exception.
 func TestCLINoStickyStateOutsideAllowList(t *testing.T) {
 	allowed := map[string]bool{
-		"autoStartDaemon": true,
-		"runCmd":          true,
+		"autoStartDaemon":    true,
+		"runWithReservation": true,
 	}
 	files := []string{"cli.go", "cli_visual.go", "main.go"}
 	for _, file := range files {

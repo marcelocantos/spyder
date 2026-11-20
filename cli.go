@@ -27,6 +27,7 @@ import (
 	"github.com/marcelocantos/spyder/internal/installdeadline"
 	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/paths"
+	"github.com/marcelocantos/spyder/internal/reservations"
 	"github.com/marcelocantos/spyder/internal/rest"
 	"github.com/marcelocantos/spyder/internal/selector"
 	"github.com/marcelocantos/spyder/internal/verify"
@@ -669,14 +670,14 @@ func daemonExitCode(err error) int {
 // alias from the response. Used by `spyder run --on PREDICATE` to close
 // the resolve→release→re-acquire race window in the previous workaround
 // pattern (🎯T38).
-func reserveViaDaemon(predicate, owner string) (string, error) {
+func reserveViaDaemon(predicate, owner string) (reservations.Reservation, error) {
 	sel, perr := selector.ParseSelectorString(predicate)
 	if perr != nil {
-		return "", fmt.Errorf("parse selector: %w", perr)
+		return reservations.Reservation{}, fmt.Errorf("parse selector: %w", perr)
 	}
 	selBytes, merr := json.Marshal(sel)
 	if merr != nil {
-		return "", fmt.Errorf("marshal selector: %w", merr)
+		return reservations.Reservation{}, fmt.Errorf("marshal selector: %w", merr)
 	}
 	args := map[string]any{
 		"selector": string(selBytes),
@@ -687,21 +688,32 @@ func reserveViaDaemon(predicate, owner string) (string, error) {
 	defer cancel()
 	res, err := postTool(ctx, "reserve", args)
 	if err != nil {
-		return "", err
+		return reservations.Reservation{}, err
 	}
 	if res.IsError {
-		return "", errors.New(res.firstText())
+		return reservations.Reservation{}, errors.New(res.firstText())
 	}
-	var reservation struct {
-		Device string `json:"device"`
-	}
+	var reservation reservations.Reservation
 	if err := json.Unmarshal([]byte(res.firstText()), &reservation); err != nil {
-		return "", fmt.Errorf("parse reserve response: %w", err)
+		return reservations.Reservation{}, fmt.Errorf("parse reserve response: %w", err)
 	}
 	if reservation.Device == "" {
-		return "", errors.New("daemon returned empty device alias")
+		return reservations.Reservation{}, errors.New("daemon returned empty device alias")
 	}
-	return reservation.Device, nil
+	return reservation, nil
+}
+
+func updateDaemonRunLease(ctx context.Context, verb string, args map[string]any) error {
+	ctx, cancel := context.WithTimeout(ctx, clitimeout.DefaultReserve)
+	defer cancel()
+	res, err := postTool(ctx, verb, args)
+	if err != nil {
+		return err
+	}
+	if res.IsError {
+		return errors.New(res.firstText())
+	}
+	return nil
 }
 
 // --- subcommand implementations -------------------------------------

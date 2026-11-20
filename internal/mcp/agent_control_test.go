@@ -50,7 +50,10 @@ func TestAgentHandlers_ReuseIdleAndOwnership(t *testing.T) {
 			return obs, nil
 		},
 		OwnerOf: func(id string) (string, bool) {
-			r, ok := store.Get(id)
+			r, ok, err := store.Get(id)
+			if err != nil {
+				t.Error(err)
+			}
 			if !ok || r.Owner == "" {
 				return "", false
 			}
@@ -190,7 +193,10 @@ func TestAgentHandlers_ConsentIsNotReady(t *testing.T) {
 			}, nil
 		},
 		OwnerOf: func(id string) (string, bool) {
-			r, ok := store.Get(id)
+			r, ok, err := store.Get(id)
+			if err != nil {
+				t.Error(err)
+			}
 			if !ok {
 				return "", false
 			}
@@ -283,7 +289,10 @@ func TestAgentHandlers_RetryIsAttendedAndOwnerOnly(t *testing.T) {
 			}, nil
 		},
 		OwnerOf: func(id string) (string, bool) {
-			r, ok := store.Get(id)
+			r, ok, err := store.Get(id)
+			if err != nil {
+				t.Error(err)
+			}
 			if !ok {
 				return "", false
 			}

@@ -346,27 +346,6 @@ func parseRunArgs(args []string) (runArgs, error) {
 	return out, nil
 }
 
-// waitReservationGate blocks while SPYDER_TEST_RESV_GATE names a directory.
-// It writes "ready" in that directory, then waits until "go" appears.
-// The variable is unset outside the reservation two-process tests.
-func waitReservationGate() error {
-	dir := os.Getenv("SPYDER_TEST_RESV_GATE")
-	if dir == "" {
-		return nil
-	}
-	if err := os.WriteFile(filepath.Join(dir, "ready"), []byte("1"), 0o600); err != nil {
-		return fmt.Errorf("reservation gate: %w", err)
-	}
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, err := os.Stat(filepath.Join(dir, "go")); err == nil {
-			return nil
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	return errors.New("reservation gate timed out")
-}
-
 // deriveOwner returns the supplied owner or falls back to
 // filepath.Base(cwd). Used by `spyder run` to pick a sensible
 // project-oriented identity without requiring a flag.
@@ -386,6 +365,10 @@ func deriveOwner(supplied string) string {
 // reservation regardless of success/failure. Exits with the command's
 // exit code (or ExitTimeout when --timeout fires before the child exits).
 func runCmd(args []string) {
+	runWithReservation(args, nil)
+}
+
+func runWithReservation(args []string, beforeAcquire func()) {
 	parsed, err := parseRunArgs(args)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
@@ -401,32 +384,37 @@ func runCmd(args []string) {
 		return ref
 	}
 
+	resvPath := filepath.Join(paths.Base(), "reservations.json")
+	var resvStore *reservations.Store
 	if parsed.On != "" {
-		alias, resolveErr := resolveSelectorViaDaemon(parsed.On, owner)
+		grant, resolveErr := reserveViaDaemon(parsed.On, owner)
 		if resolveErr != nil {
 			fmt.Fprintf(os.Stderr, "spyder run: --on: %v\n", resolveErr)
 			os.Exit(1)
 		}
-		parsed.Device = alias
+		parsed.Device = grant.Device
+		// Match the grant itself before using the local file. A configured
+		// daemon may run on another host or with a different state directory.
+		// A shared book lets the job finish cleanup even while the daemon is down.
+		if store, err := reservations.New(resvPath, reservations.WithNormalizer(normalize)); err == nil {
+			if held, ok, err := store.Get(grant.Device); err == nil && ok && held.Owner == owner &&
+				held.CreatedAt.Equal(grant.CreatedAt) {
+				resvStore = store
+			}
+		}
+	} else {
+		store, moved, err := reservations.OpenBook(resvPath, normalize)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "spyder run: reservations unavailable: %v\n", err)
+			os.Exit(1)
+		}
+		if moved != "" {
+			fmt.Fprintf(os.Stderr, "spyder run: reservations book was corrupt; moved aside to %s and started empty\n", moved)
+		}
+		resvStore = store
 	}
-
-	resvStore, resvQuarantine, resvErr := reservations.OpenBook(
-		filepath.Join(paths.Base(), "reservations.json"),
-		reservations.WithNormalizer(normalize),
-	)
-	if resvErr != nil {
-		fmt.Fprintf(os.Stderr, "spyder run: reservations unavailable: %v\n", resvErr)
-		os.Exit(1)
-	}
-	if resvQuarantine != "" {
-		fmt.Fprintf(os.Stderr, "spyder run: reservations book was corrupt; moved aside to %s and started empty\n", resvQuarantine)
-	}
-	// Tests hold the process here, after the book is open and before the
-	// grant, so another process can write the book in between. Unset in
-	// production: this returns immediately.
-	if err := waitReservationGate(); err != nil {
-		fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
-		os.Exit(1)
+	if beforeAcquire != nil {
+		beforeAcquire()
 	}
 	// runsStore is best-effort — if it fails we still run the command.
 	runsStore, runsErr := runs.New(paths.RunsBase())
@@ -436,13 +424,14 @@ func runCmd(args []string) {
 	}
 
 	note := fmt.Sprintf("spyder run: %s", strings.Join(parsed.Command, " "))
-	if _, err := resvStore.Acquire(parsed.Device, owner, reservations.DefaultTTL, note); err != nil {
-		if reservations.IsConflict(err) {
+	if resvStore != nil {
+		if _, err := resvStore.Acquire(parsed.Device, owner, reservations.DefaultTTL, note); err != nil {
 			fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
-			os.Exit(3)
+			if reservations.IsConflict(err) {
+				os.Exit(3)
+			}
+			os.Exit(1)
 		}
-		fmt.Fprintf(os.Stderr, "spyder run: %v\n", err)
-		os.Exit(1)
 	}
 
 	var runID string
@@ -462,10 +451,24 @@ func runCmd(args []string) {
 				p.ScriptPath, p.ScriptSource = parsed.Script, "unresolved"
 			}
 		}
-		if r, err := runsStore.OpenWith(p); err != nil {
-			fmt.Fprintf(os.Stderr, "spyder run: open run: %v\n", err)
-		} else {
-			runID = r.ID
+		// A selector reservation already opened a manifest in the shared
+		// daemon state. Keep its artefacts and close it with the job outcome.
+		if parsed.On != "" && resvStore != nil {
+			if r, err := runsStore.Active(canonical, owner); err == nil && r != nil {
+				runID = r.ID
+				if err := runsStore.UpdateProvenance(runID, p); err != nil {
+					fmt.Fprintf(os.Stderr, "spyder run: update run %s: %v\n", runID, err)
+				}
+			}
+		}
+		if runID == "" {
+			if r, err := runsStore.OpenWith(p); err != nil {
+				fmt.Fprintf(os.Stderr, "spyder run: open run: %v\n", err)
+			} else {
+				runID = r.ID
+			}
+		}
+		if runID != "" {
 			fmt.Fprintf(os.Stderr, "spyder run: opened run %s\n", runID)
 		}
 	}
@@ -482,8 +485,16 @@ func runCmd(args []string) {
 				fmt.Fprintf(os.Stderr, "spyder run: close run %s: %v\n", runID, err)
 			}
 		}
-		if err := resvStore.Release(parsed.Device, owner); err != nil {
-			fmt.Fprintf(os.Stderr, "spyder run: release %s: %v\n", parsed.Device, err)
+		var releaseErr error
+		if resvStore != nil {
+			releaseErr = resvStore.Release(parsed.Device, owner)
+		} else {
+			releaseErr = updateDaemonRunLease(context.Background(), "release", map[string]any{
+				"device": parsed.Device, "owner": owner, "passed": passed, "outcome": outcome,
+			})
+		}
+		if releaseErr != nil {
+			fmt.Fprintf(os.Stderr, "spyder run: release %s: %v\n", parsed.Device, releaseErr)
 		}
 	}
 
@@ -508,7 +519,15 @@ func runCmd(args []string) {
 			case <-ctx.Done():
 				return
 			case <-tick.C:
-				_, _ = resvStore.Renew(parsed.Device, owner, reservations.DefaultTTL)
+				var err error
+				if resvStore != nil {
+					_, err = resvStore.Renew(parsed.Device, owner, reservations.DefaultTTL)
+				} else {
+					err = updateDaemonRunLease(ctx, "renew", map[string]any{"device": parsed.Device, "owner": owner})
+				}
+				if err != nil && ctx.Err() == nil {
+					fmt.Fprintf(os.Stderr, "spyder run: renew %s: %v\n", parsed.Device, err)
+				}
 			}
 		}
 	}()
@@ -540,17 +559,4 @@ func runCmd(args []string) {
 	}
 	release(exitCode == 0, outcome)
 	os.Exit(exitCode)
-}
-
-// resolveSelectorViaDaemon parses --on PREDICATE as a selector predicate,
-// reserves a matching device atomically via the daemon's `reserve` REST
-// endpoint, and returns the canonical alias. The caller's local store
-// will subsequently see the daemon's reservation record (same file) and
-// renew/release it through the normal `spyder run` lifecycle.
-//
-// Returning here means the device is already reserved for owner; if the
-// caller fails to call Release, the reservation will expire on TTL.
-func resolveSelectorViaDaemon(predicate, owner string) (string, error) {
-	// Defined in cli.go — calls /api/v1/reserve with auto-start fallback.
-	return reserveViaDaemon(predicate, owner)
 }

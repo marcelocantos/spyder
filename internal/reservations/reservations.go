@@ -113,39 +113,45 @@ func WithNormalizer(n Normalizer) Option { return func(s *Store) { s.norm = n } 
 // tests. Expired entries stay in the file until a later operation
 // observes them; opening the book does not rewrite it.
 func New(path string, opts ...Option) (*Store, error) {
+	s := newStore(path)
+	for _, o := range opts {
+		o(s)
+	}
+	if err := s.reloadLocked(); err != nil {
+		return nil, fmt.Errorf("load reservations: %w", err)
+	}
+	return s, nil
+}
+
+func newStore(path string) *Store {
 	s := &Store{
 		path:  path,
 		now:   time.Now,
 		norm:  func(ref string) string { return ref },
 		state: map[string]Reservation{},
 	}
-	for _, o := range opts {
-		o(s)
-	}
-	if path != "" {
-		if err := s.load(); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("load reservations: %w", err)
-		}
-	}
-	return s, nil
+	return s
 }
 
 // OpenBook opens the book at path. When the file is corrupt it is moved
-// aside and the returned store is an empty enforcing book. quarantined
-// is the path of the moved file, or empty when the book was readable.
-func OpenBook(path string, opts ...Option) (s *Store, quarantined string, err error) {
-	s, err = New(path, opts...)
+// aside under the same lock used for updates. Even on a storage error,
+// the store remains usable once the file is repaired and fails closed
+// in the meantime. quarantined is the path of the moved file, if any.
+func OpenBook(path string, normalize Normalizer) (s *Store, quarantined string, err error) {
+	s = newStore(path)
+	s.norm = normalize
+	if err := s.lockFile(); err != nil {
+		return s, "", fmt.Errorf("open reservations: %w", err)
+	}
+	defer s.unlockFile()
+	err = s.reloadLocked()
 	var corrupt *CorruptBookError
 	if !errors.As(err, &corrupt) {
 		return s, "", err
 	}
 	moved, qerr := quarantineBook(path)
 	if qerr != nil {
-		return nil, "", fmt.Errorf("quarantine corrupt reservations: %w", qerr)
-	}
-	s, err = New(path, opts...)
-	if err != nil {
-		return nil, moved, err
+		return s, "", fmt.Errorf("quarantine corrupt reservations: %w", qerr)
 	}
 	return s, moved, nil
 }
@@ -333,24 +339,21 @@ func (s *Store) Authorize(device, owner string) error {
 
 // List returns active (unexpired) reservations. Filters out expired
 // entries as a side effect; persists the pruned state.
-func (s *Store) List() []Reservation {
+func (s *Store) List() ([]Reservation, error) {
 	var out []Reservation
-	if err := s.withBook(func() error {
+	err := s.withBook(func() error {
 		out = s.listInBook()
 		return nil
-	}); err != nil {
-		slog.Error("reservation list", "error", err)
-		return nil
-	}
-	return out
+	})
+	return out, err
 }
 
 // Get returns the active reservation for a device, if any.
-func (s *Store) Get(device string) (Reservation, bool) {
+func (s *Store) Get(device string) (Reservation, bool, error) {
 	key := s.canonical(device) // before locking (🎯T168)
 	var r Reservation
 	var ok bool
-	if err := s.withBook(func() error {
+	err := s.withBook(func() error {
 		existing, found := s.state[key]
 		if !found {
 			return nil
@@ -362,11 +365,8 @@ func (s *Store) Get(device string) (Reservation, bool) {
 		}
 		r, ok = existing, true
 		return nil
-	}); err != nil {
-		slog.Error("reservation get", "device", key, "error", err)
-		return Reservation{}, false
-	}
-	return r, ok
+	})
+	return r, ok, err
 }
 
 func (s *Store) canonical(ref string) string {
@@ -399,13 +399,24 @@ func (s *Store) listInBook() []Reservation {
 // successful replace.
 func (s *Store) withBook(fn func() error) error {
 	s.mu.Lock()
-	if err := s.lockFile(); err != nil {
-		s.mu.Unlock()
+	defer s.mu.Unlock()
+	if err := s.updateBook(fn); err != nil {
 		return err
 	}
+	pending := s.pending
+	s.pending = nil
+	for _, n := range pending {
+		s.changedLocked(n.kind, n.res)
+	}
+	return nil
+}
+
+func (s *Store) updateBook(fn func() error) error {
+	if err := s.lockFile(); err != nil {
+		return err
+	}
+	defer s.unlockFile()
 	if err := s.reloadLocked(); err != nil {
-		s.unlockFile()
-		s.mu.Unlock()
 		return err
 	}
 	prev := cloneBook(s.state)
@@ -413,26 +424,15 @@ func (s *Store) withBook(fn func() error) error {
 	if err != nil {
 		s.state = prev
 		s.pending = nil
-		s.unlockFile()
-		s.mu.Unlock()
 		return err
 	}
 	if !sameBook(prev, s.state) {
 		if err := s.saveLocked(); err != nil {
 			s.state = prev
 			s.pending = nil
-			s.unlockFile()
-			s.mu.Unlock()
 			return err
 		}
 	}
-	pending := s.pending
-	s.pending = nil
-	for _, n := range pending {
-		s.changedLocked(n.kind, n.res)
-	}
-	s.unlockFile()
-	s.mu.Unlock()
 	return nil
 }
 
@@ -444,26 +444,35 @@ func (s *Store) lockFile() error {
 	if s.path == "" {
 		return nil
 	}
-	if s.lock == nil {
-		if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-			return err
-		}
-		f, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
-		if err != nil {
-			return err
-		}
-		s.lock = f
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return err
 	}
-	return syscall.Flock(int(s.lock.Fd()), syscall.LOCK_EX)
+	f, err := os.OpenFile(s.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	for {
+		err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+		if err != syscall.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	s.lock = f
+	return nil
 }
 
 func (s *Store) unlockFile() {
 	if s.lock == nil {
 		return
 	}
-	if err := syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN); err != nil {
+	if err := s.lock.Close(); err != nil { // Closing releases the flock.
 		slog.Error("reservation unlock", "error", err)
 	}
+	s.lock = nil
 }
 
 func (s *Store) reloadLocked() error {
@@ -524,23 +533,6 @@ func sameBook(a, b map[string]Reservation) bool {
 		}
 	}
 	return true
-}
-
-func (s *Store) load() error {
-	data, err := os.ReadFile(s.path)
-	if err != nil {
-		return err
-	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		s.state = map[string]Reservation{}
-		return nil
-	}
-	next, err := parseBook(s.path, data)
-	if err != nil {
-		return err
-	}
-	s.state = next
-	return nil
 }
 
 func (s *Store) saveLocked() error {

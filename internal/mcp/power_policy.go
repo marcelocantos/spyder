@@ -246,7 +246,12 @@ func (h *Handler) seedLevels(now time.Time) {
 // named for idleStopAfter (🎯T194.2).
 func (h *Handler) sweepIdle(now time.Time) {
 	if h.reservations != nil {
-		for _, r := range h.reservations.List() {
+		active, err := h.reservations.List()
+		if err != nil {
+			slog.Warn("power: idle check skipped; reservations unavailable", "error", err)
+			return
+		}
+		for _, r := range active {
 			h.launched.Touch(h.deviceIDForRef(r.Device), now)
 		}
 	}

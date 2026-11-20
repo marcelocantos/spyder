@@ -1054,7 +1054,8 @@ func (h *Handler) buildCandidates(platform string) []selector.Candidate {
 			if info.Alias != "" {
 				ref = info.Alias
 			}
-			_, isReserved = h.reservations.Get(ref)
+			_, held, err := h.reservations.Get(ref)
+			isReserved = held || err != nil
 		}
 		candidates = append(candidates, selector.Candidate{
 			Info:       info,
@@ -1129,7 +1130,10 @@ func (h *Handler) handleReserve(args map[string]any) (*mcpgo.CallToolResult, err
 	// Admission (🎯T194.4): refuse a device that cannot run or is about
 	// to run flat. A renewal by the current holder is never refused.
 	if !optBoolArg(args, "force", false) {
-		held, isHeld := h.reservations.Get(dev)
+		held, isHeld, err := h.reservations.Get(dev)
+		if err != nil {
+			return toolErr("reservations unavailable: %v", err)
+		}
 		if !isHeld || held.Owner != owner {
 			if why := h.leaseRefusal(h.deviceIDForRef(dev)); why != "" {
 				return toolErr("needs_setup: %s: %s. Pass force=true to reserve anyway.", dev, why)
@@ -1344,7 +1348,11 @@ func (h *Handler) handleReservations(_ map[string]any) (*mcpgo.CallToolResult, e
 	if h.reservations == nil {
 		return toolJSON([]reservations.Reservation{})
 	}
-	return toolJSON(h.reservations.List())
+	active, err := h.reservations.List()
+	if err != nil {
+		return toolErr("reservations unavailable: %v", err)
+	}
+	return toolJSON(active)
 }
 
 // reservationGatedVerbs lists exactly the verbs whose handlers call
@@ -1405,7 +1413,10 @@ func (h *Handler) handleReservationStatus(args map[string]any) (*mcpgo.CallToolR
 		out["note"] = "reservations not configured on this server — nothing is gated"
 		return toolJSON(out)
 	}
-	r, ok := h.reservations.Get(dev)
+	r, ok, err := h.reservations.Get(dev)
+	if err != nil {
+		return toolErr("reservations unavailable: %v", err)
+	}
 	if !ok {
 		return toolJSON(out)
 	}

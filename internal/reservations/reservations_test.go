@@ -93,13 +93,13 @@ func TestRelease_OnlyOwnerCanRelease(t *testing.T) {
 		t.Errorf("Release by non-owner: got %v; want Conflict", err)
 	}
 	// Hold still active.
-	if _, ok := s.Get("iPad"); !ok {
+	if _, ok, err := s.Get("iPad"); err != nil || !ok {
 		t.Error("reservation was cleared by non-owner release")
 	}
 	if err := s.Release("iPad", "tiltbuggy"); err != nil {
 		t.Errorf("owner Release err = %v", err)
 	}
-	if _, ok := s.Get("iPad"); ok {
+	if _, ok, err := s.Get("iPad"); err != nil || ok {
 		t.Error("reservation still present after owner release")
 	}
 }
@@ -229,8 +229,8 @@ func TestPersistence(t *testing.T) {
 
 	// Fresh store at same path reads the existing entry.
 	s2 := newTestStore(t, path, &now)
-	r, ok := s2.Get("iPad")
-	if !ok {
+	r, ok, err := s2.Get("iPad")
+	if err != nil || !ok {
 		t.Fatal("reservation did not persist")
 	}
 	if r.Owner != "tiltbuggy" {
@@ -253,7 +253,7 @@ func TestPersistence_ExpiredPrunedOnLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if _, ok := s2.Get("iPad"); ok {
+	if _, ok, err := s2.Get("iPad"); err != nil || ok {
 		t.Error("expired reservation should have been pruned on load")
 	}
 }
@@ -290,7 +290,7 @@ func TestNormalizer(t *testing.T) {
 	if _, err := s.Acquire("00008103-001122334455667A", "tiltbuggy2", 0, ""); err != nil {
 		t.Errorf("Acquire by raw UDID after Release by alias: %v", err)
 	}
-	if _, ok := s.Get("iPad"); !ok {
+	if _, ok, err := s.Get("iPad"); err != nil || !ok {
 		t.Error("reservation should be visible under alias key")
 	}
 }
@@ -302,7 +302,10 @@ func TestList_PrunesExpired(t *testing.T) {
 	_, _ = s.Acquire("B", "o2", 30*time.Minute, "")
 
 	now = now.Add(10 * time.Minute) // A expired, B still live
-	got := s.List()
+	got, err := s.List()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 1 {
 		t.Fatalf("List returned %d entries; want 1", len(got))
 	}
@@ -363,8 +366,8 @@ func TestStore_SlowNormaliserDoesNotBlockOtherDevices(t *testing.T) {
 	<-entered
 	done := make(chan bool, 1)
 	go func() {
-		_, ok := s.Get("fast")
-		done <- ok
+		_, ok, err := s.Get("fast")
+		done <- ok && err == nil
 	}()
 	select {
 	case ok := <-done:

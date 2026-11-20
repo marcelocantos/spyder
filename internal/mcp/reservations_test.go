@@ -78,8 +78,8 @@ func TestHandleRelease_ByOwner(t *testing.T) {
 	if r.IsError {
 		t.Fatalf("owner release should succeed; body=%s", resultText(t, &r))
 	}
-	if _, held := s.Get("iPad"); held {
-		t.Error("reservation should be gone after release")
+	if _, held, err := s.Get("iPad"); err != nil || held {
+		t.Errorf("reservation should be gone after release: held=%v err=%v", held, err)
 	}
 }
 

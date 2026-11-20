@@ -57,7 +57,11 @@ func procMain() int {
 		case "RELEASE":
 			writeProcResult(out, s.Release(fields[1], fields[2]))
 		case "GET":
-			r, ok := s.Get(fields[1])
+			r, ok, err := s.Get(fields[1])
+			if err != nil {
+				writeProcResult(out, err)
+				continue
+			}
 			if !ok {
 				fmt.Fprintln(out, "FREE")
 			} else {
@@ -240,8 +244,8 @@ func TestTwoProc_KilledWhileHolding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen book: %v", err)
 	}
-	r, ok := fresh.Get("dev")
-	if !ok || r.Owner != "run-job" {
+	r, ok, err := fresh.Get("dev")
+	if err != nil || !ok || r.Owner != "run-job" {
 		t.Fatalf("book after the kill = %+v ok=%v; want run-job", r, ok)
 	}
 }
@@ -305,7 +309,7 @@ func TestTwoProc_ReleaseAndRenewReachTheOtherBook(t *testing.T) {
 	}
 }
 
-func TestTwoProc_RenewKeepsTheDaemonFromRegranting(t *testing.T) {
+func TestSharedBook_RenewKeepsTheDaemonFromRegranting(t *testing.T) {
 	now := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	clock := func() time.Time { return now }
 	path := bookPath(t)
@@ -335,7 +339,7 @@ func TestTwoProc_RenewKeepsTheDaemonFromRegranting(t *testing.T) {
 }
 
 // DH-13: two writers must not tear the book through one staging file.
-func TestTwoProc_ConcurrentWritersKeepTheBookParseable(t *testing.T) {
+func TestSharedBook_ConcurrentWritersKeepTheBookParseable(t *testing.T) {
 	path := bookPath(t)
 	a, err := New(path)
 	if err != nil {
@@ -421,34 +425,41 @@ func TestCrashBeforeRenameLeavesPreviousBook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("book did not survive the crash: %v", err)
 	}
-	r, held := fresh.Get("dev")
-	if !held || r.Owner != "keep" {
+	r, held, err := fresh.Get("dev")
+	if err != nil || !held || r.Owner != "keep" {
 		t.Fatalf("previous holder after crash = %+v held=%v", r, held)
 	}
-	if _, held := fresh.Get("other"); held {
+	if _, held, err := fresh.Get("other"); err != nil || held {
 		t.Fatal("the grant that died before replace is in the book")
 	}
 }
 
 // DH-32: a grant that was not written is not success.
 func TestUnpersistedAcquireReportsAnError(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "reservations.json")
+	path := bookPath(t)
 	s, err := New(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil {
+	testHookBeforeRename = func() {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { testHookBeforeRename = nil })
+	_, acqErr := s.Acquire("dev", "job-A", DefaultTTL, "")
+	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	_, acqErr := s.Acquire("dev", "job-A", DefaultTTL, "")
+	if acqErr == nil {
+		t.Error("Acquire returned success even though replacement failed")
+	}
 	restarted, err := New(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, held := restarted.Get("dev"); !held && acqErr == nil {
-		t.Fatal("Acquire returned success, but after a restart dev is free")
+	if _, held, err := restarted.Get("dev"); err != nil || held {
+		t.Fatalf("after failed rename, book held=%v err=%v", held, err)
 	}
 }
 
@@ -458,7 +469,7 @@ func TestOpenBook_CorruptStartsEmptyAndEnforces(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, moved, err := OpenBook(path)
+	s, moved, err := OpenBook(path, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -473,6 +484,85 @@ func TestOpenBook_CorruptStartsEmptyAndEnforces(t *testing.T) {
 	}
 	if _, err := s.Acquire("dev", "job-B", time.Minute, ""); !IsConflict(err) {
 		t.Fatalf("empty replacement book did not enforce: %v", err)
+	}
+}
+
+func TestOpenBook_QuarantineUsesTransactionLock(t *testing.T) {
+	path := bookPath(t)
+	s, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.lockFile(); err != nil {
+		t.Fatal(err)
+	}
+	locked := true
+	defer func() {
+		if locked {
+			s.unlockFile()
+		}
+	}()
+	if err := os.WriteFile(path, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		store *Store
+		moved string
+		err   error
+	}
+	done := make(chan result, 1)
+	go func() {
+		store, moved, err := OpenBook(path, nil)
+		done <- result{store, moved, err}
+	}()
+	select {
+	case got := <-done:
+		t.Fatalf("OpenBook raced the writer's lock: moved=%q error=%v", got.moved, got.err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	now := time.Now()
+	s.state["dev"] = Reservation{Device: "dev", Owner: "writer", CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	if err := s.saveLocked(); err != nil {
+		t.Fatal(err)
+	}
+	s.unlockFile()
+	locked = false
+	select {
+	case got := <-done:
+		if got.err != nil || got.moved != "" {
+			t.Fatalf("OpenBook quarantined the replacement: moved=%q error=%v", got.moved, got.err)
+		}
+		if got.store.Authorize("dev", "other") == nil {
+			t.Fatal("OpenBook lost the writer's lease")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("OpenBook did not finish after the writer unlocked")
+	}
+}
+
+func TestOpenBook_ReadsPreviousVersion(t *testing.T) {
+	path := bookPath(t)
+	now := time.Now().Truncate(time.Second)
+	body := fmt.Sprintf(`[{
+  "device": "iPad",
+  "owner": "legacy",
+  "expires_at": %q,
+  "note": "existing lease",
+  "created_at": %q
+}]`, now.Add(time.Hour).Format(time.RFC3339), now.Format(time.RFC3339))
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s, moved, err := OpenBook(path, nil)
+	if err != nil || moved != "" {
+		t.Fatalf("open previous book: moved=%q err=%v", moved, err)
+	}
+	if r, held, err := s.Get("iPad"); err != nil || !held || r.Owner != "legacy" ||
+		r.Note != "existing lease" || !r.CreatedAt.Equal(now) || !r.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("previous lease: %+v held=%v err=%v", r, held, err)
+	}
+	if _, err := s.Acquire("iPad", "new", DefaultTTL, ""); !IsConflict(err) {
+		t.Fatalf("previous lease did not block a new grant: %v", err)
 	}
 }
 

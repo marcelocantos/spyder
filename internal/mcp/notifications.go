@@ -92,7 +92,9 @@ func (h *Handler) RunNotifications(ctx context.Context) {
 					case <-ctx.Done():
 						return
 					case <-tick.C:
-						h.reservations.List()
+						if _, err := h.reservations.List(); err != nil {
+							slog.Error("reservation expiry sweep", "error", err)
+						}
 					}
 				}
 			}()

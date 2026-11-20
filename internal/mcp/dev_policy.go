@@ -54,7 +54,10 @@ func (h *Handler) developmentPolicy() *devpolicy.Controller {
 			if h.reservations == nil {
 				return errors.New("session overrides require an active reservation")
 			}
-			hold, ok := h.reservations.Get(id)
+			hold, ok, err := h.reservations.Get(id)
+			if err != nil {
+				return err
+			}
 			if !ok || hold.Owner != owner {
 				return errors.New("session override owner does not hold this device")
 			}

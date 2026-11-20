@@ -39,7 +39,11 @@ func (h *Handler) AttachIOSAgent(resv *reservations.Store, iosBin string) {
 			if resv == nil {
 				return "", false
 			}
-			r, ok := resv.Get(id)
+			r, ok, err := resv.Get(id)
+			if err != nil {
+				slog.Warn("resident agent: reservation lookup failed", "device", id, "error", err)
+				return "", false
+			}
 			if !ok || r.Owner == "" {
 				return "", false
 			}

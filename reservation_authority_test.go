@@ -22,6 +22,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/daemon"
 	"github.com/marcelocantos/spyder/internal/paths"
+	"github.com/marcelocantos/spyder/internal/runs"
 )
 
 func TestMain(m *testing.M) {
@@ -29,7 +30,25 @@ func TestMain(m *testing.M) {
 	case "daemon":
 		os.Exit(helperDaemon())
 	case "run":
-		runCmd(strings.Split(os.Getenv("SPYDER_RESV_ARGS"), "\x1f"))
+		runWithReservation(strings.Split(os.Getenv("SPYDER_RESV_ARGS"), "\x1f"), func() {
+			dir := os.Getenv("SPYDER_TEST_RESV_GATE")
+			if dir == "" {
+				return
+			}
+			if err := os.WriteFile(filepath.Join(dir, "ready"), nil, 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			deadline := time.Now().Add(30 * time.Second)
+			for time.Now().Before(deadline) {
+				if _, err := os.Stat(filepath.Join(dir, "go")); err == nil {
+					return
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			fmt.Fprintln(os.Stderr, "reservation gate timed out")
+			os.Exit(1)
+		})
 	default:
 		os.Exit(m.Run())
 	}
@@ -48,7 +67,28 @@ func helperDaemon() int {
 	}
 	fmt.Printf("ADDR %s\n", ln.Addr().String())
 	_ = os.Stdout.Sync()
-	if err := http.Serve(ln, mux); err != nil {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Supply the fake selector's single candidate without querying the lab.
+		if r.URL.Path == "/api/v1/reserve" {
+			var args map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&args); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if _, ok := args["selector"]; ok {
+				delete(args, "selector")
+				args["device"] = "fake-dev"
+			}
+			body, err := json.Marshal(args)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(body))
+		}
+		mux.ServeHTTP(w, r)
+	})
+	if err := http.Serve(ln, handler); err != nil {
 		fmt.Fprintf(os.Stderr, "serve: %v\n", err)
 		return 1
 	}
@@ -305,7 +345,9 @@ func TestBothStartAtOnce(t *testing.T) {
 	data := t.TempDir()
 	d := startTestDaemon(t, data)
 	gate := t.TempDir()
-	run := startTestRun(t, data, gate, []string{"--device", "fake-dev", "--as", "run-job", "--", "/usr/bin/true"})
+	releaseFile := filepath.Join(gate, "release")
+	run := startTestRun(t, data, gate, []string{"--device", "fake-dev", "--as", "run-job", "--",
+		"/bin/sh", "-c", `while [ ! -f "$1" ]; do /bin/sleep 0.1; done`, "test", releaseFile})
 	waitGate(t, gate)
 	errCh := make(chan error, 1)
 	go func() {
@@ -313,6 +355,9 @@ func TestBothStartAtOnce(t *testing.T) {
 	}()
 	got := postReserve(t, d.base, "fake-dev", "daemon-job")
 	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(releaseFile, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code := exitCode(t, run)
@@ -341,5 +386,69 @@ func TestRunReleaseReachesDaemon(t *testing.T) {
 	next := postReserve(t, d.base, "fake-dev", "job-B")
 	if next.isError {
 		t.Fatalf("daemon still holds fake-dev after spyder run released: %s", next.text)
+	}
+}
+
+func TestRunOnClosesDaemonLeaseAndManifest(t *testing.T) {
+	for _, sharedState := range []bool{true, false} {
+		name := "separate state"
+		if sharedState {
+			name = "shared state"
+		}
+		t.Run(name, func(t *testing.T) {
+			daemonData := t.TempDir()
+			runData := daemonData
+			if !sharedState {
+				runData = t.TempDir()
+			}
+			d := startTestDaemon(t, daemonData)
+			t.Setenv(daemonURLEnv, d.base)
+			run := startTestRun(t, runData, "", []string{"--on", "platform=ios", "--as", "job-A", "--", "/usr/bin/true"})
+			if code := exitCode(t, run); code != 0 {
+				t.Fatalf("spyder run exit %d; stderr %s", code, run.Stderr.(*bytes.Buffer).String())
+			}
+			s, err := runs.New(filepath.Join(daemonData, "runs"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			list, err := s.List()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list) != 1 || list[0].ClosedAt == nil {
+				t.Errorf("daemon has %d manifests, want one closed manifest: %+v", len(list), list)
+			}
+			if got := postReserve(t, d.base, "fake-dev", "job-B"); got.isError {
+				t.Errorf("daemon still holds the finished selector lease: %s", got.text)
+			}
+			if !sharedState {
+				if _, err := os.Stat(filepath.Join(runData, "reservations.json")); !os.IsNotExist(err) {
+					t.Errorf("independent CLI wrote its own reservation book: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestDaemonStartsAndRestartsDuringStandaloneRun(t *testing.T) {
+	data := t.TempDir()
+	releaseFile := filepath.Join(t.TempDir(), "release")
+	run := startTestRun(t, data, "", []string{"--device", "fake-dev", "--as", "standalone-job", "--",
+		"/bin/sh", "-c", `while [ ! -f "$1" ]; do /bin/sleep 0.1; done`, "test", releaseFile})
+	waitOwner(t, data, "standalone-job")
+	d := startTestDaemon(t, data)
+	if got := postReserve(t, d.base, "fake-dev", "other"); !got.isError || !strings.Contains(got.text, "standalone-job") {
+		t.Fatalf("daemon startup ignored standalone holder: %+v", got)
+	}
+	stopProc(d.cmd)
+	if err := os.WriteFile(releaseFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := exitCode(t, run); code != 0 {
+		t.Fatalf("standalone run exit %d; stderr %s", code, run.Stderr.(*bytes.Buffer).String())
+	}
+	d = startTestDaemon(t, data)
+	if got := postReserve(t, d.base, "fake-dev", "other"); got.isError {
+		t.Fatalf("standalone run's lease survived its normal exit: %s", got.text)
 	}
 }

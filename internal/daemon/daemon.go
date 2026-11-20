@@ -314,12 +314,7 @@ func superviseIOSAgents(ctx context.Context, h *spydermcp.Handler) {
 // http.ServeMux without starting a listener or the autoawake
 // supervisor. Tests (and embedders) can compose this with their own
 // transport. The returned mux serves `/mcp` (mcp-go streamable HTTP)
-// and `/api/v1/<tool>` (JSON over POST — see package rest). The
-// reservation store may be nil if `~/.spyder/reservations.json` is
-// unreadable; callers that need strict enforcement should check.
-// The returned Supervisor is non-nil when the bridge binary was found and
-// should be started by the caller; it is nil when the bridge is unavailable
-// (graceful degradation).
+// and `/api/v1/<tool>` (JSON over POST — see package rest).
 func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *logcapture.Manager, *appchannel.Manager) {
 	srv := server.NewMCPServer(
 		"spyder",
@@ -334,20 +329,22 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	resvPath := filepath.Join(paths.Base(), "reservations.json")
 	resvStore, resvQuarantine, err := reservations.OpenBook(
 		resvPath,
-		reservations.WithNormalizer(func(ref string) string {
+		func(ref string) string {
 			if entry, ok := invStore.Lookup(ref); ok && entry.Alias != "" {
 				return entry.Alias
 			}
 			return ref
-		}),
+		},
 	)
+	var reservationAttention string
 	if err != nil {
-		slog.Warn("reservations unavailable; strict mode disabled",
+		slog.Error("reservations unavailable; device operations remain gated",
 			"path", resvPath, "error", err)
-		resvStore = nil
+		reservationAttention = "reservations unavailable: " + err.Error()
 	} else if resvQuarantine != "" {
 		slog.Error("reservations book was corrupt; moved aside and started empty",
 			"path", resvPath, "quarantine", resvQuarantine)
+		reservationAttention = "reservations.json was corrupt and was moved to " + resvQuarantine
 	}
 
 	runsPolicy := runsPolicyFromEnv()
@@ -413,9 +410,7 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 		spydermcp.WithInventory(invStore),
 		spydermcp.WithLogCapture(logCapMgr),
 		spydermcp.WithAppChannel(appChanMgr),
-	}
-	if resvStore != nil {
-		handlerOpts = append(handlerOpts, spydermcp.WithReservations(resvStore))
+		spydermcp.WithReservations(resvStore),
 	}
 	if runsStore != nil {
 		handlerOpts = append(handlerOpts, spydermcp.WithRuns(runsStore))
@@ -428,10 +423,10 @@ func Build(cfg Config) (http.Handler, *reservations.Store, *spydermcp.Handler, *
 	}
 
 	handler := spydermcp.NewHandler(handlerOpts...)
-	if resvQuarantine != "" && handler != nil {
+	if reservationAttention != "" {
 		handler.Health().Model().MarkNeedsAttention(
 			health.ID{Kind: health.KindDaemon, Name: "reservations"},
-			"reservations.json was corrupt and was moved to "+resvQuarantine,
+			reservationAttention,
 		)
 	}
 	if notifications, err := notify.Open(filepath.Join(paths.Base(), "notifications.json"), notify.WaitDevice); err != nil {
