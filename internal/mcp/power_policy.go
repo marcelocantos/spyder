@@ -270,17 +270,22 @@ func (h *Handler) sweepIdle(now time.Time) {
 // on Android, a third-party app in the foreground. It publishes
 // power.stepped_in with what it stopped.
 func (h *Handler) stopApps(id string, bundles []string, reason string, foreground bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), stopAppsTimeout)
+	defer cancel()
+	h.stopAppsContext(ctx, id, bundles, reason, foreground)
+}
+
+// stopAppsContext is stopApps within the caller's budget. It returns
+// the apps it stopped and the stops that failed.
+func (h *Handler) stopAppsContext(ctx context.Context, id string, bundles []string, reason string, foreground bool) (stopped, failures []string) {
 	h.mu.Lock()
 	adapter, platform, resolved, err := h.resolveAdapter(id)
 	h.mu.Unlock()
 	if err != nil {
 		slog.Warn("power: stop apps: device not resolved", "device", id, "error", err)
-		return
+		return nil, []string{"device not resolved: " + err.Error()}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), stopAppsTimeout)
-	defer cancel()
 
-	var stopped, failures []string
 	stop := func(bundle string) {
 		err := device.TerminateAppContext(ctx, adapter, resolved, bundle)
 		if err != nil && !strings.Contains(err.Error(), "not running") {
@@ -307,12 +312,13 @@ func (h *Handler) stopApps(id string, bundles []string, reason string, foregroun
 		}
 	}
 	if len(stopped) == 0 && len(failures) == 0 {
-		return
+		return nil, nil
 	}
 	slog.Info("power: stopped apps", "device", id, "reason", reason, "stopped", stopped, "errors", failures)
 	h.publishNotification(notify.Event{Event: "power.stepped_in", DeviceID: id, Data: map[string]string{
 		"reason": reason, "stopped": strings.Join(stopped, ","), "errors": strings.Join(failures, "; "),
 	}})
+	return stopped, failures
 }
 
 func containsString(list []string, s string) bool {

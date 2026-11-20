@@ -1210,6 +1210,16 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 	h.mu.Unlock()
 	waitRecordingDone(rec, canonical, owner)
 
+	// Undo what the holder left on the device while it still holds it.
+	// Done after Release, this cleanup raced the next holder: it could
+	// stop the app that holder had just launched, or clear the profile
+	// it had just applied (DH-28). A caller who does not hold a live
+	// reservation is refused by Release below, so skip the cleanup.
+	var notes []string
+	if h.authorize(dev, owner) == nil {
+		notes = h.cleanUpBeforeRelease(dev, owner)
+	}
+
 	if err := h.reservations.Release(dev, owner); err != nil {
 		return toolErr("%v", err)
 	}
@@ -1225,45 +1235,52 @@ func (h *Handler) handleRelease(args map[string]any) (*mcpgo.CallToolResult, err
 		}
 	}
 
-	// Best-effort network clear: if this owner applied a network profile
-	// on this device, clear it on reservation release.  Errors are
-	// surfaced in the result text but do not fail the release.  This
-	// covers the normal-exit path; if the daemon dies before release the
-	// emulator retains the applied profile until the next explicit clear
-	// or emulator restart (documented in the tool description).
+	text := fmt.Sprintf("released reservation on %s", dev)
+	if len(notes) > 0 {
+		text += "; " + strings.Join(notes, "; ")
+	}
+	return toolText(text)
+}
+
+// releaseCleanupTimeout bounds the app stop that release waits for. It
+// leaves the rest of release, and a `spyder run` client's 30 s release
+// request, room to finish.
+const releaseCleanupTimeout = 15 * time.Second
+
+// cleanUpBeforeRelease clears a network profile owner applied and stops
+// the apps spyder launched on the device (🎯T194.2), and returns notes
+// for the release text. Both are best-effort: a failure is reported,
+// not fatal to the release. If the daemon dies before release the
+// emulator keeps an applied profile until the next explicit clear or
+// emulator restart (documented in the tool description).
+func (h *Handler) cleanUpBeforeRelease(dev, owner string) []string {
+	var notes []string
 	h.mu.Lock()
 	applied, hasProfile := h.networkByDevice[dev]
 	if hasProfile && applied.owner == owner {
 		delete(h.networkByDevice, dev)
-		// Resolve the adapter while still under the lock (same pattern
-		// as all other handler methods).
-		adapter, _, id, resolveErr := h.resolveAdapter(dev)
-		h.mu.Unlock()
-		if resolveErr == nil {
+	}
+	h.mu.Unlock()
+	if hasProfile && applied.owner == owner {
+		if adapter, _, id, err := h.resolveAdapter(dev); err == nil {
 			if clearErr := adapter.ClearNetwork(id); clearErr != nil {
-				return toolText(h.stopAfterRelease(dev, owner, fmt.Sprintf(
-					"released reservation on %s (network clear failed: %v — clear manually if needed)",
-					dev, clearErr,
-				)))
+				notes = append(notes, fmt.Sprintf("network clear failed: %v — clear manually if needed", clearErr))
 			}
 		}
-	} else {
-		h.mu.Unlock()
 	}
-
-	return toolText(h.stopAfterRelease(dev, owner, fmt.Sprintf("released reservation on %s", dev)))
-}
-
-// stopAfterRelease stops the apps spyder launched on a released device
-// (🎯T194.2) in the background and says so in the release text.
-func (h *Handler) stopAfterRelease(dev, owner, text string) string {
 	id := h.deviceIDForRef(dev)
-	bundles := h.launched.OnDevice(id)
-	if len(bundles) == 0 {
-		return text
+	if bundles := h.launched.OnDevice(id); len(bundles) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), releaseCleanupTimeout)
+		stopped, failures := h.stopAppsContext(ctx, id, bundles, "lease released by "+owner, false)
+		cancel()
+		if len(stopped) > 0 {
+			notes = append(notes, "stopped "+strings.Join(stopped, ", "))
+		}
+		if len(failures) > 0 {
+			notes = append(notes, "stop failed: "+strings.Join(failures, "; "))
+		}
 	}
-	go h.stopApps(id, bundles, "lease released by "+owner, false)
-	return fmt.Sprintf("%s; stopping %s", text, strings.Join(bundles, ", "))
+	return notes
 }
 
 // handleNetwork applies or clears a network condition profile on a device.
