@@ -585,7 +585,8 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	case shutdown != nil:
 		l.UDID, l.Name, l.Action, l.Pending = shutdown.UDID, shutdown.Name, ActionBooted, true
 	case running != nil:
-		l.UDID, l.Name, l.Action = running.UDID, running.Name, ActionAlreadyRunning
+		// Pending until a fresh list confirms the state: see below.
+		l.UDID, l.Name, l.Action, l.Pending = running.UDID, running.Name, ActionAlreadyRunning, true
 	default:
 		l.Name = args.Name
 		if l.Name == "" {
@@ -603,14 +604,46 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	}
 	m.mustPersistLocked()
 	m.unlockBook()
-	if l.Action == ActionAlreadyRunning {
-		m.recordAcquireLocked(l)
-		out := *l
-		m.mu.Unlock()
-		slog.Info("simlease: acquired running simulator", "lease", out.ID, "udid", out.UDID, "owner", out.Owner)
-		return out, nil
-	}
 	m.mu.Unlock()
+
+	if l.Action == ActionAlreadyRunning {
+		// The list this choice came from was taken before the lock. A
+		// release that finished in between may have shut the simulator
+		// down or deleted it, and leasing it as running would hand out
+		// a dead simulator (DH-34). The claim is on the book now, so no
+		// other lease can take or undo it; confirm its state.
+		state, err := m.simState(ctx, l.UDID)
+		switch {
+		case err != nil:
+			m.dropLease(l.ID)
+			return Lease{}, fmt.Errorf("sim_acquire: list simulators: %w", err)
+		case state == "":
+			m.dropLease(l.ID)
+			return Lease{}, fmt.Errorf("sim_acquire: simulator %s went away while it was being leased; retry", l.UDID)
+		case state == stateBooted || state == stateBooting:
+			m.mu.Lock()
+			if err := m.beginBook(); err != nil {
+				slog.Error("simlease: reload before finishing acquire", "lease", l.ID, "error", err)
+			}
+			delete(m.inFlight, l.ID)
+			l.Pending = false
+			l.OperationPID = 0
+			m.mustPersistLocked()
+			m.unlockBook()
+			m.recordAcquireLocked(l)
+			out := *l
+			m.mu.Unlock()
+			slog.Info("simlease: acquired running simulator", "lease", out.ID, "udid", out.UDID, "owner", out.Owner)
+			return out, nil
+		default:
+			// Shut down since the list: boot it, and shut it down again
+			// at release.
+			m.mu.Lock()
+			l.Action = ActionBooted
+			m.mustPersistLocked()
+			m.mu.Unlock()
+		}
+	}
 
 	if l.Action == ActionCreated {
 		udid, err := m.sim.Create(ctx, l.Name, deviceType, runtime)
@@ -678,6 +711,21 @@ func (m *Manager) dropLease(id string) {
 	delete(m.leases, id)
 	m.noteRemoved(id)
 	m.mustPersistLocked()
+}
+
+// simState is udid's current simctl state, or "" when simctl does not
+// list it.
+func (m *Manager) simState(ctx context.Context, udid string) (string, error) {
+	sims, err := m.sim.List(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, s := range sims {
+		if strings.EqualFold(s.UDID, udid) {
+			return s.State, nil
+		}
+	}
+	return "", nil
 }
 
 // abandon undoes a failed acquire so it leaves nothing behind. If the
