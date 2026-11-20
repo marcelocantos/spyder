@@ -602,10 +602,20 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 		m.inFlight[l.ID] = true
 		l.OperationPID = os.Getpid()
 	}
-	m.mustPersistLocked()
+	// The claim must reach the file before any side effect: a lease
+	// that exists only in memory is never undone after a restart
+	// (DH-35).
+	if err := m.persistLocked(); err != nil {
+		delete(m.leases, l.ID)
+		delete(m.inFlight, l.ID)
+		m.unlockBook()
+		m.mu.Unlock()
+		return Lease{}, fmt.Errorf("sim_acquire: record lease: %w", err)
+	}
 	m.unlockBook()
 	m.mu.Unlock()
 
+	needBoot := true
 	if l.Action == ActionAlreadyRunning {
 		// The list this choice came from was taken before the lock. A
 		// release that finished in between may have shut the simulator
@@ -621,20 +631,7 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 			m.dropLease(l.ID)
 			return Lease{}, fmt.Errorf("sim_acquire: simulator %s went away while it was being leased; retry", l.UDID)
 		case state == stateBooted || state == stateBooting:
-			m.mu.Lock()
-			if err := m.beginBook(); err != nil {
-				slog.Error("simlease: reload before finishing acquire", "lease", l.ID, "error", err)
-			}
-			delete(m.inFlight, l.ID)
-			l.Pending = false
-			l.OperationPID = 0
-			m.mustPersistLocked()
-			m.unlockBook()
-			m.recordAcquireLocked(l)
-			out := *l
-			m.mu.Unlock()
-			slog.Info("simlease: acquired running simulator", "lease", out.ID, "udid", out.UDID, "owner", out.Owner)
-			return out, nil
+			needBoot = false
 		default:
 			// Shut down since the list: boot it, and shut it down again
 			// at release.
@@ -665,14 +662,18 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 			slog.Error("simlease: reload before recording udid", "lease", l.ID, "error", err)
 		}
 		l.UDID = udid
+		// A failed write leaves the generated-name record, which the
+		// reaper can still match after a restart.
 		m.mustPersistLocked()
 		m.unlockBook()
 		m.mu.Unlock()
 	}
 
-	if err := m.sim.Boot(ctx, l.UDID); err != nil {
-		m.abandon(ctx, l.ID)
-		return Lease{}, fmt.Errorf("sim_acquire: boot %s: %w", l.UDID, err)
+	if needBoot {
+		if err := m.sim.Boot(ctx, l.UDID); err != nil {
+			m.abandon(ctx, l.ID)
+			return Lease{}, fmt.Errorf("sim_acquire: boot %s: %w", l.UDID, err)
+		}
 	}
 
 	m.mu.Lock()
@@ -688,7 +689,23 @@ func (m *Manager) Acquire(ctx context.Context, args AcquireArgs) (Lease, error) 
 	// The TTL starts once the simulator is usable.
 	l.RenewedAt = m.now()
 	l.ExpiresAt = l.RenewedAt.Add(ttl)
-	m.mustPersistLocked()
+	// A grant the file does not record would read as an abandoned
+	// acquire after a restart, and the reaper would undo it under its
+	// holder. Undo it now and say so instead (DH-35).
+	// abandon would reload the book, which still holds the pending claim
+	// under this process's id, and then refuse it as busy; undo directly.
+	if err := m.persistLocked(); err != nil {
+		snap := *l
+		m.unlockBook()
+		m.mu.Unlock()
+		if undo, uerr := m.undo(ctx, snap); uerr != nil {
+			slog.Error("simlease: undo after unrecorded grant failed", "lease", snap.ID, "udid", snap.UDID, "error", uerr)
+		} else {
+			slog.Warn("simlease: grant not recorded; undid it", "lease", snap.ID, "udid", snap.UDID, "undo", undo)
+		}
+		m.dropLease(snap.ID)
+		return Lease{}, fmt.Errorf("sim_acquire: record lease: %w", err)
+	}
 	m.unlockBook()
 	m.recordAcquireLocked(l)
 	out := *l
