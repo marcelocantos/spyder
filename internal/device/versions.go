@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
 	"strings"
 
 	goios_ios "github.com/danielpaulus/go-ios/ios"
@@ -43,7 +42,7 @@ type AppVersionProber interface {
 var ErrAppNotInstalled = errors.New("app not installed")
 
 func adbOut(ctx context.Context, serial string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, "adb", append([]string{"-s", serial}, args...)...).Output()
+	out, _, err := androidAdb(ctx, append([]string{"-s", serial}, args...)...)
 	if err != nil {
 		return "", err
 	}
@@ -68,7 +67,7 @@ func (a *AndroidAdapter) AppVersion(ctx context.Context, id, pkg string) (AppVer
 	if id == "" || pkg == "" {
 		return AppVersion{}, errors.New("device id and package are required")
 	}
-	out, err := adbOut(ctx, id, "shell", "dumpsys", "package", pkg)
+	out, err := adbOut(ctx, id, "shell", "dumpsys", "package", adbShellWord(pkg))
 	if err != nil {
 		return AppVersion{}, err
 	}

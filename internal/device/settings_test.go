@@ -175,3 +175,31 @@ cmd() { printf 'com.example/.MainActivity\n'; }
 		t.Fatalf("settings received %q, app extra received %q, want %q for both", setting, extra, value)
 	}
 }
+
+// The package name in the reserve-time version probe is a literal
+// argument too. Unquoted, a name carrying shell syntax ran as a
+// second command on the device and the probe read the wrong output.
+func TestAndroidAppVersionQuotesPackage(t *testing.T) {
+	const pkg = "com.example; echo Package [com.example; echo injected] versionName=9"
+	t.Cleanup(SetAndroidAdbForTest(func(ctx context.Context, args ...string) ([]byte, []byte, error) {
+		if len(args) < 4 || args[2] != "shell" {
+			return nil, nil, fmt.Errorf("unexpected command %v", args)
+		}
+		// adb joins the shell words; the device shell splits them again.
+		const commands = `
+dumpsys() {
+  [ "$#" -eq 2 ] && [ "$1" = package ] || { echo "dumpsys got $# args" >&2; return 1; }
+  printf 'Packages:\n  Package [%s] (abc):\n    versionCode=7 minSdk=21\n    versionName=1.2\n' "$2"
+}
+`
+		out, err := exec.CommandContext(ctx, "/bin/sh", "-c", commands+strings.Join(args[3:], " ")).Output()
+		return out, nil, err
+	}))
+	v, err := NewAndroidAdapter().AppVersion(context.Background(), "fixture", pkg)
+	if err != nil {
+		t.Fatalf("AppVersion: %v", err)
+	}
+	if v.Version != "1.2" || v.Build != "7" {
+		t.Fatalf("AppVersion = %+v, want 1.2 (7) read from the one package's section", v)
+	}
+}
