@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -369,6 +370,47 @@ func deriveOwner(supplied string) string {
 	return fmt.Sprintf("%s:%d@%s", base, os.Getpid(), host)
 }
 
+// connectedDevices is `spyder run`'s census for a ref the inventory
+// cannot resolve. It mirrors the daemon's resolver: an iOS device by
+// name or UDID, an Android device by serial only, within
+// connectedListTimeout. Tests replace it so they never list real
+// devices.
+var connectedDevices = func() []inventory.Connected {
+	type result struct {
+		infos   []device.Info
+		android bool
+	}
+	ch := make(chan result, 2)
+	go func() {
+		infos, _ := device.NewIOSAdapter().List()
+		ch <- result{infos: infos}
+	}()
+	go func() {
+		infos, _ := device.NewAndroidAdapter().List()
+		ch <- result{infos: infos, android: true}
+	}()
+	var out []inventory.Connected
+	timeout := time.After(connectedListTimeout)
+	for range 2 {
+		select {
+		case r := <-ch:
+			for _, info := range r.infos {
+				c := inventory.Connected{ID: info.UUID, Name: info.Name}
+				if r.android {
+					c.Name = ""
+				}
+				out = append(out, c)
+			}
+		case <-timeout:
+			return out
+		}
+	}
+	return out
+}
+
+// connectedListTimeout matches the daemon's bound on the same census.
+const connectedListTimeout = 4 * time.Second
+
 // runCmd implements the `spyder run [--device X|--on PREDICATE] [--timeout D] -- <cmd> [args]`
 // subcommand: exec the command, wait for exit, then release the device
 // reservation regardless of success/failure. Exits with the command's
@@ -389,23 +431,26 @@ func runWithReservation(args []string, beforeAcquire func()) {
 		fmt.Fprintf(os.Stderr, "spyder run: owner %s\n", owner)
 	}
 	invStore := inventory.New()
+	// Key a ref the way the daemon does: a ref the inventory cannot
+	// resolve may be a connected device's display name, so list the
+	// connected devices (DH-09). Each ref is keyed once per run, so
+	// acquire, renew and release use one key even if the device leaves
+	// the census mid-run, and renewals do not list devices.
+	var keyMu sync.Mutex
+	keys := map[string]string{}
 	normalize := func(ref string) string {
-		var connected []inventory.Connected
-		// A display name is the only ref that needs a device census.
-		// Alias and dashless UDID resolve from the inventory, so
-		// `spyder run --device fake-dev` does not list devices (DH-09).
-		if inventory.RefNeedsConnectedCensus(ref) {
-			for _, adapter := range []device.Adapter{device.NewIOSAdapter(), device.NewAndroidAdapter()} {
-				infos, err := adapter.List()
-				if err != nil {
-					continue
-				}
-				for _, info := range infos {
-					connected = append(connected, inventory.Connected{ID: info.UUID, Name: info.Name})
-				}
-			}
+		keyMu.Lock()
+		defer keyMu.Unlock()
+		if key, ok := keys[ref]; ok {
+			return key
 		}
-		return invStore.ReservationKey(ref, connected)
+		var connected []inventory.Connected
+		if invStore.NeedsConnectedCensus(ref) {
+			connected = connectedDevices()
+		}
+		key := invStore.ReservationKey(ref, connected)
+		keys[ref] = key
+		return key
 	}
 
 	resvPath := filepath.Join(paths.Base(), "reservations.json")

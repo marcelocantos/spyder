@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/daemon"
+	"github.com/marcelocantos/spyder/internal/device"
+	"github.com/marcelocantos/spyder/internal/inventory"
 	"github.com/marcelocantos/spyder/internal/paths"
 	"github.com/marcelocantos/spyder/internal/runs"
 )
@@ -30,6 +32,7 @@ func TestMain(m *testing.M) {
 	case "daemon":
 		os.Exit(helperDaemon())
 	case "run":
+		connectedDevices = testConnected
 		runWithReservation(strings.Split(os.Getenv("SPYDER_RESV_ARGS"), "\x1f"), func() {
 			dir := os.Getenv("SPYDER_TEST_RESV_GATE")
 			if dir == "" {
@@ -54,12 +57,48 @@ func TestMain(m *testing.M) {
 	}
 }
 
+// connectedEnv lists the devices the helper processes report as
+// connected: "<udid>=<name>" entries separated by ";", all iOS.
+const connectedEnv = "SPYDER_TEST_CONNECTED"
+
+func testConnected() []inventory.Connected {
+	var out []inventory.Connected
+	for _, item := range strings.Split(os.Getenv(connectedEnv), ";") {
+		if id, name, ok := strings.Cut(item, "="); ok {
+			out = append(out, inventory.Connected{ID: id, Name: name})
+		}
+	}
+	return out
+}
+
+// testCensus is the helper daemon's device adapter. Only List is
+// implemented; any other call panics, so a reservation test that
+// reaches a device fails loudly.
+type testCensus struct {
+	device.Adapter
+	platform string
+}
+
+func (c *testCensus) List() ([]device.Info, error) {
+	if c.platform != "ios" {
+		return nil, nil
+	}
+	var out []device.Info
+	for _, d := range testConnected() {
+		out = append(out, device.Info{UUID: d.ID, Name: d.Name, Platform: c.platform})
+	}
+	return out, nil
+}
+
 // helperDaemon is the worktree daemon's HTTP server on a free port.
 // It does not start the tunnel, the adb supervisor, or the battery
 // sampler; those live in daemon.Run and talk to real devices.
 func helperDaemon() int {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError})))
-	mux, _, _, _, _ := daemon.Build(daemon.Config{Addr: "127.0.0.1:0", Version: "test"})
+	mux, _, mcpHandler, _, _ := daemon.Build(daemon.Config{Addr: "127.0.0.1:0", Version: "test"})
+	// Resolving a name the inventory does not know lists connected
+	// devices. Give the daemon the test's census, never the lab's.
+	mcpHandler.SetDeviceAdapters(&testCensus{platform: "ios"}, &testCensus{platform: "android"})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "listen: %v\n", err)
@@ -318,6 +357,29 @@ func TestRunHoldsDaemonAsks(t *testing.T) {
 	got := postReserve(t, d.base, "fake-dev", "daemon-job")
 	if !got.isError {
 		t.Fatalf("daemon granted fake-dev while spyder run holds it: %s", got.text)
+	}
+	stopProc(run)
+}
+
+// spyder run must key a connected device's one-word display name as the
+// daemon does, by the inventory alias. Keyed by the display name, the
+// daemon granted the alias while spyder run still held the device
+// (DH-09).
+func TestRunAndDaemonKeyDisplayNameAlike(t *testing.T) {
+	data := t.TempDir()
+	const udid = "00008103-001122334455667A"
+	inv := `[{"alias":"iPad","platform":"ios","ios_uuid":"` + udid + `"}]`
+	if err := os.WriteFile(filepath.Join(data, "inventory.json"), []byte(inv), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(connectedEnv, udid+"=LabPad")
+	d := startTestDaemon(t, data)
+	run := startTestRun(t, data, "", []string{"--device", "LabPad", "--as", "run-job", "--", "/bin/sleep", "30"})
+	waitOwner(t, data, "run-job")
+	for _, ref := range []string{"iPad", "LabPad", udid} {
+		if got := postReserve(t, d.base, ref, "daemon-job"); !got.isError {
+			t.Errorf("daemon granted %q while spyder run holds the device as LabPad: %s", ref, got.text)
+		}
 	}
 	stopProc(run)
 }

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"image/png"
 	"log/slog"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -639,10 +638,11 @@ func (h *Handler) canonicalDevice(ref string) string {
 	return h.inventory.ReservationKey(ref, nil)
 }
 
-// ReservationKey follows the same identity resolution as device operations.
+// ReservationKey follows the same identity resolution as device
+// operations. `spyder run` applies the same census rule
+// (inventory.NeedsConnectedCensus), so both key a ref alike.
 func (h *Handler) ReservationKey(ref string) string {
-	if _, ok := h.inventory.Lookup(ref); ok ||
-		inventory.ClassifyRaw(ref).Platform == "ios" || isADBTransportAddress(ref) {
+	if !h.inventory.NeedsConnectedCensus(ref) {
 		return h.canonicalDevice(ref)
 	}
 	_, _, id, err := h.resolveUninventoried(ref)
@@ -1563,11 +1563,7 @@ func (h *Handler) resolveUninventoried(ref string) (device.Adapter, string, stri
 // isADBTransportAddress matches adb serials that may legitimately be absent
 // from `adb devices` until adb connects: emulators and TCP transports.
 func isADBTransportAddress(ref string) bool {
-	if strings.HasPrefix(ref, "emulator-") {
-		return true
-	}
-	host, port, err := net.SplitHostPort(ref)
-	return err == nil && host != "" && port != ""
+	return inventory.IsADBTransportAddress(ref)
 }
 
 func listWithTimeout(a device.Adapter, d time.Duration) []device.Info {

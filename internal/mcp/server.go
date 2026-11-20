@@ -521,6 +521,16 @@ func NewHandlerWithAdapters(ios, android device.Adapter) *Handler {
 	return h
 }
 
+// SetDeviceAdapters replaces the iOS and Android adapters. It must be
+// called before the handler serves requests. A test that builds the
+// daemon uses it so that resolving an unknown device name never lists
+// real devices.
+func (h *Handler) SetDeviceAdapters(ios, android device.Adapter) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.ios, h.android = ios, android
+}
+
 // tunnelListenerStarter is implemented by device adapters that maintain
 // a background usbmux attach/detach listener (currently only the iOS
 // adapter, 🎯T89.2). Optional: stub adapters injected in tests don't

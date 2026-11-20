@@ -10,6 +10,7 @@ package inventory
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"regexp"
 	"strings"
@@ -137,12 +138,32 @@ type Connected struct {
 	Name string
 }
 
-// RefNeedsConnectedCensus reports whether ref can only be tied to an
-// inventory entry by asking which devices are connected. A dashless
-// UDID is resolved by Lookup and must not trigger a census: a census
-// talks to usbmux and adb.
-func RefNeedsConnectedCensus(ref string) bool {
-	return strings.ContainsAny(ref, " '’")
+// NeedsConnectedCensus reports whether ref can be tied to a device only
+// by asking which devices are connected: it is not an inventory alias or
+// id, not an iOS identifier, and not an adb transport address. The
+// daemon's resolver lists devices for exactly these refs, so every
+// process that keys the reservation book must list them too, or a
+// one-word display name gets one key in `spyder run` and another in the
+// daemon (DH-09). A census talks to usbmux and adb, so other refs must
+// not trigger one.
+func (s *Store) NeedsConnectedCensus(ref string) bool {
+	if s != nil {
+		if _, ok := s.Lookup(ref); ok {
+			return false
+		}
+	}
+	return ClassifyRaw(ref).Platform != "ios" && !IsADBTransportAddress(ref)
+}
+
+// IsADBTransportAddress matches adb serials that may legitimately be
+// absent from `adb devices` until adb connects: emulators and TCP
+// transports.
+func IsADBTransportAddress(ref string) bool {
+	if strings.HasPrefix(ref, "emulator-") {
+		return true
+	}
+	host, port, err := net.SplitHostPort(ref)
+	return err == nil && host != "" && port != ""
 }
 
 // ReservationKey is the reservation-book key for ref: the inventory
