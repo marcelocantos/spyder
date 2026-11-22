@@ -1,0 +1,31 @@
+### old (master), 200 runs, parallel 16, three trials
+book parses; live entries left after every run released: 54
+runs refused at start (unparseable book): 0
+book does not parse: Extra data: line 177 column 4 (char 5923)
+0000113",
+    "owner": "job-00008103-0000000000000113",
+    "expires_at": "2026-11-23T11:27:19.511941+11:00",
+    "note": "spyder run: true",
+    "created_at": "2026-11-23T10:27:19.511941+11:00"
+  }
+]
+runs refused at start (unparseable book): 83
+book does not parse: Extra data: line 310 column 2 (char 10420)
+000000193",
+    "owner": "job-00008103-0000000000000193",
+    "expires_at": "2026-11-23T11:27:20.38482+11:00",
+    "note": "spyder run: true",
+    "created_at": "2026-11-23T10:27:20.38482+11:00"
+  }
+]
+runs refused at start (unparseable book): 9
+### new (branch), 200 runs, parallel 16
+book parses; live entries left after every run released: 0
+runs refused at start (unparseable book): 0
+
+### old, parallel 2
+book parses; live entries left after every run released: 20
+book parses; live entries left after every run released: 20
+### old, parallel 4
+book does not parse: Extra data: line 72 column 4 (char 2370)
+book parses; live entries left after every run released: 41

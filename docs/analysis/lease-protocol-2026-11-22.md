@@ -116,7 +116,7 @@ reproduction in §4, *unknown*.
 | I3 | A job that is using a device has a live lease on it. | Same as I1. | Same as I1. | Holds in the model without faults; violated with them (same configs). |
 | I4 | After a release that reports success, the releaser holds nothing. | `Store.Release` (`reservations.go:257-282`). | A daemon release by display name while the phone is unplugged keys to the literal name, finds nothing, returns nil (R4). | Violated (R4; `flap_agent`). |
 | I5 | Book transitions among new-code writers are serialised and crash-atomic: each operation sees the previous one's result, and a crash leaves the old book or the new one. | flock + reload + private temp + fsync + rename + directory fsync (`reservations.go:422-459`, `:560-619`). | Only a writer that skips the flock: master `spyder run` (shared `reservations.json.tmp`, no lock). | Holds by argument for new writers (and existing tests `TestSharedBook_*`, `TestCrashBeforeRenameLeavesPreviousBook`); violated with an old writer (R1). |
-| I6 | A daemon restart loses no lease and grants nothing new by itself. | The daemon keeps no reservation state in memory; `OpenBook` reads, quarantines only a corrupt file, never rewrites a good one (`reservations.go:140-157`). | A corrupt book is moved aside and the daemon starts empty, dropping every live lease (fails open for exclusion, closed for gating of that moment). Only an old writer's shared temp file can produce a torn book (DH-13). | Holds by argument and in the model (`DaemonStop`/`DaemonStart`). The corrupt-book branch is in §6. |
+| I6 | A daemon restart loses no lease and grants nothing new by itself. | The daemon keeps no reservation state in memory; `OpenBook` reads, quarantines only a corrupt file, never rewrites a good one (`reservations.go:140-157`). | A corrupt book is moved aside and the daemon starts empty, dropping every live lease. Only an old writer's shared temp file produces a torn book (DH-13; R8 tore it in three of five trials). | Holds by argument and in the model (`DaemonStop`/`DaemonStart`) for new writers; the corrupt-book branch is F5. |
 | L1 | A lease never outlives its holder forever: once every holder has finished or died and no orphaned job runs, the book becomes empty. | Expiry; only the owner renews, and nothing renews on behalf of a dead owner. | It would need a renewer that is not the holder. Old clients rewrite others' entries but never extend them. | Holds in the model under every fault (2 jobs, TTL 2; configs `live_old_new`, `live_new_agent`). Bounded strandings: up to 24 h after a "successful" release (R4), and devices used by an orphan after its lease lapsed (R2). |
 | L2 | Every job eventually finishes or dies (no lock starvation or deadlock in the book protocol), given a daemon that eventually stays up. | Short critical sections; flock released on close or death. | A daemon that dies on every request forever. | Holds in the model (`live_*_end`). |
 | K1 | Every process maps every name of one device to one key, for the life of a lease. | `inventory.ReservationKey` + census, shared by daemon and `spyder run` (DH-09 fix). | Uninventoried device whose census misses (unplugged, rebooting, a census over its 4 s budget) (R3); the daemon recomputes the key per call (R4); case or dash variants of an uninventoried iOS UDID are not folded (§6). | Violated (R3, R4). |
@@ -272,6 +272,19 @@ both granted (`old_name`).
 Y; A exits; the book is `[]` while B runs; new run C is granted Y and runs
 ("job C is running on Y", exit 0) while B is still running. Model:
 `old_erase`, `old_name`.
+
+Master writers also damage the book among themselves, and the new code
+turns that damage into a wholesale loss. `repro/r8-old-writers-race.sh`
+(`out/r8-old-writers-race.out`) runs 200 master `spyder run … -- true`,
+each on its own device: with two at a time, 20 leases are still live
+after every run has released (stale copies wrote them back; each blocks
+its device for an hour); with four or sixteen at a time the shared
+`reservations.json.tmp` produced a book that does not parse in three of
+five trials, and later master runs refused to start. A new-code process
+that opens such a book moves it aside and starts empty (F5), freeing
+every device at once. The branch binary under the same load leaves 0
+entries and a parseable book, so the stack fixes this once no master
+writer is left.
 
 *Smallest fix*: operational, before any code: install the new binary only
 when no `spyder run` is running (`pgrep -fl 'spyder run'` empty and
@@ -511,12 +524,8 @@ it; it costs a second build in the test.
    reproduced: whether go-ios and devicectl accept the lowercase or
    CoreDevice form for an uninventoried device decides whether a job could
    use it.
-2. **Old writers racing on `reservations.json.tmp` tear the book.** Two
-   master `spyder run` processes writing in the same instant share one
-   temp path (`os.WriteFile` with `O_TRUNC`, then rename); interleaved
-   writes can leave trailing bytes, the next new-code open quarantines the
-   book and every lease is dropped (F5). Plausible from the code (DH-13);
-   not reproduced, the window is microseconds.
+2. (Confirmed during the run and moved to D1: master writers tear the
+   book and write back released leases, R8.)
 3. **A new `spyder run --on` against the master daemon.** If the file shows
    the daemon's grant, the new run renews through the file while the
    master daemon keeps an in-memory copy with the original expiry and
