@@ -417,7 +417,10 @@ group, so the exposure is mainly MCP agents and runs outside pueue.
 the renewal loop prints either and continues (`main.go:589-597`). Nothing
 re-acquires and nothing stops the job. The ticker runs every 20 minutes
 on the monotonic clock while `expires_at` is wall-clock, so after a sleep
-the first renewal can come up to 20 awake minutes late.
+the first renewal can come up to 20 awake minutes late. On macOS Go's
+monotonic clock is `mach_absolute_time` (`runtime/sys_darwin_arm64.s`,
+`nanotime_trampoline`), which does not advance during sleep: a lid closed
+for more than 40 minutes between two renewals is enough.
 
 *Reproduction*: `TestR5_LapsedLeaseIsNotRecoveredAndIsRegranted`: A
 renews at minute 20, the clock jumps 65 minutes, B is granted, A's renewal
@@ -520,10 +523,11 @@ it; it costs a second build in the test.
    census and is used verbatim (`inventory.go:149-156`, `:220-229`), so
    `…667A` and `…667a`, or a device's UDID and its CoreDevice UUID, are
    different keys for one uninventoried phone. A dashless UDID goes
-   through the census and is folded when the phone is connected. Not
-   reproduced: whether go-ios and devicectl accept the lowercase or
-   CoreDevice form for an uninventoried device decides whether a job could
-   use it.
+   through the census and is folded when the phone is connected. go-ios
+   matches a UDID exactly (`ios/utils.go:128` in the vendored fork,
+   `SerialNumber == udid`), so spyder's own verbs fail on a lowercase
+   spelling; whether a job's own tools (xcodebuild, devicectl) accept it
+   decides whether two jobs could both use the phone. Not reproduced.
 2. (Confirmed during the run and moved to D1: master writers tear the
    book and write back released leases, R8.)
 3. **A new `spyder run --on` against the master daemon.** If the file shows
@@ -537,10 +541,9 @@ it; it costs a second build in the test.
    delivers a group SIGKILL directly. That pueue does the same is from its
    process handling and the observed `pgid == pid` of its tasks; the direct
    check (pueue task 1579) had not run.
-5. **The ticker does not advance during macOS sleep.** D6 does not depend
-   on it (a stopped process or failed renewals give the same lapse), but
-   the "about 40 minutes" figure assumes Go's monotonic clock on darwin
-   does not count sleep.
+5. (Confirmed by reading and moved to D6: Go's monotonic clock on darwin
+   is `mach_absolute_time`, which does not advance while the Mac sleeps;
+   `runtime/sys_darwin_arm64.s` `nanotime_trampoline` in go1.27.4.)
 
 ## 7. Coverage
 
