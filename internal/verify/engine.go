@@ -197,6 +197,9 @@ type runMeta struct {
 }
 
 // Wait blocks until the run ends.
+// Done is closed when the run finishes.
+func (r *Run) Done() <-chan struct{} { return r.done }
+
 func (r *Run) Wait() Result {
 	<-r.done
 	r.mu.Lock()

@@ -106,8 +106,18 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 
 	key := appchannel.AppKey{DeviceID: id, BundleID: bundleID}
 
-	// Fast path: a healthy session already exists — return it untouched.
-	if s, ok := h.waitForChannelSessionContext(ctx, key, time.Time{}, 0); ok {
+	// With a path, the build on the device must be that build. An
+	// installed bundle id alone says nothing about which build it is
+	// (🎯T234): only an unchanged artifact this daemon installed counts.
+	fresh := path == "" || h.artifacts.current(id, bundleID, path)
+
+	// Fast path: a healthy session of the right build already exists —
+	// return it untouched.
+	if s, ok := h.waitForChannelSessionContext(ctx, key, time.Time{}, 0); ok && !fresh {
+		// The session belongs to another build; the install below
+		// replaces it.
+		_ = s.Close()
+	} else if ok {
 		pingEnded := goios.LifecyclePhase(ctx, "ensure.healthy_ping", "device_id", id)
 		healthy := sessionHealthy(ctx, s)
 		if healthy {
@@ -161,8 +171,8 @@ func (h *Handler) handleEnsureSessionContext(ctx context.Context, args map[strin
 			if res := cancelled(); res != nil {
 				return res
 			}
-			if !installed {
-				if _, ierr := h.installOn(ctx, adapter, id, vpath, nil); ierr != nil {
+			if !installed || !fresh {
+				if _, ierr := h.installOn(ctx, adapter, id, vpath, bundleID, nil); ierr != nil {
 					res, _ := toolErr("ensure_session: install %s on %s: %v", filepath.Base(vpath), dev, ierr)
 					return res
 				}

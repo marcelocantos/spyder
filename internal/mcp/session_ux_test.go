@@ -432,12 +432,19 @@ func TestEnsureSession_HappyPathViaAppExec(t *testing.T) {
 	}
 }
 
-func TestEnsureSession_SkipsInstallWhenAlreadyInstalled(t *testing.T) {
+// An installed bundle id says nothing about which build it is: with a
+// path, ensure_session installs that build unless it is, unchanged, the
+// build this daemon last installed (🎯T234). The old contract skipped the
+// install whenever the bundle was present and launched a stale build.
+func TestEnsureSession_InstallsGivenBuildOverAnInstalledOne(t *testing.T) {
 	appPath := mkAppFixture(t)
+	if err := os.WriteFile(filepath.Join(appPath, "MyApp"), []byte("build 1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	installs := 0
 	ios := &stubAdapter{
 		listApps: func(id string) ([]device.AppInfo, error) {
-			return []device.AppInfo{{BundleID: "com.example.app"}}, nil
+			return []device.AppInfo{{BundleID: "com.example.app"}}, nil // an older build
 		},
 		installApp:   func(id, path string) error { installs++; return nil },
 		terminateApp: func(id, bundle string) error { return nil },
@@ -450,24 +457,44 @@ func TestEnsureSession_SkipsInstallWhenAlreadyInstalled(t *testing.T) {
 	h := newHandlerWithStubs(t, ios, nil)
 	h.appChannel = appchannel.NewManager()
 	t.Cleanup(h.appChannel.Close)
+	ensure := func() ensureSessionResult {
+		t.Helper()
+		r := dispatchJSON(t, h, "ensure_session", map[string]any{
+			"device":    "iPad",
+			"bundle_id": "com.example.app",
+			"path":      appPath,
+		})
+		if r.IsError {
+			t.Fatalf("ensure_session failed: %s", resultText(t, &r))
+		}
+		var out ensureSessionResult
+		if err := json.Unmarshal([]byte(resultText(t, &r)), &out); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return out
+	}
 
-	r := dispatchJSON(t, h, "ensure_session", map[string]any{
-		"device":    "iPad",
-		"bundle_id": "com.example.app",
-		"path":      appPath,
-	})
-	if r.IsError {
-		t.Fatalf("ensure_session failed: %s", resultText(t, &r))
+	out := ensure()
+	if installs != 1 || !out.Deployed || !out.Launched || out.SessionID == "" {
+		t.Fatalf("first call must install the given build over the installed one: installs=%d %+v", installs, out)
 	}
-	var out ensureSessionResult
-	if err := json.Unmarshal([]byte(resultText(t, &r)), &out); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	first := out.SessionID
+
+	// The same unchanged build: the healthy session is reused, no install.
+	out = ensure()
+	if installs != 1 || out.Deployed || out.SessionID != first {
+		t.Fatalf("unchanged build must reuse the session: installs=%d %+v", installs, out)
 	}
-	if installs != 0 || out.Deployed {
-		t.Errorf("install must be skipped when the bundle is present: installs=%d deployed=%v", installs, out.Deployed)
+
+	// A rebuild in place: installed again and relaunched, not the old session.
+	later := time.Now().Add(time.Minute)
+	if err := os.WriteFile(filepath.Join(appPath, "MyApp"), []byte("build 2, longer"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !out.Launched || out.SessionID == "" {
-		t.Errorf("expected launch + session: %+v", out)
+	_ = os.Chtimes(filepath.Join(appPath, "MyApp"), later, later)
+	out = ensure()
+	if installs != 2 || !out.Deployed || !out.Launched || out.SessionID == first {
+		t.Fatalf("rebuilt artifact must be installed and relaunched: installs=%d %+v", installs, out)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"errors"
 	"log/slog"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -611,6 +612,14 @@ type ownedRunwda struct {
 type tailBuf struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+	// file, when set, holds the output instead: string reads its tail.
+	file string
+}
+
+func (b *tailBuf) setFile(path string) {
+	b.mu.Lock()
+	b.file = path
+	b.mu.Unlock()
 }
 
 func (b *tailBuf) Write(p []byte) (int, error) {
@@ -632,7 +641,30 @@ func (b *tailBuf) string() string {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.file != "" {
+		return readTail(b.file, 64<<10)
+	}
 	return b.buf.String()
+}
+
+// readTail returns up to the last max bytes of path.
+func readTail(path string, max int64) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return ""
+	}
+	off := info.Size() - max
+	if off < 0 {
+		off = 0
+	}
+	data := make([]byte, info.Size()-off)
+	n, _ := f.ReadAt(data, off)
+	return string(data[:n])
 }
 
 func newProcRunner(iosBin string) *procRunner {

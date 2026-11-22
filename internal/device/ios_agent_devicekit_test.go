@@ -143,6 +143,9 @@ func dkHost(t *testing.T, pid *atomic.Int64) *AutomationHost {
 		return identityProcesses{}, nil
 	})
 	host.DeviceKit = &DeviceKitAgent{CLI: exe, devices: map[string]bool{"dut": true}}
+	saveGap, savePoll := adoptProbeGap, adoptedPoll
+	adoptProbeGap, adoptedPoll = time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { adoptProbeGap, adoptedPoll = saveGap, savePoll })
 	// No runwda hosts on this "Mac" unless a test says so.
 	host.hostScan = func(string) []runwdaProc { return nil }
 	host.hostAlive = func(int) bool { return false }

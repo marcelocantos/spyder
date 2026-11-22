@@ -118,8 +118,10 @@ type runnerHold struct {
 	launching bool
 	pending   bool
 	expired   bool
-	since     time.Time
-	msg       string
+	// adopted: a previous daemon's host this daemon took over (🎯T233).
+	adopted bool
+	since   time.Time
+	msg     string
 }
 
 // NewAutomationHost binds an iOS adapter to the XCTest agent bundles.
@@ -1133,15 +1135,22 @@ func (h *AutomationHost) HealthyPID(id string) (int, bool) {
 	return pid, true
 }
 
-// Shutdown cancels every resident XCTest session. Idle does not call
-// this; process shutdown does.
+// Shutdown ends resident XCTest sessions at process shutdown. Idle
+// does not call this. An established DeviceKit runwda is left running,
+// like the iOS tunnel, so the next daemon adopts it with its approval
+// intact (🎯T233); everything else (in-process AlertRunner sessions,
+// launches still starting or waiting on consent) is stopped.
 func (h *AutomationHost) Shutdown() {
 	if h == nil {
 		return
 	}
 	h.mu.Lock()
 	ids := make([]string, 0, len(h.holds))
-	for id := range h.holds {
+	for id, hold := range h.holds {
+		if hold.hostPID > 0 && h.usesDeviceKit(id) && !hold.launching && !hold.pending {
+			slog.Info("leaving resident DeviceKit runner for the next daemon", "device", id, "host_pid", hold.hostPID, "runner_pid", hold.pid)
+			continue
+		}
 		ids = append(ids, id)
 	}
 	h.mu.Unlock()

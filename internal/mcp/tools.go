@@ -906,7 +906,9 @@ func (h *Handler) handleTerminateAppContext(ctx context.Context, args map[string
 	for check := range stopChecks {
 		pid, pidErr := device.AppPIDContext(ctx, adapter, id, bundleID)
 		if pidErr != nil {
-			if strings.HasPrefix(pidErr.Error(), "app not running") {
+			// Adapters word "gone" differently: iOS "app not running…",
+			// the simulator "<bundle> is not running".
+			if appGone(pidErr) {
 				h.launched.Forget(id, bundleID)
 				return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
 			}
@@ -917,7 +919,7 @@ func (h *Handler) handleTerminateAppContext(ctx context.Context, args map[string
 			return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
 		}
 		if check == stopChecks/2 {
-			if err := device.TerminateAppContext(ctx, adapter, id, bundleID); err != nil {
+			if err := device.TerminateAppContext(ctx, adapter, id, bundleID); err != nil && !appGone(err) {
 				return toolErr("retry termination of %s on %s: %v", bundleID, dev, err)
 			}
 		}
@@ -2023,7 +2025,7 @@ func (h *Handler) handleInstallAppContext(ctx context.Context, args map[string]a
 	if err != nil {
 		return toolErr("%v", err)
 	}
-	installed, err := h.installOn(ctx, adapter, id, path, parts)
+	installed, err := h.installOn(ctx, adapter, id, path, "", parts)
 	if err != nil {
 		return toolErr("install_app on %s: %v", dev, err)
 	}
@@ -2209,7 +2211,7 @@ func (h *Handler) deployAppLockedContext(ctx context.Context, dev, path string, 
 		return fail("deploy_app cancelled: %v", err)
 	}
 	// Step 2: install (fail fast on error).
-	installed, err := h.installOn(ctx, adapter, id, path, parts)
+	installed, err := h.installOn(ctx, adapter, id, path, bundleID, parts)
 	if err != nil {
 		return fail("deploy_app: install %s on %s: %v", filepath.Base(path), dev, err)
 	}
@@ -2359,6 +2361,12 @@ func (h *Handler) waitUntilNotRunningContext(ctx context.Context, adapter device
 
 // isNotRunningError returns true for "app not running" / "not installed"
 // errors from TerminateApp. These are safe to ignore during a deploy.
+// appGone reports that a pid lookup or terminate found no running
+// process, in any adapter's wording.
+func appGone(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not running")
+}
+
 func isNotRunningError(err error) bool {
 	if err == nil {
 		return false

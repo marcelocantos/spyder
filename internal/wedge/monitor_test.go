@@ -52,49 +52,102 @@ func TestRunMonitor_ExitsOnContextCancel(t *testing.T) {
 	}
 }
 
+// stubReconcile replaces reconcile's seams with a controllable clock and
+// device view.
+func stubReconcile(t *testing.T, wedged *bool, missing *[]string) (now *time.Time, snapshots, recoveries *int) {
+	t.Helper()
+	saveW, saveC, saveR, saveM, saveN := isWedgedFn, captureFn, recoverFn, missingFn, nowFn
+	t.Cleanup(func() { isWedgedFn, captureFn, recoverFn, missingFn, nowFn = saveW, saveC, saveR, saveM, saveN })
+	clock := time.Date(2026, 11, 23, 8, 35, 0, 0, time.UTC)
+	var snaps, recs int
+	isWedgedFn = func() (bool, int, int, error) { return *wedged, 3, 2, nil }
+	captureFn = func(_, _ string) { snaps++ }
+	recoverFn = func(_ context.Context) error { recs++; return nil }
+	missingFn = func() ([]string, error) { return *missing, nil }
+	nowFn = func() time.Time { return clock }
+	return &clock, &snaps, &recs
+}
+
 // TestReconcile_SingleAttemptPerEpisode asserts the 🎯T72.5 contract:
-// detection + snapshot run on every wedged reconcile, but auto-recovery
-// fires at most once per continuous wedge episode (no 2-minute churn). A
-// fresh episode after recovery re-arms one more attempt.
+// auto-recovery fires at most once per continuous, confirmed wedge
+// episode (no 2-minute churn). A fresh episode re-arms one more attempt.
 func TestReconcile_SingleAttemptPerEpisode(t *testing.T) {
-	var wedged bool
-	var snapshots, recoveries int
-
-	saveW, saveC, saveR := isWedgedFn, captureFn, recoverFn
-	t.Cleanup(func() { isWedgedFn, captureFn, recoverFn = saveW, saveC, saveR })
-
-	isWedgedFn = func() (bool, int, int, error) { return wedged, 1, 0, nil }
-	captureFn = func(_, _ string) { snapshots++ }
-	recoverFn = func(_ context.Context) error { recoveries++; return nil }
-
+	wedged, missing := true, []string{"00008130-0009702E1110001C"}
+	now, _, recoveries := stubReconcile(t, &wedged, &missing)
 	ctx := context.Background()
 	var st wedgeState
 
-	// Episode 1: first detection fires recovery once...
-	wedged = true
 	reconcile(ctx, "t1", &st)
-	// ...subsequent detections in the same episode snapshot but do NOT
-	// re-fire recovery ("detect, snapshot, no auto-recovery").
-	reconcile(ctx, "t2", &st)
+	*now = now.Add(confirmWindow)
+	reconcile(ctx, "t2", &st) // confirmed: recovery
+	*now = now.Add(time.Minute)
 	reconcile(ctx, "t3", &st)
-	if recoveries != 1 {
-		t.Errorf("episode 1 recoveries = %d; want exactly 1 (no churn)", recoveries)
-	}
-	if snapshots != 3 {
-		t.Errorf("snapshots = %d; want 3 (one per wedged reconcile)", snapshots)
+	reconcile(ctx, "t4", &st)
+	if *recoveries != 1 {
+		t.Errorf("episode 1 recoveries = %d; want exactly 1 (no churn)", *recoveries)
 	}
 
-	// Episode ends — a healthy reconcile clears state without snapshot/recovery.
 	wedged = false
 	reconcile(ctx, "clear", &st)
-	if snapshots != 3 || recoveries != 1 {
-		t.Errorf("healthy reconcile should be a no-op: snapshots=%d recoveries=%d", snapshots, recoveries)
-	}
 
-	// Episode 2: a fresh wedge re-arms one attempt.
 	wedged = true
-	reconcile(ctx, "t4", &st)
-	if recoveries != 2 {
-		t.Errorf("episode 2 recoveries total = %d; want 2 (one per episode)", recoveries)
+	reconcile(ctx, "t5", &st)
+	*now = now.Add(confirmWindow)
+	reconcile(ctx, "t6", &st)
+	if *recoveries != 2 {
+		t.Errorf("episode 2 recoveries total = %d; want 2 (one per episode)", *recoveries)
+	}
+}
+
+// One device detaching or being unplugged leaves iousb > usbmux for a
+// few seconds. That must never kill usbmuxd, which drops every other
+// iOS device's tunnel and XCTest session (2026-11-17 18:54, -18 19:25,
+// -23 08:35: each kill came 1–5 s after a detach).
+func TestReconcile_TransientMismatchNeverKills(t *testing.T) {
+	wedged, missing := true, []string{"00008130-0009702E1110001C"}
+	now, _, recoveries := stubReconcile(t, &wedged, &missing)
+	ctx := context.Background()
+	var st wedgeState
+
+	reconcile(ctx, "log-tail", &st) // 5 s after the detach
+	*now = now.Add(1 * time.Second)
+	reconcile(ctx, "poll", &st)
+	*now = now.Add(10 * time.Second)
+	wedged = false // IOKit caught up
+	reconcile(ctx, "poll", &st)
+	if *recoveries != 0 {
+		t.Fatalf("transient mismatch killed usbmuxd %d time(s)", *recoveries)
+	}
+	// A later, separate blip starts its own clock.
+	wedged = true
+	reconcile(ctx, "poll", &st)
+	*now = now.Add(confirmWindow - time.Second)
+	reconcile(ctx, "poll", &st)
+	if *recoveries != 0 {
+		t.Fatalf("mismatch younger than confirmWindow killed usbmuxd")
+	}
+}
+
+// A mismatch that persists but names no device usbmux has lost (the
+// 2026-11-18 snapshot said wedged=false missing_from_usbmux=[]) is not
+// corroborated and does not kill usbmuxd; once a device is missing, it does.
+func TestReconcile_PersistentMismatchNeedsAMissingDevice(t *testing.T) {
+	wedged := true
+	var missing []string
+	now, _, recoveries := stubReconcile(t, &wedged, &missing)
+	ctx := context.Background()
+	var st wedgeState
+
+	reconcile(ctx, "poll", &st)
+	*now = now.Add(2 * confirmWindow)
+	reconcile(ctx, "poll", &st)
+	if *recoveries != 0 {
+		t.Fatalf("uncorroborated mismatch killed usbmuxd")
+	}
+	missing = []string{"00008110-0014182E0AC2801E"}
+	*now = now.Add(30 * time.Second)
+	reconcile(ctx, "poll", &st)
+	if *recoveries != 1 {
+		t.Fatalf("corroborated, persistent wedge recoveries = %d; want 1", *recoveries)
 	}
 }

@@ -134,6 +134,21 @@ func diffUDIDs(usbmux, devicectl []string) (missing, extra []string) {
 	return missing, extra
 }
 
+// missingFromUsbmux returns the devices CoreDevice reports connected
+// that usbmux does not list: the wedge signature for a specific device.
+func missingFromUsbmux() ([]string, error) {
+	usbmux, usbmuxErr := usbmuxUDIDs()
+	if usbmuxErr != "" {
+		return nil, fmt.Errorf("usbmux: %s", usbmuxErr)
+	}
+	devicectl, devicectlErr := devicectlUDIDs()
+	if devicectlErr != "" {
+		return nil, fmt.Errorf("devicectl: %s", devicectlErr)
+	}
+	missing, _ := diffUDIDs(usbmux, devicectl)
+	return missing, nil
+}
+
 func usbmuxUDIDs() ([]string, string) {
 	list, err := goios_ios.ListDevices()
 	if err != nil {

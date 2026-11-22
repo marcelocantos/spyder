@@ -6,6 +6,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -98,6 +99,14 @@ func (h *Handler) execVerifyScript(ctx context.Context, req verify.StepRequest) 
 }
 
 func (h *Handler) handleVerify(args map[string]any) (*mcpgo.CallToolResult, error) {
+	return h.handleVerifyContext(context.Background(), args)
+}
+
+// handleVerifyContext starts a run and, with wait (the default), blocks
+// until it ends or the caller goes away. A caller that disconnects does
+// not end the run: it carries on like wait=false, and the handler
+// returns at once, so a dead CLI never leaves a dispatch blocked in Wait.
+func (h *Handler) handleVerifyContext(ctx context.Context, args map[string]any) (*mcpgo.CallToolResult, error) {
 	var raw []byte
 	if p := optString(args, "workflow_path"); p != "" {
 		b, err := os.ReadFile(p)
@@ -164,8 +173,14 @@ func (h *Handler) handleVerify(args map[string]any) (*mcpgo.CallToolResult, erro
 	if !wait {
 		return toolJSON(map[string]any{"run_id": run.ID, "status": "running", "workflow": wf.Name})
 	}
-	res := run.Wait()
-	return toolJSON(res)
+	select {
+	case <-run.Done():
+		return toolJSON(run.Wait())
+	case <-ctx.Done():
+		slog.Info("verify: caller went away; run continues", "run_id", run.ID, "workflow", wf.Name, "reason", ctx.Err())
+		return toolJSON(map[string]any{"run_id": run.ID, "status": "running", "workflow": wf.Name,
+			"detached": "caller went away before the run finished; follow it with verify_status"})
+	}
 }
 
 func (h *Handler) handleVerifyStatus(args map[string]any) (*mcpgo.CallToolResult, error) {

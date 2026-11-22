@@ -9,6 +9,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -116,6 +117,8 @@ type Handler struct {
 	// launched is the idle policy's record of apps spyder launched
 	// (🎯T194.2). In memory unless the daemon sets a path.
 	launched *launchRegistry
+	// artifacts is the build each app was last installed from (🎯T234).
+	artifacts artifactRecord
 
 	// ops tracks in-flight tool calls for spyder status (🎯T99.5).
 	ops *opRegistry
@@ -400,7 +403,9 @@ type expansionInstaller interface {
 // the ones listed in parts, or else the ones Unity wrote beside the
 // APK. It returns what it installed: the artifact's name, then each
 // OBB's device path. A failure never uninstalls anything.
-func (h *Handler) installOn(ctx context.Context, adapter device.Adapter, id, path string, parts []string) ([]string, error) {
+// bundleID names the app the artifact installs as, for the record of
+// installed builds; "" derives it from the artifact when it can.
+func (h *Handler) installOn(ctx context.Context, adapter device.Adapter, id, path, bundleID string, parts []string) ([]string, error) {
 	var obbs []androidobb.File
 	exp, isAndroid := adapter.(expansionInstaller)
 	if isAndroid {
@@ -423,6 +428,12 @@ func (h *Handler) installOn(ctx context.Context, adapter device.Adapter, id, pat
 	if err != nil {
 		return nil, err
 	}
+	if bundleID == "" {
+		if pf := platformForArtifact(path); pf != "" {
+			bundleID, _ = deriveBundleID(pf, path)
+		}
+	}
+	h.artifacts.note(id, bundleID, path)
 	installed := []string{filepath.Base(path)}
 	if len(obbs) == 0 {
 		return installed, nil
@@ -651,6 +662,15 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 		msg := formatTimeoutError(name, dev, elapsed, installing)
 		slog.Error("mcp dispatch timeout",
 			"tool", name, "device", dev, "duration_ms", elapsed.Milliseconds())
+		if callerGone(ctx) {
+			// The caller disconnected (a killed CLI, a closed MCP
+			// session); no deadline passed. That is not a wedged daemon:
+			// clear the watchdog when the handler returns, never restart.
+			slog.Warn("mcp dispatch abandoned by caller",
+				"tool", name, "device", dev, "duration_ms", elapsed.Milliseconds())
+			go h.finishAbandoned(finished)
+			return toolErr("%s cancelled: caller went away after %s", name, elapsed.Round(time.Millisecond))
+		}
 		// 🎯T99.3: if the handler is still stuck after a grace period,
 		// force-stall daemon-self and request supervised self-restart.
 		// Do not Done the watchdog here — see completeStuckDispatch.
@@ -670,6 +690,21 @@ func (h *Handler) Dispatch(ctx context.Context, name string, args map[string]any
 			"tool", name, "duration_ms", elapsedMs)
 	}
 	return result, err
+}
+
+// callerGone reports that ctx ended because its caller cancelled, not
+// because the dispatch deadline passed.
+func callerGone(ctx context.Context) bool {
+	return errors.Is(ctx.Err(), context.Canceled) && !errors.Is(context.Cause(ctx), context.DeadlineExceeded)
+}
+
+// finishAbandoned clears the watchdog once a dispatch whose caller went
+// away returns.
+func (h *Handler) finishAbandoned(finished <-chan struct{}) {
+	<-finished
+	if h.dispatchWatch != nil {
+		h.dispatchWatch.Done()
+	}
 }
 
 // maybeSelfRestartAfterStuck waits selfRestartGrace for the stuck handler
@@ -860,6 +895,7 @@ type contextToolFunc func(ctx context.Context, args map[string]any) (*mcpgo.Call
 func (h *Handler) contextHandlers() map[string]contextToolFunc {
 	return map[string]contextToolFunc{
 		"ensure_session":     h.handleEnsureSessionContext,
+		"verify":             h.handleVerifyContext,
 		"is_running":         h.handleIsRunningContext,
 		"list_apps":          h.handleListAppsContext,
 		"terminate_app":      h.handleTerminateAppContext,

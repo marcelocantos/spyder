@@ -34,6 +34,14 @@ var (
 	// parity check at the end is sufficient and avoids racing the
 	// kernel's USB re-enumeration.
 	debounceDelay = 5 * time.Second
+
+	// confirmWindow is how long iousb > usbmux must persist before the
+	// monitor may kill usbmuxd. Unplugging one device leaves IOKit and
+	// usbmuxd disagreeing for a few seconds; killing usbmuxd then tears
+	// down the tunnel and XCTest session of every other plugged-in iOS
+	// device (2026-11-17, -18 and -23).
+	// (🎯T233)
+	confirmWindow = 25 * time.Second
 )
 
 // Injectable seams for testing reconcile's episode logic without shelling
@@ -42,6 +50,10 @@ var (
 	isWedgedFn = IsWedged
 	captureFn  = Capture
 	recoverFn  = AttemptRecovery
+	// missingFn names devices CoreDevice has connected that usbmux has
+	// lost: the corroboration a kill needs beyond a count mismatch.
+	missingFn = missingFromUsbmux
+	nowFn     = time.Now
 )
 
 // recentLogLines holds recent usbmuxd/tunnel log lines for 🎯T99.4 classification.
@@ -87,6 +99,8 @@ type wedgeState struct {
 	inEpisode bool
 	// attempted is true once auto-recovery has fired in the current episode.
 	attempted bool
+	// since is when the current count mismatch was first seen.
+	since time.Time
 }
 
 // RunMonitor blocks until ctx is cancelled, running the wedge
@@ -129,15 +143,29 @@ func RunMonitor(ctx context.Context) {
 
 	var st wedgeState
 
+	// A mismatch not yet confirmed is checked again once confirmWindow
+	// has passed, rather than waiting for the next poll.
+	confirm := time.NewTimer(time.Hour)
+	confirm.Stop()
+	defer confirm.Stop()
+	check := func(src string) {
+		reconcile(ctx, src, &st)
+		if st.inEpisode && !st.attempted && !st.since.IsZero() {
+			confirm.Reset(max(confirmWindow-nowFn().Sub(st.since), 0) + time.Second)
+		}
+	}
+
 	// Immediate startup check.
-	reconcile(ctx, "startup", &st)
+	check("startup")
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case src := <-triggers:
-			reconcile(ctx, src, &st)
+			check(src)
+		case <-confirm.C:
+			check("confirm")
 		}
 	}
 }
@@ -194,26 +222,50 @@ func reconcile(ctx context.Context, source string, st *wedgeState) {
 		}
 		st.inEpisode = false
 		st.attempted = false
+		st.since = time.Time{}
 		return
 	}
 
 	newEpisode := !st.inEpisode
 	st.inEpisode = true
-	slog.Warn("wedge: detected by monitor",
-		"source", source, "iousb", iousb, "usbmux", usbmux, "new_episode", newEpisode)
-	RecordDoctorFinding(true, "parity_wedge")
+	if newEpisode || st.since.IsZero() {
+		st.since = nowFn()
+	}
+	slog.Warn("wedge: count mismatch",
+		"source", source, "iousb", iousb, "usbmux", usbmux, "new_episode", newEpisode,
+		"for", nowFn().Sub(st.since).Round(time.Second))
 
-	// Detection + snapshot always run.
-	captureFn("", "wedge.monitor."+source)
-
-	if newEpisode && !st.attempted {
-		st.attempted = true
-		_ = recoverFn(ctx)
+	if st.attempted {
+		captureFn("", "wedge.monitor."+source)
+		slog.Info("wedge: auto-recovery already attempted this episode; not retrying "+
+			"(kill-usbmuxd churn disabled — run `spyder doctor --fix` to retry, or unplug+replug the device)",
+			"source", source)
 		return
 	}
-	slog.Info("wedge: auto-recovery already attempted this episode; not retrying "+
-		"(kill-usbmuxd churn disabled — run `spyder doctor --fix` to retry, or unplug+replug the device)",
-		"source", source)
+	// A single device detaching (or being unplugged) shows the same
+	// counts for a few seconds. Kill usbmuxd only for a mismatch that
+	// persists and names a device usbmux has lost.
+	if held := nowFn().Sub(st.since); held < confirmWindow {
+		slog.Info("wedge: mismatch not yet confirmed; rechecking before any recovery",
+			"source", source, "held", held.Round(time.Second), "confirm_window", confirmWindow)
+		return
+	}
+	missing, err := missingFn()
+	if err != nil {
+		slog.Warn("wedge: cannot corroborate mismatch; not killing usbmuxd",
+			"source", source, "error", err.Error())
+		return
+	}
+	if len(missing) == 0 {
+		slog.Info("wedge: persistent count mismatch but no connected device is missing from usbmux; not killing usbmuxd",
+			"source", source, "iousb", iousb, "usbmux", usbmux)
+		return
+	}
+	slog.Warn("wedge: confirmed", "source", source, "missing_from_usbmux", missing)
+	RecordDoctorFinding(true, "parity_wedge")
+	captureFn("", "wedge.monitor."+source)
+	st.attempted = true
+	_ = recoverFn(ctx)
 }
 
 // pollTrigger fires a "poll" trigger every pollInterval until ctx

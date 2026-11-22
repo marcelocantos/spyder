@@ -26,6 +26,7 @@ import (
 	goios_ios "github.com/danielpaulus/go-ios/ios"
 
 	"github.com/marcelocantos/spyder/internal/agent"
+	"github.com/marcelocantos/spyder/internal/paths"
 )
 
 // DeviceKit is the game-input agent Stock Cars and 🎯T167 already speak
@@ -193,7 +194,10 @@ func isAgentBundle(bundle string) bool {
 //   - a runner on the device with no live host on this Mac is stale:
 //     it is terminated on the device (process kill, no reinstall);
 //   - an orphaned runwda left by a previous spyder daemon (spyder's own
-//     bundled ios, parent gone) is terminated, then relaunched;
+//     bundled ios, parent gone) whose runner still answers is adopted:
+//     a restart or upgrade keeps the owner's approved automation
+//     (🎯T233). One whose runner does not answer is terminated, then
+//     relaunched;
 //   - any other host (Stock Cars' harness, other tools, a live spyder
 //     daemon) is foreign and left alone.
 func (h *AutomationHost) launchDeviceKit(id string) (int, error) {
@@ -232,6 +236,9 @@ func (h *AutomationHost) launchDeviceKit(id string) (int, error) {
 		orphans, err := h.unownedHosts(id)
 		if err != nil {
 			return 0, err
+		}
+		if adopted, ok := h.adoptOrphan(id, orphans, pid, alive); ok {
+			return adopted.pid, nil
 		}
 		for _, p := range orphans {
 			h.stopOrphan(id, p)
@@ -306,9 +313,15 @@ func (h *AutomationHost) probeDeviceKit(id string, pid int, alive bool) (dkProbe
 		return st, nil
 	}
 	// No launch of ours. A host on this Mac that is not a spyder orphan
-	// is foreign; otherwise an alive runner is stale and is replaced.
-	if _, err := h.unownedHosts(id); err != nil {
+	// is foreign. A spyder orphan whose runner answers is adopted;
+	// otherwise an alive runner is stale and is replaced.
+	orphans, err := h.unownedHosts(id)
+	if err != nil {
 		return st, err
+	}
+	if adopted, ok := h.adoptOrphan(id, orphans, pid, alive); ok {
+		st.authorized, st.hostPID = true, adopted.hostPID
+		return st, nil
 	}
 	if alive {
 		h.mu.Lock()
@@ -501,6 +514,99 @@ func (h *AutomationHost) ownsHost(pid int) bool {
 	return false
 }
 
+// adoptOrphan takes over a previous spyder daemon's runwda for id when
+// its runner still answers on :12004 (🎯T233). The approval the owner
+// gave that runner is worth keeping: on iOS 27 a fresh launch hours
+// later times out enabling automation, while a running session lasts
+// indefinitely. Only a single orphan is adopted; with several, which
+// one serves the runner is unknown and they are all replaced.
+func (h *AutomationHost) adoptOrphan(id string, orphans []runwdaProc, pid int, alive bool) (*runnerHold, bool) {
+	if len(orphans) != 1 || !alive || pid <= 0 {
+		return nil, false
+	}
+	// Losing the approval costs a trip to the device, so one slow answer
+	// right after a restart does not condemn the runner.
+	answered := false
+	for try := 0; try < adoptProbeTries && !answered; try++ {
+		if try > 0 {
+			time.Sleep(adoptProbeGap)
+		}
+		answered = h.ready(id, pid)
+	}
+	if !answered {
+		slog.Warn("previous daemon's DeviceKit runner does not answer; replacing it", "device", id, "host_pid", orphans[0].PID, "runner_pid", pid)
+		return nil, false
+	}
+	p := orphans[0]
+	ctx, cancel := context.WithCancel(context.Background())
+	hold := &runnerHold{cancel: cancel, done: make(chan struct{}), pid: pid, hostPID: p.PID, since: time.Now(), adopted: true}
+	h.mu.Lock()
+	if live := h.liveHold(id); live != nil {
+		h.mu.Unlock()
+		cancel()
+		return live, live.hostPID == p.PID
+	}
+	h.holds[id] = hold
+	delete(h.consent, id)
+	h.probeNote[id] = fmt.Sprintf("adopted DeviceKit runner pid %d (host pid %d) from a previous daemon", pid, p.PID)
+	h.mu.Unlock()
+	slog.Info("adopted resident DeviceKit runner from a previous daemon", "device", id, "host_pid", p.PID, "runner_pid", pid, "binary", p.Binary)
+	go h.watchAdopted(ctx, id, hold)
+	return hold, true
+}
+
+// adoptProbeTries readiness probes, adoptProbeGap apart, decide whether
+// an orphan's runner is healthy enough to adopt.
+var (
+	adoptProbeTries = 3
+	adoptProbeGap   = time.Second
+)
+
+// adoptedPoll is how often an adopted host, which is not our child and
+// cannot be waited on, is checked for exit.
+var adoptedPoll = 2 * time.Second
+
+// watchAdopted stands in for cmd.Wait on an adopted host: the hold ends
+// when the host exits, or when the daemon stops it (SIGINT, as for our
+// own launches, then SIGKILL).
+func (h *AutomationHost) watchAdopted(ctx context.Context, id string, hold *runnerHold) {
+	out := &tailBuf{file: runwdaLogPath(id)}
+	var exitErr error
+	t := time.NewTicker(adoptedPoll)
+	defer t.Stop()
+	defer func() {
+		h.noteExit(id, hold, ctx, exitErr, out)
+		close(hold.done)
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			_ = h.signalHost(hold.hostPID, syscall.SIGINT)
+			deadline := time.Now().Add(7 * time.Second)
+			for time.Now().Before(deadline) && h.pidAlive(hold.hostPID) {
+				time.Sleep(100 * time.Millisecond)
+			}
+			if h.pidAlive(hold.hostPID) {
+				_ = h.signalHost(hold.hostPID, syscall.SIGKILL)
+			}
+			return
+		case <-t.C:
+			if !h.pidAlive(hold.hostPID) {
+				exitErr = fmt.Errorf("adopted DeviceKit runwda (host pid %d) exited", hold.hostPID)
+				return
+			}
+		}
+	}
+}
+
+// runwdaLogPath is where a DeviceKit runwda writes its output. A file,
+// not a pipe to the daemon, so the host survives a daemon restart:
+// with a pipe, its next write after the daemon exits would kill it
+// with SIGPIPE.
+func runwdaLogPath(id string) string {
+	return filepath.Join(paths.Base(), "runwda", id+".log")
+}
+
 // stopOrphan ends a previous spyder daemon's runwda: SIGTERM to its
 // process group, then SIGKILL after a grace period.
 func (h *AutomationHost) stopOrphan(id string, p runwdaProc) {
@@ -540,7 +646,19 @@ func (h *AutomationHost) runDeviceKit(ctx context.Context, id string, out io.Wri
 	// Own process group: a terminal ^C on the daemon's group must not
 	// reach the runner before Shutdown stops it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Stdout, cmd.Stderr = out, out
+	logPath := runwdaLogPath(id)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		return fmt.Errorf("DeviceKit runwda on %s: log dir: %w", id, err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		return fmt.Errorf("DeviceKit runwda on %s: log: %w", id, err)
+	}
+	defer logFile.Close()
+	cmd.Stdout, cmd.Stderr = logFile, logFile
+	if tb, ok := out.(*tailBuf); ok {
+		tb.setFile(logPath)
+	}
 	cmd.Cancel = func() error { return cmd.Process.Signal(os.Interrupt) }
 	cmd.WaitDelay = 8 * time.Second
 	if err = cmd.Start(); err != nil {
