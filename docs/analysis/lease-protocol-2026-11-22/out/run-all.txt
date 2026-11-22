@@ -1,0 +1,42 @@
+### base
+Progress(14) at 2026-11-23 10:20:35: 1,752 states generated, 485 distinct states found, 0 states left on queue.
+Model checking completed. No error has been found.
+1752 states generated, 485 distinct states found, 0 states left on queue.
+### base_agent
+Progress(14) at 2026-11-23 10:20:37: 1,646 states generated, 485 distinct states found, 0 states left on queue.
+Model checking completed. No error has been found.
+1646 states generated, 485 distinct states found, 0 states left on queue.
+### big_nofault
+Progress(22) at 2026-11-23 10:20:40: 76,933 states generated, 18,940 distinct states found, 0 states left on queue.
+Model checking completed. No error has been found.
+76933 states generated, 18940 distinct states found, 0 states left on queue.
+### live_old_new
+Progress(18) at 2026-11-23 10:20:45: 101,781 states generated, 14,912 distinct states found, 0 states left on queue.
+Model checking completed. No error has been found.
+101781 states generated, 14912 distinct states found, 0 states left on queue.
+### live_old_new_end
+Progress(18) at 2026-11-23 10:20:49: 101,781 states generated, 14,912 distinct states found, 0 states left on queue.
+Model checking completed. No error has been found.
+101781 states generated, 14912 distinct states found, 0 states left on queue.
+### live_new_agent
+Progress(25) at 2026-11-23 10:21:06: 1,252,411 states generated, 178,184 distinct states found, 0 states left on queue.
+Model checking completed. No error has been found.
+1252411 states generated, 178184 distinct states found, 0 states left on queue.
+### live_new_agent_end
+Progress(25) at 2026-11-23 10:21:44: 1,252,411 states generated, 178,184 distinct states found, 0 states left on queue.
+Model checking completed. No error has been found.
+1252411 states generated, 178184 distinct states found, 0 states left on queue.
+### orphan
+Error: Invariant JobExclusion is violated.
+### sleep
+Error: Invariant JobExclusion is violated.
+### flap
+Error: Invariant JobExclusion is violated.
+### flap_agent
+Error: Invariant ReleasedHoldsNothing is violated.
+### old_erase
+Error: Invariant JobExclusion is violated.
+### old_name
+Error: Invariant JobExclusion is violated.
+### daemon_down
+Error: Invariant JobExclusion is violated.

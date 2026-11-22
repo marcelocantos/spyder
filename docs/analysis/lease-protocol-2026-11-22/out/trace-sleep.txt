@@ -1,0 +1,33 @@
+  1 Initial predicate
+      book = [ U1 |-> -, N1 |-> -, U2 |-> - ]
+      pc = (a :> "idle" @@ b :> "idle")
+      present = TRUE
+      daemonUp = TRUE
+  2 AcqLock
+      pc = (a :> "idle" @@ b :> "acqLocked")
+      lock = b
+      key = (a :> "none" @@ b :> "U1")
+  3 AcqWrite
+      pc = (a :> "idle" @@ b :> "running")
+      lock = "none"
+      book = [ U1 |-> [owner |-> b, rem |-> 2], N1 |-> -, U2 |-> - ]
+      worker = (a :> FALSE @@ b :> TRUE)
+  4 AcqLock
+      snap = ( a :> [ U1 |-> [owner |-> b, rem |-> 2], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      pc = (a :> "acqLocked" @@ b :> "running")
+      lock = a
+      key = (a :> "U1" @@ b :> "U1")
+  5 Tick
+      snap = ( a :> [ U1 |-> [owner |-> b, rem |-> 1], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      book = [ U1 |-> [owner |-> b, rem |-> 1], N1 |-> -, U2 |-> - ]
+      age = (a :> 0 @@ b :> 1)
+  6 Sleep
+      snap = ( a :> [ U1 |-> [owner |-> b, rem |-> 0], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      book = [ U1 |-> [owner |-> b, rem |-> 0], N1 |-> -, U2 |-> - ]
+      age = (a :> 0 @@ b :> 2)
+  7 AcqWrite
+      snap = ( a :> [ U1 |-> -, N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      pc = (a :> "running" @@ b :> "running")
+      lock = "none"
+      book = [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ]
+      worker = (a :> TRUE @@ b :> TRUE)

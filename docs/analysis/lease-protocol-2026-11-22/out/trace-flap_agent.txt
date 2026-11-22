@@ -1,0 +1,26 @@
+  1 Initial predicate
+      book = [ U1 |-> -, N1 |-> -, U2 |-> - ]
+      pc = (a :> "idle" @@ b :> "idle")
+      present = TRUE
+      daemonUp = TRUE
+  2 AcqLock
+      pc = (a :> "acqLocked" @@ b :> "idle")
+      lock = a
+      key = (a :> "U1" @@ b :> "none")
+  3 AcqWrite
+      pc = (a :> "running" @@ b :> "idle")
+      lock = "none"
+      book = [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ]
+  4 Finish
+      pc = (a :> "exiting" @@ b :> "idle")
+  5 Flap
+      present = FALSE
+  6 RelLock
+      snap = ( a :> [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      pc = (a :> "relLocked" @@ b :> "idle")
+      lock = a
+      key = (a :> "N1" @@ b :> "none")
+  7 RelWrite
+      snap = ( a :> [ U1 |-> -, N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      pc = (a :> "done" @@ b :> "idle")
+      lock = "none"

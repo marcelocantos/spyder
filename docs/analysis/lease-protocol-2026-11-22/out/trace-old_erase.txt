@@ -1,0 +1,35 @@
+  1 Initial predicate
+      book = [ U1 |-> -, N1 |-> -, U2 |-> - ]
+      pc = (a :> "idle" @@ b :> "idle" @@ c :> "idle")
+      present = TRUE
+      daemonUp = TRUE
+  2 OldAcquire
+      snap = ( a :> [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] @@ c :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      pc = (a :> "running" @@ b :> "idle" @@ c :> "idle")
+      book = [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ]
+      worker = (a :> TRUE @@ b :> FALSE @@ c :> FALSE)
+      key = (a :> "U1" @@ b :> "none" @@ c :> "none")
+  3 AcqLock
+      snap = ( a :> [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ] @@ c :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      pc = (a :> "running" @@ b :> "acqLocked" @@ c :> "idle")
+      lock = b
+      key = (a :> "U1" @@ b :> "U2" @@ c :> "none")
+  4 AcqWrite
+      snap = ( a :> [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] @@ c :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      pc = (a :> "running" @@ b :> "running" @@ c :> "idle")
+      lock = "none"
+      book = [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> [owner |-> b, rem |-> 2] ]
+      worker = (a :> TRUE @@ b :> TRUE @@ c :> FALSE)
+  5 OldRenew
+      book = [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ]
+  6 AcqLock
+      snap = ( a :> [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] @@ c :> [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ] )
+      pc = (a :> "running" @@ b :> "running" @@ c :> "acqLocked")
+      lock = c
+      key = (a :> "U1" @@ b :> "U2" @@ c :> "U2")
+  7 AcqWrite
+      snap = ( a :> [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] @@ c :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
+      pc = (a :> "running" @@ b :> "running" @@ c :> "running")
+      lock = "none"
+      book = [ U1 |-> [owner |-> a, rem |-> 2], N1 |-> -, U2 |-> [owner |-> c, rem |-> 2] ]
+      worker = (a :> TRUE @@ b :> TRUE @@ c :> TRUE)
