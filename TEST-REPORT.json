@@ -1,13 +1,13 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-11-17T07:53:23Z",
-  "head_sha": "d905dee172f3fee7bd35e4d81c37bb4765f4df2c",
+  "generated_at": "2026-11-22T22:15:47Z",
+  "head_sha": "4d11937a7b5e6ae8bc096c237af2a1e8cf362b4f",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test -timeout 2m  ./... github.com/danielpaulus/go-ios/ios/installationproxy",
-      "duration_s": 75,
+      "duration_s": 83,
       "status": "pass"
     },
     {
@@ -19,7 +19,7 @@
     {
       "name": "player-wire",
       "cmd": "make check-wire && ./scripts/check-wire-ge-test.sh",
-      "duration_s": 1,
+      "duration_s": 2,
       "status": "pass"
     },
     {
