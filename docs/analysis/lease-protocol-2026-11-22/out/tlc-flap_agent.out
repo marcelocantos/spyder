@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 87 and seed -8582242732730477072 with 2 workers on 16 cores with 3641MB heap and 64MB offheap memory [pid: 54025] (Mac OS X 27.2.1 aarch64, Homebrew 21.0.13.0.2 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 8 and seed 6517895974429539066 with 2 workers on 16 cores with 3641MB heap and 64MB offheap memory [pid: 45249] (Mac OS X 27.2.1 aarch64, Homebrew 21.0.13.0.2 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /Users/marcelo/.t3/worktrees/spyder/filler-analysis-2026-11-f07912a2eb69b96f/docs/analysis/lease-protocol-2026-11-22/tla/MC.tla
 Parsing file /Users/marcelo/.t3/worktrees/spyder/filler-analysis-2026-11-f07912a2eb69b96f/docs/analysis/lease-protocol-2026-11-22/tla/Leases.tla
 Parsing file /private/var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/TLC.tla
@@ -12,9 +12,9 @@ Semantic processing of module FiniteSets
 Semantic processing of module Leases
 Semantic processing of module TLC
 Semantic processing of module MC
-Starting... (2026-11-23 10:21:59)
+Starting... (2026-11-23 10:30:51)
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-11-23 10:21:59.
+Finished computing initial states: 1 distinct state generated at 2026-11-23 10:30:51.
 Error: Invariant ReleasedHoldsNothing is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -40,7 +40,7 @@ State 1: <Initial predicate>
 /\ key = (a :> "none" @@ b :> "none")
 /\ age = (a :> 0 @@ b :> 0)
 
-State 2: <AcqLock line 114, col 5 to line 118, col 64 of module Leases>
+State 2: <AcqLock line 120, col 5 to line 125, col 64 of module Leases>
 /\ snap = ( a :>
       [ U1 |-> [owner |-> "none", rem |-> 0],
         N1 |-> [owner |-> "none", rem |-> 0],
@@ -63,7 +63,7 @@ State 2: <AcqLock line 114, col 5 to line 118, col 64 of module Leases>
 /\ key = (a :> "U1" @@ b :> "none")
 /\ age = (a :> 0 @@ b :> 0)
 
-State 3: <AcqWrite line 121, col 5 to line 134, col 45 of module Leases>
+State 3: <AcqWrite line 128, col 5 to line 141, col 45 of module Leases>
 /\ snap = ( a :>
       [ U1 |-> [owner |-> "none", rem |-> 0],
         N1 |-> [owner |-> "none", rem |-> 0],
@@ -86,7 +86,7 @@ State 3: <AcqWrite line 121, col 5 to line 134, col 45 of module Leases>
 /\ key = (a :> "U1" @@ b :> "none")
 /\ age = (a :> 0 @@ b :> 0)
 
-State 4: <Finish line 166, col 5 to line 170, col 73 of module Leases>
+State 4: <Finish line 178, col 5 to line 182, col 73 of module Leases>
 /\ snap = ( a :>
       [ U1 |-> [owner |-> "none", rem |-> 0],
         N1 |-> [owner |-> "none", rem |-> 0],
@@ -109,7 +109,7 @@ State 4: <Finish line 166, col 5 to line 170, col 73 of module Leases>
 /\ key = (a :> "U1" @@ b :> "none")
 /\ age = (a :> 0 @@ b :> 0)
 
-State 5: <Flap line 253, col 5 to line 255, col 76 of module Leases>
+State 5: <Flap line 265, col 5 to line 267, col 76 of module Leases>
 /\ snap = ( a :>
       [ U1 |-> [owner |-> "none", rem |-> 0],
         N1 |-> [owner |-> "none", rem |-> 0],
@@ -132,7 +132,7 @@ State 5: <Flap line 253, col 5 to line 255, col 76 of module Leases>
 /\ key = (a :> "U1" @@ b :> "none")
 /\ age = (a :> 0 @@ b :> 0)
 
-State 6: <RelLock line 173, col 5 to line 177, col 64 of module Leases>
+State 6: <RelLock line 185, col 5 to line 189, col 64 of module Leases>
 /\ snap = ( a :>
       [ U1 |-> [owner |-> a, rem |-> 2],
         N1 |-> [owner |-> "none", rem |-> 0],
@@ -155,7 +155,7 @@ State 6: <RelLock line 173, col 5 to line 177, col 64 of module Leases>
 /\ key = (a :> "N1" @@ b :> "none")
 /\ age = (a :> 0 @@ b :> 0)
 
-State 7: <RelWrite line 182, col 5 to line 191, col 63 of module Leases>
+State 7: <RelWrite line 194, col 5 to line 203, col 63 of module Leases>
 /\ snap = ( a :>
       [ U1 |-> [owner |-> "none", rem |-> 0],
         N1 |-> [owner |-> "none", rem |-> 0],
@@ -178,7 +178,7 @@ State 7: <RelWrite line 182, col 5 to line 191, col 63 of module Leases>
 /\ key = (a :> "N1" @@ b :> "none")
 /\ age = (a :> 0 @@ b :> 0)
 
-235 states generated, 127 distinct states found, 60 states left on queue.
-The depth of the complete state graph search is 7.
+375 states generated, 192 distinct states found, 84 states left on queue.
+The depth of the complete state graph search is 8.
 The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 5 and the 95th percentile is 4).
-Finished in 00s at (2026-11-23 10:21:59)
+Finished in 00s at (2026-11-23 10:30:51)

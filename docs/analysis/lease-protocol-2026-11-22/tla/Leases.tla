@@ -37,7 +37,10 @@ CONSTANTS
     MayFlap,        \* device 1 may drop off USB and come back
     MayKill,        \* a wrapper may be SIGKILLed
     WorkerSurvives, \* the wrapped job survives its wrapper's death (R2)
-    MayDaemonDown   \* the daemon may stop and restart
+    MayDaemonDown,  \* the daemon may stop and restart
+    FixKeying       \* proposed fix (D4, D5, F3): a name the census cannot
+                    \* resolve is refused, and the daemon renews and releases
+                    \* under the key recorded at acquire
 
 \* Keys: U1 and N1 are the UDID and the display name of device 1; U2 is
 \* a second device's UDID.
@@ -103,6 +106,9 @@ Init ==
     /\ present = TRUE
     /\ daemonUp = TRUE
 
+\* Under FixKeying a display name that the census cannot resolve is refused.
+Unresolvable(j) == FixKeying /\ Kind[j] # "old" /\ Ref[j] = "N1" /\ ~present
+
 \* Agents reach the book through the daemon.
 CanReach(j) == Kind[j] # "agent" \/ daemonUp
 
@@ -112,6 +118,7 @@ CanReach(j) == Kind[j] # "agent" \/ daemonUp
 \* once; an agent's key is computed by the daemon on this call.
 AcqLock(j) ==
     /\ pc[j] = "idle" /\ Kind[j] # "old" /\ CanReach(j) /\ lock = None
+    /\ ~Unresolvable(j)
     /\ lock' = j /\ snap' = [snap EXCEPT ![j] = book]
     /\ key' = [key EXCEPT ![j] = KeyFor(j)]
     /\ pc' = [pc EXCEPT ![j] = "acqLocked"]
@@ -133,12 +140,17 @@ AcqWrite(j) ==
     /\ lock' = None /\ snap' = [snap EXCEPT ![j] = EmptyBook]
     /\ UNCHANGED <<dsnap, present, daemonUp>>
 
+AcqRefused(j) ==
+    /\ pc[j] = "idle" /\ Unresolvable(j)
+    /\ pc' = [pc EXCEPT ![j] = "done"]
+    /\ UNCHANGED <<book, key, snap, dsnap, age, worker, lock, present, daemonUp>>
+
 \* Renewal (main.go:581-600, tools.go:1376). The attempt resets the
 \* ticker whatever its outcome.
 RenLock(j) ==
     /\ pc[j] = "running" /\ Kind[j] # "old" /\ CanReach(j) /\ lock = None
     /\ lock' = j /\ snap' = [snap EXCEPT ![j] = book]
-    /\ key' = IF Kind[j] = "agent" THEN [key EXCEPT ![j] = KeyFor(j)] ELSE key
+    /\ key' = IF Kind[j] = "agent" /\ ~FixKeying THEN [key EXCEPT ![j] = KeyFor(j)] ELSE key
     /\ pc' = [pc EXCEPT ![j] = "renLocked"]
     /\ UNCHANGED <<book, dsnap, age, worker, present, daemonUp>>
 
@@ -172,7 +184,7 @@ Finish(j) ==
 RelLock(j) ==
     /\ pc[j] = "exiting" /\ Kind[j] # "old" /\ CanReach(j) /\ lock = None
     /\ lock' = j /\ snap' = [snap EXCEPT ![j] = book]
-    /\ key' = IF Kind[j] = "agent" THEN [key EXCEPT ![j] = KeyFor(j)] ELSE key
+    /\ key' = IF Kind[j] = "agent" /\ ~FixKeying THEN [key EXCEPT ![j] = KeyFor(j)] ELSE key
     /\ pc' = [pc EXCEPT ![j] = "relLocked"]
     /\ UNCHANGED <<book, dsnap, age, worker, present, daemonUp>>
 
@@ -309,7 +321,7 @@ Tick ==
 Sleep == MaySleep /\ Advance
 
 JobStep(j) ==
-    \/ AcqLock(j) \/ AcqWrite(j) \/ RenLock(j) \/ RenWrite(j)
+    \/ AcqLock(j) \/ AcqRefused(j) \/ AcqWrite(j) \/ RenLock(j) \/ RenWrite(j)
     \/ AgentRenewFails(j) \/ Finish(j) \/ RelLock(j) \/ RelWrite(j)
     \/ OldAcquire(j) \/ OldRenew(j) \/ OldRelease(j)
 

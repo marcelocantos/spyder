@@ -3,18 +3,20 @@
       pc = (a :> "idle" @@ b :> "idle")
       present = TRUE
       daemonUp = TRUE
-  2 AcqLock
-      pc = (a :> "idle" @@ b :> "acqLocked")
-      lock = b
-      key = (a :> "none" @@ b :> "U1")
-  3 OldAcquire
+  2 OldAcquire
       snap = ( a :> [ U1 |-> -, N1 |-> [owner |-> a, rem |-> 2], U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
-      pc = (a :> "running" @@ b :> "acqLocked")
+      pc = (a :> "running" @@ b :> "idle")
       book = [ U1 |-> -, N1 |-> [owner |-> a, rem |-> 2], U2 |-> - ]
       worker = (a :> TRUE @@ b :> FALSE)
+      key = (a :> "N1" @@ b :> "none")
+  3 AcqLock
+      snap = ( a :> [ U1 |-> -, N1 |-> [owner |-> a, rem |-> 2], U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> [owner |-> a, rem |-> 2], U2 |-> - ] )
+      pc = (a :> "running" @@ b :> "acqLocked")
+      lock = b
       key = (a :> "N1" @@ b :> "U1")
   4 AcqWrite
+      snap = ( a :> [ U1 |-> -, N1 |-> [owner |-> a, rem |-> 2], U2 |-> - ] @@ b :> [ U1 |-> -, N1 |-> -, U2 |-> - ] )
       pc = (a :> "running" @@ b :> "running")
       lock = "none"
-      book = [ U1 |-> [owner |-> b, rem |-> 2], N1 |-> -, U2 |-> - ]
+      book = [ U1 |-> [owner |-> b, rem |-> 2], N1 |-> [owner |-> a, rem |-> 2], U2 |-> - ]
       worker = (a :> TRUE @@ b :> TRUE)

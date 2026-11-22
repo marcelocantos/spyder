@@ -153,7 +153,10 @@ Also the daemon's expiry sweep (two steps, under the lock), daemon stop and
 start (in-flight agent calls fail; no state is lost because there is none),
 time (`Tick` may not pass while an awake holder is due to renew; `Sleep`
 may), SIGKILL of a wrapper with or without its job surviving, an orphaned
-job ending, and device 1 dropping off USB and returning.
+job ending, and device 1 dropping off USB and returning. A constant
+`FixKeying` switches on the fix proposed for D4 and D5: a display name the
+census cannot resolve is refused, and the daemon renews and releases under
+the key it recorded at acquire.
 
 **What is not modelled**: the old client's shared `.tmp` file (torn
 writes), inventory edits, clock steps, the simulator book (R6 and R7 are
@@ -182,6 +185,9 @@ kind and ref).
 | `old_erase` | old/U1, new/U2, new/U2 | none | I1 | violated, 7 states |
 | `old_name` | old/N1, new/U1 | none | I1 | violated, 4 states |
 | `daemon_down` | new/U1, agent/U1 | daemon down | I1 | violated, 9 states |
+| `fix_flap` | new/N1, new/U1, `FixKeying` | replug | I1, I2, I4, L1 | holds, 562 states |
+| `fix_flap_agent` | agent/N1, agent/U1, `FixKeying` | replug | I1, I2, I4, L1 | holds, 562 states |
+| `fix_live_new_agent` | new/N1, agent/N1, `FixKeying` | all | I2, I4, L1 | holds, 19,290 states |
 
 Vacuity checks: L1 fails when expiry is removed from the model
 (`Dec(e) == e`), and L2 holds only with strong fairness on job steps (with
@@ -375,9 +381,13 @@ the phone unlisted (key = "Lab iPhone"); two live leases, two owners, one
 phone. Model: `flap`.
 
 *Smallest fix*: fail closed. When a ref needs a census and the census
-does not resolve it, refuse to reserve, renew or release it ("not
-connected; name it by UDID or inventory alias") instead of keying the
-literal. One branch in `ReservationKey`'s two callers, plus the tests.
+does not resolve it, refuse to reserve it ("not connected; name it by
+UDID or inventory alias") instead of keying the literal, and have the
+daemon renew and release under the key it recorded at acquire, as
+`spyder run` already does. One branch in `ReservationKey`'s two callers,
+a key lookup by owner in `renew`/`release`, plus the tests. Checked in the
+model: `fix_flap`, `fix_flap_agent` and `fix_live_new_agent` hold. It does
+not help a master `spyder run`, which keys names verbatim (D1).
 
 ### D5. A release that reports success has released the lease — medium
 

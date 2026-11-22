@@ -1,5 +1,5 @@
 TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
-Running breadth-first search Model-Checking with fp 40 and seed -8789548803009524992 with 2 workers on 16 cores with 3641MB heap and 64MB offheap memory [pid: 55676] (Mac OS X 27.2.1 aarch64, Homebrew 21.0.13.0.2 x86_64, MSBDiskFPSet, DiskStateQueue).
+Running breadth-first search Model-Checking with fp 99 and seed -5057995344487468125 with 2 workers on 16 cores with 3641MB heap and 64MB offheap memory [pid: 46789] (Mac OS X 27.2.1 aarch64, Homebrew 21.0.13.0.2 x86_64, MSBDiskFPSet, DiskStateQueue).
 Parsing file /Users/marcelo/.t3/worktrees/spyder/filler-analysis-2026-11-f07912a2eb69b96f/docs/analysis/lease-protocol-2026-11-22/tla/MC.tla
 Parsing file /Users/marcelo/.t3/worktrees/spyder/filler-analysis-2026-11-f07912a2eb69b96f/docs/analysis/lease-protocol-2026-11-22/tla/Leases.tla
 Parsing file /private/var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/TLC.tla
@@ -12,9 +12,9 @@ Semantic processing of module FiniteSets
 Semantic processing of module Leases
 Semantic processing of module TLC
 Semantic processing of module MC
-Starting... (2026-11-23 10:22:01)
+Starting... (2026-11-23 10:30:53)
 Computing initial states...
-Finished computing initial states: 1 distinct state generated at 2026-11-23 10:22:01.
+Finished computing initial states: 1 distinct state generated at 2026-11-23 10:30:53.
 Error: Invariant JobExclusion is violated.
 Error: The behavior up to this point is:
 State 1: <Initial predicate>
@@ -40,30 +40,7 @@ State 1: <Initial predicate>
 /\ key = (a :> "none" @@ b :> "none")
 /\ age = (a :> 0 @@ b :> 0)
 
-State 2: <AcqLock line 114, col 5 to line 118, col 64 of module Leases>
-/\ snap = ( a :>
-      [ U1 |-> [owner |-> "none", rem |-> 0],
-        N1 |-> [owner |-> "none", rem |-> 0],
-        U2 |-> [owner |-> "none", rem |-> 0] ] @@
-  b :>
-      [ U1 |-> [owner |-> "none", rem |-> 0],
-        N1 |-> [owner |-> "none", rem |-> 0],
-        U2 |-> [owner |-> "none", rem |-> 0] ] )
-/\ present = TRUE
-/\ pc = (a :> "idle" @@ b :> "acqLocked")
-/\ lock = b
-/\ dsnap = [ U1 |-> [owner |-> "none", rem |-> 0],
-  N1 |-> [owner |-> "none", rem |-> 0],
-  U2 |-> [owner |-> "none", rem |-> 0] ]
-/\ book = [ U1 |-> [owner |-> "none", rem |-> 0],
-  N1 |-> [owner |-> "none", rem |-> 0],
-  U2 |-> [owner |-> "none", rem |-> 0] ]
-/\ worker = (a :> FALSE @@ b :> FALSE)
-/\ daemonUp = TRUE
-/\ key = (a :> "none" @@ b :> "U1")
-/\ age = (a :> 0 @@ b :> 0)
-
-State 3: <OldAcquire line 200, col 5 to line 212, col 51 of module Leases>
+State 2: <OldAcquire line 212, col 5 to line 224, col 51 of module Leases>
 /\ snap = ( a :>
       [ U1 |-> [owner |-> "none", rem |-> 0],
         N1 |-> [owner |-> a, rem |-> 2],
@@ -71,6 +48,29 @@ State 3: <OldAcquire line 200, col 5 to line 212, col 51 of module Leases>
   b :>
       [ U1 |-> [owner |-> "none", rem |-> 0],
         N1 |-> [owner |-> "none", rem |-> 0],
+        U2 |-> [owner |-> "none", rem |-> 0] ] )
+/\ present = TRUE
+/\ pc = (a :> "running" @@ b :> "idle")
+/\ lock = "none"
+/\ dsnap = [ U1 |-> [owner |-> "none", rem |-> 0],
+  N1 |-> [owner |-> "none", rem |-> 0],
+  U2 |-> [owner |-> "none", rem |-> 0] ]
+/\ book = [ U1 |-> [owner |-> "none", rem |-> 0],
+  N1 |-> [owner |-> a, rem |-> 2],
+  U2 |-> [owner |-> "none", rem |-> 0] ]
+/\ worker = (a :> TRUE @@ b :> FALSE)
+/\ daemonUp = TRUE
+/\ key = (a :> "N1" @@ b :> "none")
+/\ age = (a :> 0 @@ b :> 0)
+
+State 3: <AcqLock line 120, col 5 to line 125, col 64 of module Leases>
+/\ snap = ( a :>
+      [ U1 |-> [owner |-> "none", rem |-> 0],
+        N1 |-> [owner |-> a, rem |-> 2],
+        U2 |-> [owner |-> "none", rem |-> 0] ] @@
+  b :>
+      [ U1 |-> [owner |-> "none", rem |-> 0],
+        N1 |-> [owner |-> a, rem |-> 2],
         U2 |-> [owner |-> "none", rem |-> 0] ] )
 /\ present = TRUE
 /\ pc = (a :> "running" @@ b :> "acqLocked")
@@ -86,7 +86,7 @@ State 3: <OldAcquire line 200, col 5 to line 212, col 51 of module Leases>
 /\ key = (a :> "N1" @@ b :> "U1")
 /\ age = (a :> 0 @@ b :> 0)
 
-State 4: <AcqWrite line 121, col 5 to line 134, col 45 of module Leases>
+State 4: <AcqWrite line 128, col 5 to line 141, col 45 of module Leases>
 /\ snap = ( a :>
       [ U1 |-> [owner |-> "none", rem |-> 0],
         N1 |-> [owner |-> a, rem |-> 2],
@@ -102,14 +102,14 @@ State 4: <AcqWrite line 121, col 5 to line 134, col 45 of module Leases>
   N1 |-> [owner |-> "none", rem |-> 0],
   U2 |-> [owner |-> "none", rem |-> 0] ]
 /\ book = [ U1 |-> [owner |-> b, rem |-> 2],
-  N1 |-> [owner |-> "none", rem |-> 0],
+  N1 |-> [owner |-> a, rem |-> 2],
   U2 |-> [owner |-> "none", rem |-> 0] ]
 /\ worker = (a :> TRUE @@ b :> TRUE)
 /\ daemonUp = TRUE
 /\ key = (a :> "N1" @@ b :> "U1")
 /\ age = (a :> 0 @@ b :> 0)
 
-21 states generated, 14 distinct states found, 6 states left on queue.
-The depth of the complete state graph search is 4.
-The average outdegree of the complete state graph is 3 (minimum is 2, the maximum 3 and the 95th percentile is 3).
-Finished in 00s at (2026-11-23 10:22:01)
+33 states generated, 20 distinct states found, 9 states left on queue.
+The depth of the complete state graph search is 5.
+The average outdegree of the complete state graph is 2 (minimum is 1, the maximum 3 and the 95th percentile is 3).
+Finished in 00s at (2026-11-23 10:30:53)
