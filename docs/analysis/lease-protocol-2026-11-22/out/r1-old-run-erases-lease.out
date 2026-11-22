@@ -1,0 +1,26 @@
+== book while A (old) holds X and B (new) holds Y
+[
+  {
+    "device": "00008103-00000000000000AA",
+    "owner": "job-A-old",
+    "expires_at": "2026-11-23T10:57:04.72895+11:00",
+    "note": "spyder run: sh -c while [ ! -e '/var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/tmp.ottNSJXRWK/stopA' ]; do sleep 0.1; done",
+    "created_at": "2026-11-23T09:57:04.72895+11:00"
+  },
+  {
+    "device": "00008103-00000000000000BB",
+    "owner": "job-B-new",
+    "expires_at": "2026-11-23T10:57:05.248036+11:00",
+    "note": "spyder run: sh -c while [ ! -e '/var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/tmp.ottNSJXRWK/stopB' ]; do sleep 0.1; done",
+    "created_at": "2026-11-23T09:57:05.248036+11:00"
+  }
+]
+== book after A exits; B is still running: yes
+[]job C is running on Y
+job C exit status: 0
+B still running: yes
+== stderr of B
+2026/11/23 09:57:05 INFO reservation acquired device=00008103-00000000000000BB owner=job-B-new ttl=1h0m0s note="spyder run: sh -c while [ ! -e '/var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/tmp.ottNSJXRWK/stopB' ]; do sleep 0.1; done"
+2026/11/23 09:57:05 INFO runs: opened run=20261122-225705-60fd5c device=00008103-00000000000000BB owner=job-B-new dir=/var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/tmp.ottNSJXRWK/data/runs/20261122-225705-60fd5c spyder_commit=unknown script=unknown app=unknown app_version=unknown os_version=unknown
+spyder run: opened run 20261122-225705-60fd5c
+2026/11/23 09:57:05 INFO runs: closed run=20261122-225705-60fd5c device=00008103-00000000000000BB owner=job-B-new artefacts=0 size_bytes=0 passed=true outcome="exit 0"

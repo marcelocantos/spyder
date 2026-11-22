@@ -1,0 +1,30 @@
+wrapper pid 84591 pgid 84591; job pid 84594 pgid 84594
+/Users/marcelo/.t3/worktrees/spyder/filler-analysis-2026-11-f07912a2eb69b96f/docs/analysis/lease-protocol-2026-11-22/repro/r2-group-kill-orphans-job.sh: line 22: 84591 Killed: 9               perl -e 'setpgrp(0,0); exec @ARGV' "$BIN" run --device "$X" --as job-A -- sh -c "echo \$\$ > '$D/job.pid'; while :; do sleep 0.2; done" < /dev/null 2> "$D/a.err"
+after SIGKILL to the wrapper's group: wrapper alive=no job alive=yes
+== book (nothing renews it now)
+[
+  {
+    "device": "00008103-00000000000000AA",
+    "owner": "job-A",
+    "expires_at": "2026-11-23T10:57:52.869213+11:00",
+    "note": "spyder run: sh -c echo $$ \u003e '/var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/tmp.EpFLnOxfkx/job.pid'; while :; do sleep 0.2; done",
+    "created_at": "2026-11-23T09:57:52.869213+11:00"
+  }
+]
+job B granted the device
+job B exit 0; job A's worker alive=yes
+### old binary (master)
+wrapper pid 85297 pgid 85297; job pid 85299 pgid 85297
+/Users/marcelo/.t3/worktrees/spyder/filler-analysis-2026-11-f07912a2eb69b96f/docs/analysis/lease-protocol-2026-11-22/repro/r2-group-kill-orphans-job.sh: line 22: 85297 Killed: 9               perl -e 'setpgrp(0,0); exec @ARGV' "$BIN" run --device "$X" --as job-A -- sh -c "echo \$\$ > '$D/job.pid'; while :; do sleep 0.2; done" < /dev/null 2> "$D/a.err"
+after SIGKILL to the wrapper's group: wrapper alive=no job alive=no
+== book (nothing renews it now)
+[
+  {
+    "device": "00008103-00000000000000AA",
+    "owner": "job-A",
+    "expires_at": "2026-11-23T10:57:53.768621+11:00",
+    "note": "spyder run: sh -c echo $$ \u003e '/var/folders/fn/8ffdcmbd13lfwzsm2h93xrx00000gn/T/tmp.ZmsgZh7pe0/job.pid'; while :; do sleep 0.2; done",
+    "created_at": "2026-11-23T09:57:53.768621+11:00"
+  }
+]job B granted the device
+job B exit 0; job A's worker alive=no

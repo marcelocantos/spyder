@@ -1,0 +1,28 @@
+=== RUN   TestR3_DisplayNameKeyDependsOnPresence
+2026/11/23 09:59:45 INFO reservation acquired device=00008103-001122334455667A owner=job-A ttl=1h0m0s note="spyder run: A"
+2026/11/23 09:59:45 INFO reservation acquired device="Lab iPhone" owner=job-B ttl=1h0m0s note="spyder run: B"
+    repro_test.go:91: A holds "00008103-001122334455667A", B holds "Lab iPhone"; live book: [{Device:Lab iPhone Owner:job-B ExpiresAt:2026-11-23 10:59:45.236023 +1100 AEDT Note:spyder run: B CreatedAt:2026-11-23 09:59:45.236023 +1100 AEDT} {Device:00008103-001122334455667A Owner:job-A ExpiresAt:2026-11-23 10:59:45.225049 +1100 AEDT Note:spyder run: A CreatedAt:2026-11-23 09:59:45.225049 +1100 AEDT}]
+--- PASS: TestR3_DisplayNameKeyDependsOnPresence (0.02s)
+=== RUN   TestR4_ReleaseWhileAbsentReportsSuccessAndStrands
+2026/11/23 09:59:45 INFO reservation acquired device=00008103-001122334455667A owner=agent-A ttl=24h0m0s note="mcp reserve"
+    repro_test.go:117: renew while absent: no active reservation on Lab iPhone
+    repro_test.go:127: after a successful release, B is refused: device 00008103-001122334455667A is reserved by agent-A until 2026-11-24T09:59:45+11:00 (note: "mcp reserve")
+--- PASS: TestR4_ReleaseWhileAbsentReportsSuccessAndStrands (0.01s)
+=== RUN   TestR5_LapsedLeaseIsNotRecoveredAndIsRegranted
+2026/11/23 09:59:45 INFO reservation acquired device=00008103-001122334455667A owner=job-A ttl=1h0m0s note=""
+2026/11/23 09:59:45 INFO reservation renewed device=00008103-001122334455667A owner=job-A ttl=1h0m0s
+2026/11/23 09:59:45 INFO reservation acquired device=00008103-001122334455667A owner=job-B ttl=1h0m0s note=""
+    repro_test.go:168: A's renewal after B's grant: device 00008103-001122334455667A is reserved by job-B until 2026-11-22T11:25:00Z (spyder run prints this and carries on)
+--- PASS: TestR5_LapsedLeaseIsNotRecoveredAndIsRegranted (0.03s)
+=== RUN   TestR6_ActivityRenewalLostAndReaperShutsDownBusySimulator
+2026/11/23 09:59:45 INFO simlease: acquired lease=0c95067dd4bbcaaa udid=SIM-A action=booted owner=job-A ttl=5m0s
+2026/11/23 09:59:45 INFO simlease: acquired lease=16c09b33f121a7bd udid=SIM-B action=booted owner=job-B ttl=5m0s
+2026/11/23 09:59:45 INFO simlease: released lease=0c95067dd4bbcaaa udid=SIM-A owner=job-A action=booted undo=shut_down reason=expired
+    repro_test.go:267: t=+300s reaper released 0c95067dd4bbcaaa (SIM-A, owner job-A), undo=shut_down, while it was in use
+    repro_test.go:272: A's simulator is Shutdown at t=+300s although A touched it every second
+--- PASS: TestR6_ActivityRenewalLostAndReaperShutsDownBusySimulator (0.13s)
+=== RUN   TestR7_PendingLeaseWithReusedPIDIsNeverReaped
+    repro_test.go:317: 48 h later: not reaped; owner release: "still being acquired"; B: sim_acquire: create a (com.apple.CoreSimulator.SimDeviceType.iPhone-16-Pro, com.apple.CoreSimulator.SimRuntime.iOS-18-6): create not expected
+--- PASS: TestR7_PendingLeaseWithReusedPIDIsNeverReaped (0.02s)
+PASS
+ok  	github.com/marcelocantos/spyder/docs/analysis/lease-protocol-2026-11-22/_gorepro	0.261s
