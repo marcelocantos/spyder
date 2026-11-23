@@ -321,10 +321,13 @@ kill reaches the wrapper's group and not the job's.
 group is sent SIGKILL. With this branch: "wrapper alive=no job alive=yes";
 with the expiry rewritten into the past to stand for the hour, a second
 run is granted the device while the first job is alive. With master:
-"wrapper alive=no job alive=no". Whether `pueue kill` signals the task's
-group is from pueue's documented handling; a harmless pueue task that
-checks it directly (task 1579, a background `sleep` in the task's group)
-was queued behind 16 tasks and had not run when this report was written.
+"wrapper alive=no job alive=no". `pueue kill` does signal the task's whole
+group: pueue task 1622 (`repro/pueue-kill-group-task.sh`, a shell with a
+background `sleep` in its group, default group) was killed with
+`pueue kill 1622`, and both the shell and the `sleep` were gone two
+seconds later (`out/pueue-kill-group.out`: shell pgid 65058, sleep pgid
+65058). A job that has its own group, as the branch gives it, is outside
+that kill.
 
 *Smallest fix*: give the job's group a lifeline. Start the job through a
 tiny guard (spyder re-executed in a hidden mode) that is the leader of the
@@ -547,10 +550,8 @@ it; it costs a second build in the test.
    integrator recorded "a new CLI with the old daemon behaves as today";
    today's behaviour already includes DH-05. Not modelled (the model has
    no old daemon) and not reproduced.
-4. **`pueue kill` signals the task's process group.** D2's reproduction
-   delivers a group SIGKILL directly. That pueue does the same is from its
-   process handling and the observed `pgid == pid` of its tasks; the direct
-   check (pueue task 1579) had not run.
+4. (Confirmed and moved to D2: `pueue kill` kills the task's process
+   group, pueue task 1622.)
 5. (Confirmed by reading and moved to D6: Go's monotonic clock on darwin
    is `mach_absolute_time`, which does not advance while the Mac sleeps;
    `runtime/sys_darwin_arm64.s` `nanotime_trampoline` in go1.27.4.)

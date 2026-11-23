@@ -1,0 +1,3 @@
+task sh pid 65058 pgid 65058; background sleep pid 65633 pgid 65058
+Tasks are being killed: 1622
+after pueue kill: sh alive=no background sleep alive=no
