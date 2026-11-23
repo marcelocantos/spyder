@@ -1,24 +1,25 @@
 #!/usr/bin/env bash
-# codesign-spyder.sh — sign bin/spyder as the studio-secrets principal (🎯T133.1).
+# codesign-spyder.sh — sign spyder CLI and packaged macOS binaries (🎯T133.1).
 #
 # Keychain ACLs bind to the code signature. Ad-hoc (`codesign -s -`) and
 # unsigned Homebrew CDHash churn re-prompt on every rebuild. This script
-# signs with a stable Development or Developer ID Application identity and
-# forces identifier com.marcelocantos.spyder.
+# signs with a stable Developer ID Application (or fallback Apple Development)
+# identity and forces the requested reverse-DNS identifier (default:
+# com.marcelocantos.spyder).
 #
-# marcelocantos tap releases sign under Squz (SWA3H3N7TW) until the
-# canticode.com Apple Developer Program account is active. Override the team
-# with SPYDER_CODESIGN_TEAM_ID when switching. (Squz/Minicades store-ship
-# identities in internal/ship are unchanged — this script covers the CLI only.)
+# marcelocantos tap releases sign under Canticode Pty Ltd (N29CRQ669R).
+# Override the team with SPYDER_CODESIGN_TEAM_ID if needed. (Squz/Minicades
+# store-ship identities in internal/ship and player/ios are unchanged — this
+# script covers spyder's CLI and packaged macOS helpers only.)
 #
 # Usage:
-#   ./scripts/codesign-spyder.sh [path-to-binary]
-#   SPYDER_CODESIGN_IDENTITY="Apple Development: …" ./scripts/codesign-spyder.sh
+#   ./scripts/codesign-spyder.sh [path-to-binary] [identifier]
+#   SPYDER_CODESIGN_IDENTITY="Developer ID Application: …" ./scripts/codesign-spyder.sh
 set -euo pipefail
 
 BIN="${1:-bin/spyder}"
-BUNDLE_ID="com.marcelocantos.spyder"
-TEAM_ID="${SPYDER_CODESIGN_TEAM_ID:-SWA3H3N7TW}"
+BUNDLE_ID="${2:-com.marcelocantos.spyder}"
+TEAM_ID="${SPYDER_CODESIGN_TEAM_ID:-N29CRQ669R}"
 
 if [[ ! -f "$BIN" ]]; then
   echo "codesign-spyder: missing $BIN — run make build first" >&2
@@ -64,22 +65,27 @@ pick_identity() {
     return
   fi
   echo "codesign-spyder: no Developer ID Application or Apple Development identity for team ${TEAM_ID}" >&2
-  echo "  import a Squz cert into the login keychain, or set SPYDER_CODESIGN_IDENTITY" >&2
-  echo "  (interim: SWA3H3N7TW until canticode.com Developer Program is active)" >&2
+  echo "  import a Canticode Pty Ltd (${TEAM_ID}) cert into the login keychain, or set SPYDER_CODESIGN_IDENTITY" >&2
   exit 1
 }
 
 IDENTITY="$(pick_identity)"
+TIMESTAMP_OPT="--timestamp"
+if [[ "$IDENTITY" == *"Apple Development"* ]]; then
+  TIMESTAMP_OPT="--timestamp=none"
+fi
+
 echo "codesign-spyder: signing $BIN"
 echo "  team:       ${TEAM_ID}"
 echo "  identity:   $IDENTITY"
 echo "  identifier: $BUNDLE_ID"
+echo "  timestamp:  $TIMESTAMP_OPT"
 
 codesign --force --sign "$IDENTITY" \
   --identifier "$BUNDLE_ID" \
   --options runtime \
-  --timestamp=none \
+  "$TIMESTAMP_OPT" \
   "$BIN"
 
-codesign -dv --verbose=4 "$BIN" 2>&1 | egrep '^(Identifier|Authority|TeamIdentifier|Signature)=' || true
+codesign -dv --verbose=4 "$BIN" 2>&1 | grep -E '^(Identifier|Authority|TeamIdentifier|Signature|Timestamp)=' || true
 echo "codesign-spyder: ok"

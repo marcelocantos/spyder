@@ -35,23 +35,28 @@ CGO_ENABLED=1 GOOS=darwin GOARCH=arm64 \
 	go build -trimpath -ldflags "-s -w -X main.version=${TAG} -X github.com/marcelocantos/spyder/internal/runs.BuildBranch=$(git -C "$ROOT" rev-parse --abbrev-ref HEAD)" \
 	-o "$STAGE/bin/spyder" .
 
-"$ROOT/scripts/codesign-spyder.sh" "$STAGE/bin/spyder"
+"$ROOT/scripts/codesign-spyder.sh" "$STAGE/bin/spyder" com.marcelocantos.spyder
 
 echo "release-package: building go-ios" >&2
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
 	go build -trimpath -ldflags "-s -w" -mod=mod \
 	-o "$STAGE/libexec/spyder/ios" github.com/danielpaulus/go-ios
 
+"$ROOT/scripts/codesign-spyder.sh" "$STAGE/libexec/spyder/ios" com.marcelocantos.spyder.ios
+
 echo "release-package: building spyder-killusbmuxd" >&2
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
 	go build -trimpath -ldflags "-s -w" \
 	-o "$STAGE/bin/spyder-killusbmuxd" ./cmd/spyder-killusbmuxd
+
+"$ROOT/scripts/codesign-spyder.sh" "$STAGE/bin/spyder-killusbmuxd" com.marcelocantos.spyder.killusbmuxd
 
 # Desktop stream player (🎯T102): self-contained C++ glass under player/,
 # built for arm64 macOS by `make -C player`. Arch-matched to the spyder
 # binary above (darwin/arm64 only — see hygiene.yaml's no-Linux floor).
 echo "release-package: building desktop player" >&2
 "$ROOT/scripts/package-player-desktop.sh" "$STAGE/libexec/spyder/player/desktop/player"
+"$ROOT/scripts/codesign-spyder.sh" "$STAGE/libexec/spyder/player/desktop/player" com.marcelocantos.spyder.player
 
 # Android debug APK (🎯T102): best-effort. player/android's native build
 # (build-deps.sh) is currently broken pending the sokol_gfx port (🎯T34),

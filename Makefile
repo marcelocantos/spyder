@@ -62,11 +62,14 @@ export GOWORK
 bin/spyder: $(shell find . -name '*.go' -not -path './bin/*' -not -path './cmd/*' 2>/dev/null) go.mod go.sum internal/dashboard/index.html
 	CGO_ENABLED=1 go build -ldflags "-X main.version=dev $(STAMP_LDFLAGS)" -o bin/spyder .
 
-# sign attaches a stable Development / Developer ID Application identity
-# and identifier com.marcelocantos.spyder so keychain ACLs do not churn
-# across rebuilds (🎯T133.1). Required before secret import / fastlane.
-sign: bin/spyder
-	@./scripts/codesign-spyder.sh bin/spyder
+# sign attaches a stable Developer ID Application (or fallback Apple
+# Development) identity and reverse-DNS identifiers so keychain ACLs do not
+# churn across rebuilds (🎯T133.1). Required before secret import / fastlane.
+sign: bin/spyder bin/ios bin/spyder-killusbmuxd
+	@./scripts/codesign-spyder.sh bin/spyder com.marcelocantos.spyder
+	@./scripts/codesign-spyder.sh bin/ios com.marcelocantos.spyder.ios
+	@./scripts/codesign-spyder.sh bin/spyder-killusbmuxd com.marcelocantos.spyder.killusbmuxd
+	@if [ -f bin/player ]; then ./scripts/codesign-spyder.sh bin/player com.marcelocantos.spyder.player; fi
 
 # bin/spyder-killusbmuxd is a single-purpose helper for the doctor's
 # --fix path. It runs `killall usbmuxd` and exits. Built as a
