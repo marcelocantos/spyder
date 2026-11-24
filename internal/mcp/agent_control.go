@@ -123,17 +123,19 @@ func (h *Handler) KickAgents() {
 // AgentKicks is the channel the daemon's supervision loop selects on.
 func (h *Handler) AgentKicks() <-chan struct{} { return h.agentKick }
 
-// StopAgents ends resident XCTest sessions. Idle does not.
-func (h *Handler) StopAgents() {
+// StopAgents ends resident XCTest sessions. Idle does not. It reports
+// whether any DeviceKit runner was left running for the next daemon.
+func (h *Handler) StopAgents() (leftRunners bool) {
 	if h == nil {
-		return
+		return false
 	}
 	h.mu.Lock()
 	host := h.agentHost
 	h.mu.Unlock()
 	if host != nil {
-		host.Shutdown()
+		return host.Shutdown() > 0
 	}
+	return false
 }
 
 // gateAgent rejects a mutation when a supervised client already owns

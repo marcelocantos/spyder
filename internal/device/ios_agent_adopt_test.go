@@ -93,7 +93,7 @@ func TestDeviceKit_UnhealthyOrphanIsReplaced(t *testing.T) {
 	host.hostSignal = func(int, syscall.Signal) error { gone.Store(true); return nil }
 	host.readyProbe = func(_ string, p int) bool { return p == 91 }
 	host.holdRun = func(ctx context.Context, _ string, _ io.Writer) error { pid.Store(91); <-ctx.Done(); return nil }
-	t.Cleanup(host.Shutdown)
+	t.Cleanup(func() { host.Shutdown() })
 	snap, err := dkSupervisor(host).Tick("dut")
 	if err != nil || !snap.Ready || !snap.Relaunched || snap.Runner.PID != 91 || !gone.Load() {
 		t.Fatalf("tick %+v err=%v gone=%v", snap, err, gone.Load())
@@ -114,7 +114,13 @@ func TestShutdown_LeavesEstablishedDeviceKitHosts(t *testing.T) {
 		close(pendingDone)
 	}}
 	host.holds["dut"], host.holds["pending"] = kept, pending
-	host.Shutdown()
+	// The count tells the daemon to leave the tunnel the runner uses (🎯T236).
+	if left := host.Shutdown(); left != 1 {
+		t.Fatalf("Shutdown reported %d runners left, want 1", left)
+	}
+	if left := host.Shutdown(); left != 1 {
+		t.Fatalf("a second Shutdown (the agent loop also calls it) reported %d left, want 1", left)
+	}
 	if keptCancelled.Load() {
 		t.Fatal("shutdown stopped an established DeviceKit runwda")
 	}

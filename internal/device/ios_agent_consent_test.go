@@ -26,7 +26,7 @@ func pendingHost(t *testing.T, pid *atomic.Int64) *AutomationHost {
 	host := dkHost(t, pid)
 	host.launchBudget = 300 * time.Millisecond
 	host.pendingPoll = 20 * time.Millisecond
-	t.Cleanup(host.Shutdown)
+	t.Cleanup(func() { host.Shutdown() })
 	return host
 }
 
@@ -205,7 +205,7 @@ func TestDeviceKit_StaleRunnerWithoutHostIsTerminated(t *testing.T) {
 		<-ctx.Done()
 		return nil
 	}
-	t.Cleanup(host.Shutdown)
+	t.Cleanup(func() { host.Shutdown() })
 	obs, err := host.Probe("dut")
 	if err != nil || obs.Authorized || !obs.RunnerAlive {
 		t.Fatalf("stale probe %+v err=%v", obs, err)
@@ -255,7 +255,7 @@ func TestDeviceKit_OrphanedSpyderHostIsReplaced(t *testing.T) {
 		<-ctx.Done()
 		return nil
 	}
-	t.Cleanup(host.Shutdown)
+	t.Cleanup(func() { host.Shutdown() })
 	snap, err := dkSupervisor(host).Tick("dut")
 	if err != nil || !snap.Ready || !snap.Relaunched || snap.Runner.PID != 91 {
 		t.Fatalf("startup tick %+v err=%v", snap, err)

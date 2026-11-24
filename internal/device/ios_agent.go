@@ -1136,19 +1136,22 @@ func (h *AutomationHost) HealthyPID(id string) (int, bool) {
 }
 
 // Shutdown ends resident XCTest sessions at process shutdown. Idle
-// does not call this. An established DeviceKit runwda is left running,
-// like the iOS tunnel, so the next daemon adopts it with its approval
-// intact (🎯T233); everything else (in-process AlertRunner sessions,
-// launches still starting or waiting on consent) is stopped.
-func (h *AutomationHost) Shutdown() {
+// does not call this. An established DeviceKit runwda is left running
+// so the next daemon adopts it with its approval intact (🎯T233);
+// everything else (in-process AlertRunner sessions, launches still
+// starting or waiting on consent) is stopped. It returns how many
+// runners it left; the daemon then leaves the iOS tunnel they ride on
+// running as well (🎯T236).
+func (h *AutomationHost) Shutdown() (left int) {
 	if h == nil {
-		return
+		return 0
 	}
 	h.mu.Lock()
 	ids := make([]string, 0, len(h.holds))
 	for id, hold := range h.holds {
 		if hold.hostPID > 0 && h.usesDeviceKit(id) && !hold.launching && !hold.pending {
 			slog.Info("leaving resident DeviceKit runner for the next daemon", "device", id, "host_pid", hold.hostPID, "runner_pid", hold.pid)
+			left++
 			continue
 		}
 		ids = append(ids, id)
@@ -1165,6 +1168,7 @@ func (h *AutomationHost) Shutdown() {
 		}(id)
 	}
 	wg.Wait()
+	return left
 }
 
 // TapButton asks the resident runner to press a SpringBoard button.

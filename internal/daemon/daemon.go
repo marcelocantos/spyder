@@ -115,10 +115,19 @@ func Run(ctx context.Context, cfg Config) error {
 	// the supervised daemon for :60105.
 	var tunnelSup *iostunnel.Supervisor
 	var ownTunnel bool
+	// Tunnel supervision stops the tunnel when its context ends, so it
+	// gets its own context, cancelled only once shutdown has decided
+	// whether resident runners still need the tunnel (🎯T236).
+	tunnelCtx, stopTunnelSupervision := context.WithCancel(context.Background())
+	defer stopTunnelSupervision()
 	iosBin := resolveIOSTunnelBinary()
 	if iosBin != "" {
 		tunnelSup = iostunnel.New(iosBin, goios.DefaultTunnelHost, goios.DefaultTunnelPort)
 		switch {
+		case func() bool { _, ok := tunnelSup.AdoptOrphan(); return ok }():
+			// The previous daemon left its tunnel up for its resident
+			// runners (🎯T236). Supervise it as our own.
+			ownTunnel = true
 		case tunnelSup.RegistryListening():
 			// Often the outgoing daemon's tunnel during a restart; it dies
 			// with its parent moments later (🎯T193). Take over then.
@@ -130,7 +139,7 @@ func Run(ctx context.Context, cfg Config) error {
 				}
 				slog.Info("iostunnel: previous registry went away; started our own")
 				if mcpHandler != nil {
-					go mcpHandler.Health().Supervise(ctx, sup, tunnelHealthPolicy, tunnelHealthInterval)
+					go mcpHandler.Health().Supervise(tunnelCtx, sup, tunnelHealthPolicy, tunnelHealthInterval)
 				}
 				return nil
 			}, tunnelTakeoverPoll)
@@ -195,7 +204,7 @@ func Run(ctx context.Context, cfg Config) error {
 		// 🎯T90.5.1: ios-tunnel restart/liveness owned solely by health.Supervise
 		// (iostunnel has no restartLoop/healthProbe of its own).
 		if ownTunnel {
-			go mcpHandler.Health().Supervise(ctx, tunnelSup, tunnelHealthPolicy, tunnelHealthInterval)
+			go mcpHandler.Health().Supervise(tunnelCtx, tunnelSup, tunnelHealthPolicy, tunnelHealthInterval)
 		}
 	}
 	// 🎯T99.5: SIGQUIT dumps goroutines under ~/.spyder/ without dying.
@@ -245,16 +254,13 @@ func Run(ctx context.Context, cfg Config) error {
 	select {
 	case <-ctx.Done():
 		slog.Info("daemon: shutting down (signal or context cancel)")
-		if mcpHandler != nil {
-			mcpHandler.StopAgents()
-		}
+		leftRunners := mcpHandler != nil && mcpHandler.StopAgents()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		if tunnelSup != nil {
-			if err := tunnelSup.Stop(shutdownCtx); err != nil {
-				slog.Error("daemon: iostunnel stop error", "error", err)
-			}
+			finishTunnel(shutdownCtx, tunnelSup, leftRunners)
 		}
+		stopTunnelSupervision()
 		if logCapMgr != nil {
 			logCapMgr.Close()
 		}

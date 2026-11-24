@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/marcelocantos/spyder/internal/health"
+	"github.com/marcelocantos/spyder/internal/iostunnel"
 )
 
 // tunnelHealthPolicy and tunnelHealthInterval govern health.Supervise for
@@ -53,5 +54,20 @@ func takeOverTunnel(ctx context.Context, listening func() bool, start func() err
 			continue
 		}
 		return
+	}
+}
+
+// finishTunnel ends the daemon's hold on the iOS tunnel at shutdown.
+// Resident runners left for the next daemon reach their devices
+// through it, so with any left it stays up; otherwise it is stopped
+// (🎯T236). Call before cancelling the tunnel's supervision context,
+// whose cancellation stops a tunnel that was not released.
+func finishTunnel(ctx context.Context, sup *iostunnel.Supervisor, leftRunners bool) {
+	if leftRunners {
+		sup.Release()
+		return
+	}
+	if err := sup.Stop(ctx); err != nil {
+		slog.Error("daemon: iostunnel stop error", "error", err)
 	}
 }
