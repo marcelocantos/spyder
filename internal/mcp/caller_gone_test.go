@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -105,5 +106,49 @@ func TestTerminateApp_SimulatorWordingIsSuccess(t *testing.T) {
 	r := dispatchJSON(t, h, "terminate_app", map[string]any{"device": "iPad", "bundle_id": "com.example.app"})
 	if r.IsError {
 		t.Fatalf("terminate_app failed after the app was gone: %s", resultText(t, &r))
+	}
+}
+
+// terminate_app means "ensure the app is not running". Each adapter's
+// wording for an app that is already gone is success, with no
+// is_running guard needed; real failures still fail.
+func TestTerminateApp_AlreadyGoneIsSuccessOnEveryAdapter(t *testing.T) {
+	const bundle = "com.example.app"
+	cases := []struct {
+		name    string
+		err     error
+		wantErr bool
+	}{
+		{"ios/android/desktop", errors.New("app not running: " + bundle), false},
+		{"simulator", errors.New(bundle + " is not running"), false},
+		{"wrapped", fmt.Errorf("kill: %w", errors.New("app not running: "+bundle)), false},
+		{"disconnected", errors.New("device not connected"), true},
+		{"tunnel down", errors.New("ios tunnel not running"), true},
+		{"other app gone", errors.New("com.other.app is not running"), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var pidCalls atomic.Int32
+			ios := &stubAdapter{
+				terminateApp: func(_, _ string) error { return c.err },
+				appPID: func(_, _ string) (int, error) {
+					pidCalls.Add(1)
+					return 9, nil // would fail the stop check if reached
+				},
+			}
+			h := newHandlerWithStubs(t, ios, nil)
+			r := dispatchJSON(t, h, "terminate_app", map[string]any{"device": "iPad", "bundle_id": bundle})
+			if r.IsError != c.wantErr {
+				t.Fatalf("IsError = %v, want %v: %s", r.IsError, c.wantErr, resultText(t, &r))
+			}
+			if !c.wantErr {
+				if got := resultText(t, &r); !strings.Contains(got, "already not running") {
+					t.Fatalf("result = %q, want it to say the app was already not running", got)
+				}
+				if n := pidCalls.Load(); n != 0 {
+					t.Fatalf("already-gone app still ran %d pid checks", n)
+				}
+			}
+		})
 	}
 }

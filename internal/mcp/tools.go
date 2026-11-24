@@ -895,7 +895,14 @@ func (h *Handler) handleTerminateAppContext(ctx context.Context, args map[string
 	if res := h.gateAgentAny(owner, agent.MutLifecycle, dev, id); res != nil {
 		return res, nil
 	}
+	// terminate_app means "ensure the app is not running": an app that
+	// is already gone is success on every adapter, so callers need no
+	// is_running guard (and its race with the app exiting on its own).
 	if err := device.TerminateAppContext(ctx, adapter, id, bundleID); err != nil {
+		if appGone(err, bundleID) {
+			h.launched.Forget(id, bundleID)
+			return toolText(fmt.Sprintf("%s already not running on %s", bundleID, dev))
+		}
 		return toolErr("terminate_app %s on %s: %v", bundleID, dev, err)
 	}
 	// A successful kill request does not mean the process has exited yet.
@@ -908,7 +915,7 @@ func (h *Handler) handleTerminateAppContext(ctx context.Context, args map[string
 		if pidErr != nil {
 			// Adapters word "gone" differently: iOS "app not running…",
 			// the simulator "<bundle> is not running".
-			if appGone(pidErr) {
+			if appGone(pidErr, bundleID) {
 				h.launched.Forget(id, bundleID)
 				return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
 			}
@@ -919,7 +926,7 @@ func (h *Handler) handleTerminateAppContext(ctx context.Context, args map[string
 			return toolText(fmt.Sprintf("terminated %s on %s", bundleID, dev))
 		}
 		if check == stopChecks/2 {
-			if err := device.TerminateAppContext(ctx, adapter, id, bundleID); err != nil && !appGone(err) {
+			if err := device.TerminateAppContext(ctx, adapter, id, bundleID); err != nil && !appGone(err, bundleID) {
 				return toolErr("retry termination of %s on %s: %v", bundleID, dev, err)
 			}
 		}
@@ -2363,8 +2370,17 @@ func (h *Handler) waitUntilNotRunningContext(ctx context.Context, adapter device
 // errors from TerminateApp. These are safe to ignore during a deploy.
 // appGone reports that a pid lookup or terminate found no running
 // process, in any adapter's wording.
-func appGone(err error) bool {
-	return err != nil && strings.Contains(strings.ToLower(err.Error()), "not running")
+// appGone reports whether err is an adapter's "this app is not running"
+// answer: "app not running: <bundle>" (iOS, Android, desktop) or
+// "<bundle> is not running" (simulator). It is deliberately narrow so a
+// real failure that merely mentions "not running" (a tunnel, a runner)
+// still fails.
+func appGone(err error, bundleID string) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "app not running") || strings.Contains(msg, bundleID+" is not running")
 }
 
 func isNotRunningError(err error) bool {
