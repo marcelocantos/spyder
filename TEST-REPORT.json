@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-11-22T22:15:47Z",
-  "head_sha": "4d11937a7b5e6ae8bc096c237af2a1e8cf362b4f",
+  "generated_at": "2026-11-24T03:17:32Z",
+  "head_sha": "377cf48b5ce38f0e2b813b478163c1c729507463",
   "host": "colossus",
   "suites": [
     {
@@ -13,13 +13,13 @@
     {
       "name": "govulncheck",
       "cmd": "GOWORK=off govulncheck ./...",
-      "duration_s": 2,
+      "duration_s": 3,
       "status": "pass"
     },
     {
       "name": "player-wire",
       "cmd": "make check-wire && ./scripts/check-wire-ge-test.sh",
-      "duration_s": 2,
+      "duration_s": 1,
       "status": "pass"
     },
     {
