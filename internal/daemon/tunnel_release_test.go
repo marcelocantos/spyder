@@ -17,6 +17,7 @@ import (
 
 	"github.com/marcelocantos/spyder/internal/health"
 	"github.com/marcelocantos/spyder/internal/iostunnel"
+	"github.com/marcelocantos/spyder/internal/paths"
 )
 
 // On 2026-11-24 a graceful restart left both iPhones' runners but
@@ -27,7 +28,15 @@ func TestFinishTunnel_KeepsTheTunnelForLeftRunners(t *testing.T) {
 	for _, left := range []bool{true, false} {
 		t.Run(strconv.FormatBool(left), func(t *testing.T) {
 			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
+			// The tunnel's cwd lives under the data dir. Other tests in this
+			// package leave goroutines that write there too, so it is not a
+			// TempDir, whose cleanup fails if anything lands in it late.
+			data, err := os.MkdirTemp("", "spyder-tunnel-release-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(data) })
+			t.Setenv(paths.DataDirEnv, data)
 			pidFile := filepath.Join(tmp, "pid")
 			bin := filepath.Join(tmp, "ios")
 			script := "#!/bin/sh\necho $$ > " + pidFile + "\ntrap 'exit 0' TERM\nwhile true; do sleep 0.05; done\n"
