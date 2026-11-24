@@ -1,25 +1,25 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-11-24T06:04:44Z",
-  "head_sha": "15dee9c41c400fd3a14b584b98545b83cd4b0aad",
+  "generated_at": "2026-11-24T06:07:35Z",
+  "head_sha": "1e7107c25a8e56614a3bff9b8d04ded53a8e0ccd",
   "host": "colossus",
   "suites": [
     {
       "name": "go-unit",
       "cmd": "env -u SPYDER_LIVE_UDID -u SPYDER_LIVE_UDIDS -u SPYDER_LIVE_BUNDLE_ID -u SPYDER_LIVE_WEDGE -u SPYDER_LIVE_ANDROID_SERIAL -u SPYDER_LIVE_APPRAISE_DEVICE go test -timeout 2m  ./... github.com/danielpaulus/go-ios/ios/installationproxy",
-      "duration_s": 84,
-      "status": "fail"
+      "duration_s": 10,
+      "status": "pass"
     },
     {
       "name": "govulncheck",
       "cmd": "GOWORK=off govulncheck ./...",
-      "duration_s": 2,
+      "duration_s": 1,
       "status": "pass"
     },
     {
       "name": "player-wire",
       "cmd": "make check-wire && ./scripts/check-wire-ge-test.sh",
-      "duration_s": 2,
+      "duration_s": 1,
       "status": "pass"
     },
     {
@@ -33,5 +33,5 @@
       "reason": "set SPYDER_LIVE_APPRAISE_DEVICE=<android alias> to run; needs a device and a Claude login"
     }
   ],
-  "overall": "fail"
+  "overall": "partial"
 }
