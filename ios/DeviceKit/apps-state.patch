@@ -1,0 +1,56 @@
+# Adds device.apps.state, which spyder's resident-agent readiness probe calls (🎯T240).
+# Applies to https://github.com/mobile-next/devicekit-ios at cba819d (2026-11-13).
+diff --git a/DeviceKitTests/JSONRPC/Handlers/AppsForeground.swift b/DeviceKitTests/JSONRPC/Handlers/AppsForeground.swift
+index 5e30d73..a3a5bb3 100644
+--- a/DeviceKitTests/JSONRPC/Handlers/AppsForeground.swift
++++ b/DeviceKitTests/JSONRPC/Handlers/AppsForeground.swift
+@@ -1,3 +1,4 @@
++import XCTest
+ import os
+ 
+ /// `fields` names the parts of the answer the caller wants. Leaving it out asks for all of
+@@ -69,3 +70,32 @@ struct AppsForegroundMethodHandler: RPCMethodHandler {
+         return .object(result)
+     }
+ }
++
++
++/// Local addition for spyder's resident-agent readiness probe: reports an app's
++/// XCUIApplication state, and its pid when it is the foreground app (0 otherwise).
++struct AppsStateRequest: Codable {
++    let bundleId: String
++}
++
++@MainActor
++struct AppsStateMethodHandler: RPCMethodHandler {
++    static let methodName = "device.apps.state"
++
++    func execute(params: JSONValue?) async throws -> JSONValue {
++        let request = try decodeParams(AppsStateRequest.self, from: params)
++        let state: String
++        switch XCUIApplication(bundleIdentifier: request.bundleId).state {
++        case .notRunning: state = "notRunning"
++        case .runningBackgroundSuspended: state = "runningBackgroundSuspended"
++        case .runningBackground: state = "runningBackground"
++        case .runningForeground: state = "runningForeground"
++        default: state = "unknown"
++        }
++        var pid = 0
++        if let foreground = RunningApp.getForegroundApp(), foreground.bundleID == request.bundleId {
++            pid = Int(foreground.processID)
++        }
++        return .object(["bundleId": .string(request.bundleId), "state": .string(state), "pid": .int(pid)])
++    }
++}
+diff --git a/DeviceKitTests/JSONRPC/JSONRPCDispatcher.swift b/DeviceKitTests/JSONRPC/JSONRPCDispatcher.swift
+index 3daec28..97fadf0 100644
+--- a/DeviceKitTests/JSONRPC/JSONRPCDispatcher.swift
++++ b/DeviceKitTests/JSONRPC/JSONRPCDispatcher.swift
+@@ -29,6 +29,7 @@ final class JSONRPCDispatcher {
+         registerHandler(IOHingeSetMethodHandler())
+         registerHandler(DeviceInfoMethodHandler())
+         registerHandler(AppsForegroundMethodHandler())
++        registerHandler(AppsStateMethodHandler())
+         registerHandler(IOKeyboardStatusMethodHandler())
+         registerHandler(ClipboardGetMethodHandler())
+         registerHandler(ClipboardSetMethodHandler())
