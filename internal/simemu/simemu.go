@@ -188,6 +188,7 @@ func SimBoot(udid string) error {
 	if err != nil {
 		return fmt.Errorf("simctl boot %s: %w", udid, err)
 	}
+	QuietSimAudio(udid)
 	return nil
 }
 

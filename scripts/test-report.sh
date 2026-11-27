@@ -115,6 +115,15 @@ else
   run_suite_skipped live "set SPYDER_LIVE_UDID=<udid> to run; requires a paired device"
 fi
 
+# ── Tier 2b: live simulator boot (🎯T241) ────────────────────────────────────
+# Gated on SPYDER_LIVE_SIM_RUNTIME (e.g. "iOS 18.6"). Creates, boots and
+# deletes a throwaway simulator, and checks callservicesd is not running.
+if [[ -n "${SPYDER_LIVE_SIM_RUNTIME:-}" ]]; then
+  run_suite live-sim "go test $DEFAULT_TIMEOUT $GO_TEST_FLAGS -count=1 -run '_Live$' ./internal/simlease/"
+else
+  run_suite_skipped live-sim "set SPYDER_LIVE_SIM_RUNTIME='iOS 18.6' to run; boots a throwaway simulator"
+fi
+
 # ── Tier 3: live model appraisal of static owner gates (🎯T149.2) ──────────
 # Gated on SPYDER_LIVE_APPRAISE_DEVICE (an Android device alias). Stages the
 # Settings app and then the home screen, and needs a working Claudia/Claude

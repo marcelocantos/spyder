@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/marcelocantos/spyder/internal/simemu"
 )
 
 // Sim is one simulator as simctl reports it, plus its uptime when booted.
@@ -269,8 +271,11 @@ func (XcrunSimctl) Create(ctx context.Context, name, deviceType, runtime string)
 // Boot boots and waits: `bootstatus -b` boots a shut-down device and
 // returns when its boot has finished.
 func (XcrunSimctl) Boot(ctx context.Context, udid string) error {
-	_, err := simctl(ctx, "bootstatus", udid, "-b")
-	return err
+	if _, err := simctl(ctx, "bootstatus", udid, "-b"); err != nil {
+		return err
+	}
+	simemu.QuietSimAudio(udid)
+	return nil
 }
 
 func (XcrunSimctl) Shutdown(ctx context.Context, udid string) error {
